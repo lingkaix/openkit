@@ -1,12 +1,13 @@
 import { operationHttpPath } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { useWorkspaceStore } from '../workspace-store';
+import { workspaceKeys } from './data';
 import { KnowledgeScreen } from './KnowledgeScreen';
 
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
@@ -54,8 +55,10 @@ type CreateInput = Parameters<
 const queryClients: QueryClient[] = [];
 
 /** Composes the rendered form, hooks and real client; only HTTP is replaced. */
-function renderKnowledge() {
+function renderKnowledge({ failFirstCreate = false } = {}) {
   const creates: CreateInput[] = [];
+  let sources = [SOURCE_A, SELECTED_SOURCE];
+  let sourceRead: (() => Promise<Response>) | undefined;
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const path = new URL(String(input)).pathname;
     let body: unknown;
@@ -94,8 +97,9 @@ function renderKnowledge() {
           };
           break;
         case operationHttpPath('knowledge.source.list'):
+          if (sourceRead) return sourceRead();
           body = {
-            items: request.workspaceId === WORKSPACE_A ? [SOURCE_A, SELECTED_SOURCE] : [SOURCE_B],
+            items: request.workspaceId === WORKSPACE_A ? sources : [SOURCE_B],
           };
           break;
         case operationHttpPath('knowledge.indexes'):
@@ -122,6 +126,7 @@ function renderKnowledge() {
           break;
         case operationHttpPath('knowledge.create'):
           creates.push(request);
+          if (failFirstCreate && creates.length === 1) throw new TypeError('Response lost.');
           body = PAGE;
           break;
         case operationHttpPath('knowledge.observation.list'):
@@ -150,7 +155,17 @@ function renderKnowledge() {
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  return { creates, fetch };
+  return {
+    creates,
+    fetch,
+    queryClient,
+    setSources: (next: typeof sources) => {
+      sources = next;
+    },
+    setSourceRead: (read: typeof sourceRead) => {
+      sourceRead = read;
+    },
+  };
 }
 
 /** Opens the ordinary entry form once authoritative reads permit a new entry. */
@@ -240,5 +255,146 @@ describe('Add knowledge registered Source relationship', () => {
     await waitFor(() => expect(creates).toHaveLength(1));
     expect(creates[0]).toMatchObject({ workspaceId: WORKSPACE_B, content: CONTENT });
     expect(creates[0]?.sourceReferences ?? []).toEqual([]);
+  });
+
+  it('does not offer a foreign Workspace Source returned in the current catalog', async () => {
+    const fixture = renderKnowledge();
+    const user = userEvent.setup();
+    await openAddForm(user);
+    fixture.setSources([SOURCE_A, SOURCE_B]);
+    await act(async () => {
+      await fixture.queryClient.invalidateQueries({
+        queryKey: workspaceKeys.knowledgeSources(WORKSPACE_A),
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Registered source/i })).toBeEnabled()
+    );
+    await user.click(screen.getByRole('button', { name: /Registered source/i }));
+
+    expect(await screen.findByRole('option', { name: SOURCE_A.title })).toBeVisible();
+    expect(screen.queryByRole('option', { name: SOURCE_B.title })).not.toBeInTheDocument();
+  });
+
+  it('blocks a new save while the selected Source catalog is being refreshed', async () => {
+    const fixture = renderKnowledge();
+    const user = userEvent.setup();
+    await openAddForm(user);
+    await fillEntry(user);
+    await user.click(screen.getByRole('button', { name: /Registered source/i }));
+    await user.click(await screen.findByRole('option', { name: SELECTED_SOURCE.title }));
+    let finishRead!: (response: Response) => void;
+    fixture.setSourceRead(
+      () =>
+        new Promise<Response>((resolve) => {
+          finishRead = resolve;
+        })
+    );
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = fixture.queryClient.invalidateQueries({
+        queryKey: workspaceKeys.knowledgeSources(WORKSPACE_A),
+      });
+    });
+    try {
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /Registered source/i })).toBeDisabled()
+      );
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      expect(fixture.creates).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        finishRead(
+          new Response(JSON.stringify({ items: [SOURCE_A, SELECTED_SOURCE] }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+        await refresh;
+      });
+    }
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+  });
+
+  it.each([
+    'missing',
+    'changed',
+    'denied',
+  ] as const)('blocks a selected Source after a %s catalog refresh', async (outcome) => {
+    const fixture = renderKnowledge();
+    const user = userEvent.setup();
+    await openAddForm(user);
+    await fillEntry(user);
+    await user.click(screen.getByRole('button', { name: /Registered source/i }));
+    await user.click(await screen.findByRole('option', { name: SELECTED_SOURCE.title }));
+    if (outcome === 'denied') {
+      fixture.setSourceRead(
+        async () =>
+          new Response(
+            JSON.stringify({
+              code: 'workspace_access_denied',
+              message: 'Access denied.',
+            }),
+            { status: 403, headers: { 'content-type': 'application/json' } }
+          )
+      );
+    } else {
+      fixture.setSources(
+        outcome === 'missing'
+          ? [SOURCE_A]
+          : [SOURCE_A, { ...SELECTED_SOURCE, contentDigest: `sha256:${'a'.repeat(64)}` }]
+      );
+    }
+    await act(async () => {
+      await fixture.queryClient.invalidateQueries({
+        queryKey: workspaceKeys.knowledgeSources(WORKSPACE_A),
+      });
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
+    expect(
+      screen.getByText('The selected source is unavailable. Select a current source before saving.')
+    ).toBeVisible();
+    expect(fixture.creates).toHaveLength(0);
+    if (outcome !== 'denied') {
+      await user.click(screen.getByRole('button', { name: /Registered source/i }));
+      await user.click(await screen.findByRole('option', { name: 'No registered source' }));
+      expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    }
+  });
+
+  it('retries the exact failed Source-bound command after draft and catalog changes', async () => {
+    const fixture = renderKnowledge({ failFirstCreate: true });
+    const user = userEvent.setup();
+    await openAddForm(user);
+    await fillEntry(user);
+    await user.click(screen.getByRole('button', { name: /Registered source/i }));
+    await user.click(await screen.findByRole('option', { name: SELECTED_SOURCE.title }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText("Couldn't save that entry.")).toBeVisible();
+    await user.clear(screen.getByRole('textbox', { name: 'Title' }));
+    await user.paste('Changed draft title');
+    fixture.setSources([SOURCE_A]);
+    await act(async () => {
+      await fixture.queryClient.invalidateQueries({
+        queryKey: workspaceKeys.knowledgeSources(WORKSPACE_A),
+      });
+    });
+    const retry = within(screen.getByText("Couldn't save that entry.").parentElement!).getByRole(
+      'button',
+      { name: 'Try again' }
+    );
+    await waitFor(() => expect(retry).toBeEnabled());
+    await user.click(retry);
+
+    await waitFor(() => expect(fixture.creates).toHaveLength(2));
+    expect(fixture.creates[1]).toEqual(fixture.creates[0]);
+    const commands = fixture.fetch.mock.calls.filter(
+      ([input]) => new URL(String(input)).pathname === operationHttpPath('knowledge.create')
+    );
+    const requestIds = commands.map(([, init]) =>
+      new Headers(init?.headers).get('x-openkit-request-id')
+    );
+    expect(requestIds[0]).toBeTruthy();
+    expect(requestIds[1]).toBe(requestIds[0]);
   });
 });

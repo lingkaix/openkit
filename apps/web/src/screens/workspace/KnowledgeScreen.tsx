@@ -330,13 +330,15 @@ export function KnowledgeScreen() {
     indexesCatalog.isPending;
 
   const sourceOptions = (sourcesCatalog.isSuccess ? sourcesCatalog.data : []).flatMap((source) =>
-    source.contentDigest
+    source.workspaceId === workspaceId && source.contentDigest
       ? [{ id: `source:${source.id}@${source.contentDigest}`, label: source.title }]
       : []
   );
   const selectedSourceAvailable =
     !addDraft.sourceReference ||
     sourceOptions.some((source) => source.id === addDraft.sourceReference);
+  const selectedSourceReady =
+    selectedSourceAvailable && (!addDraft.sourceReference || !sourcesCatalog.isFetching);
 
   function resetForm(targetId: string) {
     clearAddDraft(targetId);
@@ -350,7 +352,7 @@ export function KnowledgeScreen() {
 
   /** Create one entry, or replay the exact Workspace-bound command after unknown failure. */
   function save(command?: CreateKnowledgeCommand) {
-    if (!command && !selectedSourceAvailable) return;
+    if (!command && !selectedSourceReady) return;
     const next =
       command ??
       (workspaceId && addDraft.title.trim() && addDraft.content.trim()
@@ -562,7 +564,7 @@ export function KnowledgeScreen() {
                 size="sm"
                 isDisabled={
                   entryWriteBlocked ||
-                  !selectedSourceAvailable ||
+                  !selectedSourceReady ||
                   !addDraft.title.trim() ||
                   !addDraft.content.trim()
                 }

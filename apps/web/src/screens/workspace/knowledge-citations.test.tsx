@@ -1,12 +1,13 @@
 import { type KnowledgeManagerAnswerResponse, operationHttpPath } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { useWorkspaceStore } from '../workspace-store';
+import { workspaceKeys } from './data';
 import { KnowledgeScreen } from './KnowledgeScreen';
 
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
@@ -48,6 +49,8 @@ const queryClients: QueryClient[] = [];
 
 /** Renders the public panel and real client parser with only HTTP responses replaced. */
 function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
+  let pageRead: (() => Promise<Response>) | undefined;
+  let answerRead: (() => Promise<Response>) | undefined;
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const path = new URL(String(input)).pathname;
     let body: unknown;
@@ -58,28 +61,27 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
       switch (path) {
         case operationHttpPath('workspace.list'):
           body = {
-            items: [
-              {
-                workspace: {
-                  id: WORKSPACE_ID,
-                  name: 'Reading room team',
-                  kind: 'general',
-                  status: 'active',
-                  counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 2 },
-                  createdAt: TIMESTAMP,
-                  updatedAt: TIMESTAMP,
-                },
-                membershipStatus: 'active',
-                accessCause: 'membership',
-                effectiveRole: 'owner',
-                membershipRevision: 1,
-                ownerUserId: 'user_reader',
-                registryRevision: 1,
+            items: [WORKSPACE_ID, 'ws_other'].map((workspaceId) => ({
+              workspace: {
+                id: workspaceId,
+                name: 'Reading room team',
+                kind: 'general',
+                status: 'active',
+                counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 2 },
+                createdAt: TIMESTAMP,
+                updatedAt: TIMESTAMP,
               },
-            ],
+              membershipStatus: 'active',
+              accessCause: 'membership',
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_reader',
+              registryRevision: 1,
+            })),
           };
           break;
         case operationHttpPath('knowledge.list'):
+          if (pageRead) return pageRead();
           body = { items: [UNRELATED_PAGE, PAGE] };
           break;
         case operationHttpPath('knowledge.indexes'):
@@ -104,6 +106,7 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
             workspaceId: WORKSPACE_ID,
             query: QUESTION,
           });
+          if (answerRead) return answerRead();
           body = answer;
           break;
         case operationHttpPath('knowledge.source.list'):
@@ -133,7 +136,15 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  return fetch;
+  return {
+    queryClient,
+    setPageRead: (read: typeof pageRead) => {
+      pageRead = read;
+    },
+    setAnswerRead: (read: typeof answerRead) => {
+      answerRead = read;
+    },
+  };
 }
 
 /** Submits the question through the visible Manager controls. */
@@ -219,5 +230,71 @@ describe('Knowledge Manager answer citations', () => {
     expect(within(manager).queryByText(PAGE.title)).not.toBeInTheDocument();
     expect(within(manager).queryByText(PAGE.content)).not.toBeInTheDocument();
     expect(within(manager).queryByText(UNRELATED_PAGE.title)).not.toBeInTheDocument();
+  });
+
+  it('withholds the current-content link when a failed refetch retains a cached page', async () => {
+    const fixture = renderKnowledge(ANSWER);
+    const manager = await askManager();
+    expect(within(manager).getByRole('link')).toBeVisible();
+    fixture.setPageRead(
+      async () =>
+        new Response(
+          JSON.stringify({ code: 'workspace_access_denied', message: 'Access denied.' }),
+          { status: 403, headers: { 'content-type': 'application/json' } }
+        )
+    );
+    await act(async () => {
+      await fixture.queryClient.invalidateQueries({
+        queryKey: workspaceKeys.knowledge(WORKSPACE_ID),
+      });
+    });
+
+    expect(fixture.queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_ID))).toContainEqual(
+      PAGE
+    );
+    await waitFor(() => expect(within(manager).queryByRole('link')).not.toBeInTheDocument());
+    expect(within(manager).getByText('Current content unavailable.')).toBeVisible();
+  });
+
+  it('hides a completed answer and its citation after switching Workspaces while it is pending', async () => {
+    const fixture = renderKnowledge(ANSWER);
+    let finishAnswer!: (response: Response) => void;
+    fixture.setAnswerRead(
+      () =>
+        new Promise<Response>((resolve) => {
+          finishAnswer = resolve;
+        })
+    );
+    const user = userEvent.setup();
+    const manager = await screen.findByRole('region', { name: 'Manager' });
+    const question = within(manager).getByRole('textbox', { name: 'Question' });
+    await waitFor(() => expect(question).toBeEnabled());
+    await user.click(question);
+    await user.paste(QUESTION);
+    await user.click(within(manager).getByRole('button', { name: 'Answer' }));
+    await waitFor(() => expect(finishAnswer).toBeTypeOf('function'));
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws_other' }));
+    await act(async () => {
+      finishAnswer(
+        new Response(JSON.stringify(ANSWER), { headers: { 'content-type': 'application/json' } })
+      );
+    });
+
+    await waitFor(() =>
+      expect(
+        fixture.queryClient
+          .getMutationCache()
+          .getAll()
+          .some((mutation) => mutation.state.status === 'success')
+      ).toBe(true)
+    );
+    await waitFor(() =>
+      expect(within(manager).getByRole('textbox', { name: 'Question' })).toHaveValue('')
+    );
+    expect(within(manager).queryByText(ANSWER.answer)).not.toBeInTheDocument();
+    expect(within(manager).queryByText(CITATION.title)).not.toBeInTheDocument();
+    expect(within(manager).queryByRole('link')).not.toBeInTheDocument();
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_ID }));
+    expect(await within(manager).findByText(ANSWER.answer)).toBeVisible();
   });
 });
