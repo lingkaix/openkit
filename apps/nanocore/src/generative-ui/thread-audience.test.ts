@@ -798,7 +798,7 @@ describe('Generative UI Thread audience', () => {
         noInsertDb.sqlite.close();
       }
 
-      const forgedId = randomUUID();
+      const forgedId = testEntityId('pres', 'retained-private-source-presentation');
       const forgedMessages = [
         ...nativeMessages('surface-audience', [
           { id: 'root', component: 'Text', text: { path: '/text' } },
@@ -828,7 +828,7 @@ describe('Generative UI Thread audience', () => {
             workspace.id,
             sharedThread.id,
             sharedTurn.id,
-            `it_${forgedId}`,
+            testEntityId('it', `retained-private-source-${forgedId}`),
             stamp,
             JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }),
             randomUUID(),
