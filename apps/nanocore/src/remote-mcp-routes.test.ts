@@ -903,6 +903,7 @@ describe('remote MCP App endpoint', () => {
         .sort();
       expect(excluded).toEqual([
         'bootstrap.consume',
+        'channel.discord.pair',
         'token.create',
         'token.rotate',
         'workspace.archive-download',

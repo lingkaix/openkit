@@ -227,12 +227,30 @@ export const OpenKitAppUpdateConfigSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
+/** Public Discord identity and an operator-held environment reference, consumed only at startup. */
+export const OpenKitChannelsConfigSchema = z
+  .object({
+    discord: z
+      .object({
+        applicationId: z.string().regex(/^[0-9]{1,20}$/),
+        publicKey: z.string().regex(/^[a-fA-F0-9]{64}$/),
+        botTokenRef: z
+          .string()
+          .regex(/^env:[A-Z][A-Z0-9_]*$/)
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 /**
  * File-backed NanoCore configuration schema.
  */
 export const OpenKitConfigSchema = z
   .object({
     appUpdate: OpenKitAppUpdateConfigSchema.optional(),
+    channels: OpenKitChannelsConfigSchema.optional(),
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),
     mode: CoreModeSchema.optional(),
