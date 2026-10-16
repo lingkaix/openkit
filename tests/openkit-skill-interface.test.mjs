@@ -3129,6 +3129,8 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
   assert.equal(requests[0].method, 'POST');
   assert.equal(requests[0].headers['x-openkit-client-channel'], 'openkit-cli');
   assert.equal(requests[0].headers['x-openkit-client-source'], 'agent-skill');
+  assert.equal(requests[0].headers['x-openkit-request-id'], input.requestId);
+  assert.equal(JSON.parse(result.stdout).requestId, input.requestId);
   assert.deepEqual(
     {
       ...requests[0].body,
@@ -3138,7 +3140,6 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
     },
     {
       workspaceId: input.workspaceId,
-      requestId: input.requestId,
       expectedRevision: input.expectedRevision,
       activate: input.activate,
       id: input.id,
