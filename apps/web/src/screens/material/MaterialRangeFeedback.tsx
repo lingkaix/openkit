@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Label, Text, TextArea, TextField as AriaTextField } from 'react-aria-components';
+import { TextField as AriaTextField, Label, Text, TextArea } from 'react-aria-components';
 import { Button, TextField } from '../../primitives';
 import type { ArtifactReviewDecisionInput } from '../goal/data';
 
@@ -53,42 +53,81 @@ export function MaterialRangeFeedback({
     !splitsSurrogate(revision.content, end);
 
   return (
-    <section aria-label="Material feedback range" className="mx-auto mt-5 flex max-w-[760px] flex-col gap-3">
+    <section
+      aria-label="Material feedback range"
+      className="mx-auto mt-5 flex max-w-[760px] flex-col gap-3"
+    >
       <AriaTextField isReadOnly isDisabled={isDisabled} className="flex flex-col gap-2">
         <Label className="text-sm font-bold text-fg">Feedback base text</Label>
         <Text slot="description" className="text-xs text-fg-muted">
-          Optional: select text from the recorded base, or enter its original UTF-16 offsets below. The end offset is exclusive. This does not edit the Material.
+          Optional: select text from the recorded base, or enter its original UTF-16 offsets below.
+          The end offset is exclusive. This does not edit the Material.
         </Text>
         <TextArea
           value={displayedText}
           onSelect={(event) => {
-            setStartText(String(originalOffset(revision.content, event.currentTarget.selectionStart)));
+            setStartText(
+              String(originalOffset(revision.content, event.currentTarget.selectionStart))
+            );
             setEndText(String(originalOffset(revision.content, event.currentTarget.selectionEnd)));
           }}
           className="min-h-32 w-full rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus disabled:text-disabled-fg"
         />
       </AriaTextField>
-      <p className="font-mono text-xs text-fg-muted">{revision.revisionId} · {revision.contentDigest}</p>
+      <p className="font-mono text-xs text-fg-muted">
+        {revision.revisionId} · {revision.contentDigest}
+      </p>
       <div className="flex flex-wrap gap-3">
-        <TextField label="Range start" value={startText} onChange={setStartText} isDisabled={isDisabled} />
-        <TextField label="Range end" value={endText} onChange={setEndText} isDisabled={isDisabled} />
+        <TextField
+          label="Range start"
+          value={startText}
+          onChange={setStartText}
+          isDisabled={isDisabled}
+        />
+        <TextField
+          label="Range end"
+          value={endText}
+          onChange={setEndText}
+          isDisabled={isDisabled}
+        />
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" isDisabled={isDisabled || !valid} onPress={() => onChange({
-          materialId: revision.materialId,
-          revisionId: revision.revisionId,
-          contentDigest: revision.contentDigest,
-          start,
-          end,
-          originalText: revision.content.slice(start, end),
-        })}>Use feedback range</Button>
-        {value ? <Button size="sm" variant="quiet" isDisabled={isDisabled} onPress={() => onChange(null)}>Clear feedback range</Button> : null}
+        <Button
+          size="sm"
+          variant="outline"
+          isDisabled={isDisabled || !valid}
+          onPress={() =>
+            onChange({
+              materialId: revision.materialId,
+              revisionId: revision.revisionId,
+              contentDigest: revision.contentDigest,
+              start,
+              end,
+              originalText: revision.content.slice(start, end),
+            })
+          }
+        >
+          Use feedback range
+        </Button>
+        {value ? (
+          <Button size="sm" variant="quiet" isDisabled={isDisabled} onPress={() => onChange(null)}>
+            Clear feedback range
+          </Button>
+        ) : null}
       </div>
-      {value ? <div role="status" className="text-sm text-fg">
-        <p>Feedback range: {value.start}–{value.end}</p>
-        <pre className="whitespace-pre-wrap font-sans">{value.originalText}</pre>
-      </div> : null}
-      {(startText || endText) && !valid ? <p className="text-xs text-negative-fg">Choose a nonempty range within the original text, with no split Unicode character.</p> : null}
+      {value ? (
+        <div role="status" className="text-sm text-fg">
+          <p>
+            Feedback range: {value.start}–{value.end}
+          </p>
+          <pre className="whitespace-pre-wrap font-sans">{value.originalText}</pre>
+        </div>
+      ) : null}
+      {(startText || endText) && !valid ? (
+        <p className="text-xs text-negative-fg">
+          Choose a nonempty range within the original text, with no split Unicode character.
+        </p>
+      ) : null}
     </section>
   );
 }
