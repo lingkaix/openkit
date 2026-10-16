@@ -839,7 +839,11 @@ async function issueNanoHostToken(dataRoot) {
           identity_id, deployment_id, status, created_at
         ) VALUES (?, ?, 'active', ?)`
       )
-      .run('nanohost-worker-mcp-smoke', 'dep_0190f4c8-0000-7000-8000-000000000602', '2026-09-05T00:00:00.000Z');
+      .run(
+        'nanohost-worker-mcp-smoke',
+        'dep_0190f4c8-0000-7000-8000-000000000602',
+        '2026-09-05T00:00:00.000Z'
+      );
     return createNanoHostTransportTokenRecord(coreDb, {
       deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000602',
       expiresAt: '2999-01-01T00:00:00.000Z',
