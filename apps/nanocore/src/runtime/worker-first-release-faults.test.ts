@@ -486,9 +486,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       const request = {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
-        raisingTurnId: 'fault-turn',
+        raisingTurnId: testEntityId('tu', 'fault-turn'),
         requestId: 'fault-question',
-        requestItemId: 'fault-question-item',
+        requestItemId: testEntityId('it', 'fault-question-item'),
         kind: 'user-input' as const,
         requesterKind: 'worker' as const,
         agentId: f.store.getTurnById(testEntityId('tu', 'fault-turn')).agentId!,
@@ -657,7 +657,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // D97/D111: terminal failure and physical cleanup cannot prove unread output or evidence.
-      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
+      expect(
+        requireSchedulerExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+      ).toMatchObject({
         phase: 'closing',
         disposition: 'unknown',
         operationId: expect.any(String),
@@ -739,7 +741,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // Submission was accepted, but held inspection leaves collection/evidence unproved.
-      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
+      expect(
+        requireSchedulerExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+      ).toMatchObject({
         phase: 'closing',
         disposition: 'accepted',
         operationId: expect.any(String),

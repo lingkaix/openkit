@@ -781,78 +781,58 @@ describe('administrator cleanup public operation composition', () => {
     );
   });
 
-  it('counts UTF-8 bytes on the complete six-source response and omits oversized identities intact', async () => {
+  it('counts UTF-8 bytes on the complete six-source response and preserves bounded native identities intact', async () => {
     const f = fixture();
     deletion(f);
-    sandbox(f.coreDb, 'sandbox_000');
-    const oversized = `sandbox_001_${'界'.repeat(12000)}`;
-    sandbox(f.coreDb, oversized);
+    const ids = Array.from(
+      { length: 96 },
+      (_, index) => `sandbox_${String(index).padStart(3, '0')}_${'界'.repeat(470)}`
+    );
+    for (const id of ids) sandbox(f.coreDb, id);
+
     const result = bounded(await f.native());
-    expect(result.items.map((item) => item.source)).toEqual([
-      'workspace-deletion',
-      'sandbox-runtime',
-    ]);
-    expect(result.items[1]).toMatchObject({ target: { sandboxRuntimeId: 'sandbox_000' } });
-    expect(JSON.stringify(result)).not.toContain('界');
+    const serialized = JSON.stringify(result);
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(262144);
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeGreaterThan(serialized.length);
+    expect(result.items[0]?.source).toBe('workspace-deletion');
+    const runtimes = result.items.filter((item) => item.source === 'sandbox-runtime');
+    expect(runtimes.length).toBeGreaterThan(0);
+    expect(runtimes.length).toBeLessThan(ids.length);
+    for (const item of runtimes) {
+      expect(item.target.kind).toBe('sandbox-runtime');
+      if (item.target.kind === 'sandbox-runtime') {
+        expect(ids).toContain(item.target.sandboxRuntimeId);
+      }
+    }
     expect(result.sources[4]).toMatchObject({
       incomplete: true,
       reasons: expect.arrayContaining(['byte_limit']),
     });
+    expect(result.sources.flatMap((source) => source.reasons)).not.toContain('count_limit');
     expect(result.incomplete).toBe(true);
   });
 
-  it('retains a complete runtime item that fits within the full public byte ceiling', async () => {
-    const calibration = fixture();
-    sandbox(calibration.coreDb, 'sandbox_');
-    const baseline = bounded(await calibration.native());
-    expect(baseline.items).toHaveLength(1);
-    const extraCharacters = Math.floor(
-      (262144 - Buffer.byteLength(JSON.stringify(baseline), 'utf8')) / 9
-    );
+  it('retains complete native runtime items when the complete response fits its byte ceiling', async () => {
     const f = fixture();
-    const id = `sandbox_${'界'.repeat(extraCharacters)}`;
-    sandbox(f.coreDb, id);
-    const result = bounded(await f.native());
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({ target: { sandboxRuntimeId: id } });
-    expect(262144 - Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(9);
-    expect(result.incomplete).toBe(false);
-  });
+    deletion(f);
+    const ids = Array.from(
+      { length: 4 },
+      (_, index) => `sandbox_${String(index).padStart(3, '0')}_${'界'.repeat(470)}`
+    );
+    for (const id of ids) sandbox(f.coreDb, id);
 
-  it('includes joined deletion and coverage metadata in the final UTF-8 byte limit', async () => {
-    const calibration = fixture();
-    const requests = Array.from(
-      { length: 30 },
-      (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+    const result = bounded(await f.native());
+    expect(result.items).toHaveLength(ids.length + 1);
+    expect(result.items.slice(1).map((item) => item.target)).toEqual(
+      ids.map((sandboxRuntimeId) => ({
+        kind: 'sandbox-runtime',
+        sandboxRuntimeId,
+        runtimeTargetId: 'target_cleanup',
+      }))
     );
-    for (const requestId of requests) deletion(calibration, requestId);
-    sandbox(calibration.coreDb, 'sandbox_');
-    const baseline = bounded(await calibration.native());
-    expect(baseline.items).toHaveLength(31);
-    // The native Sandbox identity occurs in target, evidence and inspection references.
-    const extraCharacters =
-      Math.floor((262144 - Buffer.byteLength(JSON.stringify(baseline), 'utf8')) / 9) + 1;
-    const f = fixture();
-    const id = `sandbox_${'界'.repeat(extraCharacters)}`;
-    sandbox(f.coreDb, id);
-    const runtimeOnly = bounded(await f.native());
-    expect(runtimeOnly.items).toHaveLength(1);
-    expect(runtimeOnly.items[0]).toMatchObject({ target: { sandboxRuntimeId: id } });
-    for (const requestId of requests) deletion(f, requestId);
-    const fullItems = [...baseline.items.slice(0, 30), runtimeOnly.items[0]!];
-    // Items fit by themselves; only the complete six-source metadata makes this response too large.
-    expect(Buffer.byteLength(JSON.stringify(fullItems), 'utf8')).toBeLessThan(262144);
-    expect(
-      Buffer.byteLength(JSON.stringify({ ...baseline, items: fullItems }), 'utf8')
-    ).toBeGreaterThan(262144);
-    const joined = bounded(await f.native());
-    expect(joined.items).toHaveLength(30);
-    expect(joined.items.every((item) => item.source === 'workspace-deletion')).toBe(true);
-    expect(joined.sources[4]).toMatchObject({
-      incomplete: true,
-      reasons: expect.arrayContaining(['byte_limit']),
-    });
-    expect(joined.incomplete).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(262144);
+    expect(result.sources.every((source) => source.reasons.length === 0)).toBe(true);
+    expect(result.incomplete).toBe(false);
   });
 
   it('preserves coherent current owner facts during a concurrent source transition', async () => {

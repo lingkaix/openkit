@@ -153,11 +153,6 @@ describe('Workspace sharing lifecycle', () => {
     ]);
     expect(listWorkspaceMembers(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d')).toMatchObject([
       {
-        effectiveRole: 'editor',
-        status: 'active',
-        userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
-      },
-      {
         effectiveRole: 'owner',
         status: 'active',
         userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -166,6 +161,11 @@ describe('Workspace sharing lifecycle', () => {
         effectiveRole: null,
         status: 'removed',
         userId: 'usr_00000000-0000-7171-af76-f9d024000442',
+      },
+      {
+        effectiveRole: 'editor',
+        status: 'active',
+        userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
       },
       {
         effectiveRole: 'viewer',
