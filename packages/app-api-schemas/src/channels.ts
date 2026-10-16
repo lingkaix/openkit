@@ -2,8 +2,8 @@ import {
   ApprovalRequestIdSchema,
   RequestIdSchema,
   ThreadIdSchema,
-  UserInputRequestIdSchema,
   UserIdSchema,
+  UserInputRequestIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
