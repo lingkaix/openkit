@@ -363,14 +363,13 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     true
   );
   // The answer response precedes the separate canonical Item refresh on a shared test host.
-  await expect(page.getByText('You answered').last()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('You answered')).toHaveCount(1, { timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
   await stack.restartCore();
   await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
-  const answeredBeforeSecond = await page.getByText('You answered', { exact: true }).count();
   const secondAnswerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const secondAnswer = await secondAnswerResponse;
@@ -378,10 +377,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     secondAnswer.ok(),
     `Second worker user-input response ${secondAnswer.status()}: ${await secondAnswer.text()}`
   ).toBe(true);
-  await expect(page.getByText('You answered', { exact: true })).toHaveCount(
-    answeredBeforeSecond + 1,
-    { timeout: 15_000 }
-  );
+  await expect(page.getByText('You answered')).toHaveCount(2, { timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
   const artifacts = (
