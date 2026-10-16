@@ -456,7 +456,8 @@ function resolveOpenShellAgentEnvironmentPackage(
     manifest.runtime.adapter,
     input.turn.workspaceId,
     input.coreDb?.dataRoot,
-    input.agentSessionId
+    input.agentSessionId,
+    input.turn.skillSelections
   );
   const capturePaths = workerTurnCapturePaths(
     input.turn.threadId,
@@ -1038,6 +1039,25 @@ function workspaceInputSource(
 }
 
 /**
+ * Refuses run choices that would add undeclared Skill supply, at admission and current resolution.
+ * @param skills Skills included by the current composed Agent setup.
+ * @param selections Exact run input retained on the canonical Turn, if supplied.
+ * @throws TurnStartValidationError when a selected Skill is absent from the setup.
+ */
+export function assertRunSkillSelectionsIncluded(
+  skills: readonly { readonly id: string }[],
+  selections: z.infer<typeof TurnSchema>['skillSelections']
+): void {
+  if (selections?.some((selection) => !skills.some((skill) => skill.id === selection.skillId))) {
+    throw new TurnStartValidationError(
+      'invalid_skill_selection',
+      'Run Skill selections must name Skills included in the composed Agent setup.',
+      409
+    );
+  }
+}
+
+/**
  * Verifies exact catalog Skill snapshots against release-owned adapter supply qualification.
  *
  * @param skills Included Skill references from the composed Agent setup.
@@ -1045,6 +1065,7 @@ function workspaceInputSource(
  * @param workspaceId Workspace owning the Skill catalog.
  * @param dataRoot Core data root containing the catalog.
  * @param agentSessionId Exact AgentSession identity owning the supply input paths.
+ * @param runSelections Exact run input from the canonical Turn, without any catalog mutation.
  * @returns Catalog-resolved Skill supply entries.
  * @throws DeterministicAgentPreparationError when the adapter has no declared filesystem Skill form.
  * @throws CatalogNotFoundError or CatalogIntegrityError when selected retained supply is unavailable or changed.
@@ -1054,9 +1075,12 @@ function resolveWorkerSkillSupply(
   adapter: string,
   workspaceId: string,
   dataRoot: string | undefined,
-  agentSessionId: string
+  agentSessionId: string,
+  runSelections: z.infer<typeof TurnSchema>['skillSelections']
 ) {
+  assertRunSkillSelectionsIncluded(skills, runSelections);
   if (skills.length === 0) return [];
+  const runDigests = new Map(runSelections?.map(({ skillId, digest }) => [skillId, digest]));
   if (!dataRoot) {
     throw new Error('Workspace Skill catalog requires a data root.');
   }
@@ -1069,7 +1093,8 @@ function resolveWorkerSkillSupply(
     const skillId = skill.id;
     const entry = catalog.skills.entries.find((item) => item.id === skillId);
     const pin = catalog.skills.pins.find((item) => item.entryId === skillId);
-    const digest = skill.digest ?? pin?.digest ?? entry?.currentDigest;
+    const runDigest = runDigests.get(skillId);
+    const digest = runDigest ?? skill.digest ?? pin?.digest ?? entry?.currentDigest;
     if (!entry || entry.availability !== 'available' || !digest) {
       throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${skillId}`);
     }
@@ -1088,11 +1113,13 @@ function resolveWorkerSkillSupply(
       digest,
       entry,
       version,
-      selectionSource: skill.digest
-        ? ('setup' as const)
-        : pin?.digest
-          ? ('pin' as const)
-          : ('current' as const),
+      selectionSource: runDigest
+        ? ('run' as const)
+        : skill.digest
+          ? ('setup' as const)
+          : pin?.digest
+            ? ('pin' as const)
+            : ('current' as const),
     };
   });
   // Recheck the complete selection after collection; a later Skill read can revoke an earlier entry.

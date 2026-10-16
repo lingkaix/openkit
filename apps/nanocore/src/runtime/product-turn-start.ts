@@ -21,6 +21,7 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
 import {
@@ -211,6 +212,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       setup.diagnostics.map((diagnostic) => diagnostic.message).join(' '),
       409
     );
+  assertRunSkillSelectionsIncluded(setup.setup.manifest.skills ?? [], input.input.skillSelections);
   const reasoningEffort =
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
   try {
@@ -256,6 +258,9 @@ export async function startProductTurn(input: StartProductTurnInput) {
         agentId: requestedAgentId,
         executorKind: 'worker',
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(input.input.skillSelections !== undefined
+          ? { skillSelections: input.input.skillSelections }
+          : {}),
       }
     );
   // This listener observes the existing product owner; it grants neither execution nor recovery.
