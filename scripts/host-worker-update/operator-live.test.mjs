@@ -4,11 +4,41 @@ import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { after, before, test } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createReleaseManifest } from '../release-record.mjs';
 import { sha } from '../release-safety.mjs';
-import { createOperatorLive, readOperatorJson } from './operator-live.mjs';
+
+let retainedCheckout;
+let createOperatorLive;
+let readOperatorJson;
+
+// CI checkout ancestors are not operator custody. Retain unchanged runtime sources once under protected fixture ownership, with the same relative imports and only dependencies linked outside that custody.
+before(async () => {
+  const parent = path.join(homedir(), '.cache', 'openkit-tmp');
+  await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+  retainedCheckout = await fs.mkdtemp(path.join(parent, 'operator-checkout-'));
+  await fs.cp(new URL('../', import.meta.url), path.join(retainedCheckout, 'scripts'), {
+    recursive: true,
+  });
+  await fs.mkdir(path.join(retainedCheckout, 'skills'), { mode: 0o700 });
+  await fs.copyFile(
+    new URL('../../skills/openkit-secrets.mjs', import.meta.url),
+    path.join(retainedCheckout, 'skills', 'openkit-secrets.mjs')
+  );
+  await fs.symlink(
+    await fs.realpath(new URL('../../node_modules', import.meta.url)),
+    path.join(retainedCheckout, 'node_modules'),
+    'dir'
+  );
+  ({ createOperatorLive, readOperatorJson } = await import(
+    pathToFileURL(path.join(retainedCheckout, 'scripts', 'host-worker-update', 'operator-live.mjs'))
+  ));
+});
+
+after(async () => {
+  if (retainedCheckout) await fs.rm(retainedCheckout, { recursive: true, force: true });
+});
 
 const target = 'https://staging.example.invalid';
 const tag = 'v0.1.0-rc.8';
@@ -365,6 +395,37 @@ test('a private authority file under a world-writable ancestor is refused', asyn
   const file = path.join(parent, 'authority.json');
   await fs.writeFile(file, '{}', { mode: 0o600 });
   await assert.rejects(readOperatorJson(file), /Operator live input/);
+});
+
+test('unchanged actual operator sources refuse an unsafe checkout parent before any adapter', async (t) => {
+  const f = await fixture(t);
+  const checkout = path.join(f.root, 'unsafe-checkout');
+  await fs.cp(retainedCheckout, checkout, { recursive: true });
+  await fs.chmod(checkout, 0o777);
+  for (const name of [
+    'operator-live.mjs',
+    'operator-entry.py',
+    'host-procedure.py',
+    'nanohost-maintenance.py',
+    'nanohost-systemd.py',
+    'nanohost-replacement.py',
+  ])
+    assert.deepEqual(
+      await fs.readFile(path.join(checkout, 'scripts', 'host-worker-update', name)),
+      await fs.readFile(new URL(name, import.meta.url))
+    );
+  const actual = await import(
+    pathToFileURL(path.join(checkout, 'scripts', 'host-worker-update', 'operator-live.mjs'))
+  );
+  await assert.rejects(
+    actual.createOperatorLive(target, f.options, f.adapters),
+    /Operator live input/
+  );
+  assert.deepEqual(f.calls, []);
+  // The same loaded subject and inputs pass once only this disposable source ancestor is protected.
+  await fs.chmod(checkout, 0o700);
+  await actual.createOperatorLive(target, f.options, f.adapters);
+  assert.equal(f.calls.filter((call) => call.kind === 'archive').length, 2);
 });
 
 for (const change of ['params', 'artifacts', 'grant', 'outer-checksum']) {
