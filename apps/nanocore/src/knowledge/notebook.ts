@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   fsyncSync,
@@ -107,7 +108,7 @@ export class KnowledgeNotebook {
   }
 
   /** Runs fixed plumbing with ambient Git configuration, hooks, network and callbacks disabled. */
-  private git(args: readonly string[], input?: string, author = 'OpenKit'): string {
+  private gitBytes(args: readonly string[], input?: string, author = 'OpenKit'): Buffer {
     try {
       const output = execFileSync(
         'git',
@@ -154,7 +155,33 @@ export class KnowledgeNotebook {
           },
         }
       );
-      return new TextDecoder('utf-8', { fatal: true }).decode(output);
+      return output;
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Decodes textual plumbing output strictly; raw Git tree bytes stay inside the content owner. */
+  private git(args: readonly string[], input?: string, author = 'OpenKit'): string {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(this.gitBytes(args, input, author));
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Verifies selected blob identity and preserves exact UTF-8 bytes without loading unrelated pages. */
+  private readBlob(object: string): string {
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
+      throw new NotebookError('recovery_required');
+    const bytes = this.gitBytes(['cat-file', 'blob', object]);
+    const observed = createHash(object.length === 40 ? 'sha1' : 'sha256')
+      .update(`blob ${bytes.length}\0`)
+      .update(bytes)
+      .digest('hex');
+    if (observed !== object) throw new NotebookError('recovery_required');
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
     } catch {
       throw new NotebookError('recovery_required');
     }
@@ -245,7 +272,7 @@ export class KnowledgeNotebook {
     for (const path of paths ?? Object.keys(entries)) {
       const object = entries[path];
       if (!object) throw new NotebookError('invalid_request');
-      files[path] = this.git(['cat-file', 'blob', object]);
+      files[path] = this.readBlob(object);
     }
     return { ...record, files };
   }

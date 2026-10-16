@@ -1,6 +1,15 @@
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
-import { type KnowledgePageReferenceProof, KnowledgePageValidationError } from './knowledge/okf.js';
+import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
+import {
+  type KnowledgePageReferenceProof,
+  KnowledgePageValidationError,
+  parseOkfDocument,
+  resolveRegisteredKnowledgeSourceReference,
+  stringListFrontmatterField,
+} from './knowledge/okf.js';
 import type { FsStore } from './lib/store.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
@@ -118,73 +127,108 @@ export function verifyKnowledgeProposalWorkHistory(input: {
 }
 
 /**
- * Resolves current Page-bound source proof from the existing Proposal, Review, and source owners.
+ * Resolves source-only proof from exact published Git bytes and the existing source/work owners.
  *
- * @param input Existing Proposal, Review, Page, Turn, Item, and S39 authorities.
- * @returns Exact Page and digest keyed proofs whose current owner tuples remain coherent.
+ * @param input Exact notebook selection and current Source, Turn, Item, and S39 authorities.
+ * @returns Exact Page and digest keyed source proofs; these never grant a human Review.
  */
 export function resolveWorkspaceKnowledgeReferenceProofs(input: {
   /** Core scheduler and worker-session authority when available. */
   readonly coreDb: CoreDb | undefined;
-  /** Product Proposal, Review, Page, Turn, and Item owner. */
+  /** Product Page, Source, Turn, and Item owner. */
   readonly store: FsStore;
   /** Workspace S39 authority when available. */
   readonly workspaceDb: WorkspaceDb | undefined;
   /** Workspace that must own every referenced record. */
   readonly workspaceId: string;
+  /** Exact published commit selected by this request, or current published at initial admission. */
+  readonly notebookRevision?: string | undefined;
+  /** Exact selected page identities; omission requests the full current notebook inventory. */
+  readonly pageIds?: readonly string[] | undefined;
 }): ReadonlyMap<string, KnowledgePageReferenceProof> {
   const referenceProofs = new Map<string, KnowledgePageReferenceProof>();
-
-  for (const proposal of input.store.listKnowledgeProposals(input.workspaceId)) {
-    const review = input.store.getKnowledgeProposalReviewDecision(proposal.id);
-    if (!review || review.decision !== 'accepted') {
-      continue;
-    }
-
+  const dataRoot = input.store.getDataRoot();
+  if (!dataRoot) return referenceProofs;
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
+  });
+  const revision = input.notebookRevision ?? notebook.publishedRevision();
+  if (input.notebookRevision !== undefined) notebook.history({ revision, limit: 1 });
+  const entries = notebook.inspectRevision(revision).entries;
+  const ids = input.pageIds ?? Object.keys(entries).map((path) => path.slice(0, -3));
+  const sources = new Map(
+    input.store
+      .listKnowledgeSources(input.workspaceId)
+      .map((source) => [source.id, source.contentDigest])
+  );
+  const files = notebook.readRevision(
+    revision,
+    ids.filter((id) => Object.hasOwn(entries, `${id}.md`)).map((id) => `${id}.md`)
+  ).files;
+  for (const id of ids) {
+    const path = `${id}.md`;
+    if (!Object.hasOwn(entries, path)) continue;
+    // Read-integrity failures are not source ineligibility and must remain explicit.
+    const content = files[path]!;
+    const parsed = parseOkfDocument({ path: `knowledge/pages/${path}`, content });
+    if (!parsed.ok || parsed.document.reserved) continue;
+    const references = stringListFrontmatterField(parsed.document, 'source_refs');
+    if (!references) continue;
+    const sourceReferences = [...new Set(references)].sort((left, right) =>
+      Buffer.compare(Buffer.from(left), Buffer.from(right))
+    );
     try {
-      const verification = verifyKnowledgeProposalWorkHistory({
-        coreDb: input.coreDb,
-        sourceReferences: proposal.sourceReferences,
-        store: input.store,
-        workspaceDb: input.workspaceDb,
-        workspaceId: input.workspaceId,
-      });
-      const proof = input.store.projectKnowledgeProposalReferenceProof(
-        input.workspaceId,
-        review.reviewId,
-        verification.verifiedExternalReferences
+      const verified = new Set(
+        verifyKnowledgeProposalWorkHistory({
+          ...input,
+          sourceReferences,
+          // Import evidence remains read-only history, never a decision for another publication.
+          allowImportedHistory: Boolean(input.store.getWorkspace(input.workspaceId).importedFrom),
+        }).verifiedExternalReferences
       );
-      referenceProofs.set(proof.knowledgePageId, proof);
-    } catch {
-      // An incoherent owner tuple remains excluded by normal Knowledge validation.
+      for (const reference of sourceReferences) {
+        if (reference.startsWith('source:')) {
+          const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
+          const source = resolution.targetId
+            ? input.store.getKnowledgeSource(input.workspaceId, resolution.targetId)
+            : null;
+          const material = source
+            ? input.store.readKnowledgeSourceMaterial(input.workspaceId, source.id)
+            : null;
+          if (
+            !resolution.resolved ||
+            !source ||
+            material === null ||
+            sha256(material) !== source.contentDigest
+          )
+            throw new KnowledgePageValidationError();
+          verified.add(reference);
+        } else if (reference.startsWith('knowledge:')) {
+          const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
+          if (!match || !Object.hasOwn(entries, `${match[1]}.md`))
+            throw new KnowledgePageValidationError();
+          const source = notebook.readRevision(revision, [`${match[1]}.md`]).files[
+            `${match[1]}.md`
+          ]!;
+          if (match[2] && sha256(source) !== match[2]) throw new KnowledgePageValidationError();
+          verified.add(reference);
+        } else if (!verified.has(reference)) throw new KnowledgePageValidationError();
+      }
+      referenceProofs.set(id, {
+        contentDigest: sha256(content),
+        knowledgePageId: id,
+        sourceReferences,
+        resolvedReferences: verified,
+      });
+    } catch (error) {
+      if (error instanceof NotebookError) throw error;
+      // Missing or contradictory current evidence supplies no source proof for these exact bytes.
     }
   }
-
-  if (input.store.getWorkspace(input.workspaceId).importedFrom) {
-    for (const entry of input.store.getWorkspaceResources(input.workspaceId).knowledge) {
-      if (referenceProofs.has(entry.id)) {
-        continue;
-      }
-      try {
-        const verification = verifyKnowledgeProposalWorkHistory({
-          allowImportedHistory: true,
-          coreDb: input.coreDb,
-          sourceReferences: entry.sourceReferences ?? [],
-          store: input.store,
-          workspaceDb: input.workspaceDb,
-          workspaceId: input.workspaceId,
-        });
-        const proof = input.store.projectImportedKnowledgePageReferenceProof(
-          input.workspaceId,
-          entry.id,
-          verification.verifiedExternalReferences
-        );
-        referenceProofs.set(proof.knowledgePageId, proof);
-      } catch {
-        // Imported Pages remain excluded when their reminted current owners do not verify.
-      }
-    }
-  }
-
   return referenceProofs;
+}
+
+/** Exact canonical UTF-8 content identity shared by source and page proof comparisons. */
+function sha256(content: string): string {
+  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }

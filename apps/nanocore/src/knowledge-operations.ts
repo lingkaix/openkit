@@ -65,6 +65,11 @@ import {
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
+import {
+  admitKnowledgeRetrieval,
+  knowledgeSourceAudienceReadable,
+  readAuthorizedWorkspaceNotebookPages,
+} from './retrieval-knowledge-adapter.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { openWorkspaceDb } from './storage/db.js';
@@ -498,13 +503,28 @@ export function createKnowledgeOperationImplementations(
         );
       }
     },
-    'knowledge.source.list': async (input, _context) => {
+    'knowledge.source.list': async (input, context) => {
       const { workspaceId } = input;
+      const access = {
+        store,
+        coreDb,
+        actor: context.actorRef,
+        requestActor: publicOperationActor(context),
+        outputThreadId: context.queryContext?.threadId,
+        outputTurnId: context.queryContext?.turnId,
+      };
 
       try {
-        return ListKnowledgeSourcesResponseSchema.parse({
-          items: store.listKnowledgeSources(workspaceId),
+        admitKnowledgeRetrieval({ workspaceId, access });
+        const response = ListKnowledgeSourcesResponseSchema.parse({
+          items: store
+            .listKnowledgeSources(workspaceId)
+            .filter((source) =>
+              knowledgeSourceAudienceReadable({ workspaceId, access }, source.id)
+            ),
         });
+        admitKnowledgeRetrieval({ workspaceId, access });
+        return response;
       } catch (error) {
         throw commandFailure(error, 'knowledge_source_list_failed', 404);
       }
@@ -572,8 +592,25 @@ export function createKnowledgeOperationImplementations(
     'knowledge.source.read': async (input, context) => {
       const actor = context.actorRef;
       const { workspaceId, sourceId } = input;
+      const access = {
+        store,
+        coreDb,
+        actor,
+        requestActor: publicOperationActor(context),
+        outputThreadId: context.queryContext?.threadId,
+        outputTurnId: context.queryContext?.turnId,
+      };
+      const requireSourceAudience = () => {
+        if (!knowledgeSourceAudienceReadable({ workspaceId, access }, sourceId))
+          throw new OperationError(
+            'workspace_access_denied',
+            'Knowledge source is unavailable.',
+            403
+          );
+      };
 
       try {
+        requireSourceAudience();
         const source = readAuthorizedKnowledgeOwner(workspaceId, () =>
           store.getKnowledgeSource(workspaceId, sourceId)
         );
@@ -595,6 +632,8 @@ export function createKnowledgeOperationImplementations(
           ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
+        // Derived metadata and its usage accounting must not outlive current disclosure authority.
+        requireSourceAudience();
         return response;
       } catch (error) {
         if (error instanceof OperationError) throw error;
@@ -1401,7 +1440,7 @@ export function createKnowledgeOperationImplementations(
         return knowledgeProposalCommandFailure(error, 'knowledge_proposal_reversal_failed');
       }
     },
-    'knowledge.list': async (input, _context) => {
+    'knowledge.list': async (input, context) => {
       const { workspaceId } = input;
 
       try {
@@ -1412,16 +1451,23 @@ export function createKnowledgeOperationImplementations(
             'Notebook storage is unavailable.',
             503
           );
-        const notebook = new KnowledgeNotebook({
-          repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
+        const snapshot = readAuthorizedWorkspaceNotebookPages({
+          dataRoot,
+          workspaceId,
+          access: {
+            store,
+            coreDb,
+            actor: context.actorRef,
+            requestActor: publicOperationActor(context),
+            outputThreadId: context.queryContext?.threadId,
+            outputTurnId: context.queryContext?.turnId,
+          },
         });
-        const notebookRevision = notebook.publishedRevision();
-        const snapshot = notebook.readRevision(notebookRevision);
         return ListKnowledgeEntriesResponseSchema.parse({
-          notebookRevision,
-          items: Object.entries(snapshot.files)
-            .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
-            .map(([path, content]) => parseOwnedKnowledgeEntry(path, path.slice(0, -3), content)),
+          notebookRevision: snapshot.notebookRevision,
+          items: snapshot.pages.map(({ path, id, content }) =>
+            parseOwnedKnowledgeEntry(path, id, content)
+          ),
         });
       } catch (error) {
         throw commandFailure(error, 'not_found');

@@ -86,6 +86,31 @@ afterEach(async () => {
 });
 
 describe('KnowledgeNotebook real Git content publication', () => {
+  it('rejects selected blob bytes that do not match their Git identity', async () => {
+    const { repositoryPath, notebook, revision } = await fixture({
+      'a.md': page('A', 'Exact selected body'),
+    });
+    const object = await git(repositoryPath, ['rev-parse', `${revision}:pages/a.md`]);
+    const changed = Buffer.from(page('A', 'Changed selected body'));
+    const objectPath = path.join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
+    await chmod(objectPath, 0o600);
+    await writeFile(
+      objectPath,
+      deflateSync(Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed]))
+    );
+    expect(() => notebook.readRevision(revision, ['a.md'])).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+  });
+
+  it('preserves a selected reserved page leading UTF-8 byte-order mark and CRLF bytes', async () => {
+    const content = '\uFEFF# Nested index\r\nExact retained bytes.\r\n';
+    const { notebook, revision } = await fixture({ 'nested/index.md': content });
+    expect(notebook.readRevision(revision, ['nested/index.md']).files['nested/index.md']).toBe(
+      content
+    );
+  });
+
   it('returns bounded metadata history without reading any page body', async () => {
     const { notebook, revision } = await fixture({ 'a.md': page('A', 'BODY-MUST-STAY-UNREAD') });
     const versions = [revision];
