@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +26,10 @@ const nativeProcess = {
 
 /** Use actual private files and fixed-source framing; external tool doubles prove routing only. */
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'operator-live-'));
+  // The subject requires protected ancestors; a public system temporary parent is a refusal case.
+  const parent = path.join(homedir(), '.cache', 'openkit-tmp');
+  await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+  const root = await fs.mkdtemp(path.join(parent, 'operator-live-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const binding = {
     reference: 'staging-binding',
@@ -352,6 +355,16 @@ test('private authority reads reject duplicate keys, links, unsafe modes and sym
     readOperatorJson(path.join(f.root, 'alias', 'private.json')),
     /Operator live input/
   );
+});
+
+test('a private authority file under a world-writable ancestor is refused', async (t) => {
+  const f = await fixture(t);
+  const parent = path.join(f.root, 'public-parent');
+  await fs.mkdir(parent);
+  await fs.chmod(parent, 0o1777);
+  const file = path.join(parent, 'authority.json');
+  await fs.writeFile(file, '{}', { mode: 0o600 });
+  await assert.rejects(readOperatorJson(file), /Operator live input/);
 });
 
 for (const change of ['params', 'artifacts', 'grant', 'outer-checksum']) {
