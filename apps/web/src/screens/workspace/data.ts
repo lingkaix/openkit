@@ -251,8 +251,7 @@ export function useKnowledge(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledge(workspaceId ?? ''),
-    queryFn: async () =>
-      (await client.operations['knowledge.list']({ workspaceId: workspaceId as string })).items,
+    queryFn: () => client.operations['knowledge.list']({ workspaceId: workspaceId as string }),
     enabled: Boolean(workspaceId),
   });
 }

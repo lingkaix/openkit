@@ -183,7 +183,81 @@ afterEach(() => {
   }
 });
 
+/** Submit retained entry commands through their public native binding, never through a nested notebook command. */
+async function entryCommand(
+  f: ReturnType<typeof fixture>,
+  operation: 'knowledge.create' | 'knowledge.update',
+  requestId: string,
+  input: Record<string, unknown>
+) {
+  const response = await f.app.request(`/api/app/operations/${operation}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+    body: JSON.stringify({ workspaceId: 'ws_demo', ...input }),
+  });
+  return { status: response.status, body: await response.json() };
+}
+
 describe('native Workspace notebook publication with real Git and SQLite', () => {
+  it('publishes existing entry commands once and replays their exact old bytes after later edits and reopen', async () => {
+    const f = fixture();
+    const baseRevision = (await listing(f)).notebookRevision;
+    const createRequestId = randomUUID();
+    const input = {
+      baseRevision,
+      knowledgePageId: 'notes/human-entry',
+      kind: 'project-context',
+      title: 'Original human title',
+      content: 'Original human bytes.',
+    };
+    const created = await entryCommand(f, 'knowledge.create', createRequestId, input);
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    expect(created.body).toMatchObject({
+      id: 'notes/human-entry',
+      title: input.title,
+      content: input.content,
+    });
+    const createdRevision = (await listing(f)).notebookRevision;
+    expect(createdRevision).not.toBe(baseRevision);
+    const updated = await entryCommand(f, 'knowledge.update', randomUUID(), {
+      knowledgeEntryId: 'notes/human-entry',
+      baseRevision: createdRevision,
+      title: 'Later title',
+      content: 'Later bytes.',
+    });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    const currentRevision = (await listing(f)).notebookRevision;
+    reopen(f);
+    const replay = await entryCommand(f, 'knowledge.create', createRequestId, input);
+    expect(replay).toEqual(created);
+    expect((await listing(f)).notebookRevision).toBe(currentRevision);
+    expect(
+      (await listing(f)).items.find((entry) => entry.id === 'notes/human-entry')?.content
+    ).toBe('Later bytes.');
+    const receipts = f.workspaceDb.sqlite
+      .prepare(
+        'SELECT command_name AS command, response_kind AS kind FROM idempotency_requests WHERE request_id = ?'
+      )
+      .all(createRequestId);
+    expect(receipts).toEqual([
+      { command: 'knowledge.create', kind: 'knowledge_notebook_revision' },
+    ]);
+    expect(
+      f.workspaceDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM idempotency_requests WHERE command_name = 'knowledge.notebook.update'"
+        )
+        .get()
+    ).toEqual({ count: 0 });
+    const changed = await entryCommand(f, 'knowledge.create', createRequestId, {
+      ...input,
+      content: 'Changed under the old key.',
+    });
+    expect(changed.status).toBe(409);
+    expect(changed.body).toMatchObject({ code: 'idempotency_key_conflict' });
+    expect((await listing(f)).notebookRevision).toBe(currentRevision);
+  });
+
   it('retains generic valid pages without managed entry fields or body text across reopen', async () => {
     const f = fixture();
     const initial = await listing(f);

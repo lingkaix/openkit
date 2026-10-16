@@ -8,6 +8,7 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from './okf.js';
 
@@ -98,6 +99,109 @@ describe('Notebook publication through existing Audit and command receipts', () 
     expect(f.notebook.publishedRevision()).toBe(f.initial);
     expect(
       f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
+    ).toEqual({ count: 0 });
+  });
+
+  it('reconstructs an entry command response from its exact old commit after another edit and a new Store', async () => {
+    const f = fixture();
+    const input = {
+      operation: 'knowledge.create' as const,
+      workspaceId,
+      requestId: randomUUID(),
+      baseRevision: f.initial,
+      knowledgePageId: 'notes/human-entry',
+      kind: 'project-context' as const,
+      title: 'Original title',
+      content: 'Original bytes.',
+    };
+    const created = await publishWorkspaceNotebookEntry(f, input);
+    const createdRevision = f.notebook.publishedRevision();
+    expect(created).toMatchObject({
+      id: input.knowledgePageId,
+      title: input.title,
+      content: input.content,
+    });
+    const updated = await publishWorkspaceNotebookEntry(f, {
+      operation: 'knowledge.update',
+      workspaceId,
+      requestId: randomUUID(),
+      baseRevision: createdRevision,
+      knowledgeEntryId: created.id,
+      content: 'Later bytes.',
+    });
+    expect(updated.content).toBe('Later bytes.');
+    const current = f.notebook.publishedRevision();
+    expect(await publishWorkspaceNotebookEntry({ ...f, store: new FsStore() }, input)).toEqual(
+      created
+    );
+    expect(f.notebook.publishedRevision()).toBe(current);
+    expect(
+      f.workspaceDb.sqlite
+        .prepare(
+          'SELECT command_name AS command, response_kind AS kind FROM idempotency_requests ORDER BY command_name'
+        )
+        .all()
+    ).toEqual([
+      { command: 'knowledge.create', kind: 'knowledge_notebook_revision' },
+      { command: 'knowledge.update', kind: 'knowledge_notebook_revision' },
+    ]);
+  });
+
+  it('retains the first candidate timestamps when an explicit unchanged entry request retries a ref failure', async () => {
+    const f = fixture();
+    const input = {
+      operation: 'knowledge.create' as const,
+      workspaceId,
+      requestId: randomUUID(),
+      baseRevision: f.initial,
+      knowledgePageId: 'retry-note',
+      kind: 'preference' as const,
+      title: 'Retry note',
+      content: 'Retained exact content.',
+    };
+    const lock = join(f.repositoryPath, 'refs/heads/published.lock');
+    writeFileSync(lock, 'Test-owned ref lock.');
+    await expect(publishWorkspaceNotebookEntry(f, input)).rejects.toMatchObject({
+      code: 'recovery_required',
+    });
+    const row = f.workspaceDb.sqlite
+      .prepare(
+        "SELECT notebook_admission_json AS admission FROM audit_events WHERE action = 'knowledge.notebook.admit'"
+      )
+      .get() as { admission: string };
+    const admitted = JSON.parse(row.admission);
+    const originalBytes = f.notebook.readRevision(admitted.candidateRevision, ['retry-note.md'])
+      .files['retry-note.md'];
+    rmSync(lock);
+    const result = await publishWorkspaceNotebookEntry(f, input);
+    expect(result.content).toBe(input.content);
+    expect(
+      f.notebook.readRevision(f.notebook.publishedRevision(), ['retry-note.md']).files[
+        'retry-note.md'
+      ]
+    ).toBe(originalBytes);
+  });
+
+  it('refuses a contradictory unpublished admission before an explicit retry can publish another candidate', async () => {
+    const f = fixture();
+    const lock = join(f.repositoryPath, 'refs/heads/published.lock');
+    writeFileSync(lock, 'Test-owned ref lock.');
+    await expect(f.publish()).rejects.toMatchObject({ code: 'recovery_required' });
+    rmSync(lock);
+    const row = f.workspaceDb.sqlite
+      .prepare(
+        "SELECT audit_event_id AS id, notebook_admission_json AS admission FROM audit_events WHERE action = 'knowledge.notebook.admit'"
+      )
+      .get() as { id: string; admission: string };
+    const admitted = JSON.parse(row.admission);
+    admitted.sourceReferences = ['source:unproved'];
+    f.workspaceDb.sqlite
+      .prepare('UPDATE audit_events SET notebook_admission_json = ? WHERE audit_event_id = ?')
+      .run(JSON.stringify(admitted), row.id);
+    await expect(f.publish()).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(f.notebook.publishedRevision()).toBe(f.initial);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM idempotency_requests').get()
     ).toEqual({ count: 0 });
   });
 

@@ -120,6 +120,36 @@ export function readWorkspaceNotebookAdmissions(
     );
 }
 
+/** Verifies an existing admission against its exact immutable candidate before replay or explicit retry. */
+export function readWorkspaceNotebookAdmissionRevision(
+  dependencies: Pick<NotebookPublicationDependencies, 'notebook' | 'producer' | 'command'>,
+  request: NotebookUpdate,
+  evidence: KnowledgeNotebookAdmission
+) {
+  const candidate = dependencies.notebook.readRevision(evidence.candidateRevision);
+  const inputDigest = commandInputHash(dependencies.command?.input ?? request);
+  if (
+    evidence.ownerScope.kind !== 'workspace' ||
+    evidence.ownerScope.workspaceId !== request.workspaceId ||
+    evidence.requestId !== request.requestId ||
+    evidence.inputDigest !== inputDigest ||
+    candidate.parentRevision !== request.baseRevision ||
+    candidate.metadata.changeRequest.requestId !== request.requestId ||
+    candidate.metadata.changeRequest.inputDigest !== inputDigest ||
+    candidate.metadata.summary !== request.summary ||
+    !isDeepStrictEqual(candidate.metadata.producer, dependencies.producer) ||
+    !isDeepStrictEqual(evidence.producer, dependencies.producer) ||
+    evidence.baseRevision !== candidate.parentRevision ||
+    !isDeepStrictEqual(evidence.authority, candidate.metadata.authority) ||
+    !isDeepStrictEqual(evidence.sourceReferences, candidate.metadata.sourceReferences) ||
+    candidate.metadata.authority.kind !== 'direct' ||
+    candidate.metadata.authority.instructionReference !==
+      `${dependencies.command?.name ?? OPERATION}:${request.requestId}`
+  )
+    throw new NotebookError('recovery_required');
+  return candidate;
+}
+
 /** Publishes a human Workspace edit through one Git CAS, with existing Audit and receipt owners. */
 export async function publishWorkspaceNotebook(
   dependencies: NotebookPublicationDependencies,
@@ -135,18 +165,8 @@ export async function publishWorkspaceNotebook(
   dependencies.revalidate();
 
   const project = (revision: string, evidence: KnowledgeNotebookAdmission): NotebookPublication => {
-    const candidate = dependencies.notebook.readRevision(revision);
-    if (
-      candidate.parentRevision !== request.baseRevision ||
-      candidate.metadata.changeRequest.requestId !== request.requestId ||
-      candidate.metadata.changeRequest.inputDigest !== inputDigest ||
-      candidate.metadata.summary !== request.summary ||
-      !isDeepStrictEqual(candidate.metadata.producer, dependencies.producer) ||
-      evidence.baseRevision !== candidate.parentRevision ||
-      !isDeepStrictEqual(evidence.authority, candidate.metadata.authority) ||
-      !isDeepStrictEqual(evidence.sourceReferences, candidate.metadata.sourceReferences)
-    )
-      throw new NotebookError('recovery_required');
+    if (revision !== evidence.candidateRevision) throw new NotebookError('recovery_required');
+    const candidate = readWorkspaceNotebookAdmissionRevision(dependencies, request, evidence);
     // A saved unpublished candidate is not a completed publication.
     dependencies.notebook.history({ revision, limit: 1 });
     const base = dependencies.notebook.readRevision(request.baseRevision);
@@ -216,6 +236,7 @@ export async function publishWorkspaceNotebook(
         'knowledge.notebook.admit'
       )) {
         if (prior.inputDigest !== inputDigest) throw new IdempotencyKeyConflictError();
+        readWorkspaceNotebookAdmissionRevision(dependencies, request, prior);
         let published = false;
         try {
           dependencies.notebook.history({ revision: prior.candidateRevision, limit: 1 });

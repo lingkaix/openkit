@@ -31,6 +31,10 @@ export const UpdateWorkspaceRequestSchema = z
  */
 export const CreateKnowledgeEntryRequestSchema = z.object({
   requestId: RequestIdSchema,
+  /** Exact published notebook revision selected by the editor. */
+  baseRevision: z.string().min(1),
+  /** Stable concept path; the native notebook path owner validates its admissible form. */
+  knowledgePageId: z.string().min(1),
   kind: z.enum(['preference', 'project-context', 'task-summary']),
   title: z.string().min(1),
   content: z.string().min(1),
@@ -42,6 +46,7 @@ export const CreateKnowledgeEntryRequestSchema = z.object({
  */
 export const UpdateKnowledgeEntryRequestSchema = z.object({
   requestId: RequestIdSchema,
+  baseRevision: z.string().min(1),
   title: z.string().min(1).optional(),
   content: z.string().min(1).optional(),
 });
@@ -51,6 +56,7 @@ export const UpdateKnowledgeEntryRequestSchema = z.object({
  */
 export const DeleteKnowledgeEntryRequestSchema = z.object({
   requestId: RequestIdSchema,
+  baseRevision: z.string().min(1),
 });
 
 /**

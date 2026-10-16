@@ -23,11 +23,7 @@ import {
   ReverseKnowledgeProposalResponseSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
-import {
-  type ActorRef,
-  KnowledgeEntrySchema,
-  ListKnowledgeEntriesResponseSchema,
-} from '@openkit/protocol';
+import { type ActorRef, ListKnowledgeEntriesResponseSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from './audit-events.js';
@@ -38,6 +34,10 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
+import {
+  type NotebookEntryEdit,
+  publishWorkspaceNotebookEntry,
+} from './knowledge/notebook-entry-publication.js';
 import { publishWorkspaceNotebook } from './knowledge/notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -58,7 +58,11 @@ import {
   StoreRecordNotFoundError,
 } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
-import { type OperationImplementations, publicOperationActor } from './operation-contract.js';
+import {
+  type AdmittedOperationContext,
+  type OperationImplementations,
+  publicOperationActor,
+} from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
@@ -83,6 +87,28 @@ function commandFailure(error: unknown, code: string, status = 404): OperationEr
   )
     return new OperationError(code, publishedErrorMessage(error), status, { cause: error });
   throw error;
+}
+
+/** Keeps native notebook partial outcomes visible without exposing Git or filesystem diagnostics. */
+function notebookCommandFailure(error: unknown): never {
+  if (error instanceof OperationError) throw error;
+  if (error instanceof IdempotencyKeyConflictError || error instanceof KnowledgePageValidationError)
+    throw commandFailure(error, 'invalid_request', 400);
+  if (error instanceof NotebookError)
+    throw new OperationError(
+      error.code,
+      error.message,
+      error.code === 'invalid_request' ? 400 : 409,
+      {
+        ...(error.currentRevision ? { details: { currentRevision: error.currentRevision } } : {}),
+      }
+    );
+  throw new OperationError(
+    'recovery_required',
+    'Notebook publication evidence is unavailable.',
+    503,
+    { cause: error }
+  );
 }
 
 /** Requires a scoped child from its current owner after native Workspace admission; no foreign Workspace is scanned. */
@@ -302,6 +328,64 @@ export function createKnowledgeOperationImplementations(
   const inflightCommands = dependencies.inflightCommands!;
   const repositoryWorkspaceDb = dependencies.repositoryWorkspaceDb!;
 
+  /** Binds existing entry commands to current native authority and the one Git/Audit/receipt publisher. */
+  const publishEntry = async (input: NotebookEntryEdit, context: AdmittedOperationContext) => {
+    const dataRoot = store.getDataRoot();
+    const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;
+    if (!coreDb || !dataRoot || !runtimeConfigManager || !workspaceMutationAdmission)
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'Notebook publication storage is unavailable.',
+        503
+      );
+    const requestActor = publicOperationActor(context);
+    const actor = context.actorRef;
+    if (actor.kind !== 'user')
+      throw new OperationError(
+        'workspace_access_denied',
+        'Notebook publication access denied.',
+        403
+      );
+    const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+    try {
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(
+          dataRoot,
+          'workspaces',
+          input.workspaceId,
+          'knowledge',
+          'notebook.git'
+        ),
+      });
+      return await publishWorkspaceNotebookEntry(
+        {
+          store,
+          workspaceDb,
+          notebook,
+          producer: actor,
+          inflightCommands,
+          revalidate: (request) =>
+            readWorkspaceNotebookAdmission({
+              store,
+              coreDb,
+              workspaceDb,
+              notebook,
+              request,
+              requestActor,
+              actor,
+              runtimeConfigManager,
+              workspaceMutationAdmission,
+            }),
+        },
+        input
+      );
+    } catch (error) {
+      notebookCommandFailure(error);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  };
+
   return {
     'knowledge.notebook.update': async (input, context) => {
       const dataRoot = store.getDataRoot();
@@ -356,32 +440,13 @@ export function createKnowledgeOperationImplementations(
         return {
           ...publication,
           changedPageIds: [...publication.changedPageIds],
-          receiptRef: { ...publication.receiptRef, operation: 'knowledge.notebook.update' as const },
+          receiptRef: {
+            ...publication.receiptRef,
+            operation: 'knowledge.notebook.update' as const,
+          },
         };
       } catch (error) {
-        if (error instanceof OperationError) throw error;
-        if (
-          error instanceof IdempotencyKeyConflictError ||
-          error instanceof KnowledgePageValidationError
-        )
-          throw commandFailure(error, 'invalid_request', 400);
-        if (error instanceof NotebookError)
-          throw new OperationError(
-            error.code,
-            error.message,
-            error.code === 'invalid_request' ? 400 : 409,
-            {
-              ...(error.currentRevision
-                ? { details: { currentRevision: error.currentRevision } }
-                : {}),
-            }
-          );
-        throw new OperationError(
-          'recovery_required',
-          'Notebook publication evidence is unavailable.',
-          503,
-          { cause: error }
-        );
+        notebookCommandFailure(error);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -1367,20 +1432,7 @@ export function createKnowledgeOperationImplementations(
       const { workspaceId, ...commandInput } = input;
 
       try {
-        const knowledge = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'knowledge.create',
-          requestId: commandInput.requestId,
-          scope: { workspaceId },
-          input: { ...commandInput, workspaceId },
-          responseKind: 'knowledge',
-          execute: () =>
-            KnowledgeEntrySchema.parse(store.createKnowledgeEntry(workspaceId, commandInput)),
-          replay: (record) =>
-            KnowledgeEntrySchema.parse(store.getKnowledgeEntry(workspaceId, record.response.id)),
-          responseId: (result) => result.id,
-        });
+        const knowledge = await publishEntry({ ...input, operation: 'knowledge.create' }, context);
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.entry.create',
@@ -1400,30 +1452,10 @@ export function createKnowledgeOperationImplementations(
     },
     'knowledge.update': async (input, context) => {
       const actor = context.actorRef;
-      const { workspaceId, knowledgeEntryId, ...commandInput } = input;
-
-      readAuthorizedKnowledgeOwner(workspaceId, () => {
-        store.getKnowledgeEntry(workspaceId, knowledgeEntryId);
-        return { workspaceId };
-      });
+      const { workspaceId, ...commandInput } = input;
 
       try {
-        const knowledge = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'knowledge.update',
-          requestId: commandInput.requestId,
-          scope: { workspaceId, knowledgeEntryId },
-          input: { ...commandInput, workspaceId, knowledgeEntryId },
-          responseKind: 'knowledge',
-          execute: () =>
-            KnowledgeEntrySchema.parse(
-              store.updateKnowledgeEntry(workspaceId, knowledgeEntryId, commandInput)
-            ),
-          replay: (record) =>
-            KnowledgeEntrySchema.parse(store.getKnowledgeEntry(workspaceId, record.response.id)),
-          responseId: (result) => result.id,
-        });
+        const knowledge = await publishEntry({ ...input, operation: 'knowledge.update' }, context);
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.entry.update',

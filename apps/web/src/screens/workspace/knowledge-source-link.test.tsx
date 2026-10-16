@@ -91,6 +91,7 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
           break;
         case operationHttpPath('knowledge.list'):
           body = {
+            notebookRevision: 'notebook-fixture-revision',
             items: creates.some((command) => command.workspaceId === request.workspaceId)
               ? [PAGE]
               : [],

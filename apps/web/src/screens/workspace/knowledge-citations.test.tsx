@@ -82,7 +82,7 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
           break;
         case operationHttpPath('knowledge.list'):
           if (pageRead) return pageRead();
-          body = { items: [UNRELATED_PAGE, PAGE] };
+          body = { notebookRevision: 'notebook-fixture-revision', items: [UNRELATED_PAGE, PAGE] };
           break;
         case operationHttpPath('knowledge.indexes'):
           body = {
