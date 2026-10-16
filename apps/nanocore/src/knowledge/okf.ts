@@ -612,6 +612,7 @@ export function updateOkfFrontmatter(input: {
   readonly path: string;
   readonly content: string;
   readonly updates: Readonly<Record<string, unknown>>;
+  readonly removeFields?: readonly string[];
   readonly body?: string;
 }): string {
   const parsed = parseOkfDocument({ path: input.path, content: input.content });
@@ -624,11 +625,36 @@ export function updateOkfFrontmatter(input: {
   if (errors.length > 0 || !yaml.document) {
     throw new Error('OKF frontmatter cannot be updated because its YAML mapping is invalid.');
   }
+  for (const field of input.removeFields ?? []) yaml.document.delete(field);
   for (const [field, value] of Object.entries(input.updates)) {
     yaml.document.set(field, value);
   }
   const serialized = yaml.document.toString({ lineWidth: 0 });
   return `---\n${serialized}---\n${input.body ?? framing.body}`;
+}
+
+/** Edits a plain schema mapping through the shared safe YAML boundary; the trusted callback validates existing facts before updates. */
+export function updateKnowledgeSchemaFields(input: {
+  readonly content: string;
+  readonly updates: (
+    fields: Readonly<Record<string, unknown>>
+  ) => Readonly<Record<string, unknown>>;
+  readonly removeFields?: readonly string[];
+}): string {
+  const errors: KnowledgeValidationError[] = [];
+  const yaml = parseYamlMapping(input.content, errors);
+  collectSecretLikeErrors(yaml.value, errors);
+  if (errors.length > 0 || !yaml.document)
+    throw new Error('Knowledge schema fields cannot be updated because the mapping is invalid.');
+  const updates = input.updates(yaml.value);
+  for (const field of input.removeFields ?? []) yaml.document.delete(field);
+  for (const [field, value] of Object.entries(updates)) yaml.document.set(field, value);
+  const content = yaml.document.toString({ lineWidth: 0 });
+  const finalMapping = parseYamlMapping(content, errors);
+  collectSecretLikeErrors(finalMapping.value, errors);
+  if (errors.length > 0 || !finalMapping.document)
+    throw new Error('Knowledge schema fields cannot be updated because the result is invalid.');
+  return content;
 }
 
 /**
