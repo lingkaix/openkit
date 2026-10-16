@@ -1976,12 +1976,12 @@ describe('selected-Workspace member management', () => {
     ).toBeInTheDocument();
     expect(
       within(members).getByRole('row', {
-        name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+        name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*member/i,
       })
     ).toBeInTheDocument();
     expect(
       within(members).getByRole('row', {
-        name: /usr_00000000-0000-74e6-acb7-da1cb380abb8.*viewer/i,
+        name: /usr_00000000-0000-74e6-acb7-da1cb380abb8.*member/i,
       })
     ).toBeInTheDocument();
     expect(
