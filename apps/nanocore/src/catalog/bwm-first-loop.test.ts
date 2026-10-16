@@ -1,6 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +22,10 @@ import { FsStore } from '../lib/store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import { createApp } from '../test-support/app.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { readSkillCandidateArtifact } from '../skill-candidate-artifact.js';
@@ -233,6 +244,28 @@ describe('synthetic BWM Artifact/catalog component', () => {
       agentId: 'agent_bwm_consumer',
       skillIds: ['synthetic-workshop'],
     });
+    // Catalog publication reloads authored supply. Keep this fixture's Agents and route on disk.
+    mkdirSync(join(dataRoot, 'config/agents'), { recursive: true });
+    for (const setup of [authorSetup, useSetup])
+      writeFileSync(
+        join(dataRoot, 'config/agents', `${setup.manifest.id}.agent.jsonc`),
+        JSON.stringify(setup.manifest)
+      );
+    mkdirSync(join(dataRoot, 'config/providers'), { recursive: true });
+    writeFileSync(
+      join(dataRoot, 'config/providers/agent-openrouter.provider.jsonc'),
+      JSON.stringify({
+        id: 'agent-openrouter',
+        displayName: 'Test inference provider',
+        kind: 'local',
+        models: ['openai/gpt-5.2'],
+        modelMetadata: { 'openai/gpt-5.2': { limit: { context: 128_000 } } },
+      })
+    );
+    writeFileSync(
+      join(dataRoot, 'config/gateway.jsonc'),
+      JSON.stringify(createTestGatewayConfig())
+    );
     const executor = new SimulatedTurnExecutor({ coreDb });
     const app = createApp({
       coreDb,
