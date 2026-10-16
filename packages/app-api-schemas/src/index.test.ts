@@ -5265,7 +5265,7 @@ describe('app api schemas', () => {
 
   it('accepts only exact version-keyed Artifact Review Action Center sources', () => {
     const source = {
-      type: testEntityId('ar', 'artifact_review'),
+      type: 'artifact_review',
       reviewId: 'arev_00000000-0000-725e-9350-18e29b99fc35',
       artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 2,
@@ -5408,7 +5408,7 @@ describe('app api schemas', () => {
       },
       {
         id: 'artifact-review:arev_00000000-0000-725e-9350-18e29b99fc35',
-        kind: testEntityId('ar', 'artifact_review'),
+        kind: 'artifact_review',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
@@ -5420,7 +5420,7 @@ describe('app api schemas', () => {
         severity: 'needs_input',
         createdAt: timestamp,
         source: {
-          type: testEntityId('ar', 'artifact_review'),
+          type: 'artifact_review',
           reviewId: 'arev_00000000-0000-725e-9350-18e29b99fc35',
           artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
           artifactVersion: 1,

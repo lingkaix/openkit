@@ -279,9 +279,7 @@ describe('Workspace JSON transfer cutover', () => {
       agentId: 'failed-cache-agent',
       agentSessionId: testEntityId('as', 'as_failed_cache'),
     });
-    expect(recurringTurnPublicationIssue(store, entry)).toBe(
-      testEntityId('tu', 'turn_contradictory')
-    );
+    expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );

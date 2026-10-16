@@ -704,9 +704,7 @@ describe('scheduler dispatch loop', () => {
       expect(update).not.toHaveBeenCalled();
       expect(executor.prepareCalls).toEqual([]);
       expect(executor.calls).toEqual([]);
-      expect(recurringTurnPublicationIssue(store, entry)).toBe(
-        testEntityId('tu', 'turn_contradictory')
-      );
+      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
       expect(
         readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
       ).toEqual(published);
@@ -813,8 +811,8 @@ describe('scheduler dispatch loop', () => {
         fault === 'after-publication'
           ? null
           : fault === 'contradictory'
-            ? testEntityId('tu', 'turn_contradictory')
-            : testEntityId('tu', 'turn_missing');
+            ? 'turn_contradictory'
+            : 'turn_missing';
       // A cache entry created before a failed file write is not durable publication proof.
       expect(recurringTurnPublicationIssue(store, entry)).toBe(expectedIssue);
       service.stop();

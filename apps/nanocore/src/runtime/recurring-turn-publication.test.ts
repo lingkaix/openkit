@@ -211,7 +211,7 @@ it.each([
     const publish = vi.spyOn(freshStore, 'createTurn');
     const update = vi.spyOn(freshStore, 'updateTurn');
     expect(recurringTurnPublicationIssue(freshStore, fixed)).toBe(
-      point === 'before-rename' ? testEntityId('tu', 'turn_missing') : null
+      point === 'before-rename' ? 'turn_missing' : null
     );
     expect(publish).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
