@@ -10,6 +10,7 @@ export function recurringTurnPublicationIssue(
   entry: SchedulerAdmissionEntryRecord
 ): AutomationOccurrence['publicationIssue'] {
   try {
+    store.assertWorkspaceFilePersistenceAvailable(entry.workspaceId);
     const dataRoot = store.getDataRoot();
     if (!dataRoot) return 'turn_missing';
     const turn = readPublishedTurnFileRecords(
@@ -23,7 +24,9 @@ export function recurringTurnPublicationIssue(
       turn.agentId !== entry.requestedAgentId ||
       !isDeepStrictEqual(turn.triggerActor, entry.triggerActor) ||
       turn.reasoningEffort !== entry.reasoningEffort ||
-      (entry.status === 'queued' && (turn.status !== 'pending' || turn.agentSessionId))
+      (entry.status === 'queued' && (turn.status !== 'pending' || turn.agentSessionId)) ||
+      // Consumers use the Store Turn; a failed persist must not make its cache publication proof.
+      !isDeepStrictEqual(store.getTurn(entry.workspaceId, entry.threadId, entry.turnId), turn)
     )
       return 'turn_contradictory';
     return null;

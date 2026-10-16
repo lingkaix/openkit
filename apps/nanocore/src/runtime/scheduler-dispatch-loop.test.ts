@@ -23,7 +23,10 @@ import {
 import * as schedulerRecords from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
-import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
+import {
+  isCurrentAgentSessionStatus,
+  readPublishedTurnFileRecords,
+} from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -492,6 +495,233 @@ describe('route B durable intent before effects', () => {
 });
 
 describe('scheduler dispatch loop', () => {
+  it('dispatches one monthly UTC occurrence in its existing Thread through the ordinary modeled Worker port', async () => {
+    const coreDb = createMigratedCoreDb();
+    const root = coreDb.dataRoot;
+    const store = createDemoStore({ dataRoot: root });
+    const manifest = agentManifest();
+    const executor = new RecordingTurnExecutor(coreDb);
+    const thread = store.createThread('ws_demo', 'Monthly existing target');
+    const instant = '2026-10-28T09:30:00.000Z';
+    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+    const schedule = schedules.createAutomation('user_local', {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      name: 'Monthly instruction',
+      prompt: 'Exact monthly input',
+      monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 },
+    });
+    schedules.updateAutomation('user_local', schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const service = startRecurringScheduleService({
+      schedules,
+      store,
+      prepare: async () => ({
+        kind: 'ready',
+        payload: {
+          backendId: executor.executionBackend.id,
+          requestedAgentId: manifest.id,
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+          workspaceRoots: [],
+          workspaceCwd: null,
+        },
+      }),
+      now: () => instant,
+      setInterval: () => 'timer',
+      clearInterval: () => {},
+    });
+    try {
+      await service.runOnce();
+      await service.runOnce();
+      const occurrences = schedules
+        .listHistory(schedule.id)
+        .items.filter((entry) => entry.kind === 'occurrence');
+      expect(occurrences).toHaveLength(1);
+      const accepted = occurrences[0]!.record;
+      expect(accepted).toMatchObject({
+        state: 'admission-accepted',
+        scheduledAt: instant,
+        attempts: [{ number: 1 }],
+        snapshot: { threadId: thread.id, monthlyUtc: schedule.monthlyUtc },
+      });
+      expect(executor.prepareCalls).toEqual([]);
+      expect(executor.calls).toEqual([]);
+      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+      expect(entry).toMatchObject({
+        threadId: thread.id,
+        turnId: accepted.turnId,
+        turnInput: 'Exact monthly input',
+      });
+      const dispatched = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+      });
+      expect(
+        dispatched.startedTurns.map(({ dispatch, handle }) => ({
+          queueEntryId: dispatch.entry.queueEntryId,
+          threadId: handle.turn.threadId,
+          turnId: handle.turn.id,
+        }))
+      ).toEqual([{ queueEntryId: entry.queueEntryId, threadId: thread.id, turnId: entry.turnId }]);
+      expect(executor.prepareCalls).toEqual([{ threadId: thread.id, turnId: accepted.turnId }]);
+      expect(executor.calls).toEqual([
+        expect.objectContaining({ input: 'Exact monthly input', turnId: accepted.turnId }),
+      ]);
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+      expect(store.getTurnById(entry.turnId).threadId).toBe(thread.id);
+      expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+    } finally {
+      service.stop();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'dispatch-then-cancel',
+    'cancel-only',
+  ] as const)('refuses a same-Store cached recurring Turn contradiction after failed persistence: %s', async (consumer) => {
+    const coreDb = createMigratedCoreDb();
+    const root = coreDb.dataRoot;
+    const store = createDemoStore({ dataRoot: root });
+    const manifest = agentManifest();
+    const executor = new RecordingTurnExecutor(coreDb);
+    const thread = store.createThread('ws_demo', 'Retain canonical recurring Turn');
+    const instant = '2026-10-16T00:00:00.000Z';
+    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+    const schedule = schedules.createAutomation('user_local', {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      name: 'Inspect cache disagreement',
+      prompt: 'Exact recurring input',
+      intervalSeconds: 5,
+    });
+    schedules.updateAutomation('user_local', schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const service = startRecurringScheduleService({
+      schedules,
+      store,
+      prepare: async () => ({
+        kind: 'ready',
+        payload: {
+          backendId: executor.executionBackend.id,
+          requestedAgentId: manifest.id,
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+          workspaceRoots: [],
+          workspaceCwd: null,
+        },
+      }),
+      now: () => instant,
+      setInterval: () => 'timer',
+      clearInterval: () => {},
+    });
+    try {
+      await service.runOnce();
+      service.stop();
+      const accepted = schedules
+        .listHistory(schedule.id)
+        .items.find((entry) => entry.kind === 'occurrence')!.record;
+      expect(accepted.state).toBe('admission-accepted');
+      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+      // Assemble HTTP before the fault: no later ordinary Workspace write may publish the stale cache.
+      const app = createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
+      const published = readPublishedTurnFileRecords(root, 'ws_demo', thread.id, entry.turnId);
+      expect(published?.turn).toMatchObject({ agentId: manifest.id, status: 'pending' });
+      const turnRoot = join(
+        root,
+        'workspaces',
+        'ws_demo',
+        'threads',
+        thread.id,
+        'turns',
+        entry.turnId
+      );
+      const originalBytes = ['turn.json', 'items.jsonl'].map((file) =>
+        readFileSync(join(turnRoot, file))
+      );
+      const fault = vi
+        .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
+        .mockImplementationOnce(() => {
+          throw new Error('Turn persistence interrupted');
+        });
+      try {
+        expect(() => store.updateTurn(entry.turnId, { agentId: 'other-worker' })).toThrow(
+          'Turn persistence interrupted'
+        );
+      } finally {
+        fault.mockRestore();
+      }
+      expect(store.getTurnById(entry.turnId)).toMatchObject({
+        agentId: 'other-worker',
+        status: 'pending',
+      });
+      expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, entry.turnId)).toEqual(
+        published
+      );
+      const update = vi.spyOn(store, 'updateTurn');
+      if (consumer === 'dispatch-then-cancel') {
+        expect(
+          await runSchedulerDispatchLoop({
+            coreDb,
+            store,
+            turnExecutor: executor,
+            executionBackend: executor.executionBackend,
+            agentManifests: [manifest],
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: localProviderRegistry(),
+          })
+        ).toMatchObject({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'recovery-required' },
+        });
+        expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+      }
+      const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', queueEntryId: entry.queueEntryId }),
+      });
+      expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+      expect(update).not.toHaveBeenCalled();
+      expect(executor.prepareCalls).toEqual([]);
+      expect(executor.calls).toEqual([]);
+      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
+      expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, entry.turnId)).toEqual(
+        published
+      );
+      expect(
+        ['turn.json', 'items.jsonl'].map((file) => readFileSync(join(turnRoot, file)))
+      ).toEqual(originalBytes);
+      expect(
+        schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+      ).toBe('cancelled');
+      expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+      // Only the series waiting slot was released. The original pending Turn still holds its Thread.
+      expect(store.getTurnById(entry.turnId)).toMatchObject({
+        agentId: 'other-worker',
+        status: 'pending',
+      });
+    } finally {
+      service.stop();
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     'before-publication',
     'after-publication',
