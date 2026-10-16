@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -16,6 +17,12 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  catalogDocumentPath,
+  importWorkspaceSkill,
+  loadWorkspaceResourceCatalog,
+  publishWorkspaceResourceCatalog,
+} from '../catalog/resource-catalog.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -25,6 +32,7 @@ import { RuntimeConfigFileService } from './runtime-config-files.js';
 const durability = vi.hoisted(() => ({
   afterRead: undefined as ((path: string) => void) | undefined,
   readFailurePath: undefined as string | undefined,
+  mkdirFailurePath: undefined as string | undefined,
   paths: new Map<number, string>(),
   events: [] as Array<{
     op: 'sync' | 'rename';
@@ -48,6 +56,13 @@ vi.mock('node:fs', async (importOriginal) => {
       durability.afterRead?.(path);
       return content;
     }) as typeof actual.readFileSync,
+    mkdirSync: ((...args: Parameters<typeof actual.mkdirSync>) => {
+      if (String(args[0]) === durability.mkdirFailurePath)
+        throw Object.assign(new Error('Injected unrelated layout mkdir failure'), {
+          code: 'EACCES',
+        });
+      return actual.mkdirSync(...args);
+    }) as typeof actual.mkdirSync,
     openSync: ((...args: Parameters<typeof actual.openSync>) => {
       const descriptor = actual.openSync(...args);
       durability.paths.set(descriptor, String(args[0]));
@@ -85,6 +100,7 @@ const roots: string[] = [];
 afterEach(() => {
   durability.afterRead = undefined;
   durability.readFailurePath = undefined;
+  durability.mkdirFailurePath = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -633,5 +649,290 @@ describe('authored configuration durability', () => {
     } finally {
       durability.fail = undefined;
     }
+  });
+});
+
+/** Builds authored Assistant selection without introducing version or runtime authority. */
+function assistantSelectionContent(skillIds?: readonly unknown[]): string {
+  return JSON.stringify({
+    workspace: {
+      name: 'Assistant selection',
+      roots: [],
+      assistant: {
+        repositoryInspection: { enabled: false, excludedPaths: ['docs/private'] },
+        ...(skillIds === undefined ? {} : { resources: { skillIds } }),
+      },
+    },
+  });
+}
+
+/** Supplies real inactive local and foreign Skills after the file service snapshot was created. */
+function assistantSelectionFixture(mode: 'create' | 'update') {
+  const f = fixture(true);
+  for (const [workspaceId, id] of [
+    ['ws_demo', 'local-guidance'],
+    [f.otherWorkspaceId as string, 'foreign-guidance'],
+  ]) {
+    importWorkspaceSkill({
+      activate: false,
+      createdAt: '2026-10-15T00:00:00.000Z',
+      dataRoot: f.dataRoot,
+      displayName: id,
+      id,
+      expectedRevision: 0,
+      producer: { id: 'user_local', kind: 'user' },
+      tree: [
+        {
+          kind: 'file',
+          path: 'SKILL.md',
+          contentBase64: Buffer.from('# Guidance\n').toString('base64'),
+        },
+      ],
+      workspaceId,
+    });
+  }
+  const id = 'workspaces/ws_demo/workspace.jsonc';
+  const path = join(f.dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc');
+  const previous = assistantSelectionContent();
+  f.write(id, previous);
+  const revision = f.files.readFile(id).file.revision;
+  if (mode === 'create') rmSync(path);
+  const write = (content: string) =>
+    mode === 'create'
+      ? f.files.createFile({ id, kind: 'workspace', content })
+      : f.files.updateFile({ id, kind: 'workspace', content, expectedRevision: revision });
+  return { ...f, id, path, previous, revision, write };
+}
+
+describe('Workspace Assistant Skill selection configuration', () => {
+  const invalidSelections = [
+    ['missing', ['missing-guidance']],
+    ['foreign-only', ['foreign-guidance']],
+    ['different exact ID', ['local-guidance ']],
+    ['path', ['../local-guidance']],
+    ['empty ID', ['']],
+    ['duplicate ID', ['local-guidance', 'local-guidance']],
+  ] as const;
+  it.each(
+    invalidSelections.flatMap(([label, ids]) =>
+      (['create', 'update'] as const).map((mode) => ({ label, ids, mode }))
+    )
+  )('refuses $label references on $mode without changing authored or catalog bytes', ({
+    ids,
+    mode,
+  }) => {
+    const f = assistantSelectionFixture(mode);
+    const localCatalog = catalogDocumentPath(f.dataRoot, 'ws_demo');
+    const foreignCatalog = catalogDocumentPath(f.dataRoot, f.otherWorkspaceId as string);
+    const catalogBefore = readFileSync(localCatalog);
+    const foreignBefore = readFileSync(foreignCatalog);
+    const content = assistantSelectionContent(ids);
+    expect(() => f.write(content)).toThrowError(
+      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+    );
+    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    expect(readFileSync(localCatalog)).toEqual(catalogBefore);
+    expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
+    const validation = f.files.validate({ files: [{ id: f.id, content }], mode: 'safe' });
+    expect(validation.valid).toBe(false);
+    expect(validation.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fileId: f.id,
+          code: 'invalid_workspace_config',
+          severity: 'error',
+        }),
+      ])
+    );
+  });
+
+  it.each(
+    (['absent', 'empty', 'selected'] as const).flatMap((selection) =>
+      (['create', 'update'] as const).map((mode) => ({ selection, mode }))
+    )
+  )('persists $selection selection on $mode using current same-Workspace catalog identities', ({
+    selection,
+    mode,
+  }) => {
+    const f = assistantSelectionFixture(mode);
+    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_demo');
+    const catalogBefore = readFileSync(catalogPath);
+    expect(
+      loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo').skills.entries[0].currentDigest
+    ).toBeNull();
+    const ids =
+      selection === 'absent' ? undefined : selection === 'empty' ? [] : ['local-guidance'];
+    const content = assistantSelectionContent(ids);
+    f.write(content);
+    expect(f.files.readFile(f.id).content).toBe(content);
+    expect(readFileSync(catalogPath)).toEqual(catalogBefore);
+    const loaded = loadRuntimeConfig(f.dataRoot).workspaceConfigs.find(
+      (entry) => entry.workspaceId === 'ws_demo'
+    );
+    expect(loaded?.config.workspace.assistant.repositoryInspection.enabled).toBe(false);
+    expect(
+      JSON.parse(readFileSync(f.path, 'utf8')).workspace.assistant.resources?.skillIds ?? []
+    ).toEqual(ids ?? []);
+  });
+
+  it('rejects a reference deleted from current catalog after a prior valid selection without discarding authored selection', () => {
+    const f = assistantSelectionFixture('update');
+    const selected = assistantSelectionContent(['local-guidance']);
+    f.write(selected);
+    const current = loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo');
+    publishWorkspaceResourceCatalog({
+      dataRoot: f.dataRoot,
+      workspaceId: 'ws_demo',
+      expectedRevision: current.revision,
+      catalog: { ...current, skills: { entries: [], versions: [], pins: [], candidates: [] } },
+    });
+    expect(readFileSync(f.path, 'utf8')).toBe(selected);
+    expect(() =>
+      f.files.updateFile({
+        id: f.id,
+        kind: 'workspace',
+        content: selected,
+        expectedRevision: f.files.readFile(f.id).file.revision,
+      })
+    ).toThrowError(expect.objectContaining({ code: 'config_file_invalid', status: 400 }));
+    expect(readFileSync(f.path, 'utf8')).toBe(selected);
+  });
+
+  it.each(
+    (['corrupt', 'missing'] as const).flatMap((authority) =>
+      (['create', 'update'] as const).map((mode) => ({ authority, mode }))
+    )
+  )('refuses $authority current catalog authority on $mode with a redacted error and unchanged authored bytes', ({
+    authority,
+    mode,
+  }) => {
+    const f = assistantSelectionFixture(mode);
+    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_demo');
+    if (authority === 'corrupt') writeFileSync(catalogPath, '{invalid');
+    else rmSync(catalogPath);
+    let failure: unknown;
+    try {
+      f.write(assistantSelectionContent(['local-guidance']));
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: 'config_file_invalid', status: 400 });
+    expect(
+      `${failure instanceof Error ? failure.message : ''}${JSON.stringify(failure)}`
+    ).not.toContain(f.dataRoot);
+    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    if (authority === 'corrupt') expect(readFileSync(catalogPath, 'utf8')).toBe('{invalid');
+    else expect(existsSync(catalogPath)).toBe(false);
+  });
+
+  it('keeps exact revision refusal for an otherwise valid existing Skill selection', () => {
+    const f = assistantSelectionFixture('update');
+    const newer = `${f.previous}\n// Concurrent authored edit\n`;
+    writeFileSync(f.path, newer);
+    expect(() => f.write(assistantSelectionContent(['local-guidance']))).toThrowError(
+      expect.objectContaining({ code: 'config_revision_conflict', status: 409 })
+    );
+    expect(readFileSync(f.path, 'utf8')).toBe(newer);
+  });
+});
+
+describe('Workspace Assistant Skill read-only validation', () => {
+  it('validates a real selected Skill without repairing an unrelated missing Workspace subtree', () => {
+    const f = assistantSelectionFixture('update');
+    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
+    const catalogPath = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json');
+    const catalogBefore = readFileSync(catalogPath);
+    rmSync(unrelated, { recursive: true });
+    const result = f.files.validate({
+      files: [{ id: f.id, content: assistantSelectionContent(['local-guidance']) }],
+      mode: 'safe',
+    });
+    expect(result.valid).toBe(true);
+    expect(existsSync(unrelated)).toBe(false);
+    expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    expect(readFileSync(catalogPath)).toEqual(catalogBefore);
+  });
+
+  it.each([
+    'create',
+    'update',
+  ] as const)('does not repair an unrelated Workspace subtree while refusing an invalid %s selection', (mode) => {
+    const f = assistantSelectionFixture(mode);
+    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
+    const catalogPath = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json');
+    const catalogBefore = readFileSync(catalogPath);
+    rmSync(unrelated, { recursive: true });
+    expect(() => f.write(assistantSelectionContent(['missing-guidance']))).toThrowError(
+      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+    );
+    expect(existsSync(unrelated)).toBe(false);
+    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    expect(readFileSync(catalogPath)).toEqual(catalogBefore);
+  });
+
+  it('does not reject a valid Skill because an unrelated layout mkdir would fail', () => {
+    const f = assistantSelectionFixture('update');
+    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
+    rmSync(unrelated, { recursive: true });
+    durability.mkdirFailurePath = unrelated;
+    try {
+      const result = f.files.validate({
+        files: [{ id: f.id, content: assistantSelectionContent(['local-guidance']) }],
+        mode: 'safe',
+      });
+      expect(result.valid).toBe(true);
+      expect(existsSync(unrelated)).toBe(false);
+      expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    } finally {
+      durability.mkdirFailurePath = undefined;
+    }
+  });
+});
+
+describe('Workspace Assistant Skill catalog confinement', () => {
+  it.each(
+    (['directory', 'file'] as const).flatMap((redirect) =>
+      (['create', 'update'] as const).map((mode) => ({ redirect, mode }))
+    )
+  )('rejects a catalog $redirect symlink to another Workspace on $mode without changing either authority', ({
+    redirect,
+    mode,
+  }) => {
+    const f = assistantSelectionFixture(mode);
+    const localDirectory = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog');
+    const foreignDirectory = join(
+      f.dataRoot,
+      'workspaces',
+      f.otherWorkspaceId as string,
+      'catalog'
+    );
+    const foreignCatalog = join(foreignDirectory, 'catalog.json');
+    const foreignBefore = readFileSync(foreignCatalog);
+    const linkPath =
+      redirect === 'directory' ? localDirectory : join(localDirectory, 'catalog.json');
+    const linkTarget = redirect === 'directory' ? foreignDirectory : foreignCatalog;
+    rmSync(linkPath, { recursive: redirect === 'directory' });
+    symlinkSync(linkTarget, linkPath, redirect === 'directory' ? 'dir' : 'file');
+    expect(() => f.write(assistantSelectionContent(['foreign-guidance']))).toThrowError(
+      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+    );
+    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(linkPath)).toBe(linkTarget);
+    const validation = f.files.validate({
+      files: [{ id: f.id, content: assistantSelectionContent(['foreign-guidance']) }],
+      mode: 'safe',
+    });
+    expect(validation.valid).toBe(false);
+    expect(validation.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'invalid_workspace_config', severity: 'error' }),
+      ])
+    );
   });
 });
