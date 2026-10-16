@@ -410,9 +410,12 @@ describe('pi-ai real-provider L3 test policy', () => {
             const path = new URL(url).pathname;
             requestedPaths.push(path);
             assert.ok(path === '/health' || path === '/api/app/operations/diagnostics.app');
-            return new Response(JSON.stringify(path === '/health' ? { status: 'ok' } : diagnostics), {
-              status: 200,
-            });
+            return new Response(
+              JSON.stringify(path === '/health' ? { status: 'ok' } : diagnostics),
+              {
+                status: 200,
+              }
+            );
           },
           stdout: () => {},
         }),

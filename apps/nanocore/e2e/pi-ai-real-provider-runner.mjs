@@ -332,9 +332,7 @@ function writeEvidenceResult(config, result) {
  */
 function gatewayPreflightFailure(json, config) {
   const models = json?.gateway?.models;
-  const model = Array.isArray(models)
-    ? models.find((entry) => entry?.id === config.model)
-    : null;
+  const model = Array.isArray(models) ? models.find((entry) => entry?.id === config.model) : null;
   if (!model) {
     return { providerId: config.providerId, model: config.model, reason: 'logical-model-missing' };
   }
