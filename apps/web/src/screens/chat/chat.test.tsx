@@ -6251,7 +6251,7 @@ describe('conversation artifact inspection', () => {
     const file = ItemSchema.parse({
       ...ITEMS[0],
       id: 'it_00000000-0000-7f8f-9ccf-39fc6fcf8be8',
-      type: 'it_00000000-0000-7f8f-9ccf-39fc6fcf8be8',
+      type: 'file-change',
       path,
       changeKind: 'modified',
     });
