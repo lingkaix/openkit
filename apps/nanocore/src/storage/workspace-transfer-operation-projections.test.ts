@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
@@ -14,16 +15,22 @@ import {
   isWorkspaceOperationAuthorized,
 } from '../auth/operation-authorizer.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
+import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
+import { recurringTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createApp } from '../test-support/app.js';
-import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { createDemoWorkspaceForUser, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { readPublishedTurnFileRecords } from './workspace-file-records.js';
 
 const fixtures: Array<{ root: string; db: ReturnType<typeof openCoreDb> }> = [];
+const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
 afterEach(() => {
   for (const { root, db } of fixtures.splice(0)) {
     if (db.sqlite.open) db.sqlite.close();
@@ -38,7 +45,7 @@ function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   applyMigrations(db);
   ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
-  const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
+  const demo = createDemoWorkspaceForUser(FIXTURE_LOCAL_USER_ID);
   store.importWorkspaceSnapshot({
     workspace: demo.workspace,
     threads: [demo.thread],
@@ -51,7 +58,7 @@ function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   });
   recordWorkspaceOwnerMembership({
     coreDb: db,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
     workspaceId: demo.workspace.id,
   });
   fixtures.push({ root, db });
@@ -78,7 +85,7 @@ function request(path: string, body: unknown) {
 
 /** Reads the specific native export usage owner without acquiring authority for the caller. */
 function exportUsage(root: string) {
-  const workspaceDb = openWorkspaceDb(root, 'ws_00000000-0000-7000-8000-000000000001');
+  const workspaceDb = openWorkspaceDb(root, DEMO_WORKSPACE_ID);
   try {
     applyScopedMigrations(workspaceDb);
     return workspaceDb.sqlite
@@ -90,6 +97,245 @@ function exportUsage(root: string) {
 }
 
 describe('Workspace JSON transfer cutover', () => {
+  it('exports complete canonical Item history after an unacknowledged append and later update', async () => {
+    const { root, store, app } = fixture();
+    const thread = store.listThreads(DEMO_WORKSPACE_ID)[0]!;
+    const turn = store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Retain history', {
+      kind: 'user',
+      id: FIXTURE_LOCAL_USER_ID,
+    });
+    const item = store.createItem({
+      id: testEntityId('it', 'it_export_history'),
+      type: 'assistant-message',
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      turnId: turn.id,
+      text: 'A',
+      status: 'completed',
+      createdAt: '2026-10-16T00:00:00.000Z',
+      completedAt: '2026-10-16T00:00:00.000Z',
+    });
+    const fsync = nodeFs.fsyncSync;
+    let faults = 0;
+    nodeFs.fsyncSync = () => {
+      faults++;
+      throw new Error('Append synchronization interrupted');
+    };
+    syncBuiltinESMExports();
+    try {
+      expect(() => store.updateItem(item.id, { text: 'B' })).toThrow(
+        'Append synchronization interrupted'
+      );
+    } finally {
+      nodeFs.fsyncSync = fsync;
+      syncBuiltinESMExports();
+    }
+    expect(faults).toBe(1);
+    store.updateItem(item.id, { text: 'C' });
+    const cachedTexts = () =>
+      store
+        .listWorkspaceItemRevisions(DEMO_WORKSPACE_ID)
+        .filter((row) => row.id === item.id)
+        .map((row) => (row.type === 'assistant-message' ? row.text : null));
+    expect(cachedTexts()).toEqual(['A', 'C']);
+    expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, turn.id)?.turn).toEqual(
+      store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)
+    );
+    const sourcePath = join(
+      root,
+      'workspaces',
+      DEMO_WORKSPACE_ID,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'items.jsonl'
+    );
+    const originalBytes = readFileSync(sourcePath, 'utf8');
+    expect(
+      originalBytes
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line).text)
+    ).toEqual(['A', 'B', 'C']);
+    const exported = await app.request(
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
+    );
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = await exported.json();
+    const artifact = readFileSync(
+      join(
+        root,
+        'server',
+        'exports',
+        'workspaces',
+        DEMO_WORKSPACE_ID,
+        exportId,
+        'records',
+        'item-revisions.jsonl'
+      ),
+      'utf8'
+    );
+    expect(
+      artifact
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .filter((row) => row.id === item.id)
+        .map((row) => row.text)
+    ).toEqual(['A', 'B', 'C']);
+    expect(readFileSync(sourcePath, 'utf8')).toBe(originalBytes);
+    expect(cachedTexts()).toEqual(['A', 'C']);
+  });
+
+  it('exports canonical recurring Turn data after an actual update persistence failure', async () => {
+    const { root, db, store, app } = fixture();
+    const thread = store.listThreads(DEMO_WORKSPACE_ID)[0]!;
+    const instant = '2026-10-16T00:00:00.000Z';
+    const schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      name: 'Inspect retained bytes',
+      prompt: 'Inspect retained bytes',
+      intervalSeconds: 5,
+    });
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const occurrence = schedules.collectScanCandidates(instant)[0]!;
+    schedules.commitAttempt(occurrence.id, 2, {
+      kind: 'ready',
+      payload: {
+        backendId: 'modeled',
+        requestedAgentId: 'worker',
+        profileRef: null,
+        modelId: 'exact-model',
+        workspaceRoots: [],
+        workspaceCwd: null,
+      },
+    });
+    const entry = requireSchedulerAdmissionEntry(
+      db,
+      schedules.getOccurrence(occurrence.id).queueEntryId!
+    );
+    const turn = store.createTurn(
+      entry.workspaceId,
+      entry.threadId,
+      entry.turnInput,
+      entry.triggerActor,
+      null,
+      {
+        turnId: entry.turnId,
+        status: 'pending',
+        agentId: entry.requestedAgentId,
+        executorKind: 'worker',
+        reasoningEffort: entry.reasoningEffort,
+      }
+    );
+    const published = readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, turn.id)!;
+    expect(published.turn.status).toBe('pending');
+    const turnRoot = join(
+      root,
+      'workspaces',
+      DEMO_WORKSPACE_ID,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id
+    );
+    const turnPath = join(turnRoot, 'turn.json');
+    const sourceBytes = new Map(
+      ['turn.json', 'items.jsonl'].map((name) => [name, readFileSync(join(turnRoot, name))])
+    );
+    const rename = nodeFs.renameSync;
+    let faults = 0;
+    // Refuse the real file replacement after updateTurn has advanced the derivative cache.
+    nodeFs.renameSync = ((from, to) => {
+      if (String(to) === turnPath) {
+        faults++;
+        throw new Error('Turn replacement interrupted');
+      }
+      rename(from, to);
+    }) as typeof nodeFs.renameSync;
+    syncBuiltinESMExports();
+    try {
+      expect(() =>
+        store.updateTurn(turn.id, {
+          status: 'running',
+          agentId: 'failed-cache-agent',
+          agentSessionId: testEntityId('as', 'as_failed_cache'),
+        })
+      ).toThrow('Turn replacement interrupted');
+    } finally {
+      nodeFs.renameSync = rename;
+      syncBuiltinESMExports();
+    }
+    expect(faults).toBe(1);
+    expect(store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)).toMatchObject({
+      status: 'running',
+      agentId: 'failed-cache-agent',
+      agentSessionId: testEntityId('as', 'as_failed_cache'),
+    });
+    expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
+    const exported = await app.request(
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
+    );
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = await exported.json();
+    const exportedTurns = readFileSync(
+      join(
+        root,
+        'server',
+        'exports',
+        'workspaces',
+        DEMO_WORKSPACE_ID,
+        exportId,
+        'records',
+        'turns.jsonl'
+      ),
+      'utf8'
+    );
+    expect(
+      exportedTurns
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+    ).toEqual([{ ...published.turn, captureCoverage: published.captureCoverage }]);
+    expect(exportedTurns).not.toContain('failed-cache');
+    // A discarded cache candidate cannot hide the same complete canonical Turn from later exports.
+    (store as unknown as { turns: Map<string, unknown> }).turns.delete(turn.id);
+    expect(store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toEqual([]);
+    const withoutCache = await app.request(
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
+    );
+    expect(withoutCache.status, await withoutCache.clone().text()).toBe(200);
+    const withoutCacheResult = await withoutCache.json();
+    expect(
+      readFileSync(
+        join(
+          root,
+          'server',
+          'exports',
+          'workspaces',
+          DEMO_WORKSPACE_ID,
+          withoutCacheResult.exportId,
+          'records',
+          'turns.jsonl'
+        ),
+        'utf8'
+      )
+    ).toBe(exportedTurns);
+    for (const [name, bytes] of sourceBytes) {
+      expect(readFileSync(join(turnRoot, name))).toEqual(bytes);
+    }
+    expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, turn.id)).toEqual(
+      published
+    );
+  });
+
   it('round-trips actual archive bytes and Knowledge through the Web session streaming bindings', async () => {
     const source = fixture();
     const target = fixture();
@@ -104,7 +350,7 @@ describe('Workspace JSON transfer cutover', () => {
           api: {
             getSession: async () => ({
               session: { id: 'archive_session' },
-              user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
+              user: { id: FIXTURE_LOCAL_USER_ID },
             }),
           },
           handler: async () => Response.json({ status: 'auth-ok' }),
@@ -112,7 +358,7 @@ describe('Workspace JSON transfer cutover', () => {
       });
     for (const f of [source, target])
       createOpenKitAccessTokenRecord(f.db, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
@@ -121,7 +367,7 @@ describe('Workspace JSON transfer cutover', () => {
     const targetWeb = sessionApp(target);
     const content = 'Web session archive: café and exact retained content.';
     const [createPath, createInit] = request('/api/app/operations/knowledge.create', {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId: DEMO_WORKSPACE_ID,
       title: 'Web archive proof',
       kind: 'project-context',
       content,
@@ -132,14 +378,12 @@ describe('Workspace JSON transfer cutover', () => {
     });
     expect(created.status, await created.clone().text()).toBe(200);
     const exported = await sourceWeb.request(
-      ...request('/api/app/operations/workspace.export', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(exported.status, await exported.clone().text()).toBe(200);
     const { exportId } = await exported.json();
     const downloaded = await sourceWeb.request(
-      `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exportId}/archive`
+      `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`
     );
     expect(downloaded.status, await downloaded.clone().text()).toBe(200);
     const bytes = await downloaded.arrayBuffer();
@@ -178,13 +422,11 @@ describe('Workspace JSON transfer cutover', () => {
   ] as const)('%s preserves canonical-user HTTP admission with a valid creator handle', async (operation) => {
     const { app, db, root, store } = fixture();
     const exported = await app.request(
-      ...request('/api/app/operations/workspace.export', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(exported.status).toBe(200);
     const { exportId } = await exported.json();
-    const input = { sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId };
+    const input = { sourceWorkspaceId: DEMO_WORKSPACE_ID, exportId };
     const sessionApp = createApp({
       dataRoot: root,
       coreDb: db,
@@ -194,20 +436,20 @@ describe('Workspace JSON transfer cutover', () => {
         api: {
           getSession: async () => ({
             session: { id: 'creator_session' },
-            user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
+            user: { id: FIXTURE_LOCAL_USER_ID },
           }),
         },
         handler: async () => Response.json({ status: 'auth-ok' }),
       },
     });
     const ordinary = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace',
-      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+      workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const admin = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -241,21 +483,15 @@ describe('Workspace JSON transfer cutover', () => {
     const now = Date.now();
     db.sqlite
       .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('usr_00000000-0000-724d-b11e-2bc6c5c8572c', 'Private owner', 'private@example.test', 0, ?, ?, 'human')"
+        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('${testEntityId('usr', 'user_private')}', 'Private owner', 'private@example.test', 0, ?, ?, 'human')`
       )
       .run(now, now);
-    store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Another user private history',
-      undefined,
-      undefined,
-      {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-724d-b11e-2bc6c5c8572c',
-      }
-    );
+    store.createThread(DEMO_WORKSPACE_ID, 'Another user private history', undefined, undefined, {
+      visibility: 'private',
+      privateOwnerUserId: testEntityId('usr', 'user_private'),
+    });
     const token = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -269,14 +505,14 @@ describe('Workspace JSON transfer cutover', () => {
         api: {
           getSession: async () => ({
             session: { id: 'creator_session' },
-            user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
+            user: { id: FIXTURE_LOCAL_USER_ID },
           }),
         },
         handler: async () => Response.json({ status: 'auth-ok' }),
       },
     });
     const [url, init] = request('/api/app/operations/workspace.export', {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId: DEMO_WORKSPACE_ID,
     });
     const exported = await app.request(url, {
       ...init,
@@ -284,7 +520,7 @@ describe('Workspace JSON transfer cutover', () => {
     });
     expect(exported.status, await exported.clone().text()).toBe(200);
     const { exportId } = await exported.json();
-    const archivePath = `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exportId}/archive`;
+    const archivePath = `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`;
     const eligible = await app.request(archivePath, {
       headers: { authorization: `Bearer ${token.secret}` },
     });
@@ -292,7 +528,7 @@ describe('Workspace JSON transfer cutover', () => {
     expect((await eligible.arrayBuffer()).byteLength).toBeGreaterThan(0);
     for (const operation of ['workspace.import-dry-run', 'workspace.import']) {
       const [operationUrl, operationInit] = request(`/api/app/operations/${operation}`, {
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        sourceWorkspaceId: DEMO_WORKSPACE_ID,
         exportId,
       });
       const response = await app.request(operationUrl, {
@@ -303,16 +539,13 @@ describe('Workspace JSON transfer cutover', () => {
     }
     revokeOpenKitAccessTokenRecord(db, token.record.tokenId);
     expect(
-      isCurrentDeploymentAdministrator(db, {
-        kind: 'session',
-        userId: 'usr_00000000-0000-7000-8000-000000000001',
-      })
+      isCurrentDeploymentAdministrator(db, { kind: 'session', userId: FIXTURE_LOCAL_USER_ID })
     ).toBe(false);
     expect(
       isWorkspaceOperationAuthorized(
         db,
-        { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-        'ws_00000000-0000-7000-8000-000000000001',
+        { kind: 'session', userId: FIXTURE_LOCAL_USER_ID },
+        DEMO_WORKSPACE_ID,
         {
           mutating: false,
           policyOperation: 'workspace.export',
@@ -336,7 +569,7 @@ describe('Workspace JSON transfer cutover', () => {
     for (const operation of ['workspace.import-dry-run', 'workspace.import']) {
       const response = await app.request(
         ...request(`/api/app/operations/${operation}`, {
-          sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          sourceWorkspaceId: DEMO_WORKSPACE_ID,
           exportId,
         })
       );
@@ -354,15 +587,12 @@ describe('Workspace JSON transfer cutover', () => {
     const usage = exportUsage(root);
     const before = store.listWorkspaces().map(({ id }) => id);
     for (const path of [
-      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/export',
+      `/api/app/workspaces/${DEMO_WORKSPACE_ID}/export`,
       '/api/app/workspace-imports/dry-run',
       '/api/app/workspace-imports',
     ]) {
       const response = await app.request(
-        ...request(path, {
-          sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          exportId: testEntityId('wsexp', 'absent'),
-        })
+        ...request(path, { sourceWorkspaceId: DEMO_WORKSPACE_ID, exportId: 'absent' })
       );
       expect(response.status, path).toBe(404);
     }
@@ -373,13 +603,11 @@ describe('Workspace JSON transfer cutover', () => {
   it('canonical export, dry-run and import reach their existing owners', async () => {
     const { app, store, db } = fixture();
     const exported = await app.request(
-      ...request('/api/app/operations/workspace.export', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(exported.status, await exported.clone().text()).toBe(200);
     const { exportId } = await exported.json();
-    const input = { sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId };
+    const input = { sourceWorkspaceId: DEMO_WORKSPACE_ID, exportId };
     const before = db.sqlite
       .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
       .all();
@@ -404,32 +632,24 @@ describe('Workspace JSON transfer cutover', () => {
       db.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
         .get(result.importedWorkspaceId)
-    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
+    ).toEqual({ owner_user_id: FIXTURE_LOCAL_USER_ID });
   });
 
   it('HTTP and MCP readiness refuse export and import without tree or registry writes', async () => {
     let readiness = computeBootReadinessSnapshot({ bootId: 'b14-readiness' });
     const { app, db, root } = fixture(() => readiness);
     const exportedResponse = await app.request(
-      ...request('/api/app/operations/workspace.export', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(exportedResponse.status).toBe(200);
     const { exportId } = await exportedResponse.json();
     const token = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const exportsRoot = join(
-      root,
-      'server',
-      'exports',
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001'
-    );
+    const exportsRoot = join(root, 'server', 'exports', 'workspaces', DEMO_WORKSPACE_ID);
     const trees = readdirSync(exportsRoot);
     const registry = db.sqlite
       .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
@@ -446,11 +666,8 @@ describe('Workspace JSON transfer cutover', () => {
       },
     });
     for (const [operation, input] of [
-      ['workspace.export', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }],
-      [
-        'workspace.import',
-        { sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId },
-      ],
+      ['workspace.export', { workspaceId: DEMO_WORKSPACE_ID }],
+      ['workspace.import', { sourceWorkspaceId: DEMO_WORKSPACE_ID, exportId }],
     ] as const) {
       const response = await app.request(...request(`/api/app/operations/${operation}`, input));
       expect(response.status).toBe(503);
@@ -478,7 +695,7 @@ describe('Workspace JSON transfer cutover', () => {
     }
     const preview = await app.request(
       ...request('/api/app/operations/workspace.import-dry-run', {
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        sourceWorkspaceId: DEMO_WORKSPACE_ID,
         exportId,
       })
     );
@@ -493,13 +710,13 @@ describe('Workspace JSON transfer cutover', () => {
     const { db, root, store } = fixture();
     const app = createApp({ dataRoot: root, coreDb: db, store, mode: 'server' });
     const readonly = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+      workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const revoked = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -515,7 +732,7 @@ describe('Workspace JSON transfer cutover', () => {
       [revoked.secret, 401],
     ] as const) {
       const [url, init] = request('/api/app/operations/workspace.export', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        workspaceId: DEMO_WORKSPACE_ID,
       });
       const response = await app.request(url, {
         ...init,
@@ -536,7 +753,7 @@ describe('Workspace JSON transfer cutover', () => {
     const trees = readdirSync(join(root, 'server', 'exports'));
     const response = await app.request(
       ...request('/api/app/operations/workspace.export', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        workspaceId: DEMO_WORKSPACE_ID,
         administratorEligible: true,
       })
     );
@@ -550,18 +767,18 @@ describe('Workspace JSON transfer cutover', () => {
     const now = Date.now();
     db.sqlite
       .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('usr_00000000-0000-7431-921d-ea7bcc58a6f2', 'Source', 'source@example.test', 0, ?, ?, 'human')"
+        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('${testEntityId('usr', 'user_source')}', 'Source', 'source@example.test', 0, ?, ?, 'human')`
       )
       .run(now, now);
     const workspace = store.createWorkspace('Source-owned private data');
     recordWorkspaceOwnerMembership({
       coreDb: db,
-      ownerUserId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
+      ownerUserId: testEntityId('usr', 'user_source'),
       workspaceId: workspace.id,
     });
     store.createThread(workspace.id, 'Private project', undefined, undefined, {
       visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      privateOwnerUserId: FIXTURE_LOCAL_USER_ID,
     });
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: workspace.id })
@@ -577,7 +794,7 @@ describe('Workspace JSON transfer cutover', () => {
         api: {
           getSession: async () => ({
             session: { id: 'source_session' },
-            user: { id: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2' },
+            user: { id: testEntityId('usr', 'user_source') },
           }),
         },
         handler: async () => Response.json({ status: 'auth-ok' }),
@@ -599,27 +816,26 @@ describe('Workspace JSON transfer cutover', () => {
     ['missing creator proof', 'DELETE FROM usage_records WHERE capability_call_id = ?'],
     [
       'different recorded actor',
-      "UPDATE usage_records SET responsible_user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c' WHERE capability_call_id = ?",
+      `UPDATE usage_records SET responsible_user_id = '${testEntityId('usr', 'user_other')}' WHERE capability_call_id = ?`,
     ],
     [
       'contradictory recorded actor',
-      "UPDATE usage_records SET responsible_user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c' WHERE capability_call_id = ? AND unit = 'bytes'",
+      `UPDATE usage_records SET responsible_user_id = '${testEntityId('usr', 'user_other')}' WHERE capability_call_id = ? AND unit = 'bytes'`,
     ],
   ])('fails closed on %s without publishing an imported Workspace', async (_case, mutation) => {
     const { app, db, root } = fixture();
     const exported = await app.request(
-      ...request('/api/app/operations/workspace.export', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
+      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(exported.status).toBe(200);
     const { exportId } = await exported.json();
-    const workspaceDb = openWorkspaceDb(root, 'ws_00000000-0000-7000-8000-000000000001');
+    const workspaceDb = openWorkspaceDb(root, DEMO_WORKSPACE_ID);
     try {
-      const changed = workspaceDb.sqlite
-        .prepare(mutation)
-        .run(deriveEntityId('cap', ['storage_export', exportId]));
-      expect(changed.changes).toBeGreaterThan(0);
+      expect(
+        workspaceDb.sqlite
+          .prepare(mutation)
+          .run(deriveEntityId('cap', ['storage_export', exportId])).changes
+      ).toBeGreaterThan(0);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -627,14 +843,14 @@ describe('Workspace JSON transfer cutover', () => {
       .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
       .all();
     const archive = await app.request(
-      `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exportId}/archive`
+      `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`
     );
     expect(archive.status).toBe(403);
     expect(await archive.json()).toMatchObject({ code: 'workspace_export_archive_forbidden' });
     for (const operation of ['workspace.import-dry-run', 'workspace.import']) {
       const response = await app.request(
         ...request(`/api/app/operations/${operation}`, {
-          sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          sourceWorkspaceId: DEMO_WORKSPACE_ID,
           exportId,
         })
       );

@@ -2599,7 +2599,7 @@ export class FsStore {
    * @param configVersion Runtime config version captured for the turn.
    * @param options Optional turn creation controls, including the admission-time capture pair.
    * @returns Created turn.
-   * @throws Error when the requested turn id already exists.
+   * @throws Error when the requested turn id already exists or file publication fails; retained files remain intact.
    */
   public createTurn(
     workspaceId: string,
@@ -2650,7 +2650,17 @@ export class FsStore {
       timers: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
-    this.persist(workspaceId);
+    try {
+      this.persist(workspaceId);
+    } catch (error) {
+      // Publication can finish before acknowledgement fails. Retain files, discard only this candidate.
+      this.turns.delete(turn.id);
+      this.streams.delete(turn.id);
+      this.turnCaptureCoverage.delete(turn.id);
+      this.turnExecutors.delete(turn.id);
+      this.threads.set(threadId, thread);
+      throw error;
+    }
     this.turnAdmissionHooks?.onAdmitted?.(turn);
     return this.getTurnById(turn.id);
   }

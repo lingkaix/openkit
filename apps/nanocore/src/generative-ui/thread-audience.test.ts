@@ -8,6 +8,7 @@ import {
   GENERATIVE_UI_NATIVE_CATALOG_ID,
   GENERATIVE_UI_PROTOCOL_VERSION,
 } from '@openkit/app-api-schemas';
+import { PresentationIdSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
@@ -286,9 +287,7 @@ describe('Generative UI Thread audience', () => {
       );
       expect(ownPublished.status, await ownPublished.clone().text()).toBe(201);
       const ownPresentation = (await ownPublished.json()) as { id: string; itemId: string };
-      expect(ownPresentation.id).toMatch(
-        /^pres_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-      );
+      expect(PresentationIdSchema.safeParse(ownPresentation.id).success).toBe(true);
 
       const otherPublished = await app.request(
         ...operationRequest(

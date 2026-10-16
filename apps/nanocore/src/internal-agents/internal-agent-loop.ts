@@ -41,6 +41,8 @@ export type AgentMessage =
 /** Server-side execution context for one admitted Tool call. */
 export interface ToolExecutionContext {
   readonly callId: string;
+  /** One-based accepted environment touch; model correlation and arguments cannot select it. */
+  readonly toolOccurrence: number;
   readonly signal: AbortSignal;
 }
 
@@ -283,7 +285,11 @@ export async function runInternalAgentLoop(
         toolCalls += 1;
         try {
           const result = await raceWithSignal(
-            tool.execute(call.arguments, { callId: call.callId, signal }),
+            tool.execute(call.arguments, {
+              callId: call.callId,
+              toolOccurrence: toolCalls,
+              signal,
+            }),
             signal
           );
           const cancelledAfterTool = exitForCancellation();

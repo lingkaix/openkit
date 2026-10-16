@@ -492,6 +492,21 @@ function assertActions(
   components: Map<string, AdmittedComponent>,
   source: PublishGenerativePresentationRequest['source']
 ): void {
+  if (source.kind === 'answer' && actions.length !== 0) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Generated answer sources accept no actions.'
+    );
+  }
+  if (
+    source.kind === 'answer' &&
+    (source.text.length === 0 || Buffer.byteLength(source.text, 'utf8') > 2 * 1024 * 1024)
+  ) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Generated answer text must be non-empty and at most 2 MiB.'
+    );
+  }
   const names = new Set<string>();
   const templateButtons = templateComponentIds(components);
   for (const action of actions) {
