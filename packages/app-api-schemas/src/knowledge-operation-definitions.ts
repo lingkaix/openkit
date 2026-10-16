@@ -391,6 +391,8 @@ export const KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS = {
     description: 'Delete one scoped Workspace Knowledge Entry.',
     inputSchema: DeleteKnowledgeEntryRequestSchema.extend({
       ...workspaceSelector,
+      expectedContentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      confirmRemoval: z.literal(true),
       knowledgeEntryId: z.string().min(1),
     }).strict(),
     outputSchema: z.null(),

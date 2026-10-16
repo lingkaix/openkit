@@ -27,6 +27,7 @@ import { type ActorRef, ListKnowledgeEntriesResponseSchema } from '@openkit/prot
 import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from './audit-events.js';
+import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   normalizeCapabilityRequestId,
@@ -38,7 +39,11 @@ import {
   type NotebookEntryEdit,
   publishWorkspaceNotebookEntry,
 } from './knowledge/notebook-entry-publication.js';
-import { publishWorkspaceNotebook } from './knowledge/notebook-publication.js';
+import {
+  type NotebookPublicationDependencies,
+  type NotebookUpdate,
+  publishWorkspaceNotebook,
+} from './knowledge/notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import {
@@ -97,6 +102,8 @@ function commandFailure(error: unknown, code: string, status = 404): OperationEr
 /** Keeps native notebook partial outcomes visible without exposing Git or filesystem diagnostics. */
 function notebookCommandFailure(error: unknown): never {
   if (error instanceof OperationError) throw error;
+  if (error instanceof KnowledgeProposalAuthorityError)
+    knowledgeProposalCommandFailure(error, 'knowledge_proposal_failed');
   if (error instanceof IdempotencyKeyConflictError || error instanceof KnowledgePageValidationError)
     throw commandFailure(error, 'invalid_request', 400);
   if (error instanceof NotebookError)
@@ -147,6 +154,8 @@ function readAuthorizedKnowledgeOwner<T extends { readonly workspaceId: string }
  * @throws The retained typed owner refusal or its bounded fallback.
  */
 function knowledgeProposalDraftFailure(error: unknown): never {
+  if (error instanceof OperationError) throw error;
+  if (error instanceof NotebookError) notebookCommandFailure(error);
   if (
     error instanceof IdempotencyKeyConflictError ||
     error instanceof KnowledgePageValidationError
@@ -384,6 +393,65 @@ export function createKnowledgeOperationImplementations(
         },
         input
       );
+    } catch (error) {
+      notebookCommandFailure(error);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  };
+
+  /** Binds governed changes to the same current authority and single Git publication sequence. */
+  const withGovernedNotebook = async <T>(
+    request: NotebookUpdate,
+    context: AdmittedOperationContext,
+    run: (dependencies: NotebookPublicationDependencies) => T | Promise<T>
+  ): Promise<T> => {
+    const dataRoot = store.getDataRoot();
+    const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;
+    const actor = context.actorRef;
+    if (
+      !coreDb ||
+      !dataRoot ||
+      !runtimeConfigManager ||
+      !workspaceMutationAdmission ||
+      actor.kind !== 'user'
+    )
+      throw new OperationError(
+        'workspace_access_denied',
+        'Notebook publication access denied.',
+        403
+      );
+    const workspaceDb = repositoryWorkspaceDb(request.workspaceId);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        request.workspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    try {
+      return await run({
+        store,
+        workspaceDb,
+        notebook,
+        producer: actor,
+        actor,
+        inflightCommands,
+        revalidate: () =>
+          readWorkspaceNotebookAdmission({
+            store,
+            coreDb,
+            workspaceDb,
+            notebook,
+            request,
+            requestActor: publicOperationActor(context),
+            actor,
+            runtimeConfigManager,
+            workspaceMutationAdmission,
+          }),
+      });
     } catch (error) {
       notebookCommandFailure(error);
     } finally {
@@ -1025,7 +1093,7 @@ export function createKnowledgeOperationImplementations(
             input: { ...commandInput, producer },
             responseKind: 'knowledge_proposal',
             ...(workspaceDb ? { workspaceDb } : {}),
-            execute: () => {
+            execute: async () => {
               const executionVerification = verifyKnowledgeProposalWorkHistory({
                 coreDb,
                 sourceReferences: commandInput.sourceReferences,
@@ -1033,6 +1101,24 @@ export function createKnowledgeOperationImplementations(
                 workspaceDb,
                 workspaceId,
               });
+              await withGovernedNotebook(
+                {
+                  workspaceId,
+                  requestId: commandInput.requestId,
+                  baseRevision: commandInput.baseRevision,
+                  changes: [
+                    {
+                      path: `${commandInput.knowledgePageId}.md`,
+                      content: commandInput.canonicalPageBytes,
+                    },
+                  ],
+                  summary: commandInput.rationale,
+                },
+                context,
+                (owner) => {
+                  owner.revalidate();
+                }
+              );
               return store.createKnowledgeProposal({
                 ...commandInput,
                 workspaceId,
@@ -1052,7 +1138,8 @@ export function createKnowledgeOperationImplementations(
               if (
                 replayed.id !== proposalId ||
                 replayed.workspaceId !== workspaceId ||
-                replayed.operation !== 'create' ||
+                replayed.operation !== 'notebook-change' ||
+                replayed.baseRevision !== commandInput.baseRevision ||
                 replayed.knowledgePageId !== commandInput.knowledgePageId ||
                 replayed.canonicalPageBytes !== commandInput.canonicalPageBytes ||
                 replayed.contentDigest !== commandInput.contentDigest ||
@@ -1068,6 +1155,21 @@ export function createKnowledgeOperationImplementations(
             },
             responseId: (result) => result.id,
           });
+          await withGovernedNotebook(
+            {
+              workspaceId,
+              requestId: commandInput.requestId,
+              baseRevision: proposal.baseRevision,
+              changes: [
+                { path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes },
+              ],
+              summary: proposal.rationale,
+            },
+            context,
+            (owner) => {
+              owner.revalidate();
+            }
+          );
           const completedWorkReferences = proposal.sourceReferences.filter((reference) =>
             /^(?:turn|item|context-package):/.test(reference)
           );
@@ -1170,274 +1272,184 @@ export function createKnowledgeOperationImplementations(
       }
     },
     'knowledge.proposal.decide': async (input, context) => {
-      const actor = context.actorRef;
       const { workspaceId, proposalId, ...commandInput } = input;
-
-      try {
-        const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
-        if (!coreDb) {
-          throw new OperationError(
-            'knowledge_proposal_storage_unavailable',
-            'Knowledge Proposal command storage is unavailable.',
-            503
-          );
-        }
-
-        const scope = { workspaceId, proposalId };
+      const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
+      const request: NotebookUpdate = {
+        workspaceId,
+        requestId: commandInput.requestId,
+        baseRevision: commandInput.baseRevision,
+        changes: [{ path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes }],
+        summary: proposal.rationale,
+      };
+      return withGovernedNotebook(request, context, async (owner) => {
+        const current = () => {
+          if (
+            !coreDb ||
+            !isWorkspaceOperationAuthorized(coreDb, publicOperationActor(context), workspaceId, {
+              mutating: true,
+              policyOperation: 'review.apply',
+            })
+          )
+            throw new OperationError(
+              'workspace_access_denied',
+              'Knowledge Review access denied.',
+              403
+            );
+          const saved = store.projectKnowledgeProposalDraft(workspaceId, proposalId);
+          if (
+            saved.baseRevision !== commandInput.baseRevision ||
+            saved.candidateRevision !== commandInput.candidateRevision ||
+            store.knowledgeProposalDigest(workspaceId, proposalId) !== commandInput.proposalDigest
+          )
+            throw new NotebookError('conflict');
+          return owner.revalidate();
+        };
+        current();
         const reviewId = knowledgeAuthorityId('kr_', {
           workspaceId,
           proposalId,
           requestId: commandInput.requestId,
         });
-        const auditIdentity = {
-          action: 'knowledge.proposal.decide' as const,
-          actor,
-          proposalId,
-          requestId: commandInput.requestId,
-          workspaceId,
-        };
-        const workspaceDb = repositoryWorkspaceDb(workspaceId);
-        try {
-          const receipt = store.getCommandRequest(
-            'knowledge.proposal.decide',
-            commandInput.requestId,
-            scope,
-            workspaceDb
-          );
-          const existingReview = store
-            .listKnowledgeProposalReviewDecisions(workspaceId)
-            .find((candidate) => candidate.reviewId === reviewId);
-          const auditCount = knowledgeProposalAuditCount(workspaceDb, auditIdentity, false);
-          if (!receipt) {
-            if (auditCount !== 0) {
-              throw knowledgeProposalAuthorityFailure('recovery_required');
-            }
-            if (existingReview) {
-              if (
-                existingReview.requestId !== commandInput.requestId ||
-                existingReview.decision !== commandInput.decision ||
-                JSON.stringify(existingReview.actor) !== JSON.stringify(actor)
-              ) {
-                throw knowledgeProposalAuthorityFailure('conflict');
-              }
-              if (
-                existingReview.proposalId !== proposalId ||
-                existingReview.workspaceId !== workspaceId ||
-                existingReview.knowledgePageId !== proposal.knowledgePageId ||
-                existingReview.contentDigest !== proposal.contentDigest
-              ) {
-                throw knowledgeProposalAuthorityFailure('recovery_required');
-              }
-
-              let complete = false;
-              try {
-                store.projectKnowledgeProposalDecision(workspaceId, reviewId);
-                complete = true;
-              } catch {
-                // Only the accepted Review's exact missing-page path may continue below.
-              }
-              if (complete || existingReview.decision !== 'accepted') {
-                throw knowledgeProposalAuthorityFailure('recovery_required');
-              }
-              try {
-                store.projectKnowledgeProposalReversal({
-                  workspaceId,
-                  proposalId,
-                  reviewId,
-                  knowledgePageId: proposal.knowledgePageId,
-                  expectedContentDigest: proposal.contentDigest,
-                });
-              } catch {
-                throw knowledgeProposalAuthorityFailure('recovery_required');
-              }
-            }
-          }
-
-          const response = await runIdempotentCommand({
-            store,
-            inflightCommands,
-            command: 'knowledge.proposal.decide',
-            requestId: commandInput.requestId,
-            scope,
-            input: {
-              actor,
-              proposalId,
-              decision: commandInput.decision,
-              knowledgePageId: proposal.knowledgePageId,
-              contentDigest: proposal.contentDigest,
+        const recordDecision = () =>
+          store.recordKnowledgeProposalReviewDecision({
+            ...commandInput,
+            workspaceId,
+            proposalId,
+            actor: context.actorRef,
+            decidedAt: new Date().toISOString(),
+            verifiedExternalReferences: verifyKnowledgeProposalWorkHistory({
+              coreDb,
+              store,
+              workspaceDb: owner.workspaceDb,
+              workspaceId,
               sourceReferences: proposal.sourceReferences,
-            },
-            responseKind: 'knowledge_proposal_review',
-            workspaceDb,
-            execute: () => {
-              const verifiedExternalReferences =
-                commandInput.decision === 'accepted'
-                  ? verifyKnowledgeProposalWorkHistory({
-                      coreDb,
-                      sourceReferences: proposal.sourceReferences,
-                      store,
-                      workspaceDb,
-                      workspaceId,
-                    }).verifiedExternalReferences
-                  : [];
-              const executed = store.recordKnowledgeProposalReviewDecision({
-                ...commandInput,
-                actor,
-                decidedAt: new Date().toISOString(),
-                proposalId,
-                verifiedExternalReferences,
-                workspaceId,
-              });
-              recordWorkspaceAuditEvent({
-                workspaceDb,
-                workspaceId,
-                requestId: commandInput.requestId,
-                actor,
-                category: 'knowledge',
-                action: auditIdentity.action,
-                resource: `knowledge-proposal:${proposalId}`,
-                outcome: 'succeeded',
-                severity: 'info',
-                summary: 'Knowledge proposal decision recorded.',
-              });
-              return SubmitKnowledgeProposalDecisionResponseSchema.parse(executed);
-            },
-            replay: (record) => {
-              if (
-                record.response.kind !== 'knowledge_proposal_review' ||
-                record.response.id !== reviewId
-              ) {
-                throw knowledgeProposalAuthorityFailure('recovery_required');
-              }
-              const replayed = store.projectKnowledgeProposalDecision(workspaceId, reviewId);
-              if (
-                replayed.review.proposalId !== proposalId ||
-                replayed.review.workspaceId !== workspaceId ||
-                replayed.review.reviewId !== reviewId ||
-                replayed.review.requestId !== commandInput.requestId ||
-                replayed.review.decision !== commandInput.decision ||
-                replayed.review.knowledgePageId !== proposal.knowledgePageId ||
-                replayed.review.contentDigest !== proposal.contentDigest ||
-                JSON.stringify(replayed.review.actor) !== JSON.stringify(actor) ||
-                knowledgeProposalAuditCount(workspaceDb, auditIdentity) !== 1
-              ) {
-                throw knowledgeProposalAuthorityFailure('recovery_required');
-              }
-              return SubmitKnowledgeProposalDecisionResponseSchema.parse(replayed);
-            },
-            responseId: (result) => result.review.reviewId,
+            }).verifiedExternalReferences,
           });
-
-          return response;
-        } finally {
-          workspaceDb.sqlite.close();
+        if (commandInput.decision === 'accepted') {
+          await publishWorkspaceNotebook(
+            {
+              ...owner,
+              command: { name: 'knowledge.proposal.decide', input },
+              producer: proposal.producer,
+              revalidate: current,
+              reviewedCandidate: {
+                proposalId,
+                candidateRevision: proposal.candidateRevision,
+                recordDecision,
+              },
+            },
+            request
+          );
+          return store.projectKnowledgeProposalDecision(workspaceId, reviewId);
         }
-      } catch (error) {
-        if (error instanceof OperationError) throw error;
-        return knowledgeProposalCommandFailure(error, 'knowledge_proposal_review_failed');
-      }
+        return runIdempotentCommand({
+          store,
+          workspaceDb: owner.workspaceDb,
+          inflightCommands,
+          command: 'knowledge.proposal.decide',
+          requestId: commandInput.requestId,
+          scope: { workspaceId, actorId: context.actorRef.id },
+          input,
+          responseKind: 'knowledge_proposal_review',
+          responseId: (result) => result.review.reviewId,
+          execute: () => {
+            current();
+            const result = recordDecision();
+            recordWorkspaceAuditEvent({
+              workspaceDb: owner.workspaceDb,
+              workspaceId,
+              requestId: commandInput.requestId,
+              actor: context.actorRef,
+              category: 'knowledge',
+              action: 'knowledge.proposal.decide',
+              outcome: 'succeeded',
+              resource: `knowledge-proposal:${proposalId}`,
+              summary: 'Knowledge proposal decision recorded.',
+            });
+            return result;
+          },
+          replay: (receipt) => {
+            current();
+            if (
+              receipt.response.id !== reviewId ||
+              knowledgeProposalAuditCount(owner.workspaceDb, {
+                workspaceId,
+                proposalId,
+                requestId: commandInput.requestId,
+                actor: context.actorRef,
+                action: 'knowledge.proposal.decide',
+              }) !== 1
+            )
+              throw new NotebookError('recovery_required');
+            return store.projectKnowledgeProposalDecision(workspaceId, reviewId);
+          },
+        });
+      });
     },
     'knowledge.proposal.reverse': async (input, context) => {
-      const actor = context.actorRef;
-      const { workspaceId, proposalId, ...commandInput } = input;
-
       try {
+        const { workspaceId, proposalId } = input;
         const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
-        if (!coreDb) {
+        store.projectKnowledgeProposalDraft(workspaceId, proposalId);
+        const decision = store.projectKnowledgeProposalDecision(workspaceId, input.reviewId);
+        if (
+          decision.review.proposalId !== proposalId ||
+          decision.review.decision !== 'accepted' ||
+          input.knowledgePageId !== proposal.knowledgePageId ||
+          input.expectedContentDigest !== proposal.contentDigest
+        )
           throw new OperationError(
-            'knowledge_proposal_storage_unavailable',
-            'Knowledge Proposal command storage is unavailable.',
-            503
+            'conflict',
+            'Knowledge reversal conflicts with its Review.',
+            409
           );
-        }
-
-        const scope = { workspaceId, proposalId };
-        const auditIdentity = {
-          action: 'knowledge.proposal.reverse' as const,
-          actor,
-          proposalId,
-          requestId: commandInput.requestId,
+        // Restore only the selected path from the original base; keep every unrelated current path.
+        const dataRoot = store.getDataRoot();
+        if (!dataRoot)
+          throw new OperationError('recovery_required', 'Notebook storage is unavailable.', 503);
+        const notebook = new KnowledgeNotebook({
+          repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
+        });
+        const path = `${proposal.knowledgePageId}.md`;
+        const original = notebook.readRevision(proposal.baseRevision).files[path] ?? null;
+        const baseBytes = notebook.readRevision(input.baseRevision).files[path];
+        if (baseBytes !== proposal.canonicalPageBytes)
+          throw new OperationError('conflict', 'Knowledge page changed after Review.', 409);
+        const request: NotebookUpdate = {
           workspaceId,
+          requestId: input.requestId,
+          baseRevision: input.baseRevision,
+          changes: [{ path, content: original }],
+          summary: 'Reverse reviewed Knowledge change',
         };
-        const workspaceDb = repositoryWorkspaceDb(workspaceId);
-        try {
-          const receipt = store.getCommandRequest(
-            'knowledge.proposal.reverse',
-            commandInput.requestId,
-            scope,
-            workspaceDb
+        return withGovernedNotebook(request, context, async (owner) => {
+          const publication = await publishWorkspaceNotebook(
+            {
+              ...owner,
+              command: { name: 'knowledge.proposal.reverse', input },
+              ...(original === null && input.confirmRemoval
+                ? { confirmedRemovals: { [path]: baseBytes } }
+                : {}),
+            },
+            request
           );
-          if (!receipt && knowledgeProposalAuditCount(workspaceDb, auditIdentity, false) !== 0) {
-            throw knowledgeProposalAuthorityFailure('recovery_required');
-          }
-
-          const response = await runIdempotentCommand({
-            store,
-            inflightCommands,
-            command: 'knowledge.proposal.reverse',
-            requestId: commandInput.requestId,
-            scope,
-            input: { ...commandInput, actor, proposalId },
-            responseKind: 'knowledge_proposal',
-            workspaceDb,
-            execute: () => {
-              const executed = store.reverseKnowledgeProposalApplication({
-                workspaceId,
-                proposalId,
-                reviewId: commandInput.reviewId,
-                knowledgePageId: commandInput.knowledgePageId,
-                expectedContentDigest: commandInput.expectedContentDigest,
-              });
-              recordWorkspaceAuditEvent({
-                workspaceDb,
-                workspaceId,
-                requestId: commandInput.requestId,
-                actor,
-                category: 'knowledge',
-                action: auditIdentity.action,
-                resource: `knowledge-proposal:${proposalId}`,
-                outcome: 'succeeded',
-                severity: 'info',
-                summary: 'Knowledge proposal application reversed.',
-              });
-              return ReverseKnowledgeProposalResponseSchema.parse(executed);
+          const content = owner.notebook.readRevision(publication.notebookRevision).files[path];
+          return ReverseKnowledgeProposalResponseSchema.parse({
+            proposalId,
+            reviewId: input.reviewId,
+            application: {
+              knowledgePageId: proposal.knowledgePageId,
+              contentDigest:
+                content === undefined
+                  ? proposal.contentDigest
+                  : `sha256:${createHash('sha256').update(content).digest('hex')}`,
+              present: content !== undefined,
+              notebookRevision: publication.notebookRevision,
             },
-            replay: (record) => {
-              if (
-                record.response.kind !== 'knowledge_proposal' ||
-                record.response.id !== proposalId
-              ) {
-                throw knowledgeProposalAuthorityFailure('recovery_required');
-              }
-              const replayed = store.projectKnowledgeProposalReversal({
-                workspaceId,
-                proposalId,
-                reviewId: commandInput.reviewId,
-                knowledgePageId: commandInput.knowledgePageId,
-                expectedContentDigest: commandInput.expectedContentDigest,
-              });
-              if (
-                replayed.proposalId !== proposalId ||
-                replayed.reviewId !== commandInput.reviewId ||
-                replayed.application.knowledgePageId !== proposal.knowledgePageId ||
-                replayed.application.contentDigest !== proposal.contentDigest ||
-                replayed.application.present !== false ||
-                knowledgeProposalAuditCount(workspaceDb, auditIdentity) !== 1
-              ) {
-                throw knowledgeProposalAuthorityFailure('recovery_required');
-              }
-              return ReverseKnowledgeProposalResponseSchema.parse(replayed);
-            },
-            responseId: (result) => result.proposalId,
           });
-
-          return response;
-        } finally {
-          workspaceDb.sqlite.close();
-        }
+        });
       } catch (error) {
-        if (error instanceof OperationError) throw error;
-        return knowledgeProposalCommandFailure(error, 'knowledge_proposal_reversal_failed');
+        notebookCommandFailure(error);
       }
     },
     'knowledge.list': async (input, context) => {
@@ -1524,25 +1536,41 @@ export function createKnowledgeOperationImplementations(
       const { workspaceId, knowledgeEntryId, ...commandInput } = input;
 
       try {
-        await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'knowledge.delete',
-          requestId: commandInput.requestId,
-          scope: { workspaceId, knowledgeEntryId },
-          input: { ...commandInput, workspaceId, knowledgeEntryId },
-          responseKind: 'knowledge',
-          execute: () => {
-            // A retained command receipt must replay after deletion; a new command still proves the child owner before effects.
-            readAuthorizedKnowledgeOwner(workspaceId, () => {
-              store.getKnowledgeEntry(workspaceId, knowledgeEntryId);
-              return { workspaceId };
-            });
-            store.deleteKnowledgeEntry(workspaceId, knowledgeEntryId);
-          },
-          replay: () => undefined,
-          responseId: () => knowledgeEntryId,
+        const dataRoot = store.getDataRoot();
+        if (!dataRoot)
+          throw new OperationError('recovery_required', 'Notebook storage is unavailable.', 503);
+        const notebook = new KnowledgeNotebook({
+          repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
         });
+        const path = `${knowledgeEntryId}.md`;
+        const content = notebook.readRevision(commandInput.baseRevision).files[path];
+        if (
+          content === undefined ||
+          `sha256:${createHash('sha256').update(content).digest('hex')}` !==
+            commandInput.expectedContentDigest
+        )
+          throw new OperationError(
+            'conflict',
+            'Knowledge removal conflicts with its fixed base.',
+            409
+          );
+        const request: NotebookUpdate = {
+          workspaceId,
+          requestId: commandInput.requestId,
+          baseRevision: commandInput.baseRevision,
+          changes: [{ path, content: null }],
+          summary: 'Explicit Knowledge removal; Git history retained',
+        };
+        await withGovernedNotebook(request, context, (owner) =>
+          publishWorkspaceNotebook(
+            {
+              ...owner,
+              command: { name: 'knowledge.delete', input },
+              confirmedRemovals: { [path]: content },
+            },
+            request
+          )
+        );
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.entry.delete',
@@ -1557,6 +1585,7 @@ export function createKnowledgeOperationImplementations(
 
         return null;
       } catch (error) {
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_delete_failed');
       }
     },

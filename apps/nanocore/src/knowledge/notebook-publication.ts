@@ -23,7 +23,10 @@ const OPERATION = 'knowledge.notebook.update';
 export type NotebookPublicationOperation =
   | typeof OPERATION
   | 'knowledge.create'
-  | 'knowledge.update';
+  | 'knowledge.update'
+  | 'knowledge.proposal.decide'
+  | 'knowledge.proposal.reverse'
+  | 'knowledge.delete';
 
 /** Exact human edit submitted through native admission; paths are bundle-relative, never host paths. */
 export interface NotebookUpdate {
@@ -63,7 +66,17 @@ export interface NotebookPublicationDependencies {
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly notebook: KnowledgeNotebook;
-  readonly producer: Extract<ActorRef, { kind: 'user' }>;
+  readonly producer: ActorRef;
+  /** Actual current human command actor, separate from the immutable candidate producer. */
+  readonly actor?: Extract<ActorRef, { kind: 'user' }>;
+  /** Exact existing Proposal candidate; the callback appends its human Review before publication. */
+  readonly reviewedCandidate?: {
+    readonly proposalId: string;
+    readonly candidateRevision: string;
+    readonly recordDecision: () => void;
+  };
+  /** Human-confirmed removed paths and their exact bytes at the fixed base. */
+  readonly confirmedRemovals?: Readonly<Record<string, string>>;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly revalidate: () => NotebookPublicationAdmission;
 }
@@ -85,7 +98,10 @@ function humanPageBytes(path: string, content: string, workspaceId: string): str
 
 /** Reads only this command's existing Audit evidence; page content is never stored in Audit. */
 export function readWorkspaceNotebookAdmissions(
-  dependencies: Pick<NotebookPublicationDependencies, 'workspaceDb' | 'producer' | 'command'>,
+  dependencies: Pick<
+    NotebookPublicationDependencies,
+    'workspaceDb' | 'producer' | 'command' | 'reviewedCandidate'
+  >,
   request: Pick<NotebookUpdate, 'workspaceId' | 'requestId'>,
   action: string
 ): KnowledgeNotebookAdmission[] {
@@ -114,15 +130,21 @@ export function readWorkspaceNotebookAdmissions(
     .filter(
       (admission) =>
         isDeepStrictEqual(admission.producer, dependencies.producer) &&
-        admission.authority.kind === 'direct' &&
-        admission.authority.instructionReference ===
-          `${dependencies.command?.name ?? OPERATION}:${request.requestId}`
+        (dependencies.reviewedCandidate
+          ? admission.authority.kind === 'proposal' &&
+            admission.authority.proposalId === dependencies.reviewedCandidate.proposalId
+          : admission.authority.kind === 'direct' &&
+            admission.authority.instructionReference ===
+              `${dependencies.command?.name ?? OPERATION}:${request.requestId}`)
     );
 }
 
 /** Verifies an existing admission against its exact immutable candidate before replay or explicit retry. */
 export function readWorkspaceNotebookAdmissionRevision(
-  dependencies: Pick<NotebookPublicationDependencies, 'notebook' | 'producer' | 'command'>,
+  dependencies: Pick<
+    NotebookPublicationDependencies,
+    'notebook' | 'producer' | 'command' | 'reviewedCandidate'
+  >,
   request: NotebookUpdate,
   evidence: KnowledgeNotebookAdmission
 ) {
@@ -134,17 +156,22 @@ export function readWorkspaceNotebookAdmissionRevision(
     evidence.requestId !== request.requestId ||
     evidence.inputDigest !== inputDigest ||
     candidate.parentRevision !== request.baseRevision ||
-    candidate.metadata.changeRequest.requestId !== request.requestId ||
-    candidate.metadata.changeRequest.inputDigest !== inputDigest ||
+    (!dependencies.reviewedCandidate &&
+      (candidate.metadata.changeRequest.requestId !== request.requestId ||
+        candidate.metadata.changeRequest.inputDigest !== inputDigest)) ||
     candidate.metadata.summary !== request.summary ||
     !isDeepStrictEqual(candidate.metadata.producer, dependencies.producer) ||
     !isDeepStrictEqual(evidence.producer, dependencies.producer) ||
     evidence.baseRevision !== candidate.parentRevision ||
     !isDeepStrictEqual(evidence.authority, candidate.metadata.authority) ||
     !isDeepStrictEqual(evidence.sourceReferences, candidate.metadata.sourceReferences) ||
-    candidate.metadata.authority.kind !== 'direct' ||
-    candidate.metadata.authority.instructionReference !==
-      `${dependencies.command?.name ?? OPERATION}:${request.requestId}`
+    (dependencies.reviewedCandidate
+      ? candidate.revision !== dependencies.reviewedCandidate.candidateRevision ||
+        candidate.metadata.authority.kind !== 'proposal' ||
+        candidate.metadata.authority.proposalId !== dependencies.reviewedCandidate.proposalId
+      : candidate.metadata.authority.kind !== 'direct' ||
+        candidate.metadata.authority.instructionReference !==
+          `${dependencies.command?.name ?? OPERATION}:${request.requestId}`)
   )
     throw new NotebookError('recovery_required');
   return candidate;
@@ -161,7 +188,10 @@ export async function publishWorkspaceNotebook(
   const operation = dependencies.command?.name ?? OPERATION;
   const commandInput = dependencies.command?.input ?? request;
   const inputDigest = commandInputHash(commandInput);
-  const scope = { workspaceId: request.workspaceId, actorId: dependencies.producer.id };
+  const actor =
+    dependencies.actor ?? (dependencies.producer.kind === 'user' ? dependencies.producer : null);
+  if (!actor) throw new NotebookError('invalid_request');
+  const scope = { workspaceId: request.workspaceId, actorId: actor.id };
   dependencies.revalidate();
 
   const project = (revision: string, evidence: KnowledgeNotebookAdmission): NotebookPublication => {
@@ -175,7 +205,7 @@ export async function publishWorkspaceNotebook(
       if (content === null) delete expected[path];
       else
         expected[path] =
-          base.files[path] === content
+          dependencies.reviewedCandidate || base.files[path] === content
             ? content
             : humanPageBytes(path, content, request.workspaceId);
     }
@@ -259,7 +289,7 @@ export async function publishWorkspaceNotebook(
         if (content === null) delete files[path];
         else
           files[path] =
-            base.files[path] === content
+            dependencies.reviewedCandidate || base.files[path] === content
               ? content
               : humanPageBytes(path, content, request.workspaceId);
       }
@@ -269,34 +299,47 @@ export async function publishWorkspaceNotebook(
       const validated = check(admission);
       if (validated.errors.length) throw new NotebookError('invalid_request');
       if (
+        !dependencies.reviewedCandidate &&
         validated.changedPaths.some((path) =>
           admission.reviewRequiredPageIds.includes(path.slice(0, -3))
         )
       )
         throw new NotebookError('review_required');
-      // This direct component admits non-destructive edits only; required Reviews are joined by the native caller.
-      if (validated.removedPaths.length) throw new NotebookError('invalid_request');
-      const authority = {
-        kind: 'direct',
-        instructionReference: `${operation}:${request.requestId}`,
-      } as const;
-      const candidateRevision = dependencies.notebook.prepare({
-        baseRevision: request.baseRevision,
-        changes: Object.fromEntries(
-          request.changes.map(({ path, content }) => [path, content === null ? null : files[path]!])
-        ),
-        metadata: {
-          summary: request.summary,
-          changeRequest: { requestId: request.requestId, inputDigest },
-          producer: dependencies.producer,
-          authority,
-          sourceReferences: [...validated.sourceReferences],
-        },
-      });
+      if (
+        validated.removedPaths.some(
+          (path) => dependencies.confirmedRemovals?.[path] !== base.files[path]
+        )
+      )
+        throw new NotebookError('invalid_request');
+      const authority = dependencies.reviewedCandidate
+        ? { kind: 'proposal' as const, proposalId: dependencies.reviewedCandidate.proposalId }
+        : ({
+            kind: 'direct',
+            instructionReference: `${operation}:${request.requestId}`,
+          } as const);
+      const candidateRevision =
+        dependencies.reviewedCandidate?.candidateRevision ??
+        dependencies.notebook.prepare({
+          baseRevision: request.baseRevision,
+          changes: Object.fromEntries(
+            request.changes.map(({ path, content }) => [
+              path,
+              content === null ? null : files[path]!,
+            ])
+          ),
+          metadata: {
+            summary: request.summary,
+            changeRequest: { requestId: request.requestId, inputDigest },
+            producer: dependencies.producer,
+            authority,
+            sourceReferences: [...validated.sourceReferences],
+          },
+        });
       // All work from this final current-authority check through CAS is synchronous, with no model run or await.
       const finalAdmission = dependencies.revalidate();
       const finalValidation = check(finalAdmission);
       if (
+        !dependencies.reviewedCandidate &&
         validated.changedPaths.some((path) =>
           finalAdmission.reviewRequiredPageIds.includes(path.slice(0, -3))
         )
@@ -322,7 +365,7 @@ export async function publishWorkspaceNotebook(
           workspaceDb: dependencies.workspaceDb,
           workspaceId: request.workspaceId,
           requestId: request.requestId,
-          actor: dependencies.producer,
+          actor,
           category: 'knowledge',
           action,
           outcome: 'succeeded',
@@ -330,6 +373,25 @@ export async function publishWorkspaceNotebook(
           notebookAdmission: evidence,
           summary: 'Notebook publication evidence retained.',
         });
+      if (dependencies.reviewedCandidate) {
+        const retained = dependencies.notebook.retainedCandidate(
+          dependencies.reviewedCandidate.proposalId
+        );
+        if (
+          retained.revision !== candidateRevision ||
+          retained.parentRevision !== request.baseRevision
+        )
+          throw new NotebookError('conflict');
+        // Verify the retained candidate before recording its human decision or advancing the ref.
+        readWorkspaceNotebookAdmissionRevision(dependencies, request, evidence);
+        const retainedFiles = dependencies.notebook.readRevision(candidateRevision).files;
+        if (
+          Object.keys(retainedFiles).length !== Object.keys(files).length ||
+          Object.entries(files).some(([path, bytes]) => retainedFiles[path] !== bytes)
+        )
+          throw new NotebookError('conflict');
+        dependencies.reviewedCandidate.recordDecision();
+      }
       audit('knowledge.notebook.admit');
       dependencies.notebook.publish({ baseRevision: request.baseRevision, candidateRevision });
       audit(operation);

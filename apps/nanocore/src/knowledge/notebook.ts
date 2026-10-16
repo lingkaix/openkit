@@ -346,6 +346,14 @@ export class KnowledgeNotebook {
     syncDirectory(join(this.repositoryPath, 'refs'), true);
   }
 
+  /** Reads the service-owned retained Proposal ref without changing publication or reconstructing content. */
+  retainedCandidate(proposalId: string): Omit<NotebookRevision, 'files'> {
+    if (!/^[A-Za-z0-9_-]+$/.test(proposalId)) throw new NotebookError('invalid_request');
+    return this.inspectRevision(
+      this.git(['rev-parse', '--verify', `refs/proposals/${proposalId}`]).trim()
+    );
+  }
+
   /** Returns a bounded metadata page from published ancestry without loading page bodies. */
   history(input: { readonly revision?: string; readonly limit?: number } = {}): {
     readonly revisions: readonly Omit<NotebookRevision, 'files'>[];

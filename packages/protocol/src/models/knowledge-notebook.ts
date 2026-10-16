@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { RequestIdSchema, WorkspaceIdSchema } from '../common/ids.js';
-import { UserActorRefSchema } from './actor.js';
+import { ActorRefSchema, UserActorRefSchema } from './actor.js';
 
 /** Exact durable notebook owner; query context and source restrictions remain independent. */
 export const KnowledgeOwnerScopeSchema = z.union([
@@ -28,7 +28,7 @@ export const KnowledgeNotebookCommitMetadataSchema = z
     changeRequest: z
       .object({ requestId: z.string().min(1), inputDigest: KnowledgeContentDigestSchema })
       .strict(),
-    producer: UserActorRefSchema,
+    producer: ActorRefSchema,
     authority: KnowledgeNotebookAuthoritySchema,
     sourceReferences: z.array(z.string().min(1)),
   })
@@ -42,7 +42,7 @@ export const KnowledgeNotebookAdmissionSchema = z
     inputDigest: KnowledgeContentDigestSchema,
     baseRevision: z.string().min(1).nullable(),
     candidateRevision: z.string().min(1),
-    producer: UserActorRefSchema,
+    producer: ActorRefSchema,
     authority: KnowledgeNotebookAuthoritySchema,
     sourceReferences: z.array(z.string().min(1)),
   })
