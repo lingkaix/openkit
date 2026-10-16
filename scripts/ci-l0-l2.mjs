@@ -14,7 +14,7 @@ import {
   testOwners,
 } from './release-tests.mjs';
 
-/** Keep task owners independent and partition only the measured slow coverage suites. */
+/** Share measured setup work and partition only where the complete runner cost justifies it. */
 export function shardPlan(root = process.cwd()) {
   const owners = testOwners(root);
   if (new Set(owners.map((o) => o.name)).size !== owners.length)
@@ -22,13 +22,11 @@ export function shardPlan(root = process.cwd()) {
   const vitest = owners.filter((owner) => owner.vitest);
   const plan = [
     {
-      id: 'static-check-repo-typecheck',
+      id: 'static',
       kind: 'static',
       owners: [],
-      tasks: ['check:repo', 'typecheck'],
+      tasks: ['check:repo', 'lint', 'typecheck', 'build'],
     },
-    { id: 'static-lint', kind: 'static', owners: [], tasks: ['lint'] },
-    { id: 'static-build', kind: 'static', owners: [], tasks: ['build'] },
     { id: 'root', kind: 'root', owners: [] },
     {
       id: 'native-nanohost',
@@ -45,7 +43,7 @@ export function shardPlan(root = process.cwd()) {
         .map((owner) => owner.name),
     },
     ...vitest
-      .filter((owner) => ['@openkit/nanocore', '@openkit/worker-shim'].includes(owner.name))
+      .filter((owner) => owner.name === '@openkit/worker-shim')
       .flatMap((owner) => {
         const id = owner.name.replace('@openkit/', '');
         const count = 2;
@@ -56,6 +54,13 @@ export function shardPlan(root = process.cwd()) {
           partition: { index: index + 1, count },
         }));
       }),
+    {
+      id: 'nanocore',
+      kind: 'coverage',
+      owners: vitest
+        .filter((owner) => owner.name === '@openkit/nanocore')
+        .map((owner) => owner.name),
+    },
     {
       id: 'web',
       kind: 'coverage',
