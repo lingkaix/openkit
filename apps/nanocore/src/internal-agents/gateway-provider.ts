@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { operationToolName } from '@openkit/app-api-schemas';
 
 import {
+  type CapabilityAuditLineage,
   finishCapabilityCall,
   type GatewayCallContext,
   startCapabilityCall,
@@ -46,6 +47,8 @@ export interface InternalAgentGatewayProviderOptions {
   readonly resolveLogicalModel: (logicalModelId: string) => ResolvedLogicalModel | null;
   /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
   readonly callContext?: GatewayCallContext;
+  /** Entry-validated command context for audit only; never a call-start request key. */
+  readonly auditLineage?: CapabilityAuditLineage;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -54,7 +57,11 @@ export interface InternalAgentGatewayProviderOptions {
     readonly workspaceId: string;
   };
   readonly usageEndpoint: 'quick_chat' | 'responses';
-  readonly onDispatch?: (result: { readonly providerId: string; readonly usage?: unknown }) => void;
+  readonly onDispatch?: (result: {
+    readonly id: string;
+    readonly providerId: string;
+    readonly usage?: unknown;
+  }) => void;
 }
 
 /**
@@ -189,6 +196,7 @@ export function createInternalAgentGatewayProvider(
                       recordInternalLlmGatewayUsage({
                         workspaceDb,
                         call,
+                        ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                         logicalModelId: options.logicalModel.id,
                         providerId: provider.id,
                         usage,
@@ -246,6 +254,7 @@ export function createInternalAgentGatewayProvider(
               recordInternalLlmGatewayUsage({
                 workspaceDb,
                 call,
+                ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                 logicalModelId: options.logicalModel.id,
                 providerId: provider.id,
                 usage: response.usage,
@@ -257,9 +266,16 @@ export function createInternalAgentGatewayProvider(
         },
       });
       callFinished = true;
-      if (call) finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+      if (call)
+        finishCapabilityCall({
+          workspaceDb,
+          callId: call.id,
+          status: 'succeeded',
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+        });
       const message = selected.message;
       options.onDispatch?.({
+        id: selected.response.id,
         providerId: selected.providerId,
         ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
       });
@@ -271,6 +287,7 @@ export function createInternalAgentGatewayProvider(
           workspaceDb,
           callId: call.id,
           status: 'failed',
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
           errorCode: projectGatewayFailure(error, 'internal_inference_failed').code,
         });
       try {
@@ -373,20 +390,34 @@ function fromResponses(
   aliasToCanonical: ReadonlyMap<string, string>,
   canonicalToAlias: ReadonlyMap<string, string>
 ): AgentAssistantMessage {
-  if (!Array.isArray(response.output)) {
-    throw new Error('Gateway returned an invalid internal Agent response.');
+  if (!response || !Array.isArray(response.output)) {
+    throw new InternalAgentProviderError(
+      'provider_response_invalid',
+      'Gateway returned an invalid internal Agent response.'
+    );
   }
   const content: AgentAssistantMessage['content'][number][] = [];
   let truncated = response.status === 'incomplete';
   for (const output of response.output) {
+    if (!output || typeof output !== 'object')
+      throw new InternalAgentProviderError(
+        'provider_response_invalid',
+        'Gateway returned an invalid internal Agent response.'
+      );
     if (output.type === 'message') {
       if (!Array.isArray(output.content)) {
-        throw new Error('Gateway returned invalid message content.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid message content.'
+        );
       }
       for (const rawPart of output.content) {
         const part = record(rawPart);
         if (part?.type !== 'output_text' || typeof part.text !== 'string') {
-          throw new Error('Gateway returned unsupported message content.');
+          throw new InternalAgentProviderError(
+            'provider_response_invalid',
+            'Gateway returned unsupported message content.'
+          );
         }
         content.push({ type: 'text', text: part.text });
       }
@@ -401,7 +432,10 @@ function fromResponses(
         !output.name ||
         typeof output.arguments !== 'string'
       ) {
-        throw new Error('Gateway returned invalid Tool calls.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid Tool calls.'
+        );
       }
       const name =
         aliasToCanonical.get(output.name) ??
@@ -412,7 +446,10 @@ function fromResponses(
       try {
         args = JSON.parse(output.arguments);
       } catch {
-        throw new Error('Gateway returned invalid Tool arguments.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid Tool arguments.'
+        );
       }
       content.push({
         type: 'toolCall',
@@ -429,7 +466,11 @@ function fromResponses(
       );
     }
   }
-  if (content.length === 0) throw new Error('Gateway returned empty internal Agent content.');
+  if (content.length === 0)
+    throw new InternalAgentProviderError(
+      'provider_response_invalid',
+      'Gateway returned empty internal Agent content.'
+    );
   return { role: 'assistant', content, truncated };
 }
 

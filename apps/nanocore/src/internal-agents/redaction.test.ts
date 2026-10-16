@@ -26,7 +26,7 @@ describe('internal Agent text redaction', () => {
   it('redacts decoded JSON string content while preserving the complete structure', () => {
     const input = JSON.stringify({
       text: 'Example: Authorization: Bearer EXAMPLE',
-      path: 'guide.md',
+      path: 'SKILL.md',
       nested: { text: 'token=abc123', count: 3, active: true, empty: null },
       examples: ['hf_x', 'Safe guidance. 世界\n'],
     });
@@ -36,7 +36,7 @@ describe('internal Agent text redaction', () => {
 
     expect(parsed).toEqual({
       text: expect.any(String),
-      path: 'guide.md',
+      path: 'SKILL.md',
       nested: { text: expect.any(String), count: 3, active: true, empty: null },
       examples: [expect.any(String), 'Safe guidance. 世界\n'],
     });
