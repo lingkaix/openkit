@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { RequestIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { KnowledgeNotebook } from './notebook.js';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
 import { initializeWorkspaceNotebook } from './notebook-initialization.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './okf.js';
 
@@ -51,6 +53,139 @@ function fixture() {
 }
 
 describe('Fresh Workspace notebook admission inside native staging', () => {
+  it('seeds no-argument disk-backed Workspace creation with only the exact service-owned index', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-empty-store-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Empty service seed');
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
+    });
+    const revision = notebook.publishedRevision();
+    const retained = notebook.readRevision(revision);
+    const systemProducer = {
+      kind: 'system',
+      id: 'notebook-initializer',
+      responsibleUserId: null,
+    };
+    expect(retained.parentRevision).toBeNull();
+    expect(retained.files).toEqual({ 'index.md': DEFAULT_NOTEBOOK_INDEX });
+    expect(retained.metadata).toMatchObject({
+      producer: systemProducer,
+      authority: { kind: 'direct', instructionReference: 'workspace.create:empty-notebook-seed' },
+      sourceReferences: [],
+    });
+    expect(RequestIdSchema.safeParse(retained.metadata.changeRequest.requestId).success).toBe(true);
+    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+    try {
+      const rows = workspaceDb.sqlite
+        .prepare(
+          'SELECT action, notebook_admission_json AS evidence FROM audit_events ORDER BY rowid'
+        )
+        .all() as Array<{ action: string; evidence: string }>;
+      expect(rows.map(({ action }) => action)).toEqual([
+        'knowledge.notebook.admit',
+        'knowledge.notebook.initialize',
+      ]);
+      for (const row of rows)
+        expect(JSON.parse(row.evidence)).toMatchObject({
+          ownerScope: { kind: 'workspace', workspaceId: workspace.id },
+          requestId: retained.metadata.changeRequest.requestId,
+          inputDigest: retained.metadata.changeRequest.inputDigest,
+          baseRevision: null,
+          candidateRevision: revision,
+          producer: systemProducer,
+        });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const second = store.createWorkspace('Another empty service seed');
+    const secondNotebook = new KnowledgeNotebook({
+      repositoryPath: join(dataRoot, 'workspaces', second.id, 'knowledge', 'notebook.git'),
+    });
+    expect(
+      secondNotebook.readRevision(secondNotebook.publishedRevision()).metadata.changeRequest
+        .requestId
+    ).not.toBe(retained.metadata.changeRequest.requestId);
+    const explicit = store.createWorkspace('Explicit User', {
+      requestId: randomUUID(),
+      producer,
+      instructionReference: 'workspace.create:actual-user',
+    });
+    const explicitNotebook = new KnowledgeNotebook({
+      repositoryPath: join(dataRoot, 'workspaces', explicit.id, 'knowledge', 'notebook.git'),
+    });
+    expect(
+      explicitNotebook.readRevision(explicitNotebook.publishedRevision()).metadata.producer
+    ).toEqual(producer);
+  });
+
+  it('refuses service attribution for authored initial content before creating Git or Audit evidence', () => {
+    for (const files of [
+      { 'index.md': '---\nokf_version: "0.2"\n---\n# Authored navigation\n' },
+      {
+        'index.md': DEFAULT_NOTEBOOK_INDEX,
+        'note.md': `---
+type: KnowledgePage
+title: Authored note
+schema_version: openkit-scope-knowledge-schema-v4
+requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+openkit_status: active
+status: stable
+scope: {kind: workspace, workspaceId: ${workspaceId}}
+source_refs: []
+review_state: user-authored
+sensitivity: normal
+freshness: current
+created_at: "2026-10-16T00:00:00.000Z"
+updated_at: "2026-10-16T00:00:00.000Z"
+---
+User-authored note.
+`,
+      },
+    ]) {
+      const f = fixture();
+      expect(() =>
+        initializeWorkspaceNotebook({
+          ...f,
+          files,
+          initialization: {
+            requestId: randomUUID(),
+            producer: { kind: 'system', id: 'notebook-initializer', responsibleUserId: null },
+            instructionReference: 'workspace.create:empty-notebook-seed',
+          },
+        })
+      ).toThrow('Notebook invalid request.');
+      expect(existsSync(f.repositoryPath)).toBe(false);
+      expect(f.rows()).toEqual([]);
+    }
+  });
+
+  it('keeps import without native attribution refused before Workspace publication', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-unattributed-import-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const source = new FsStore();
+    const workspace = source.createWorkspace('Unattributed import');
+    const target = new FsStore({ dataRoot });
+    expect(() =>
+      target.importWorkspaceSnapshot({
+        workspace,
+        threads: [],
+        turns: [],
+        knowledge: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+        initialNotebookFiles: {
+          'index.md': '---\nokf_version: "0.2"\n---\n# Authored imported index\n',
+        },
+      })
+    ).toThrow('Fresh Workspace publication requires native notebook attribution.');
+    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
+    expect(target.listWorkspaces()).toEqual([]);
+  });
+
   it('publishes one parentless revision with exact responsible actor and both Audit facts', () => {
     const f = fixture();
     const revision = f.initialize();

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -1923,7 +1923,7 @@ export class FsStore {
     return workspace;
   }
 
-  /** Creates a fresh Workspace with actual native attribution before publishing its canonical root. */
+  /** Creates a fresh Workspace with native User attribution or the service-owned empty notebook seed. */
   public createWorkspace(
     name: string,
     notebookInitialization?: NotebookInitialization
@@ -1946,7 +1946,11 @@ export class FsStore {
     this.persistNewWorkspaceAtomically(
       emptyWorkspaceFileRecords(workspace),
       undefined,
-      notebookInitialization
+      notebookInitialization ?? {
+        requestId: randomUUID(),
+        producer: { kind: 'system', id: 'notebook-initializer', responsibleUserId: null },
+        instructionReference: 'workspace.create:empty-notebook-seed',
+      }
     );
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, resources);
