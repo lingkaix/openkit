@@ -22,7 +22,12 @@ import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { AssistantSkillAdmissionSchema } from '../storage/work-observations.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { assembleAssistantSkillResources } from './assistant-skill-resources.js';
+import {
+  AssistantSkillReadInputSchema,
+  AssistantSkillResourceError,
+  assembleAssistantSkillResources as assembleResources,
+  createAssistantSkillReadTool,
+} from './assistant-skill-resources.js';
 import { type AgentToolResult, runInternalAgentLoop } from './internal-agent-loop.js';
 
 const fixtures: Array<{ coreDb: CoreDb; dataRoot: string }> = [];
@@ -67,6 +72,7 @@ function fixture() {
     coreDb,
     store,
     actor,
+    requestId: '00000000-0000-4000-8000-000000000144',
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
@@ -74,7 +80,35 @@ function fixture() {
 }
 
 type Fixture = ReturnType<typeof fixture>;
-type Assembly = Awaited<ReturnType<typeof assembleAssistantSkillResources>>;
+type Assembly = Awaited<ReturnType<typeof assembleResources>>;
+type ReadContext = Parameters<Assembly['read']>[1];
+const contexts = new WeakMap<Assembly, ReadContext>();
+
+/** Captures test-owned context; this is not P12's native invocation binding. */
+async function assembleAssistantSkillResources(input: Parameters<typeof assembleResources>[0]) {
+  const resources = await assembleResources(input);
+  contexts.set(resources, {
+    kind: 'assistant-command',
+    entryScope: 'conversation.submit',
+    actor: { ...input.actor },
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    requestId: input.requestId,
+    signal: new AbortController().signal,
+  });
+  return resources;
+}
+
+/** Supplies a local fake invoker so retained read regressions keep their model-envelope oracle. */
+function modelTool(resources: Assembly) {
+  return createAssistantSkillReadTool(async (input, execution) =>
+    resources.read(AssistantSkillReadInputSchema.parse(input), {
+      ...contexts.get(resources)!,
+      signal: execution.signal,
+    })
+  );
+}
 
 /** Imports exact retained bytes through the catalog owner. */
 function importSkill(
@@ -112,7 +146,7 @@ function updateCatalog(
 
 /** Reads only one admitted exact reference through the returned Tool. */
 async function read(assembled: Assembly, path?: string, selection = assembled.index[0]!) {
-  return assembled.tool.execute(
+  return modelTool(assembled).execute(
     {
       skillId: selection.skillId,
       versionId: selection.versionId,
@@ -177,6 +211,36 @@ function expectNoSnapshotRead(spies: ReturnType<typeof observeReads>, snapshot: 
 }
 
 describe('Assistant selected Skill assembly', () => {
+  it('exposes the retained logical read handler without a direct model Tool bypass', async () => {
+    const f = fixture();
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: [] });
+
+    expect(Object.hasOwn(assembled, 'tool')).toBe(false);
+    expect(assembled).toHaveProperty('read', expect.any(Function));
+  });
+
+  it.each([
+    undefined,
+    '',
+    'not-a-command-uuid',
+  ] as const)('refuses an absent or invalid captured command request %s before resource access', async (requestId) => {
+    const f = fixture();
+    const imported = importSkill(f);
+    const spies = observeReads();
+    const input = { ...f, requestId, skillIds: ['alpha'] } as Parameters<
+      typeof assembleResources
+    >[0];
+
+    const error = await assembleResources(input).catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(AssistantSkillResourceError);
+    expect(error).toHaveProperty('code', 'resource_access_denied');
+    expectNoSnapshotRead(
+      spies,
+      skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest)
+    );
+  });
+
   it.each([
     { label: 'absent', skillIds: undefined },
     { label: 'empty', skillIds: [] },
@@ -193,9 +257,9 @@ describe('Assistant selected Skill assembly', () => {
 
     expect(assembled.index).toEqual([]);
     expect(assembled.admission).toEqual({ catalogRevision: null, skills: [] });
-    expect(assembled.tool.name).toBe('skill.read');
+    expect(modelTool(assembled).name).toBe('skill.read');
     refusal(
-      await assembled.tool.execute(
+      await modelTool(assembled).execute(
         {
           skillId: 'alpha',
           versionId: `sha256:${'a'.repeat(64)}`,
@@ -268,18 +332,18 @@ describe('Assistant selected Skill assembly', () => {
       spies,
       join(f.dataRoot, 'workspaces', f.workspaceId, 'catalog', 'skill-snapshots')
     );
-    expect(assembled.tool.inputSchema).toMatchObject({
+    expect(modelTool(assembled).inputSchema).toMatchObject({
       type: 'object',
       additionalProperties: false,
     });
-    expect([...(assembled.tool.inputSchema.required as string[])].sort()).toEqual([
+    expect([...(modelTool(assembled).inputSchema.required as string[])].sort()).toEqual([
       'contentDigest',
       'skillId',
       'versionId',
     ]);
     expect(
       Object.keys(
-        (assembled.tool.inputSchema as { properties: Record<string, unknown> }).properties
+        (modelTool(assembled).inputSchema as { properties: Record<string, unknown> }).properties
       ).sort()
     ).toEqual(['contentDigest', 'path', 'skillId', 'versionId']);
   });
@@ -353,6 +417,137 @@ describe('Assistant selected Skill assembly', () => {
 });
 
 describe('Assistant progressive Skill reads', () => {
+  it('returns one strict logical success and throws owner failures instead of a model envelope', async () => {
+    const f = fixture();
+    const imported = importSkill(f, 'alpha', '# Logical guidance\n');
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const input = {
+      skillId: 'alpha',
+      versionId: imported.version.digest,
+      contentDigest: imported.version.digest,
+      path: 'SKILL.md',
+    };
+
+    const output = await assembled.read(input, contexts.get(assembled)!);
+
+    expect(output).toEqual({
+      skillId: 'alpha',
+      versionId: imported.version.digest,
+      path: 'SKILL.md',
+      fileDigest: `sha256:${createHash('sha256').update('# Logical guidance\n').digest('hex')}`,
+      text: '# Logical guidance\n',
+    });
+    expect(output).not.toHaveProperty('content');
+    await expect(
+      assembled.read(
+        { ...input, contentDigest: `sha256:${'f'.repeat(64)}` },
+        contexts.get(assembled)!
+      )
+    ).rejects.toMatchObject({ code: 'invalid_skill_read' });
+  });
+
+  it.each([
+    'actor',
+    'workspaceId',
+    'threadId',
+    'turnId',
+    'kind',
+    'entryScope',
+    'requestId',
+  ] as const)('refuses missing or mismatched trusted %s before content access', async (field) => {
+    const f = fixture();
+    const imported = importSkill(f);
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const input = {
+      skillId: 'alpha',
+      versionId: imported.version.digest,
+      contentDigest: imported.version.digest,
+      path: 'SKILL.md',
+    };
+    const admitted = contexts.get(assembled)!;
+    const mismatches: Record<typeof field, unknown> = {
+      actor: { kind: 'session', userId: 'user_local' },
+      workspaceId: 'another-workspace',
+      threadId: 'another-thread',
+      turnId: 'another-turn',
+      kind: 'worker',
+      entryScope: 'chat.quick',
+      requestId: '00000000-0000-4000-8000-000000000145',
+    };
+    const missing = { ...admitted } as Record<string, unknown>;
+    delete missing[field];
+    const spies = observeReads();
+
+    for (const context of [missing, { ...admitted, [field]: mismatches[field] }]) {
+      const error = await assembled
+        .read(input, context as ReadContext)
+        .catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(AssistantSkillResourceError);
+      expect(error).toHaveProperty('code', 'resource_access_denied');
+      expectNoSnapshotRead(
+        spies,
+        skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest)
+      );
+    }
+  });
+
+  it.each([
+    undefined,
+    { aborted: false },
+  ] as const)('rejects missing or forged cancellation context before content access', async (signal) => {
+    const f = fixture();
+    const imported = importSkill(f);
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const spies = observeReads();
+    const context = { ...contexts.get(assembled)!, signal } as unknown as ReadContext;
+
+    const error = await assembled
+      .read(
+        {
+          skillId: 'alpha',
+          versionId: imported.version.digest,
+          contentDigest: imported.version.digest,
+          path: 'SKILL.md',
+        },
+        context
+      )
+      .catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(AssistantSkillResourceError);
+    expect(error).toHaveProperty('code', 'resource_access_denied');
+    expectNoSnapshotRead(
+      spies,
+      skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest)
+    );
+  });
+
+  it('preserves direct read cancellation before any content access', async () => {
+    const f = fixture();
+    const imported = importSkill(f);
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const controller = new AbortController();
+    const reason = new Error('Read cancelled.');
+    controller.abort(reason);
+    const spies = observeReads();
+
+    await expect(
+      assembled.read(
+        {
+          skillId: 'alpha',
+          versionId: imported.version.digest,
+          contentDigest: imported.version.digest,
+          path: 'SKILL.md',
+        },
+        { ...contexts.get(assembled)!, signal: controller.signal }
+      )
+    ).rejects.toBe(reason);
+
+    expectNoSnapshotRead(
+      spies,
+      skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest)
+    );
+  });
+
   it('returns exact default and separately requested supporting bytes with digest provenance and no script execution', async () => {
     const f = fixture();
     const marker = join(f.dataRoot, 'script-ran');
@@ -474,7 +669,7 @@ describe('Assistant progressive Skill reads', () => {
 
     expect(signal.aborted).toBe(false);
     refusal(
-      await assembled.tool.execute(
+      await modelTool(assembled).execute(
         {
           skillId: selection.skillId,
           versionId: selection.versionId,
@@ -528,7 +723,7 @@ describe('Assistant progressive Skill reads', () => {
       { ...base, workspaceId: 'untrusted-workspace' },
       ...unsafePaths.map((path) => ({ ...base, path })),
     ])
-      refusal(await assembled.tool.execute(args, context), f);
+      refusal(await modelTool(assembled).execute(args, context), f);
   });
 
   it.each([
@@ -682,7 +877,7 @@ describe('Assistant Skill sanitization through the shared loop', () => {
             {
               type: 'toolCall',
               callId: 'read-sanitized',
-              name: assembled.tool.name,
+              name: modelTool(assembled).name,
               arguments: {
                 skillId: 'alpha',
                 ...(path ? { path } : {}),
@@ -705,7 +900,7 @@ describe('Assistant Skill sanitization through the shared loop', () => {
       {
         systemPrompt: 'Use only the admitted Skill Tool.',
         messages: [{ role: 'user', content: [{ type: 'text', text: 'Read the selected Skill.' }] }],
-        tools: [assembled.tool],
+        tools: [modelTool(assembled)],
         model: { logicalModelId: 'assistant', capabilities: ['tool-calling'], modelFamilyId: null },
         limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 },
         signal: new AbortController().signal,
@@ -795,7 +990,7 @@ describe('Assistant Skill Tool in the shared loop', () => {
         messages: [
           { role: 'user', content: [{ type: 'text', text: JSON.stringify(assembled.index) }] },
         ],
-        tools: [assembled.tool],
+        tools: [modelTool(assembled)],
         model: { logicalModelId: 'assistant', capabilities: ['tool-calling'], modelFamilyId: null },
         limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 },
         signal: new AbortController().signal,
@@ -807,9 +1002,9 @@ describe('Assistant Skill Tool in the shared loop', () => {
     expect(provider).toHaveBeenCalledTimes(requestRead ? 2 : 1);
     expect(provider.mock.calls[0]![0].tools).toEqual([
       {
-        name: assembled.tool.name,
-        description: assembled.tool.description,
-        inputSchema: assembled.tool.inputSchema,
+        name: modelTool(assembled).name,
+        description: modelTool(assembled).description,
+        inputSchema: modelTool(assembled).inputSchema,
       },
     ]);
     expect(JSON.stringify(provider.mock.calls[0]![0].messages)).not.toContain(

@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   digestOpenKitTree,
   hashOpenKitTreeEntries,
+  ResourceCatalogIdSchema,
   ResourceDigestSchema,
   type SkillVersionRecord,
 } from '@openkit/config-schema';
@@ -16,8 +17,10 @@ import {
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
+import { normalizeCapabilityRequestId } from '../capability/usage-ledger.js';
 import { loadWorkspaceResourceCatalog, skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   type AssistantSkillAdmission,
@@ -29,15 +32,45 @@ import { redactInternalAgentText } from './redaction.js';
 /** Complete UTF-8 model projections are bounded; instructions are never truncated. */
 const MAX_SKILL_PROJECTION_BYTES = 64 * 1024;
 
-/** Private fixed Skill read contract; caller authority is never model input. */
-const SkillReadInputSchema = z
+/** Logical private-operation input; caller authority is never model input. */
+export const AssistantSkillReadInputSchema = z
   .object({
-    skillId: z.string().min(1),
+    skillId: ResourceCatalogIdSchema,
     versionId: ResourceDigestSchema,
     contentDigest: ResourceDigestSchema,
     path: z.string().min(1).default('SKILL.md'),
   })
   .strict();
+
+/** Logical success validated by native invocation before model projection. */
+export const AssistantSkillReadOutputSchema = z
+  .object({
+    skillId: ResourceCatalogIdSchema,
+    versionId: ResourceDigestSchema,
+    path: z.string().min(1),
+    fileDigest: ResourceDigestSchema,
+    text: z.string(),
+  })
+  .strict();
+
+/** Parsed logical input, including the default relative file. */
+export type AssistantSkillReadInput = z.output<typeof AssistantSkillReadInputSchema>;
+/** Exact logical success; no AgentToolResult envelope reaches the invocation output validator. */
+export type AssistantSkillReadOutput = z.output<typeof AssistantSkillReadOutputSchema>;
+
+/** Release-authored private table, separate from every public operation projection. */
+export const ASSISTANT_SKILL_OPERATION_DEFINITIONS = Object.freeze({
+  'skill.read': Object.freeze({
+    binding: 'internal',
+    entryScope: 'conversation.submit',
+    description:
+      'Read one UTF-8 text file from an exact selected Skill. Loading text executes no code.',
+    inputSchema: AssistantSkillReadInputSchema,
+    outputSchema: AssistantSkillReadOutputSchema,
+    policyOperation: 'workspace.read',
+    mutating: false,
+  } as const),
+});
 
 type SkillResourceFailureCode =
   | 'resource_unavailable'
@@ -83,14 +116,33 @@ export interface AssistantSkillAssemblyInput {
   readonly workspaceId: string;
   readonly threadId: string;
   readonly turnId: string;
+  /** Actual command identity supplied by entry admission, never inferred from retained evidence. */
+  readonly requestId: string;
   readonly skillIds?: readonly string[];
 }
 
-/** Fixed metadata, existing-owner evidence input, and one on-demand read Tool. */
+/** Fixed metadata, existing-owner evidence input and retained native invocation handler. */
 export interface AssistantSkillResources {
   readonly index: readonly AssistantSkillMetadata[];
   readonly admission: AssistantSkillAdmission;
-  readonly tool: AgentTool;
+  /**
+   * Handles logical reads only under the retained trusted invocation context.
+   *
+   * This inline shape projects P12's agreed AssistantOperationInvocationContext until its canonical type export lands. P12 owns the type; replace this structural projection with that import when the supplier is published, rather than adding a competing named context owner.
+   */
+  read(
+    input: AssistantSkillReadInput,
+    context: {
+      readonly kind: 'assistant-command';
+      readonly actor: Actor;
+      readonly workspaceId: string;
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly entryScope: 'conversation.submit';
+      readonly requestId: string;
+      readonly signal: AbortSignal;
+    }
+  ): Promise<AssistantSkillReadOutput>;
   /** Checks the original lineage and current retained authority without selecting new pins. */
   assertCurrent(
     lineage: Pick<AssistantSkillAssemblyInput, 'actor' | 'workspaceId' | 'threadId' | 'turnId'>
@@ -106,12 +158,14 @@ type AdmittedSkill = { metadata: AssistantSkillMetadata; version: SkillVersionRe
  * The ordinary entry supplies authored IDs once per run. Catalog presence grants no selection or authority, and resource text cannot enlarge the Tool set. Entry assembly retains admission through existing Turn/capability evidence and owns publication reauthorization; this factory persists no run or selection record.
  *
  * @param input Current authority, admitted conversation lineage, and selected Workspace identities.
- * @returns Immutable metadata and the fixed progressive read Tool.
+ * @returns Immutable metadata, admission and the original logical handler for native invocation.
  * @throws AssistantSkillResourceError when selected metadata or current authority is unavailable.
  */
 export async function assembleAssistantSkillResources(
   input: AssistantSkillAssemblyInput
 ): Promise<AssistantSkillResources> {
+  const requestId = normalizeCapabilityRequestId(input.requestId);
+  if (requestId === null) throw new AssistantSkillResourceError('resource_access_denied');
   // Copy transient selectors; a caller's later object mutation cannot change this run's authority.
   const scope = {
     dataRoot: input.dataRoot,
@@ -126,6 +180,7 @@ export async function assembleAssistantSkillResources(
     workspaceId: input.workspaceId,
     threadId: input.threadId,
     turnId: input.turnId,
+    requestId,
   };
   const admitted = new Map<string, AdmittedSkill>();
   const metadata: AssistantSkillMetadata[] = [];
@@ -207,18 +262,28 @@ export async function assembleAssistantSkillResources(
       );
     }
   }
-  const { $schema: _schema, ...inputSchema } = z.toJSONSchema(SkillReadInputSchema, {
-    io: 'input',
-  });
-  const tool: AgentTool = Object.freeze({
-    name: 'skill.read',
-    description:
-      'Read one UTF-8 text file from an exact selected Skill. Loading text executes no code.',
-    inputSchema,
-    async execute(args: unknown, context: ToolExecutionContext) {
-      context.signal.throwIfAborted();
+  return Object.freeze({
+    index,
+    admission,
+    async read(
+      args: AssistantSkillReadInput,
+      context: Parameters<AssistantSkillResources['read']>[1]
+    ): Promise<AssistantSkillReadOutput> {
       try {
-        const parsed = SkillReadInputSchema.safeParse(args);
+        if (
+          !context ||
+          context.kind !== 'assistant-command' ||
+          context.entryScope !== ASSISTANT_SKILL_OPERATION_DEFINITIONS['skill.read'].entryScope ||
+          context.workspaceId !== scope.workspaceId ||
+          context.threadId !== scope.threadId ||
+          context.turnId !== scope.turnId ||
+          context.requestId !== scope.requestId ||
+          !isDeepStrictEqual(context.actor, scope.actor) ||
+          !(context.signal instanceof AbortSignal)
+        )
+          throw new AssistantSkillResourceError('resource_access_denied');
+        context.signal.throwIfAborted();
+        const parsed = AssistantSkillReadInputSchema.safeParse(args);
         if (!parsed.success) throw new AssistantSkillResourceError('invalid_skill_read');
         const { skillId, versionId, contentDigest, path } = parsed.data;
         const selected = admitted.get(skillId);
@@ -266,39 +331,26 @@ export async function assembleAssistantSkillResources(
           if ((value < 32 && value !== 9 && value !== 10 && value !== 13) || value === 127)
             throw new AssistantSkillResourceError('skill_content_not_text');
         }
-        const result = JSON.stringify({
+        const output = AssistantSkillReadOutputSchema.parse({
           skillId,
           versionId,
           path,
           fileDigest,
           text: redactInternalAgentText(text),
         });
+        const result = JSON.stringify(output);
         // The loop sanitizes again. Require a fixed point so provenance and the byte bound survive it.
         if (redactInternalAgentText(result) !== result)
           throw new AssistantSkillResourceError('resource_unavailable');
         if (Buffer.byteLength(result) > MAX_SKILL_PROJECTION_BYTES)
           throw new AssistantSkillResourceError('skill_content_too_large');
         context.signal.throwIfAborted();
-        return { content: [{ type: 'text' as const, text: result }] };
+        return output;
       } catch (error) {
-        if (context.signal.aborted) throw context.signal.reason;
-        const failure = safeSkillFailure(error);
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({ code: failure.code, message: failure.message }),
-            },
-          ],
-        };
+        if (context?.signal?.aborted) throw context.signal.reason;
+        throw safeSkillFailure(error);
       }
     },
-  });
-  return Object.freeze({
-    index,
-    admission,
-    tool,
     assertCurrent(
       lineage: Pick<AssistantSkillAssemblyInput, 'actor' | 'workspaceId' | 'threadId' | 'turnId'>
     ) {
@@ -313,6 +365,66 @@ export async function assembleAssistantSkillResources(
         assertRetainedSkills(admitted.values());
       } catch (error) {
         throw safeSkillFailure(error);
+      }
+    },
+  });
+}
+
+/**
+ * Derives the private model Tool from the release-authored definition and a native invoker.
+ *
+ * The caller binds native invocation to this run's retained handler and trusted context. This projection receives no resources or handler, and cannot provide a direct read alternative. Invocation owns input parsing, primary admission and logical output validation; this final projection enforces the model envelope and never exposes unknown exception text.
+ *
+ * @param invoke Native invoker supplied by P12's exact-key private binding.
+ * @returns One fixed definition-derived Tool with bounded safe observations.
+ */
+export function createAssistantSkillReadTool(
+  invoke: (input: unknown, context: ToolExecutionContext) => Promise<AssistantSkillReadOutput>
+): AgentTool {
+  const [name] = Object.keys(ASSISTANT_SKILL_OPERATION_DEFINITIONS) as ['skill.read'];
+  const definition = ASSISTANT_SKILL_OPERATION_DEFINITIONS[name];
+  const { $schema: _schema, ...inputSchema } = z.toJSONSchema(definition.inputSchema, {
+    io: 'input',
+  });
+  return Object.freeze({
+    name,
+    description: definition.description,
+    inputSchema,
+    async execute(input: unknown, context: ToolExecutionContext) {
+      context.signal.throwIfAborted();
+      try {
+        const output = definition.outputSchema.safeParse(await invoke(input, context));
+        context.signal.throwIfAborted();
+        if (!output.success) throw new AssistantSkillResourceError('resource_unavailable');
+        const result = JSON.stringify(output.data);
+        if (redactInternalAgentText(result) !== result)
+          throw new AssistantSkillResourceError('resource_unavailable');
+        if (Buffer.byteLength(result) > MAX_SKILL_PROJECTION_BYTES)
+          throw new AssistantSkillResourceError('skill_content_too_large');
+        return { content: [{ type: 'text' as const, text: result }] };
+      } catch (error) {
+        if (context.signal.aborted) throw context.signal.reason;
+        const failure =
+          error instanceof OperationError
+            ? new AssistantSkillResourceError(
+                error.code === 'invalid_request' || error.code === 'invalid_operation_input'
+                  ? 'invalid_skill_read'
+                  : error.code === 'workspace_access_denied' ||
+                      error.code === 'bound_input_conflict' ||
+                      error.code === 'core.auth.unauthenticated'
+                    ? 'resource_access_denied'
+                    : 'resource_unavailable'
+              )
+            : safeSkillFailure(error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ code: failure.code, message: failure.message }),
+            },
+          ],
+        };
       }
     },
   });
