@@ -13,14 +13,12 @@ import type {
   KnowledgeProposalApplication,
   KnowledgeProposalReview,
   MaterializedWorkspaceRoot,
-  ReverseKnowledgeProposalResponse,
   SubmitKnowledgeProposalDecisionRequest,
   SubmitKnowledgeProposalDecisionResponse,
 } from '@openkit/app-api-schemas';
 import {
   KnowledgeManagerDraftProposalRequestSchema,
   KnowledgeProposalReviewSchema,
-  ReverseKnowledgeProposalResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -48,6 +46,7 @@ import { resolveDataRoot } from '../config/data-root.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   initializeWorkspaceNotebook,
   type NotebookInitialization,
@@ -62,6 +61,7 @@ import {
 } from '../knowledge/okf.js';
 import { OperationError } from '../operation-error.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
@@ -449,20 +449,6 @@ export interface RecordKnowledgeProposalReviewDecisionInput
   actor: ActorRef;
   /** Canonical decision timestamp. */
   decidedAt: string;
-}
-
-/** Input used to reverse one unchanged proposal-created Knowledge Page. */
-export interface ReverseKnowledgeProposalApplicationInput {
-  /** Workspace that owns the proposal and page. */
-  workspaceId: string;
-  /** Immutable proposal that authorized the page. */
-  proposalId: string;
-  /** Accepted review that authorized the page. */
-  reviewId: string;
-  /** Fixed Knowledge Page id owned by the proposal. */
-  knowledgePageId: string;
-  /** Expected digest of the exact current page bytes. */
-  expectedContentDigest: string;
 }
 
 /** Knowledge source kind tracked by the first source registry slice. */
@@ -1653,7 +1639,7 @@ export class FsStore {
           this.workspaceRootPath(proposal.workspaceId),
           'knowledge',
           'schema',
-          'workspace-schema.yaml'
+          'scope-schema.yaml'
         );
         if (existsSync(schemaPath)) {
           scopeSchemaText = readCanonicalTextFile(schemaPath);
@@ -1692,6 +1678,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: candidatePath,
       content: proposal.canonicalPageBytes,
+      expectedOwnerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
@@ -1843,30 +1830,6 @@ export class FsStore {
   }
 
   /**
-   * Reports whether another accepted proposal reserves one generated Page identity.
-   *
-   * @param workspaceId Workspace that owns the Page identity.
-   * @param knowledgePageId Generated Page identity being proposed or accepted.
-   * @param excludedProposalId Current proposal to ignore while checking its own replay.
-   * @returns True when an accepted Review reserves the identity against another proposal.
-   */
-  private hasAcceptedKnowledgeProposalForPage(
-    workspaceId: string,
-    knowledgePageId: string,
-    excludedProposalId?: string
-  ): boolean {
-    return [...this.knowledgeProposals.values()].some(
-      (candidate) =>
-        candidate.id !== excludedProposalId &&
-        candidate.workspaceId === workspaceId &&
-        candidate.knowledgePageId === knowledgePageId &&
-        (this.knowledgeProposalReviews.get(candidate.id) ?? []).some(
-          (review) => review.decision === 'accepted'
-        )
-    );
-  }
-
-  /**
    * Re-reads one proposal file and verifies its exact immutable bytes.
    *
    * @param proposal Proposal owner held in memory.
@@ -1890,6 +1853,21 @@ export class FsStore {
       if (actual !== expected) {
         throw knowledgeProposalAuthorityError('recovery_required');
       }
+      const notebook = this.proposalNotebook(proposal.workspaceId);
+      const candidate = notebook.retainedCandidate(proposal.id);
+      const content = notebook.readRevision(proposal.candidateRevision).files[
+        `${proposal.knowledgePageId}.md`
+      ];
+      if (
+        candidate.revision !== proposal.candidateRevision ||
+        candidate.parentRevision !== proposal.baseRevision ||
+        content !== proposal.canonicalPageBytes ||
+        contentDigest(content) !== proposal.contentDigest ||
+        candidate.metadata.authority.kind !== 'proposal' ||
+        candidate.metadata.authority.proposalId !== proposal.id ||
+        !isDeepStrictEqual(candidate.metadata.producer, proposal.producer)
+      )
+        throw knowledgeProposalAuthorityError('recovery_required');
       return actual;
     } catch (error) {
       if (
@@ -1925,7 +1903,10 @@ export class FsStore {
       review.workspaceId !== proposal.workspaceId ||
       review.proposalDigest !== contentDigest(proposalBytes) ||
       review.knowledgePageId !== proposal.knowledgePageId ||
-      review.contentDigest !== proposal.contentDigest
+      review.contentDigest !== proposal.contentDigest ||
+      review.baseRevision !== proposal.baseRevision ||
+      review.candidateRevision !== proposal.candidateRevision ||
+      !isDeepStrictEqual(review.ownerScope, proposal.ownerScope)
     ) {
       throw knowledgeProposalAuthorityError('recovery_required');
     }
@@ -1962,44 +1943,6 @@ export class FsStore {
       ) {
         throw error;
       }
-      throw knowledgeProposalAuthorityError('recovery_required');
-    }
-  }
-
-  /**
-   * Reads the current page bytes addressed by one proposal.
-   *
-   * @param proposal Proposal that owns the page identity.
-   * @returns Exact durable page bytes, or null when absent.
-   * @throws Error with recovery_required when the page path is unreadable.
-   */
-  private readKnowledgeProposalPage(proposal: KnowledgeProposalRecord): string | null {
-    if (!this.dataRoot) {
-      const entry = this.getWorkspaceResources(proposal.workspaceId).knowledge.find(
-        (candidate) => candidate.id === proposal.knowledgePageId
-      );
-      if (!entry) {
-        return null;
-      }
-      const proposalEntry = parseOwnedKnowledgeEntry(
-        `knowledge/pages/${proposal.knowledgePageId}.md`,
-        proposal.knowledgePageId,
-        proposal.canonicalPageBytes
-      );
-      return JSON.stringify(entry) === JSON.stringify(proposalEntry)
-        ? proposal.canonicalPageBytes
-        : serializeUserAuthoredKnowledgePage(entry, {
-            kind: 'workspace',
-            workspaceId: proposal.workspaceId,
-          });
-    }
-
-    try {
-      return readWorkspaceKnowledgePage(
-        this.workspaceRootPath(proposal.workspaceId),
-        proposal.knowledgePageId
-      );
-    } catch {
       throw knowledgeProposalAuthorityError('recovery_required');
     }
   }
@@ -3707,6 +3650,14 @@ export class FsStore {
     return artifact;
   }
 
+  /** Resolves this Workspace's existing single Git content owner. */
+  private proposalNotebook(workspaceId: string): KnowledgeNotebook {
+    if (!this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
+    return new KnowledgeNotebook({
+      repositoryPath: join(this.workspaceRootPath(workspaceId), 'knowledge', 'notebook.git'),
+    });
+  }
+
   /**
    * Creates one deterministic immutable Knowledge Proposal awaiting review.
    *
@@ -3715,56 +3666,52 @@ export class FsStore {
    */
   public createKnowledgeProposal(input: CreateKnowledgeProposalInput): KnowledgeProposalRecord {
     this.getWorkspace(input.workspaceId);
-    let request: KnowledgeManagerDraftProposalRequest;
-    let proposal: KnowledgeProposalRecord;
-    try {
-      request = KnowledgeManagerDraftProposalRequestSchema.parse({
-        requestId: input.requestId,
-        knowledgePageId: input.knowledgePageId,
-        canonicalPageBytes: input.canonicalPageBytes,
-        contentDigest: input.contentDigest,
-        sourceReferences: input.sourceReferences,
-        rationale: input.rationale,
-        confidence: input.confidence,
-      });
-      proposal = KnowledgeProposalRecordSchema.parse({
-        id: knowledgeAuthorityId('kp_', {
-          workspaceId: input.workspaceId,
-          requestId: request.requestId,
-        }),
-        workspaceId: input.workspaceId,
-        operation: 'create',
-        knowledgePageId: request.knowledgePageId,
-        canonicalPageBytes: request.canonicalPageBytes,
-        contentDigest: request.contentDigest,
-        sourceReferences: request.sourceReferences,
-        rationale: request.rationale,
-        confidence: request.confidence,
-        producer: input.producer,
-        createdAt: input.createdAt,
-      });
-    } catch {
-      throw new KnowledgePageValidationError();
-    }
-
-    const existing = this.knowledgeProposals.get(proposal.id);
-    if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(proposal)) {
-        throw knowledgeProposalAuthorityError('conflict');
-      }
-      this.verifiedKnowledgeProposalBytes(existing);
-      return existing;
-    }
-    if (
-      this.hasAcceptedKnowledgeProposalForPage(proposal.workspaceId, proposal.knowledgePageId) ||
-      this.getWorkspaceResources(proposal.workspaceId).knowledge.some(
-        (entry) => entry.id === proposal.knowledgePageId
-      ) ||
-      this.readKnowledgeProposalPage(proposal) !== null
-    ) {
+    const request = KnowledgeManagerDraftProposalRequestSchema.parse({
+      requestId: input.requestId,
+      baseRevision: input.baseRevision,
+      knowledgePageId: input.knowledgePageId,
+      canonicalPageBytes: input.canonicalPageBytes,
+      contentDigest: input.contentDigest,
+      sourceReferences: input.sourceReferences,
+      rationale: input.rationale,
+      confidence: input.confidence,
+    });
+    const id = knowledgeAuthorityId('kp_', {
+      workspaceId: input.workspaceId,
+      requestId: request.requestId,
+    });
+    const existing = this.knowledgeProposals.get(id);
+    if (existing) throw knowledgeProposalAuthorityError('conflict');
+    const notebook = this.proposalNotebook(input.workspaceId);
+    if (notebook.publishedRevision() !== request.baseRevision)
       throw knowledgeProposalAuthorityError('conflict');
-    }
+    const proposal = KnowledgeProposalRecordSchema.parse({
+      ...request,
+      id,
+      workspaceId: input.workspaceId,
+      operation: 'notebook-change',
+      ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
+      candidateRevision: 'pending',
+      producer: input.producer,
+      createdAt: input.createdAt,
+    });
     this.assertValidKnowledgeProposal(proposal, input.verifiedExternalReferences);
+    const candidateRevision = notebook.prepare({
+      baseRevision: request.baseRevision,
+      changes: { [`${request.knowledgePageId}.md`]: request.canonicalPageBytes },
+      metadata: {
+        summary: request.rationale,
+        changeRequest: {
+          requestId: request.requestId,
+          inputDigest: commandInputHash({ ...request, producer: input.producer }),
+        },
+        producer: input.producer,
+        authority: { kind: 'proposal', proposalId: id },
+        sourceReferences: request.sourceReferences,
+      },
+    });
+    proposal.candidateRevision = candidateRevision;
+    notebook.retainCandidate({ proposalId: id, candidateRevision });
 
     this.knowledgeProposals.set(proposal.id, proposal);
     try {
@@ -3806,6 +3753,15 @@ export class FsStore {
     return proposal;
   }
 
+  /** Returns the exact existing immutable Proposal document digest for human Review binding. */
+  public knowledgeProposalDigest(workspaceId: string, proposalId: string): string {
+    return contentDigest(
+      this.verifiedKnowledgeProposalBytes(
+        this.projectKnowledgeProposalDraft(workspaceId, proposalId)
+      )
+    );
+  }
+
   /**
    * Lists app-local knowledge proposals for one workspace.
    *
@@ -3820,149 +3776,80 @@ export class FsStore {
   }
 
   /**
-   * Appends one human decision and applies an accepted create-only proposal.
+   * Appends one exact human decision; the shared Notebook publisher alone applies accepted content.
    *
    * @param input Authenticated append request.
-   * @returns Stored review row and current application projection.
+   * @returns Stored Review row and its fixed candidate projection.
    */
   public recordKnowledgeProposalReviewDecision(
     input: RecordKnowledgeProposalReviewDecisionInput
   ): SubmitKnowledgeProposalDecisionResponse {
-    if (this.dataRoot && input.decision === 'accepted')
-      throw knowledgeProposalAuthorityError('recovery_required');
     const proposal = this.knowledgeProposals.get(input.proposalId);
-
-    if (!proposal || proposal.workspaceId !== input.workspaceId) {
+    if (!proposal || proposal.workspaceId !== input.workspaceId)
       throw knowledgeProposalAuthorityError('not_found');
-    }
-    let command: SubmitKnowledgeProposalDecisionRequest;
-    try {
-      command = SubmitKnowledgeProposalDecisionRequestSchema.parse({
-        requestId: input.requestId,
-        decision: input.decision,
-      });
-    } catch {
-      throw knowledgeProposalAuthorityError('invalid_request');
-    }
-
-    const proposalBytes = this.verifiedKnowledgeProposalBytes(proposal);
-    const proposalDigest = contentDigest(proposalBytes);
-    const decisions = this.knowledgeProposalReviews.get(proposal.id) ?? [];
-    const existing = decisions.find((review) => review.requestId === command.requestId);
-    if (existing) {
-      if (
-        existing.decision !== command.decision ||
-        JSON.stringify(existing.actor) !== JSON.stringify(input.actor)
-      ) {
-        throw knowledgeProposalAuthorityError('conflict');
-      }
-      this.verifiedKnowledgeProposalReview(proposal, existing.reviewId, proposalBytes);
-
-      if (existing.decision === 'accepted') {
-        const pageBytes = this.readKnowledgeProposalPage(proposal);
-        if (pageBytes === null) {
-          this.assertNoUnresolvedKnowledgeProposalConflict(proposal);
-          const entry = this.assertValidKnowledgeProposal(
-            proposal,
-            input.verifiedExternalReferences
-          );
-          const resources = this.storedWorkspaceResources(proposal.workspaceId);
-          const existingEntry = resources.knowledge.find(
-            (candidate) => candidate.id === proposal.knowledgePageId
-          );
-          if (existingEntry && JSON.stringify(existingEntry) !== JSON.stringify(entry)) {
-            throw knowledgeProposalAuthorityError('recovery_required');
-          }
-          if (!existingEntry) {
-            this.workspaceResources.set(proposal.workspaceId, {
-              ...resources,
-              knowledge: [...resources.knowledge, entry],
-            });
-          }
-          this.refreshWorkspaceCounts(proposal.workspaceId);
-          this.persist(proposal.workspaceId);
-        } else if (
-          pageBytes !== proposal.canonicalPageBytes ||
-          contentDigest(pageBytes) !== proposal.contentDigest
-        ) {
-          throw knowledgeProposalAuthorityError('recovery_required');
-        }
-      }
-
-      return this.projectKnowledgeProposalDecision(proposal.workspaceId, existing.reviewId);
-    }
-
-    if (decisions.some((review) => review.decision !== 'deferred')) {
+    const command = SubmitKnowledgeProposalDecisionRequestSchema.parse({
+      requestId: input.requestId,
+      decision: input.decision,
+      proposalDigest: input.proposalDigest,
+      baseRevision: input.baseRevision,
+      candidateRevision: input.candidateRevision,
+    });
+    const bytes = this.verifiedKnowledgeProposalBytes(proposal);
+    if (
+      command.proposalDigest !== contentDigest(bytes) ||
+      command.baseRevision !== proposal.baseRevision ||
+      command.candidateRevision !== proposal.candidateRevision
+    )
       throw knowledgeProposalAuthorityError('conflict');
-    }
-
+    const decisions = this.knowledgeProposalReviews.get(proposal.id) ?? [];
+    if (
+      decisions.some(
+        (review) => review.decision !== 'deferred' || review.requestId === command.requestId
+      )
+    )
+      throw knowledgeProposalAuthorityError('conflict');
     const accepted = command.decision === 'accepted';
     if (accepted) {
-      if (
-        this.hasAcceptedKnowledgeProposalForPage(
-          proposal.workspaceId,
-          proposal.knowledgePageId,
-          proposal.id
-        )
-      ) {
-        throw knowledgeProposalAuthorityError('conflict');
-      }
       this.assertNoUnresolvedKnowledgeProposalConflict(proposal);
+      this.assertValidKnowledgeProposal(proposal, input.verifiedExternalReferences);
     }
-    const entry = accepted
-      ? this.assertValidKnowledgeProposal(proposal, input.verifiedExternalReferences)
-      : null;
-    if (
-      accepted &&
-      (this.getWorkspaceResources(proposal.workspaceId).knowledge.some(
-        (candidate) => candidate.id === proposal.knowledgePageId
-      ) ||
-        this.readKnowledgeProposalPage(proposal) !== null)
-    ) {
-      throw knowledgeProposalAuthorityError('conflict');
-    }
-
-    let review: KnowledgeProposalReviewRecord;
-    try {
-      review = KnowledgeProposalReviewSchema.parse({
-        reviewId: knowledgeAuthorityId('kr_', {
-          workspaceId: proposal.workspaceId,
-          proposalId: proposal.id,
-          requestId: command.requestId,
-        }),
-        proposalId: proposal.id,
+    const notebook = this.proposalNotebook(proposal.workspaceId);
+    const base = notebook.readRevision(proposal.baseRevision);
+    const review = KnowledgeProposalReviewSchema.parse({
+      reviewId: knowledgeAuthorityId('kr_', {
         workspaceId: proposal.workspaceId,
+        proposalId: proposal.id,
         requestId: command.requestId,
-        decision: command.decision,
-        actor: input.actor,
-        proposalDigest,
-        knowledgePageId: proposal.knowledgePageId,
-        contentDigest: proposal.contentDigest,
-        targetAbsentAtDecision: accepted ? true : null,
-        decidedAt: input.decidedAt,
-      });
-    } catch {
-      throw knowledgeProposalAuthorityError('invalid_request');
-    }
-
+      }),
+      proposalId: proposal.id,
+      workspaceId: proposal.workspaceId,
+      ownerScope: proposal.ownerScope,
+      baseRevision: proposal.baseRevision,
+      candidateRevision: proposal.candidateRevision,
+      requestId: command.requestId,
+      decision: command.decision,
+      actor: input.actor,
+      proposalDigest: contentDigest(bytes),
+      knowledgePageId: proposal.knowledgePageId,
+      contentDigest: proposal.contentDigest,
+      targetAbsentAtDecision: accepted
+        ? !Object.hasOwn(base.files, `${proposal.knowledgePageId}.md`)
+        : null,
+      decidedAt: input.decidedAt,
+    });
     this.knowledgeProposalReviews.set(proposal.id, [...decisions, review]);
-    let application: KnowledgeProposalApplication | null = null;
-    if (accepted) {
-      const resources = this.storedWorkspaceResources(proposal.workspaceId);
-      this.workspaceResources.set(proposal.workspaceId, {
-        ...resources,
-        knowledge: [...resources.knowledge, entry!],
-      });
-      this.refreshWorkspaceCounts(proposal.workspaceId);
-      application = {
-        knowledgePageId: proposal.knowledgePageId,
-        contentDigest: proposal.contentDigest,
-        present: true,
-      };
-    }
-
     this.persist(proposal.workspaceId);
-    return SubmitKnowledgeProposalDecisionResponseSchema.parse({ review, application });
+    return SubmitKnowledgeProposalDecisionResponseSchema.parse({
+      review,
+      application: accepted
+        ? {
+            knowledgePageId: proposal.knowledgePageId,
+            contentDigest: proposal.contentDigest,
+            present: true,
+            notebookRevision: proposal.candidateRevision,
+          }
+        : null,
+    });
   }
 
   /**
@@ -3992,18 +3879,21 @@ export class FsStore {
 
     let application: KnowledgeProposalApplication | null = null;
     if (review.decision === 'accepted') {
-      const pageBytes = this.readKnowledgeProposalPage(proposal);
+      const notebook = this.proposalNotebook(workspaceId);
+      notebook.history({ revision: proposal.candidateRevision, limit: 1 });
+      const pageBytes = notebook.readRevision(proposal.candidateRevision).files[
+        `${proposal.knowledgePageId}.md`
+      ];
       if (
-        pageBytes === null ||
         pageBytes !== proposal.canonicalPageBytes ||
         contentDigest(pageBytes) !== proposal.contentDigest
-      ) {
+      )
         throw knowledgeProposalAuthorityError('recovery_required');
-      }
       application = {
         knowledgePageId: proposal.knowledgePageId,
         contentDigest: proposal.contentDigest,
         present: true,
+        notebookRevision: proposal.candidateRevision,
       };
     }
 
@@ -4150,92 +4040,6 @@ export class FsStore {
     return [...this.knowledgeProposalReviews.values()]
       .flat()
       .filter((review) => review.workspaceId === workspaceId);
-  }
-
-  /**
-   * Removes one unchanged page created by an accepted Knowledge Proposal.
-   *
-   * @param input Exact proposal, accepted review, page, and digest tuple.
-   * @returns Derived projection showing that the page is absent.
-   */
-  public reverseKnowledgeProposalApplication(
-    input: ReverseKnowledgeProposalApplicationInput
-  ): ReverseKnowledgeProposalResponse {
-    if (this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
-    const proposal = this.knowledgeProposals.get(input.proposalId);
-    if (!proposal || proposal.workspaceId !== input.workspaceId) {
-      throw knowledgeProposalAuthorityError('not_found');
-    }
-    const proposalBytes = this.verifiedKnowledgeProposalBytes(proposal);
-    const review = this.verifiedKnowledgeProposalReview(proposal, input.reviewId, proposalBytes);
-    if (
-      review.decision !== 'accepted' ||
-      review.knowledgePageId !== proposal.knowledgePageId ||
-      review.contentDigest !== proposal.contentDigest ||
-      input.knowledgePageId !== proposal.knowledgePageId ||
-      input.expectedContentDigest !== proposal.contentDigest
-    ) {
-      throw knowledgeProposalAuthorityError('recovery_required');
-    }
-
-    const pageBytes = this.readKnowledgeProposalPage(proposal);
-    if (pageBytes === null) {
-      throw knowledgeProposalAuthorityError('recovery_required');
-    }
-    if (
-      pageBytes !== proposal.canonicalPageBytes ||
-      contentDigest(pageBytes) !== input.expectedContentDigest
-    ) {
-      throw knowledgeProposalAuthorityError('conflict');
-    }
-
-    const resources = this.storedWorkspaceResources(proposal.workspaceId);
-    this.workspaceResources.set(proposal.workspaceId, {
-      ...resources,
-      knowledge: resources.knowledge.filter((entry) => entry.id !== proposal.knowledgePageId),
-    });
-    this.refreshWorkspaceCounts(proposal.workspaceId);
-    this.persist(proposal.workspaceId);
-
-    return this.projectKnowledgeProposalReversal(input);
-  }
-
-  /**
-   * Projects one completed reversal from exact durable owners without repairing effects.
-   *
-   * @param input Exact proposal, accepted review, page, and digest tuple.
-   * @returns Existing reversal response derived from current durable authority.
-   * @throws Error with recovery_required when any required owner is missing or changed.
-   */
-  public projectKnowledgeProposalReversal(
-    input: ReverseKnowledgeProposalApplicationInput
-  ): ReverseKnowledgeProposalResponse {
-    const proposal = this.knowledgeProposals.get(input.proposalId);
-    if (!proposal || proposal.workspaceId !== input.workspaceId) {
-      throw knowledgeProposalAuthorityError('recovery_required');
-    }
-    const proposalBytes = this.verifiedKnowledgeProposalBytes(proposal);
-    const review = this.verifiedKnowledgeProposalReview(proposal, input.reviewId, proposalBytes);
-    if (
-      review.decision !== 'accepted' ||
-      review.knowledgePageId !== proposal.knowledgePageId ||
-      review.contentDigest !== proposal.contentDigest ||
-      input.knowledgePageId !== proposal.knowledgePageId ||
-      input.expectedContentDigest !== proposal.contentDigest ||
-      this.readKnowledgeProposalPage(proposal) !== null
-    ) {
-      throw knowledgeProposalAuthorityError('recovery_required');
-    }
-
-    return ReverseKnowledgeProposalResponseSchema.parse({
-      proposalId: proposal.id,
-      reviewId: review.reviewId,
-      application: {
-        knowledgePageId: proposal.knowledgePageId,
-        contentDigest: proposal.contentDigest,
-        present: false,
-      },
-    });
   }
 
   /**

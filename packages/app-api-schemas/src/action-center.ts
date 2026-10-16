@@ -1,4 +1,9 @@
-import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  KnowledgeOwnerScopeSchema,
+  RequestIdSchema,
+  TimestampSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import {
   KnowledgeProposalContentDigestSchema,
@@ -307,6 +312,9 @@ export const SubmitKnowledgeProposalDecisionRequestSchema = z
   .object({
     requestId: RequestIdSchema,
     decision: KnowledgeProposalDecisionSchema,
+    proposalDigest: KnowledgeProposalContentDigestSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
   })
   .strict();
 
@@ -315,6 +323,9 @@ export const KnowledgeProposalReviewSchema = z
   .object({
     proposalId: z.string().min(1),
     workspaceId: z.string().min(1),
+    ownerScope: KnowledgeOwnerScopeSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
     reviewId: z.string().min(1),
     requestId: RequestIdSchema,
     decision: KnowledgeProposalDecisionSchema,
@@ -327,12 +338,13 @@ export const KnowledgeProposalReviewSchema = z
   })
   .strict();
 
-/** Current Knowledge Page presence projected from proposal-owned application lineage. */
+/** Knowledge Page result at the exact published commit named by its command. */
 export const KnowledgeProposalApplicationSchema = z
   .object({
     knowledgePageId: KnowledgeProposalPageIdSchema,
     contentDigest: KnowledgeProposalContentDigestSchema,
     present: z.boolean(),
+    notebookRevision: z.string().min(1),
   })
   .strict();
 
@@ -346,7 +358,9 @@ export const SubmitKnowledgeProposalDecisionResponseSchema = z
   .superRefine((response, context) => {
     const accepted = response.review.decision === 'accepted';
     if (
-      response.review.targetAbsentAtDecision !== (accepted ? true : null) ||
+      (accepted
+        ? response.review.targetAbsentAtDecision === null
+        : response.review.targetAbsentAtDecision !== null) ||
       (accepted ? response.application?.present !== true : response.application !== null)
     ) {
       context.addIssue({
@@ -366,10 +380,12 @@ export const SubmitKnowledgeProposalDecisionResponseSchema = z
     }
   });
 
-/** Request payload for removing one unchanged proposal-created Knowledge Page. */
+/** Request payload for restoring the original selected path after one reviewed change. */
 export const ReverseKnowledgeProposalRequestSchema = z
   .object({
     requestId: RequestIdSchema,
+    baseRevision: z.string().min(1),
+    confirmRemoval: z.literal(true).optional(),
     reviewId: z.string().min(1),
     knowledgePageId: KnowledgeProposalPageIdSchema,
     expectedContentDigest: KnowledgeProposalContentDigestSchema,
@@ -381,7 +397,7 @@ export const ReverseKnowledgeProposalResponseSchema = z
   .object({
     proposalId: z.string().min(1),
     reviewId: z.string().min(1),
-    application: KnowledgeProposalApplicationSchema.extend({ present: z.literal(false) }),
+    application: KnowledgeProposalApplicationSchema,
   })
   .strict();
 
@@ -395,13 +411,13 @@ export type SubmitKnowledgeProposalDecisionRequest = z.infer<
 >;
 /** Append-only human Knowledge Review row projected after one decision. */
 export type KnowledgeProposalReview = z.infer<typeof KnowledgeProposalReviewSchema>;
-/** Current Knowledge Page presence projected from proposal-owned application lineage. */
+/** Knowledge Page result at the exact published commit named by its command. */
 export type KnowledgeProposalApplication = z.infer<typeof KnowledgeProposalApplicationSchema>;
 /** Response payload after recording one knowledge proposal decision. */
 export type SubmitKnowledgeProposalDecisionResponse = z.infer<
   typeof SubmitKnowledgeProposalDecisionResponseSchema
 >;
-/** Request payload for removing one unchanged proposal-created Knowledge Page. */
+/** Request payload for restoring the original selected path after one reviewed change. */
 export type ReverseKnowledgeProposalRequest = z.infer<typeof ReverseKnowledgeProposalRequestSchema>;
 /** Derived post-reversal projection without a separate reversal record. */
 export type ReverseKnowledgeProposalResponse = z.infer<

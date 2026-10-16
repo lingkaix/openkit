@@ -182,7 +182,9 @@ export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema
   .strip()
   .superRefine((review, context) => {
     const accepted = review.decision === 'accepted';
-    if (accepted !== (review.targetAbsentAtDecision === true)) {
+    if (
+      accepted ? review.targetAbsentAtDecision === null : review.targetAbsentAtDecision !== null
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'Only an accepted review may record target absence.',
@@ -1717,7 +1719,10 @@ export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalReco
   return [
     '---',
     'type: "proposal"',
-    'operation: "create"',
+    'operation: "notebook-change"',
+    `owner_scope: ${JSON.stringify(proposal.ownerScope)}`,
+    `base_revision: ${JSON.stringify(proposal.baseRevision)}`,
+    `candidate_revision: ${JSON.stringify(proposal.candidateRevision)}`,
     `knowledge_page_id: ${JSON.stringify(proposal.knowledgePageId)}`,
     `content_digest: ${JSON.stringify(proposal.contentDigest)}`,
     `source_references: ${JSON.stringify(proposal.sourceReferences)}`,
@@ -1727,7 +1732,7 @@ export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalReco
     `producer: ${JSON.stringify(proposal.producer)}`,
     `created_at: ${JSON.stringify(proposal.createdAt)}`,
     '---',
-    proposal.canonicalPageBytes,
+    proposal.rationale,
   ].join('\n');
 }
 
@@ -1761,7 +1766,7 @@ function loadKnowledgeProposals(
       const confidenceValue = parsed.document.frontmatter.confidence;
       if (
         parsed.document.frontmatter.type !== 'proposal' ||
-        parsed.document.frontmatter.operation !== 'create' ||
+        parsed.document.frontmatter.operation !== 'notebook-change' ||
         parsed.document.frontmatter.review_required !== true ||
         sourceReferences === null ||
         typeof producerValue !== 'object' ||
@@ -1771,12 +1776,35 @@ function loadKnowledgeProposals(
         throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
       }
 
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+      });
+      const candidateRevision = requiredFrontmatterString(
+        parsed.document,
+        'candidate_revision',
+        path
+      );
+      const baseRevision = requiredFrontmatterString(parsed.document, 'base_revision', path);
+      const knowledgePageId = requiredFrontmatterString(parsed.document, 'knowledge_page_id', path);
+      const candidate = notebook.retainedCandidate(id);
+      if (
+        candidate.revision !== candidateRevision ||
+        candidate.parentRevision !== baseRevision ||
+        candidate.metadata.authority.kind !== 'proposal' ||
+        candidate.metadata.authority.proposalId !== id
+      )
+        throw new Error('Knowledge Proposal retained candidate is unavailable.');
+      const canonicalPageBytes =
+        notebook.readRevision(candidateRevision).files[`${knowledgePageId}.md`];
       const proposal = KnowledgeProposalRecordSchema.parse({
         id,
         workspaceId,
-        operation: 'create',
-        knowledgePageId: requiredFrontmatterString(parsed.document, 'knowledge_page_id', path),
-        canonicalPageBytes: parsed.document.body,
+        operation: 'notebook-change',
+        ownerScope: parsed.document.frontmatter.owner_scope,
+        baseRevision,
+        candidateRevision,
+        knowledgePageId,
+        canonicalPageBytes,
         contentDigest: requiredFrontmatterString(parsed.document, 'content_digest', path),
         sourceReferences,
         rationale: requiredFrontmatterString(parsed.document, 'rationale', path),
@@ -1787,7 +1815,11 @@ function loadKnowledgeProposals(
       const candidateDigest = `sha256:${createHash('sha256')
         .update(proposal.canonicalPageBytes, 'utf8')
         .digest('hex')}`;
-      if (proposal.contentDigest !== candidateDigest) {
+      if (
+        proposal.contentDigest !== candidateDigest ||
+        !isDeepStrictEqual(proposal.ownerScope, { kind: 'workspace', workspaceId }) ||
+        !isDeepStrictEqual(candidate.metadata.producer, proposal.producer)
+      ) {
         throw new Error(`Knowledge proposal ${id} does not preserve its canonical bytes.`);
       }
       Object.defineProperty(proposal, retainedProposal, {
