@@ -51,14 +51,24 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     SELECT ?, 'Channel member', 'member-' || email, email_verified, created_at, updated_at, 'human' FROM users WHERE id = ?`)
     .run(actor.userId, FIXTURE_LOCAL_USER_ID);
   let store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: FIXTURE_LOCAL_USER_ID, workspaceId: DEMO_WORKSPACE_ID });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
+    workspaceId: DEMO_WORKSPACE_ID,
+  });
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,created_at,updated_at,revision)
     SELECT workspace_id,?,status,access_level,joined_at,created_at,updated_at,revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?`)
     .run(actor.userId, DEMO_WORKSPACE_ID, FIXTURE_LOCAL_USER_ID);
-  const thread = store.createThread(DEMO_WORKSPACE_ID, 'Exact channel request', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
+  const thread = store.createThread(
+    DEMO_WORKSPACE_ID,
+    'Exact channel request',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
   const turn = store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Request a decision', {
     kind: 'user',
     id: actor.userId,
@@ -294,6 +304,33 @@ afterEach(() => {
 });
 
 describe('Discord to native Pending Request seam', () => {
+  it('admits only the recorded local User to pairing in local mode', () => {
+    const f = fixture();
+    const openWorkspace = vi.fn(() => {
+      throw new Error('Pairing must not open Workspace storage');
+    });
+    const invokePending = vi.fn(async () => {
+      throw new Error('Pairing must not invoke a Pending Request');
+    });
+    const services = createChannelServices({
+      coreDb: f.coreDb,
+      store: f.store,
+      mode: 'local',
+      publicBaseUrl: 'https://openkit.invalid',
+      discordConfig: { applicationId, publicKey },
+      openWorkspace,
+      invokePending,
+    });
+    expect(
+      services.discord!.beginPairing({ userId: FIXTURE_LOCAL_USER_ID, kind: 'local' })
+    ).toEqual({ challenge: expect.any(String), expiresAt: expect.any(Number) });
+    expect(() => services.discord!.beginPairing(actor)).toThrow(
+      'Current actor authority is unavailable.'
+    );
+    expect(openWorkspace).not.toHaveBeenCalled();
+    expect(invokePending).not.toHaveBeenCalled();
+  });
+
   it('skips unavailable Workspace recovery and later queues the exact retained request', () => {
     const f = fixture();
     const pending = f.record();

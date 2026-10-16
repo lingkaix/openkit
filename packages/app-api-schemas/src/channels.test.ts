@@ -15,7 +15,11 @@ describe('first channel contracts', () => {
     expect(schema.safeParse({ deliveryId }).success).toBe(false);
     expect(schema.safeParse({ deliveryId, expectedAttemptId: null }).success).toBe(true);
     expect(
-      schema.safeParse({ deliveryId, expectedAttemptId: 7, recipientUserId: allocateEntityId('usr') }).success
+      schema.safeParse({
+        deliveryId,
+        expectedAttemptId: 7,
+        recipientUserId: allocateEntityId('usr'),
+      }).success
     ).toBe(false);
     expect(schema.safeParse({ deliveryId, expectedAttemptId: 7, channel: 'email' }).success).toBe(
       false

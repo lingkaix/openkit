@@ -53,8 +53,14 @@ describe('attention delivery owner', () => {
     for (const changed of [
       { source, recipientUserId: bobId },
       { source: { ...source, requestId: 'apr_other' }, recipientUserId: aliceId },
-      { source: { ...source, threadId: testEntityId('th', 'attention-other') }, recipientUserId: aliceId },
-      { source: { ...source, workspaceId: testEntityId('ws', 'attention-other') }, recipientUserId: aliceId },
+      {
+        source: { ...source, threadId: testEntityId('th', 'attention-other') },
+        recipientUserId: aliceId,
+      },
+      {
+        source: { ...source, workspaceId: testEntityId('ws', 'attention-other') },
+        recipientUserId: aliceId,
+      },
       {
         source: { ...source, kind: 'user-input-request' as const },
         recipientUserId: aliceId,
