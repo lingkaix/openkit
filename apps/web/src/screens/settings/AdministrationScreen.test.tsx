@@ -26,7 +26,7 @@ const QUICK_CHAT = {
   ...PROJECT,
   id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
 };
 const SECOND_PROJECT = {
   ...PROJECT,

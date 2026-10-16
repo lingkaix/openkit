@@ -110,6 +110,7 @@ export interface LlmProjectionPolicyDecision {
 const ITEM_TYPE_CATEGORY_MAP = {
   'user-message': 'user',
   'assistant-message': 'assistant',
+  'context-summary': 'assistant',
   reasoning: 'review',
   'artifact-reference': 'artifact',
   'command-execution': 'diagnostic',

@@ -105,8 +105,6 @@ import {
   ListWorkspaceVaultUseRecordsResponseSchema,
   ProviderApiKeyProfileIdSchema,
   ProviderRegistryEntrySchema,
-  QuickChatRequestSchema,
-  QuickChatResponseSchema,
   ReadKnowledgeSourceResponseSchema,
   RecordKnowledgeClaimRequestSchema,
   RecordKnowledgeClaimResponseSchema,
@@ -4045,7 +4043,6 @@ describe('app api schemas', () => {
   });
 
   it.each([
-    ['Quick Chat', QuickChatRequestSchema, { input: 'Hello' }],
     [
       'Chat Mode',
       SubmitConversationRequestSchema,
@@ -4055,15 +4052,6 @@ describe('app api schemas', () => {
     for (const override of [{ providerId: 'caller-provider' }, { model: 'caller-model' }]) {
       expect(schema.safeParse({ ...input, ...override }).success).toBe(false);
     }
-  });
-
-  it('rejects caller Workspace authority from Quick Chat requests', () => {
-    expect(
-      QuickChatRequestSchema.safeParse({
-        input: 'Hello',
-        workspaceId: 'ws_00000000-0000-7349-9b29-0b0df94928e7',
-      }).success
-    ).toBe(false);
   });
 
   it('preserves ordinary Git push summaries and rejects host paths', () => {
@@ -4713,7 +4701,7 @@ describe('app api schemas', () => {
     }
   });
 
-  it('accepts dashboard, auth, quick chat, agent catalog, and action center payloads', () => {
+  it('accepts dashboard, auth, agent catalog, and action center payloads', () => {
     expect(
       AuthSignUpEmailResponseSchema.parse({
         token: 'as_00000000-0000-78f3-bdfb-13f04d6a5a83',
@@ -4975,15 +4963,6 @@ describe('app api schemas', () => {
         defaultTokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
       }).success
     ).toBe(false);
-    expect(
-      QuickChatResponseSchema.parse({
-        id: 'quick_1',
-        status: 'completed',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        modelId: 'default',
-        content: 'ok',
-      }).content
-    ).toBe('ok');
     expect(
       AutomationRecordSchema.parse({
         id: testEntityId('auto', 'dashboard-automation'),

@@ -15,10 +15,7 @@ export function isThreadVisible(
   if (!userId || !ThreadSchema.safeParse(thread).success) return false;
   const workspace = store.getWorkspace(thread.workspaceId);
   if (administratorEligible) return true;
-  if (
-    workspace.kind === 'quick-chat' &&
-    (thread.visibility !== 'private' || workspace.id !== quickChatWorkspaceIdForUser(userId))
-  )
+  if (workspace.kind === 'personal' && workspace.id !== quickChatWorkspaceIdForUser(userId))
     return false;
   return thread.visibility === 'workspace' || thread.privateOwnerUserId === userId;
 }

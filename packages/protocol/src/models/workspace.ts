@@ -14,7 +14,7 @@ export const WorkspaceKindSchema = z.enum([
   'research',
   'operations',
   'general',
-  'quick-chat',
+  'personal',
 ]);
 
 /**

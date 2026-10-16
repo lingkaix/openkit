@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
@@ -25,7 +26,7 @@ import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../s
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { assembleAssistantCommandRun, runAssistantCommand } from './assistant-command-run.js';
 import {
@@ -36,7 +37,9 @@ import {
 } from './assistant-skill-resources.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import type { AgentMessage, AgentTool } from './internal-agent-loop.js';
+import { readInternalContextEvidence } from './internal-context-evidence.js';
 
+const SKILL_READER_ID = allocateEntityId('usr');
 const roots: string[] = [];
 const databases: Array<CoreDb | WorkspaceDb> = [];
 afterEach(() => {
@@ -98,20 +101,20 @@ async function fixture(selected = true, description?: string) {
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: workspace.id,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(`INSERT INTO users
       (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-      VALUES (?, 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
-    .run(testEntityId('usr', 'skill-reader'), Date.now(), Date.now());
+      VALUES (?, 'Skill reader', ?, 0, ?, ?, 'human', 'active')`)
+    .run(SKILL_READER_ID, ['skill-reader', 'example.invalid'].join('@'), Date.now(), Date.now());
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
       (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
       VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
-    .run(workspace.id, testEntityId('usr', 'skill-reader'), timestamp, timestamp, timestamp);
-  const actor: Actor = { kind: 'session', userId: testEntityId('usr', 'skill-reader') };
+    .run(workspace.id, SKILL_READER_ID, timestamp, timestamp, timestamp);
+  const actor: Actor = { kind: 'session', userId: SKILL_READER_ID };
   const thread = store.createThread(workspace.id, 'Assistant command');
   const turn = store.createTurn(
     workspace.id,
@@ -142,7 +145,7 @@ async function fixture(selected = true, description?: string) {
         expectedRevision: 0,
         activate: true,
         createdAt: '2026-10-15T00:00:00.000Z',
-        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
         tree: [
           {
             kind: 'file',
@@ -252,7 +255,7 @@ function changeDefault(f: Fixture) {
     expectedRevision: loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId).revision,
     activate: true,
     createdAt: '2026-10-16T00:00:00.000Z',
-    producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
     tree: [
       {
         kind: 'file',
@@ -420,7 +423,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
       workspaceId: f.workspaceId,
-      responsibleUserId: testEntityId('usr', 'skill-reader'),
+      responsibleUserId: SKILL_READER_ID,
       requestId: null,
       threadId: f.threadId,
       turnId: f.turn.id,
@@ -447,13 +450,121 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(f.execute).not.toHaveBeenCalled();
   });
 
+  it('accounts summary production and the answer through one captured Gateway environment and budget', async () => {
+    const f = await fixture(false);
+    f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
+    for (let index = 0; index < 8; index += 1) {
+      const earlier = f.store.createTurn(
+        f.workspaceId,
+        f.threadId,
+        'Earlier request.',
+        { kind: 'user', id: f.actor.userId },
+        null,
+        { startedAt: `2026-10-15T00:00:0${index}.000Z`, agentId: 'quick-chat' }
+      );
+      for (const type of ['user-message', 'assistant-message'] as const) {
+        f.store.createItem({
+          id: allocateEntityId('it'),
+          workspaceId: f.workspaceId,
+          threadId: f.threadId,
+          turnId: earlier.id,
+          type,
+          status: 'completed',
+          text: `${type} ${index}: ${'x'.repeat(800)}`,
+          ...(type === 'user-message'
+            ? { actor: { kind: 'user', id: f.actor.userId } as const }
+            : {}),
+          createdAt: earlier.startedAt!,
+          completedAt: earlier.startedAt!,
+        });
+      }
+      f.store.updateTurn(earlier.id, { status: 'completed', completedAt: earlier.startedAt });
+    }
+    const assembly = assembleAssistantCommandRun({
+      resources: f.resources,
+      tools: f.tools,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] }],
+    });
+    let summaryCalls = 0;
+    f.createResponses.mockImplementation(async (_provider, request) => {
+      expect(environments(f)).toHaveLength(1);
+      const summary = JSON.stringify(request.input).includes('openkit_context_summary_task');
+      if (summary) summaryCalls += 1;
+      return {
+        ...response(
+          summary
+            ? 'Keep the exact unresolved constraint and source references.'
+            : 'Bounded answer.',
+          `response-${summaryCalls}-${summary ? 'summary' : 'answer'}`
+        ),
+        usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+      };
+    });
+    const boundedModel = {
+      ...logicalModel,
+      contract: { context: 14_000, output: 512, inputModalities: ['text'], reasoning: false },
+    };
+    const result = await runAssistantCommand({
+      ...f.input,
+      assembly,
+      turn: f.store.getTurnById(f.turn.id),
+      readContextEvidence: (items) =>
+        readInternalContextEvidence({
+          store: f.store,
+          coreDb: f.coreDb,
+          actor: f.actor,
+          workspaceId: f.workspaceId,
+          threadId: f.threadId,
+          items,
+        }),
+      limits: { ...limits, maxModelTurns: 8 },
+      gateway: {
+        ...f.input.gateway,
+        logicalModel: boundedModel,
+        resolveLogicalModel: () => boundedModel,
+      },
+    });
+    expect(summaryCalls).toBeGreaterThan(0);
+    expect(f.createResponses).toHaveBeenCalledTimes(summaryCalls + 1);
+    expect(result.content).toBe('Bounded answer.');
+    expect(result.assertContextCurrent).toEqual(expect.any(Function));
+    expect(() => result.assertContextCurrent!()).not.toThrow();
+    expect(environments(f)).toHaveLength(1);
+    const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
+    expect(calls).toHaveLength(summaryCalls + 1);
+    for (const call of calls) {
+      expect(call).toMatchObject({
+        status: 'succeeded',
+        turnId: f.turn.id,
+        requestId: null,
+        capabilityId: 'inference.local.quick_chat',
+      });
+      expect(
+        f.workspaceDb.sqlite
+          .prepare(
+            'SELECT request_id FROM audit_events WHERE capability_call_id = ? AND action = ?'
+          )
+          .get(call.id, 'capability.finish')
+      ).toEqual({ request_id: requestId });
+    }
+    const usage = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
+    expect(usage).toHaveLength(summaryCalls + 1);
+    expect(usage.every((record) => record.quantity === 10 && record.requestId === null)).toBe(true);
+    expect(
+      f.store
+        .listThreadItems(f.workspaceId, f.threadId)
+        .filter((item) => item.type === 'context-summary')
+    ).toHaveLength(summaryCalls);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
   it('requires current inference permission even when the actor can still read selected resources', async () => {
     const f = await fixture();
     f.coreDb.sqlite
       .prepare(
         "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
       )
-      .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
+      .run(f.workspaceId, SKILL_READER_ID);
     expect(
       authorizeWorkspace(f.coreDb, f.actor, f.workspaceId, {
         mutating: false,
@@ -495,13 +606,13 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           .prepare(
             "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
           )
-          .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
+          .run(f.workspaceId, SKILL_READER_ID);
       else
         f.coreDb.sqlite
           .prepare(
             "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
           )
-          .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
+          .run(f.workspaceId, SKILL_READER_ID);
       return result;
     });
 
@@ -517,7 +628,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId)).toEqual([
       expect.objectContaining({
         capabilityCallId: calls[0]!.id,
-        responsibleUserId: testEntityId('usr', 'skill-reader'),
+        responsibleUserId: SKILL_READER_ID,
       }),
     ]);
     expect(
@@ -576,7 +687,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       expect(records.filter((record) => record.capabilityCallId === call.id)).toEqual([
         expect.objectContaining({
           requestId: null,
-          responsibleUserId: testEntityId('usr', 'skill-reader'),
+          responsibleUserId: SKILL_READER_ID,
           workspaceId: f.workspaceId,
           threadId: f.threadId,
           turnId: f.turn.id,
@@ -767,10 +878,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const f = await fixture();
     let input = f.input;
     if (condition === 'actor')
-      input = {
-        ...input,
-        actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-      };
+      input = { ...input, actor: { kind: 'session', userId: FIXTURE_LOCAL_USER_ID } };
     if (condition === 'turn')
       input = {
         ...input,
@@ -778,7 +886,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           f.workspaceId,
           f.threadId,
           'Another turn.',
-          { kind: 'user', id: testEntityId('usr', 'skill-reader') },
+          { kind: 'user', id: SKILL_READER_ID },
           null,
           { captureCoverage: { scope: 'server', value: 'off' } }
         ),
@@ -799,7 +907,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         .prepare(
           "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ? AND user_id = ?"
         )
-        .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
+        .run(f.workspaceId, SKILL_READER_ID);
     if (condition === 'removed' || condition === 'missing-version') {
       const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
       if (condition === 'removed') catalog.skills.entries[0]!.availability = 'removed';

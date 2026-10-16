@@ -42,6 +42,7 @@ import {
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
+import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
@@ -307,13 +308,26 @@ export function prepareWorkerTurnContextPackage(
     : null;
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  const isChatSubordinateTask = isChatSubordinateTaskTurn({
-    originatingThreadId: store.getThread(input.workspaceId, input.threadId).parentThreadId ?? null,
-    requestId: input.requestId,
-    turn,
-  });
   const isTask =
     workerRequest.requestKind === 'structured-delegation' && checkpoint?.goalId === null;
+  const isChatSubordinateTask =
+    isChatSubordinateTaskTurn({
+      originatingThreadId:
+        store.getThread(input.workspaceId, input.threadId).parentThreadId ?? null,
+      requestId: input.requestId,
+      turn,
+    }) ||
+    (isTask &&
+      knowledgeSelectionInput === null &&
+      readAssistantTaskHandoffSource(store, workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        requestId: input.requestId,
+        ...(checkpoint ? { requestInputHash: checkpoint.requestInputHash } : {}),
+        triggerActor: turn.triggerActor,
+        turnInput: input.workerRequest,
+      }) !== null);
   // Direct Task entry requires selection. A Chat handoff retains its entry's existing
   // selection choice; changing its identity must not add or remove a query.
   if (

@@ -54,7 +54,7 @@ The reason is recorded in [Skill Read Operation Invocation](../decisions/2026101
 
 Family acceptance must prove exact authority, immutable selected versions/digests, bounded reads, current access and output-audience checks, cancellation and correct Turn evidence through the required invocation path. Captured-effect approval and unknown external-effect non-replay are not applicable to these Skill reads because they read admitted retained text without an external effect. This does not waive another Tool's requirements. Report passed family predicates and remaining specification work separately. Wider cross-role loop, internal MCP/adapter/isolation/approval/effect-settlement, native Kernel/UI and other resource-integration predicates remain; this family does not complete the specification.
 
-Standalone `chat.quick` receives no resources, request ID or synthetic Turn in this slice. Its direct Provider call remains a documented divergence from the required shared-loop design; the bypass-removal obligation below remains binding without a permanent direct-call exception. Retirement or Timeline admission of that entry remains an open Chat-owner decision, not a condition for satisfying the existing shared-loop obligation.
+The former standalone entry is superseded by [Retire Stateless Quick Chat](../decisions/20261016-retire_stateless_quick_chat.md). All ordinary Assistant entry uses `conversation.submit` on the private Timeline. The first-family scope remains selected Skills; retirement adds no wider resource-family completion claim and grants no exception to the shared-loop requirement.
 
 ## Resource Selection And Configuration
 
