@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { WorkspaceMcpCredentialBindingSchema } from './mcp-credentials.js';
+import { McpHttpEndpointSchema, WorkspaceMcpCredentialBindingSchema } from './mcp-credentials.js';
 
 export {
   WorkspaceMcpCredentialBindingSchema,
@@ -60,15 +60,7 @@ export const WorkspaceMcpStdioTransportSchema = z
 export const WorkspaceMcpHttpTransportSchema = z
   .object({
     kind: z.literal('http'),
-    endpoint: z.url().refine((value) => {
-      const endpoint = new URL(value);
-      return (
-        (endpoint.protocol === 'http:' || endpoint.protocol === 'https:') &&
-        endpoint.username === '' &&
-        endpoint.password === '' &&
-        endpoint.hash === ''
-      );
-    }, 'MCP endpoints must be credential-free HTTP URLs without hash.'),
+    endpoint: McpHttpEndpointSchema,
     headers: z.record(z.string().regex(HTTP_HEADER_NAME), z.string()).default({}),
   })
   .strict();
