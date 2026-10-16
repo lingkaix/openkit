@@ -48,7 +48,6 @@ export async function acquireGitEcosystemSkill(
             },
             timeout: 60_000,
             maxBuffer,
-            stdio: ['ignore', 'pipe', 'pipe'],
           }
         )
       ).stdout;
