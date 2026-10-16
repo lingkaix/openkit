@@ -10,6 +10,7 @@ import { createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE } from './workspace-archive.js';
@@ -24,7 +25,7 @@ afterEach(() => {
 });
 
 /** Creates a real server-mode archive owner with an ordinary canonical-user session. */
-function archiveFixture() {
+function archiveFixture(fileAdmission?: FileStorageAdmission) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-archive-admission-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
@@ -46,6 +47,7 @@ function archiveFixture() {
     },
     coreDb,
     dataRoot,
+    fileAdmission,
     mode: 'server',
     store,
     workspaceMutationAdmission,
@@ -91,6 +93,41 @@ function workspaceAuthority(fixture: ReturnType<typeof archiveFixture>) {
 }
 
 describe('retained archive primary admission', () => {
+  it('shares disk capacity admission across export and archive staging', async () => {
+    let availableBytes = 1_000_000_000n;
+    const admission = new FileStorageAdmission('.', () => 0n, () => availableBytes);
+    const fixture = archiveFixture(admission);
+    const archive = await exportedArchive(fixture);
+    const before = workspaceAuthority(fixture);
+    // The existing App-owned reservation can consume capacity before the next transfer.
+    const pending = admission.reserve({
+      stagingBytes: availableBytes,
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 0n,
+    });
+    try {
+      const exported = await fixture.app.request(
+        ...operationRequest('workspace.export', { workspaceId: fixture.workspace.id }, { method: 'POST' })
+      );
+      const imported = await fixture.app.request('http://127.0.0.1/api/app/workspace-archives/import', {
+        body: archive.bytes,
+        headers: {
+          'content-type': WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
+          'x-openkit-request-id': '00000000-0000-4000-8000-000000000017',
+        },
+        method: 'POST',
+      });
+      expect([exported.status === 200, imported.status === 200]).toEqual([false, false]);
+      expect(workspaceAuthority(fixture)).toEqual(before);
+    } finally {
+      pending.release();
+    }
+    // Releasing a different request's unused capacity permits a fresh transfer.
+    availableBytes = 1_000_000_000n;
+    await exportedArchive(fixture);
+  });
+
   it.each([
     ['workspace', 'import-dry-run'],
     ['workspace', 'import'],
