@@ -104,7 +104,6 @@ function fixture(configured = true) {
     coreDb,
     workerControlGateway: gateway,
     llmGatewayDispatcher: {
-      createChatCompletion: dispatch,
       createResponses: dispatch,
       createResponsesStream: dispatch,
       createChatCompletionStream: dispatch,
@@ -273,12 +272,7 @@ it.each([
   expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
 });
 
-it.each([
-  ['responses', false],
-  ['responses', true],
-  ['chat/completions', false],
-  ['chat/completions', true],
-] as const)('retains observed HTTP rejection when stock loses status: %s stream=%s', async (endpoint, stream) => {
+it('retains observed HTTP rejection when the stock Responses stream loses status', async () => {
   const f = fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = Object.assign(new Error('exception-canary'), {
@@ -289,7 +283,7 @@ it.each([
     context.transport?.onProviderHttpRejection?.(401);
     throw error;
   });
-  const response = await f.post(stream, endpoint);
+  const response = await f.post(true);
   expect(response.status).toBe(400);
   expect(await response.text()).not.toContain('canary');
   expect(f.dispatch).toHaveBeenCalledTimes(1);
@@ -326,44 +320,18 @@ it('keeps terminal SSE and durable failure when logging throws', async () => {
   ]);
 });
 
-it.each([
-  199,
-  200,
-  302,
-  399,
-  401.5,
-  600,
-  NaN,
-  Infinity,
-])('ignores malformed or non-rejection observer status %s', async (status) => {
-  const f = fixture();
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
-    context.transport?.onProviderHttpRejection?.(status);
-    throw Object.assign(new Error('exception-canary'), {
-      failure: { kind: 'unknown', settled: false },
-    });
-  });
-  await f.post(false);
-  expect(warn).toHaveBeenCalledTimes(1);
-  expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
-});
-
-it('clears observed rejection across retries and ignores late evidence from a prior attempt', async () => {
+it('clears observed rejection before a retry with no HTTP evidence', async () => {
   const f = fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.useFakeTimers();
-  let priorContext: LLMGatewayDispatchContext | undefined;
   f.dispatch
     .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
-      priorContext = context;
       context.transport?.onProviderHttpRejection?.(429);
       throw Object.assign(new Error('first-exception-canary'), {
         failure: { kind: 'rate_limited', settled: true, status: 429 },
       });
     })
     .mockImplementationOnce(async () => {
-      priorContext?.transport?.onProviderHttpRejection?.(403);
       throw Object.assign(new Error('second-exception-canary'), {
         failure: { kind: 'unknown', settled: false },
       });

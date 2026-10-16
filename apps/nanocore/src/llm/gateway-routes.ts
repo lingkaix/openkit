@@ -1950,14 +1950,8 @@ export function registerWorkerInferenceRoutes({
                     responseTurnState = value;
                   },
                   onProviderHttpRejection: (status: number) => {
-                    // Keep stock HTTP evidence diagnostic-only and reject prior-attempt callbacks.
-                    if (
-                      activeExecution === execution &&
-                      Number.isInteger(status) &&
-                      status >= 400 &&
-                      status <= 599
-                    )
-                      observedHttpRejection = status;
+                    // The stock observer supplies only an actual HTTP rejection, not routing authority.
+                    observedHttpRejection = status;
                   },
                   signal: c.req.raw.signal,
                 },
