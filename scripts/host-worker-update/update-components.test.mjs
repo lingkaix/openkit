@@ -383,6 +383,16 @@ async function run(f) {
   return updateComponents(target, f.p, f.evidence, f.io);
 }
 
+test('shared parameter admission is effect-free and rejects unknown instructions', async (t) => {
+  const f = await fixture(t);
+  const { admitComponentParameters } = await import('./update-components.mjs');
+  const admitted = admitComponentParameters(f.p);
+  assert.deepEqual(admitted, f.p);
+  assert.notEqual(admitted, f.p);
+  assert.throws(() => admitComponentParameters({ ...f.p, restore: true }), /closed release and component inputs/);
+  assert.deepEqual(f.calls, []);
+});
+
 test('runs actual App, restored NanoHost and Worker stages in their mandatory order', async (t) => {
   const f = await fixture(t);
   const out = await run(f);

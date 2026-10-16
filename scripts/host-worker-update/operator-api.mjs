@@ -8,7 +8,7 @@ import {
 const unavailable = 'Operator API unavailable; inspect before any new effect.';
 const operations = new Set([
   'app-update.prepare', 'app-update.preflight', 'app-update.start', 'app-update.status',
-  'nanohost.runtime-target', 'worker-environment.prepare', 'worker-environment.activate',
+  'nanohost.runtime-target', 'diagnostics.app', 'worker-environment.prepare', 'worker-environment.activate',
   'thread.read', 'turn.read', 'thread.items', 'artifact.read',
 ]);
 

@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 import secrets
 import stat
-import time
 import uuid
 
 
@@ -169,23 +168,12 @@ def _stock(manager, unit_hash):
     return manager._incarnation(False)
 
 
-def _inspection(process, attribution, manager, *, wait_for_start=False):
-    """Let P02 measure its canonical digest after the caller proved the posture."""
-    deadline = time.monotonic() + (120 if wait_for_start else 10)
-    while True:
-        _need(manager._incarnation(wait_for_start) == process)
-        nonce = secrets.token_hex(32)
-        raw = _run(["/usr/lib/openkit/nanohost", "inspect"], input_bytes=json.dumps({"nonce": nonce}).encode())
-        result = json.loads(raw, object_pairs_hook=_systemd._unique)
-        _need(result.get("nonce") == nonce)
-        if result.get("outcome") == "observed":
-            break
-        # These two closed observations describe startup that is still pending.
-        # A failed read, changed process or other unavailable cause stops once.
-        _need(wait_for_start and result.get("outcome") == "unavailable"
-              and result.get("reason") in ("not-running", "connection-unavailable")
-              and time.monotonic() < deadline)
-        time.sleep(0.25)
+def _inspection(process, attribution, manager, *, guarded=False):
+    """Measure once after actual readiness; unavailable evidence is never refreshed."""
+    _need(manager._incarnation(guarded) == process)
+    nonce = secrets.token_hex(32)
+    raw = _run(["/usr/lib/openkit/nanohost", "inspect"], input_bytes=json.dumps({"nonce": nonce}).encode())
+    result = json.loads(raw, object_pairs_hook=_systemd._unique)
     _need(result.get("outcome") == "observed" and result.get("nonce") == nonce
           and result.get("coordinator") == process and result.get("replacementDuringMeasurement") is False
           and result.get("executables", {}).get("nanohost", {}).get("sha256") == attribution["payloads"]["nanohostSha256"]
@@ -196,7 +184,7 @@ def _inspection(process, attribution, manager, *, wait_for_start=False):
     return digest
 
 
-def run_step(request, workspace, machine_identity_digest):
+def run_step(request, workspace, machine_identity_digest, *, controlled_process=None):
     """Run one fixed admitted step; callers must not replay an unknown result.
 
     workspace is exclusively created archive custody selected by the fixed
@@ -205,6 +193,9 @@ def run_step(request, workspace, machine_identity_digest):
     """
     try:
         identifier = _request(request)
+        if controlled_process is not None:
+            _need(request["action"] == "start")
+            _maintenance._stamp(controlled_process)
         _need(os.geteuid() == 0 and os.getegid() == 0)
         _maintenance._hash(machine_identity_digest)
         machine, _ = _regular(Path("/etc/machine-id"), limit=128)
@@ -242,18 +233,41 @@ def run_step(request, workspace, machine_identity_digest):
             result.update(custodyVerified=True, fenced=True, inhibited=True)
         elif action == "install":
             manager.assert_fenced_and_inhibited()
-            _run([str(bundle / "install.sh")], timeout_seconds=180, max_stdout_bytes=65536, max_stderr_bytes=4096)
+            before = _run([str(bundle / "install.sh"), "--check"], timeout_seconds=180,
+                          max_stdout_bytes=65536, max_stderr_bytes=4096).decode("ascii").splitlines()
+            _need(len([line for line in before if line.startswith("destination=")]) == 1
+                  and any(line in before for line in ("destination=installable", "destination=resumable", "destination=already-installed")))
+            manager.assert_fenced_and_inhibited()
+            installed = _run([str(bundle / "install.sh")], timeout_seconds=180,
+                             max_stdout_bytes=65536, max_stderr_bytes=4096).decode("ascii").splitlines()
+            _need(len([line for line in installed if line.startswith("installation=")]) == 1
+                  and any(line in installed for line in ("installation=complete", "installation=already-installed"))
+                  and installed.count("remaining=configuration,enrollment,service-start") == 1)
+            manager.assert_fenced_and_inhibited()
+            after = _run([str(bundle / "install.sh"), "--check"], timeout_seconds=180,
+                         max_stdout_bytes=65536, max_stderr_bytes=4096).decode("ascii").splitlines()
+            _need([line for line in after if line.startswith("destination=")] == ["destination=already-installed"])
             manager.assert_fenced_and_inhibited()
             manager._payloads(_payloads(target))
             result.update(payloads=target["payloads"], retainedInputsDigest=retained, fenced=True, inhibited=True)
         elif action == "start":
-            process = manager.start_once(_payloads(target))
-            manager._unit_roots(True)
-            manager._activation()
-            manager._payloads(_payloads(target))
-            _need(manager._incarnation(True) == process)
-            # No reader retry substitutes for an unavailable native observation.
-            result.update(process=process, controlledEffectiveStateDigest=_inspection(process, target, manager, wait_for_start=True))
+            if controlled_process is None:
+                # The external adapter next waits on public pending-readiness
+                # observations. This command must never be reissued on loss.
+                result.update(process=manager.start_once(_payloads(target)))
+            else:
+                # A separate fixed read-only subphase follows public readiness.
+                # It consumes no permit and has no authority to start a process.
+                manager._admit()
+                manager._unit_roots(True)
+                manager._activation()
+                manager._guard()
+                manager._owned(manager.attempt, manager._attempt_bytes(), 0o644)
+                manager._conditions()
+                manager._payloads(_payloads(target))
+                _need(manager._incarnation(True) == controlled_process)
+                result.update(process=controlled_process,
+                              controlledEffectiveStateDigest=_inspection(controlled_process, target, manager, guarded=True))
         else:
             process = request["process"]
             manager.finalize(process, _payloads(target))
