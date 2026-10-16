@@ -1279,44 +1279,82 @@ describe('Administration', () => {
     (['environment', 'configuration'] as const).flatMap((kind) =>
       (['thread', 'items', 'candidate'] as const).map((source) => ({ kind, source }))
     )
-  )('hides the private $kind candidate and its open confirmation after $source denial', async ({ kind, source }) => {
+  )('hides the private $kind candidate and its open confirmation after $source denial', async ({
+    kind,
+    source,
+  }) => {
     const activate = vi.fn();
     const apply = vi.fn();
     const candidate = kind === 'environment' ? RESOLVED_CANDIDATE : CONFIG_CANDIDATE;
     const client = makeClient(
       { 'worker-environment.activate': activate, 'administration.configuration-apply': apply },
       {
-        'artifact.read': vi.fn().mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
-        'thread.items': vi.fn().mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
+        'artifact.read': vi
+          .fn()
+          .mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
+        'thread.items': vi
+          .fn()
+          .mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
         'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
     const { queryClient } = renderScreen(client);
-    await userEvent.click(await screen.findByRole('button', {
-      name: kind === 'environment' ? 'Review activation' : 'Review configuration',
-    }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: kind === 'environment' ? 'Review activation' : 'Review configuration',
+      })
+    );
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     const keys = {
       thread: ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id],
       items: ['items', QUICK_CHAT.id, ADMIN_THREAD.id],
-      candidate: ['settings', 'administration', 'prepared-candidate', QUICK_CHAT.id, ADMIN_THREAD.id, `${candidate.artifactId}:1`],
+      candidate: [
+        'settings',
+        'administration',
+        'prepared-candidate',
+        QUICK_CHAT.id,
+        ADMIN_THREAD.id,
+        `${candidate.artifactId}:1`,
+      ],
     };
-    const methods = { thread: 'thread.read', items: 'thread.items', candidate: 'artifact.read' } as const;
-    vi.mocked(client.operations[methods[source]]).mockRejectedValue(new ApiCallError(403, 'private-source-denied'));
+    const methods = {
+      thread: 'thread.read',
+      items: 'thread.items',
+      candidate: 'artifact.read',
+    } as const;
+    vi.mocked(client.operations[methods[source]]).mockRejectedValue(
+      new ApiCallError(403, 'private-source-denied')
+    );
     await act(() => queryClient.invalidateQueries({ queryKey: keys[source], exact: true }));
     expect(queryClient.getQueryState(keys[source])?.status).toBe('error');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.queryAllByText(kind === 'environment' ? /Resolved Artifact artifact_resolved/ : /"displayName": "OpenAI production"/)).toHaveLength(0);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(
+      screen.queryAllByText(
+        kind === 'environment'
+          ? /Resolved Artifact artifact_resolved/
+          : /"displayName": "OpenAI production"/
+      )
+    ).toHaveLength(0);
     expect(activate).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
     expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
-    vi.mocked(client.operations[methods[source]]).mockImplementation(() => new Promise<never>(() => {}));
+    vi.mocked(client.operations[methods[source]]).mockImplementation(
+      () => new Promise<never>(() => {})
+    );
     await act(async () => {
       void queryClient.refetchQueries({ queryKey: keys[source], exact: true });
     });
-    await waitFor(() => expect(queryClient.getQueryState(keys[source])?.fetchStatus).toBe('fetching'));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.queryAllByText(kind === 'environment' ? /Resolved Artifact artifact_resolved/ : /"displayName": "OpenAI production"/)).toHaveLength(0);
+    await waitFor(() =>
+      expect(queryClient.getQueryState(keys[source])?.fetchStatus).toBe('fetching')
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(
+      screen.queryAllByText(
+        kind === 'environment'
+          ? /Resolved Artifact artifact_resolved/
+          : /"displayName": "OpenAI production"/
+      )
+    ).toHaveLength(0);
     expect(activate).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
     await act(() => queryClient.cancelQueries({ queryKey: keys[source], exact: true }));
@@ -1328,28 +1366,45 @@ describe('Administration', () => {
         (['pending', 'paused', 'failed'] as const).map((state) => ({ kind, source, state }))
       )
     )
-  )('blocks private $kind confirmation while the $source read is $state', async ({ kind, source, state }) => {
+  )('blocks private $kind confirmation while the $source read is $state', async ({
+    kind,
+    source,
+    state,
+  }) => {
     const activate = vi.fn();
     const apply = vi.fn();
     const candidate = kind === 'environment' ? RESOLVED_CANDIDATE : CONFIG_CANDIDATE;
     const client = makeClient(
       { 'worker-environment.activate': activate, 'administration.configuration-apply': apply },
       {
-        'artifact.read': vi.fn().mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
-        'thread.items': vi.fn().mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
+        'artifact.read': vi
+          .fn()
+          .mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
+        'thread.items': vi
+          .fn()
+          .mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
         'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
     const { queryClient } = renderScreen(client);
-    await userEvent.click(await screen.findByRole('button', {
-      name: kind === 'environment' ? 'Review activation' : 'Review configuration',
-    }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: kind === 'environment' ? 'Review activation' : 'Review configuration',
+      })
+    );
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     const keys = {
       access: ['settings', 'administration', 'access'],
       thread: ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id],
       items: ['items', QUICK_CHAT.id, ADMIN_THREAD.id],
-      candidate: ['settings', 'administration', 'prepared-candidate', QUICK_CHAT.id, ADMIN_THREAD.id, `${candidate.artifactId}:1`],
+      candidate: [
+        'settings',
+        'administration',
+        'prepared-candidate',
+        QUICK_CHAT.id,
+        ADMIN_THREAD.id,
+        `${candidate.artifactId}:1`,
+      ],
     };
     const methods = {
       access: 'token.list',
@@ -1359,7 +1414,9 @@ describe('Administration', () => {
     } as const;
     const queryKey = keys[source];
     if (state === 'failed') {
-      vi.mocked(client.operations[methods[source]]).mockRejectedValue(new Error('private-read-unavailable'));
+      vi.mocked(client.operations[methods[source]]).mockRejectedValue(
+        new Error('private-read-unavailable')
+      );
     } else if (state === 'pending') {
       vi.mocked(client.operations[methods[source]]).mockReturnValue(new Promise<never>(() => {}));
     }
@@ -1369,9 +1426,13 @@ describe('Administration', () => {
         const refresh = queryClient.invalidateQueries({ queryKey, exact: true });
         if (state === 'failed') await refresh;
       });
-      await waitFor(() => expect(queryClient.getQueryState(queryKey)).toMatchObject(
-        state === 'failed' ? { status: 'error' } : { fetchStatus: state === 'paused' ? 'paused' : 'fetching' }
-      ));
+      await waitFor(() =>
+        expect(queryClient.getQueryState(queryKey)).toMatchObject(
+          state === 'failed'
+            ? { status: 'error' }
+            : { fetchStatus: state === 'paused' ? 'paused' : 'fetching' }
+        )
+      );
       const confirmation = screen.queryByRole('button', {
         name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
       });
@@ -1393,60 +1454,105 @@ describe('Administration', () => {
   it('removes an open deletion confirmation when current administrator access is denied', async () => {
     const purge = vi.fn();
     const client = makeClient({
-      'worker-environment.list': vi.fn().mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
+      'worker-environment.list': vi
+        .fn()
+        .mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
       'worker-environment.purge': purge,
     });
     const { queryClient } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
-    expect(screen.getByRole('dialog', { name: 'Delete retained environment?' })).toBeInTheDocument();
-    vi.mocked(client.operations['token.list']).mockRejectedValue(new ApiCallError(403, 'administrator-denied'));
-    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'administration', 'access'], exact: true }));
+    expect(
+      screen.getByRole('dialog', { name: 'Delete retained environment?' })
+    ).toBeInTheDocument();
+    vi.mocked(client.operations['token.list']).mockRejectedValue(
+      new ApiCallError(403, 'administrator-denied')
+    );
+    await act(() =>
+      queryClient.invalidateQueries({
+        queryKey: ['settings', 'administration', 'access'],
+        exact: true,
+      })
+    );
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(purge).not.toHaveBeenCalled();
   });
 
-  it('hides private candidate facts during an automatic typed-denial Items retry', async () => {
+  it('hides private candidate facts after typed denial and a later failed Items retry until success', async () => {
     const client = makeClient({}, {
       'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
       'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
       'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
     });
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 60_000 } } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 0 } } });
     renderScreen(client, queryClient);
-    await userEvent.click(await screen.findByRole('button', { name: 'Review configuration' }));
-    vi.mocked(client.operations['thread.items']).mockRejectedValue(new ApiCallError(403, 'private-items-denied'));
     const queryKey = ['items', QUICK_CHAT.id, ADMIN_THREAD.id];
-    await act(async () => { void queryClient.invalidateQueries({ queryKey, exact: true }); });
-    await waitFor(() => expect(queryClient.getQueryState(queryKey)?.fetchFailureCount).toBe(1));
-    expect(queryClient.getQueryState(queryKey)?.error).toBeNull();
-    expect(queryClient.getQueryState(queryKey)?.fetchFailureReason).toBeInstanceOf(ApiCallError);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
-    expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
-    await act(() => queryClient.cancelQueries({ queryKey, exact: true }));
+    try {
+      await userEvent.click(await screen.findByRole('button', { name: 'Review configuration' }));
+      let failRetry!: () => void;
+      vi.mocked(client.operations['thread.items'])
+        .mockRejectedValueOnce(new ApiCallError(403, 'private-items-denied'))
+        .mockImplementation(() => new Promise((_resolve, reject) => {
+          failRetry = () => reject(new ApiCallError(500, 'private-items-unavailable'));
+        }));
+      await act(async () => { void queryClient.invalidateQueries({ queryKey, exact: true }); });
+      await waitFor(() => expect(failRetry).toBeDefined());
+      expect(queryClient.getQueryState(queryKey)?.error).toBeNull();
+      expect(queryClient.getQueryState(queryKey)?.fetchFailureReason).toMatchObject({ status: 403 });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+      await act(async () => failRetry());
+      await waitFor(() => expect(queryClient.getQueryState(queryKey)?.error).toMatchObject({ status: 500 }));
+      await waitFor(() => expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument());
+      let restoreItems!: () => void;
+      vi.mocked(client.operations['thread.items']).mockImplementation(() => new Promise((resolve) => {
+        restoreItems = () => resolve({ items: [CONFIG_ITEM] });
+      }));
+      await act(async () => { void queryClient.refetchQueries({ queryKey, exact: true }); });
+      await waitFor(() => expect(restoreItems).toBeDefined());
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+      await act(async () => restoreItems());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled());
+      expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
+    } finally {
+      await act(() => queryClient.cancelQueries({ queryKey, exact: true }));
+    }
   });
 
   it('rechecks current administrator and exact parent authority before admitting a fresh cached candidate on remount', async () => {
-    const fixture = () => makeClient({}, {
-      'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
-      'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
-      'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+    const fixture = () =>
+      makeClient(
+        {},
+        {
+          'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+          'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+          'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+        }
+      );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const first = renderScreen(fixture(), queryClient);
     expect(await screen.findByRole('button', { name: 'Review configuration' })).toBeEnabled();
     first.unmount();
     const client = fixture();
     let allowAccess!: () => void;
     let allowParent!: () => void;
-    vi.mocked(client.operations['token.list']).mockImplementation(() => new Promise((resolve) => {
-      allowAccess = () => resolve({ items: [] });
-    }));
+    vi.mocked(client.operations['token.list']).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          allowAccess = () => resolve({ items: [] });
+        })
+    );
     const readParent = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
-    vi.mocked(client.operations['thread.read']).mockImplementation((input) => new Promise((resolve) => {
-      allowParent = () => { void Promise.resolve(readParent(input)).then(resolve); };
-    }));
+    vi.mocked(client.operations['thread.read']).mockImplementation(
+      (input) =>
+        new Promise((resolve) => {
+          allowParent = () => {
+            void Promise.resolve(readParent(input)).then(resolve);
+          };
+        })
+    );
     renderScreen(client, queryClient);
     await waitFor(() => expect(client.operations['token.list']).toHaveBeenCalledTimes(1));
     expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
@@ -1456,62 +1562,97 @@ describe('Administration', () => {
     expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
     expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
     await act(async () => allowParent());
-    expect(await screen.findByRole('button', { name: 'Review configuration' })).toBeEnabled();
-    expect(client.operations['thread.read']).toHaveBeenCalledWith({ workspaceId: QUICK_CHAT.id, threadId: ADMIN_THREAD.id });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled());
+    expect(client.operations['thread.read']).toHaveBeenCalledWith({
+      workspaceId: QUICK_CHAT.id,
+      threadId: ADMIN_THREAD.id,
+    });
     expect(client.operations['artifact.read']).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['environment', 'configuration'] as const)(
-    'keeps the dispatched %s outcome through private parent denial and read recovery',
-    async (kind) => {
-      let finish!: () => void;
-      const activate = vi.fn().mockImplementation((input: { requestId: string }) => new Promise((resolve) => {
-        finish = () => resolve({
-          affected: [{ ...CANDIDATE_PAYLOAD.affectedStorage[0], disposition: 'unknown' }],
-          configuration: null,
-          replaceNow: CANDIDATE_PAYLOAD.replaceNow,
-          requestId: input.requestId,
-          resolvedCandidate: RESOLVED_CANDIDATE,
-          target: CANDIDATE_PAYLOAD.target,
-        });
-      }));
-      const apply = vi.fn().mockImplementation(() => new Promise((resolve) => {
-        finish = () => resolve(CONFIG_OUTCOME);
-      }));
-      const client = makeClient(
-        { 'worker-environment.activate': activate, 'administration.configuration-apply': apply },
-        {
-          'artifact.read': vi.fn().mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
-          'thread.items': vi.fn().mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
-          'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
-        }
-      );
-      const readThread = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
-      const { queryClient } = renderScreen(client);
-      await userEvent.click(await screen.findByRole('button', {
+  it.each([
+    'environment',
+    'configuration',
+  ] as const)('keeps the dispatched %s outcome through private parent denial and read recovery', async (kind) => {
+    let finish!: () => void;
+    const activate = vi.fn().mockImplementation(
+      (input: { requestId: string }) =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({
+              affected: [{ ...CANDIDATE_PAYLOAD.affectedStorage[0], disposition: 'unknown' }],
+              configuration: null,
+              replaceNow: CANDIDATE_PAYLOAD.replaceNow,
+              requestId: input.requestId,
+              resolvedCandidate: RESOLVED_CANDIDATE,
+              target: CANDIDATE_PAYLOAD.target,
+            });
+        })
+    );
+    const apply = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve(CONFIG_OUTCOME);
+        })
+    );
+    const client = makeClient(
+      { 'worker-environment.activate': activate, 'administration.configuration-apply': apply },
+      {
+        'artifact.read': vi
+          .fn()
+          .mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
+        'thread.items': vi
+          .fn()
+          .mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    const readThread = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
+    const { queryClient } = renderScreen(client);
+    await userEvent.click(
+      await screen.findByRole('button', {
         name: kind === 'environment' ? 'Review activation' : 'Review configuration',
-      }));
-      await userEvent.click(screen.getByRole('button', {
+      })
+    );
+    await userEvent.click(
+      screen.getByRole('button', {
         name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
-      }));
-      const effect = kind === 'environment' ? activate : apply;
-      await waitFor(() => expect(effect).toHaveBeenCalledTimes(1));
-      const command = queryClient.getMutationCache().getAll().find((mutation) => mutation.state.status === 'pending');
-      expect(command).toBeDefined();
-      const queryKey = ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id];
-      vi.mocked(client.operations['thread.read']).mockRejectedValue(new ApiCallError(403, 'private-parent-denied'));
-      await act(() => queryClient.invalidateQueries({ queryKey, exact: true }));
-      await act(async () => finish());
-      await waitFor(() => expect(command?.state.status).toBe('success'));
-      expect(screen.queryByText(kind === 'environment' ? 'Activation command result' : 'Configuration command result')).not.toBeInTheDocument();
-      vi.mocked(client.operations['thread.read']).mockImplementation(readThread);
-      await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-      expect(await screen.findByText(kind === 'environment' ? 'Activation command result' : 'Configuration command result')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: kind === 'environment' ? 'Review activation' : 'Review configuration' })).toBeDisabled();
-      expect(queryClient.getMutationCache().getAll()).toContain(command);
-      expect(effect).toHaveBeenCalledTimes(1);
-    }
-  );
+      })
+    );
+    const effect = kind === 'environment' ? activate : apply;
+    await waitFor(() => expect(effect).toHaveBeenCalledTimes(1));
+    const command = queryClient
+      .getMutationCache()
+      .getAll()
+      .find((mutation) => mutation.state.status === 'pending');
+    expect(command).toBeDefined();
+    const queryKey = ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id];
+    vi.mocked(client.operations['thread.read']).mockRejectedValue(
+      new ApiCallError(403, 'private-parent-denied')
+    );
+    await act(() => queryClient.invalidateQueries({ queryKey, exact: true }));
+    await act(async () => finish());
+    await waitFor(() => expect(command?.state.status).toBe('success'));
+    expect(
+      screen.queryByText(
+        kind === 'environment' ? 'Activation command result' : 'Configuration command result'
+      )
+    ).not.toBeInTheDocument();
+    vi.mocked(client.operations['thread.read']).mockImplementation(readThread);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(
+      await screen.findByText(
+        kind === 'environment' ? 'Activation command result' : 'Configuration command result'
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: kind === 'environment' ? 'Review activation' : 'Review configuration',
+      })
+    ).toBeDisabled();
+    expect(queryClient.getMutationCache().getAll()).toContain(command);
+    expect(effect).toHaveBeenCalledTimes(1);
+  });
 
   it('unmounts an open confirmation when the discovered candidate identity changes', async () => {
     const user = userEvent.setup();
