@@ -123,9 +123,9 @@ export type SkillCandidateDecisionContext = NonNullable<SkillCandidateRecord['de
 
 /** One API-submitted tree entry. */
 export interface CatalogTreeFile {
-  /** Base64 file bytes; omitted for directories. */
+  /** Canonical base64 file bytes; omitted for directories and empty files. */
   readonly contentBase64?: string;
-  /** Whether any executable bit should be retained. */
+  /** Whether any file executable bit should be retained; directories cannot set this to true. */
   readonly executable?: boolean;
   /** Directory or regular file. */
   readonly kind: 'directory' | 'file';
@@ -1498,9 +1498,17 @@ export function validateCatalogTree(tree: readonly CatalogTreeFile[]): {
 function treeFilesToEntries(tree: readonly CatalogTreeFile[]): OpenKitTreeEntry[] {
   const entries: OpenKitTreeEntry[] = tree.map((entry) => {
     if (entry.kind === 'directory') {
+      if (entry.contentBase64 !== undefined || entry.executable === true)
+        throw new CatalogInputError(
+          `Resource tree directory cannot carry content or executable file flags: ${entry.path}.`
+        );
       return { kind: 0, path: entry.path };
     }
-    const content = Buffer.from(entry.contentBase64 ?? '', 'base64');
+    const encoded = entry.contentBase64 ?? '';
+    const content = Buffer.from(encoded, 'base64');
+    // Node accepts malformed encodings; exact transport must already be canonical.
+    if (content.toString('base64') !== encoded)
+      throw new CatalogInputError(`Resource tree file requires canonical base64: ${entry.path}.`);
     return { content, kind: entry.executable ? 2 : 1, path: entry.path };
   });
   const directories = new Set(
