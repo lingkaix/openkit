@@ -1948,51 +1948,52 @@ pub async fn poll_effect_command(
     if kind == RuntimeEffectKind::ImportReference {
         return poll_reference_import(authority, sender, path).await;
     }
-    let (status, body) = match send_effect_request(authority, sender, path, b"{}").await {
-        Ok(response) => response,
-        Err((status, _)) if kind == RuntimeEffectKind::OpenBridge && !live_bridge => {
-            return Err(OuterSessionFailure::terminal(
-                OuterSessionStage::Poll,
-                operation,
-                status.map(|status| status.as_u16()),
-                "bridge.open command delivery unknown",
-            ));
-        }
-        Err((status, error)) => {
-            let physical_close = matches!(
-                error,
-                "effect connection closed"
-                    | "effect request send failed"
-                    | "effect request body send failed"
-                    | "effect response failed"
-            );
-            let error = if first_poll
-                && matches!(
-                    error,
-                    "effect request body send failed" | "effect response failed"
-                ) {
-                FIRST_EFFECT_POLL_RESPONSE_LOST
-            } else {
-                error
-            };
-            return Err(if physical_close {
-                OuterSessionFailure::reconnect(
+    let (status, body, trace_context) =
+        match send_effect_request(authority, sender, path, b"{}", None).await {
+            Ok(response) => response,
+            Err((status, _)) if kind == RuntimeEffectKind::OpenBridge && !live_bridge => {
+                return Err(OuterSessionFailure::terminal(
                     OuterSessionStage::Poll,
                     operation,
                     status.map(|status| status.as_u16()),
+                    "bridge.open command delivery unknown",
+                ));
+            }
+            Err((status, error)) => {
+                let physical_close = matches!(
                     error,
-                    None,
-                )
-            } else {
-                OuterSessionFailure::terminal(
-                    OuterSessionStage::Poll,
-                    operation,
-                    status.map(|status| status.as_u16()),
-                    error,
-                )
-            });
-        }
-    };
+                    "effect connection closed"
+                        | "effect request send failed"
+                        | "effect request body send failed"
+                        | "effect response failed"
+                );
+                let error = if first_poll
+                    && matches!(
+                        error,
+                        "effect request body send failed" | "effect response failed"
+                    ) {
+                    FIRST_EFFECT_POLL_RESPONSE_LOST
+                } else {
+                    error
+                };
+                return Err(if physical_close {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Poll,
+                        operation,
+                        status.map(|status| status.as_u16()),
+                        error,
+                        None,
+                    )
+                } else {
+                    OuterSessionFailure::terminal(
+                        OuterSessionStage::Poll,
+                        operation,
+                        status.map(|status| status.as_u16()),
+                        error,
+                    )
+                });
+            }
+        };
     if status == StatusCode::NO_CONTENT {
         return Ok(None);
     }
@@ -2165,7 +2166,7 @@ pub async fn poll_effect_command(
         kind,
         request_id,
         input,
-        trace_context: opentelemetry::Context::new(),
+        trace_context,
         file_data: None,
     }))
 }
@@ -2296,6 +2297,7 @@ async fn poll_reference_import(
     let response = response
         .await
         .map_err(|_| reconnect_without_status("reference.import response failed"))?;
+    let trace_context = crate::telemetry::extract(response.headers());
     let status = response.status();
     let terminal = |reason| {
         OuterSessionFailure::terminal(
@@ -2397,7 +2399,7 @@ async fn poll_reference_import(
         kind: RuntimeEffectKind::ImportReference,
         request_id,
         input: serde_json::json!({}),
-        trace_context: opentelemetry::Context::new(),
+        trace_context,
         file_data: Some(RawImportFile {
             slot,
             relative_path,
@@ -2449,34 +2451,37 @@ pub async fn submit_effect_result(
         return Err(terminal_without_status("effect result body exceeded bound"));
     }
     loop {
-        let (status, response) = match send_effect_request(authority, sender, path, &body).await {
-            Ok(response) => response,
-            Err((status, error)) => {
-                let delivery_uncertain = matches!(
-                    error,
-                    "effect connection closed"
-                        | "effect request send failed"
-                        | "effect request body send failed"
-                        | "effect response failed"
-                );
-                return Err(if delivery_uncertain {
-                    OuterSessionFailure::reconnect(
-                        OuterSessionStage::Result,
-                        operation,
-                        status.map(|status| status.as_u16()),
+        let (status, response, _) =
+            match send_effect_request(authority, sender, path, &body, Some(&command.trace_context))
+                .await
+            {
+                Ok(response) => response,
+                Err((status, error)) => {
+                    let delivery_uncertain = matches!(
                         error,
-                        None,
-                    )
-                } else {
-                    OuterSessionFailure::terminal(
-                        OuterSessionStage::Result,
-                        operation,
-                        status.map(|status| status.as_u16()),
-                        error,
-                    )
-                });
-            }
-        };
+                        "effect connection closed"
+                            | "effect request send failed"
+                            | "effect request body send failed"
+                            | "effect response failed"
+                    );
+                    return Err(if delivery_uncertain {
+                        OuterSessionFailure::reconnect(
+                            OuterSessionStage::Result,
+                            operation,
+                            status.map(|status| status.as_u16()),
+                            error,
+                            None,
+                        )
+                    } else {
+                        OuterSessionFailure::terminal(
+                            OuterSessionStage::Result,
+                            operation,
+                            status.map(|status| status.as_u16()),
+                            error,
+                        )
+                    });
+                }
+            };
         if status == StatusCode::SERVICE_UNAVAILABLE
             && response.is_empty()
             && matches!(
@@ -2540,7 +2545,7 @@ pub async fn submit_file_export_result(
         .ok_or_else(|| terminal_without_status("file export result path unavailable"))?;
     let relative_path =
         encode_relative_path(result.relative_path()).map_err(terminal_without_status)?;
-    let request = Request::builder()
+    let mut request = Request::builder()
         .method(Method::POST)
         .uri(format!("{}{}", authority.trim_end_matches('/'), path))
         .header("content-type", FILE_CONTENT_TYPE)
@@ -2552,6 +2557,7 @@ pub async fn submit_file_export_result(
         .header(BYTE_LENGTH_HEADER, result.byte_length().to_string())
         .body(())
         .map_err(|_| terminal_without_status("file export result invalid"))?;
+    crate::telemetry::inject(&command.trace_context, request.headers_mut());
     let mut ready = sender
         .clone()
         .ready()
@@ -2665,9 +2671,10 @@ pub async fn submit_workspace_collect_result(
         for header in crate::workspace_collect::delivery_headers(result) {
             request = request.header(header.name, header.value);
         }
-        let request = request
+        let mut request = request
             .body(())
             .map_err(|_| terminal_without_status("workspace collect result invalid"))?;
+        crate::telemetry::inject(&command.trace_context, request.headers_mut());
         let mut ready =
             sender.clone().ready().await.map_err(|_| {
                 reconnect_without_status("workspace collect result delivery uncertain")
@@ -2884,13 +2891,17 @@ async fn send_effect_request(
     sender: &mut h2::client::SendRequest<Bytes>,
     path: &str,
     body: &[u8],
-) -> Result<(StatusCode, BytesMut), (Option<StatusCode>, &'static str)> {
-    let request = Request::builder()
+    context: Option<&opentelemetry::Context>,
+) -> Result<(StatusCode, BytesMut, opentelemetry::Context), (Option<StatusCode>, &'static str)> {
+    let mut request = Request::builder()
         .method(Method::POST)
         .uri(format!("{}{}", authority.trim_end_matches('/'), path))
         .header("content-type", "application/json")
         .body(())
         .map_err(|_| (None, "effect request invalid"))?;
+    if let Some(context) = context {
+        crate::telemetry::inject(context, request.headers_mut());
+    }
     let mut ready = sender
         .clone()
         .ready()
@@ -2905,6 +2916,7 @@ async fn send_effect_request(
     let response = response
         .await
         .map_err(|_| (None, "effect response failed"))?;
+    let context = crate::telemetry::extract(response.headers());
     let status = response.status();
     let mut response_body = response.into_body();
     let mut bytes = BytesMut::new();
@@ -2919,7 +2931,7 @@ async fn send_effect_request(
             .map_err(|_| (Some(status), "effect response flow control failed"))?;
         bytes.extend_from_slice(&chunk);
     }
-    Ok((status, bytes))
+    Ok((status, bytes, context))
 }
 
 /// Test-only bounded request used to prove predecessor and replay fencing.

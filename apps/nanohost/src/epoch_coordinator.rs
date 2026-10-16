@@ -21,6 +21,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use openshell_sdk::raw::proto::SandboxPolicy;
 use openshell_sdk::{ListOptions, SandboxRef, SandboxSpec};
+use opentelemetry::trace::TraceContextExt;
+use opentelemetry::{Context, KeyValue};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
@@ -707,6 +709,26 @@ impl MemberFailure {
             subject,
             observation,
         })
+    }
+
+    /// Records only the failure class proved by the existing member observation.
+    fn trace_failure(self) {
+        let kind = match self.observation {
+            MemberObservation::ExitCode(_) => "exit-code",
+            MemberObservation::Signal(_) => "signal",
+            MemberObservation::Finished => "finished",
+            MemberObservation::ProofUnavailable(_) => "proof-unavailable",
+        };
+        let mut observation = crate::telemetry::Observation::start(
+            "nanohost.member.failure",
+            &Context::new(),
+            vec![
+                KeyValue::new("openkit.member", self.subject.token()),
+                KeyValue::new("openkit.member.observation", kind),
+            ],
+            None,
+        );
+        observation.finish(false);
     }
 
     /// Returns the space-separated cause-line tokens for this observation.
@@ -1572,10 +1594,12 @@ impl EpochMemberMonitor {
     ) -> Option<EpochFault> {
         loop {
             if let Some(failure) = Self::watched_task_failure(harness_tasks) {
+                failure.trace_failure();
                 return Some(EpochFault::MemberExited(Some(failure)));
             }
             for (index, child) in children.iter_mut().enumerate() {
                 if let Some(failure) = MemberFailure::from_child_wait(index, child.try_wait()) {
+                    failure.trace_failure();
                     return Some(EpochFault::MemberExited(Some(failure)));
                 }
             }
@@ -1785,6 +1809,13 @@ impl EpochCoordinator {
         image_backend: &mut Option<DockerImageBackend>,
         persistent_volumes: &mut Option<PersistentVolumeStore>,
     ) -> Result<Self, EpochFault> {
+        let mut startup = crate::telemetry::Observation::start(
+            "nanohost.epoch.start",
+            &Context::new(),
+            Vec::new(),
+            None,
+        );
+        let _active = startup.context().attach();
         let physical_epoch = physical_epoch_for_plan(plan);
         let image_store = image_store.take().ok_or(EpochFault::PartialStart)?;
         let image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
@@ -1981,6 +2012,9 @@ impl EpochCoordinator {
             crate::live_inspection::InspectionServer::start(Arc::clone(state)).ok()
         });
 
+        let startup_context = startup.context().span().span_context().clone();
+        // Local Gateway health ends startup; later Core acknowledgement owns readiness.
+        startup.finish(true);
         Ok(Self {
             monitor: EpochMemberMonitor::start_with_namespaces(
                 children,
@@ -1997,7 +2031,7 @@ impl EpochCoordinator {
             image_backend,
             persistent_volumes,
             physical_epoch,
-            startup_context: opentelemetry::trace::SpanContext::empty_context(),
+            startup_context,
             run_root: plan.run_root().to_path_buf(),
             bridge: None,
             route_projection: OuterRouteProjection::new(),
@@ -2008,6 +2042,11 @@ impl EpochCoordinator {
             #[cfg(test)]
             collection_test_sandbox: None,
         })
+    }
+
+    /// Returns only the ended startup context for one optional later-effect link.
+    pub(crate) fn startup_context(&self) -> &opentelemetry::trace::SpanContext {
+        &self.startup_context
     }
 
     /// Returns the private physical-incarnation witness retained by this coordinator.
@@ -3088,6 +3127,19 @@ fn spawn_member(
     private_namespaces: Option<&PrivateNamespaceDescriptors>,
     resolver_projection: Option<(&Path, &Path)>,
 ) -> io::Result<Option<UnixStream>> {
+    // This observes process creation. Dependency readiness remains in startup.
+    let role = match member.role() {
+        EpochProcessRole::Containerd => "containerd",
+        EpochProcessRole::Slirp4netns => "slirp4netns",
+        EpochProcessRole::Dockerd => "dockerd",
+        EpochProcessRole::OpenShellGateway => "openshell-gateway",
+    };
+    let mut observation = crate::telemetry::Observation::start(
+        "nanohost.member.start",
+        &Context::current(),
+        vec![KeyValue::new("openkit.member", role)],
+        None,
+    );
     let mut command = Command::new(member.program());
     command
         .args(member.args())
@@ -3198,6 +3250,7 @@ fn spawn_member(
     }
     let child = command.spawn()?;
     children.push(child);
+    observation.finish(true);
     Ok(ready_reader)
 }
 
@@ -3462,7 +3515,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nanohost-tracing-{}", std::process::id()));
         let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
         let mut startup = crate::telemetry::Observation::start(
-            "nanohost.epoch.start", &Context::new(), Vec::new(), None,
+            "nanohost.epoch.start",
+            &Context::new(),
+            Vec::new(),
+            None,
         );
         startup.finish(true);
         coordinator.startup_context = startup.context().span().span_context().clone();
@@ -3488,12 +3544,28 @@ mod tests {
                 }
                 if is_result {
                     requests.lock().unwrap().push((headers, bytes));
-                    respond.send_response(http::Response::builder().status(204).body(()).unwrap(), true).unwrap();
+                    respond
+                        .send_response(
+                            http::Response::builder().status(204).body(()).unwrap(),
+                            true,
+                        )
+                        .unwrap();
                 } else {
-                    assert!(!headers.contains_key("traceparent"), "poll context is not effect parentage");
-                    let mut stream = respond.send_response(http::Response::builder()
-                        .status(200).header("traceparent", remote).header("tracestate", "test=value")
-                        .body(()).unwrap(), false).unwrap();
+                    assert!(
+                        !headers.contains_key("traceparent"),
+                        "poll context is not effect parentage"
+                    );
+                    let mut stream = respond
+                        .send_response(
+                            http::Response::builder()
+                                .status(200)
+                                .header("traceparent", remote)
+                                .header("tracestate", "test=value")
+                                .body(())
+                                .unwrap(),
+                            false,
+                        )
+                        .unwrap();
                     stream.send_data(Bytes::from(serde_json::to_vec(&serde_json::json!({
                         "requestId": "a".repeat(64), "storageRef": "storage-one", "attachmentGeneration": 1,
                     })).unwrap()), true).unwrap();
@@ -3502,31 +3574,80 @@ mod tests {
         });
         let mut cursor = 9;
         let mut command = crate::nanocore_session::poll_effect_command(
-            "http://nanocore.test", &mut sender, &mut cursor, false,
-        ).await.unwrap().unwrap();
-        assert_eq!(command.trace_context.span().span_context().trace_id().to_string(), "11111111111111111111111111111111", "command response must carry the initiating parent");
+            "http://nanocore.test",
+            &mut sender,
+            &mut cursor,
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            command
+                .trace_context
+                .span()
+                .span_context()
+                .trace_id()
+                .to_string(),
+            "11111111111111111111111111111111",
+            "command response must carry the initiating parent"
+        );
         let original_input = command.input.clone();
         let result = match crate::execute_effect_command(&mut coordinator, &mut command).unwrap() {
             crate::ExecutedEffectResult::Json(result) => result,
             _ => panic!("storage inspection returns JSON"),
         };
-        assert_eq!(command.input, original_input, "trace context must not enter effect identity");
+        assert_eq!(
+            command.input, original_input,
+            "trace context must not enter effect identity"
+        );
         let spans = exporter.get_finished_spans().unwrap();
-        let effect = spans.iter().find(|span| span.name == "nanohost.effect").expect("local span must end before any result delivery");
+        let effect = spans
+            .iter()
+            .find(|span| span.name == "nanohost.effect")
+            .expect("local span must end before any result delivery");
         assert_eq!(effect.parent_span_id.to_string(), "2222222222222222");
         assert_eq!(effect.links.links.len(), 1);
         assert_eq!(effect.links.links[0].span_context, startup_context);
-        assert_eq!(command.trace_context.span().span_context(), &effect.span_context);
-        assert_eq!(effect.status, opentelemetry::trace::Status::Ok);
+        assert_eq!(
+            command.trace_context.span().span_context(),
+            &effect.span_context
+        );
+        assert_eq!(effect.status, opentelemetry::trace::Status::Unset);
+        assert!(
+            effect
+                .attributes
+                .contains(&opentelemetry::KeyValue::new("openkit.outcome", "returned"))
+        );
         for _ in 0..2 {
-            crate::nanocore_session::submit_effect_result("http://nanocore.test", &mut sender, &command, result.clone()).await.unwrap();
+            crate::nanocore_session::submit_effect_result(
+                "http://nanocore.test",
+                &mut sender,
+                &command,
+                result.clone(),
+            )
+            .await
+            .unwrap();
         }
         let requests = observed.lock().unwrap();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0], requests[1], "redelivery preserves context and exact result identity");
-        assert_eq!(crate::telemetry::extract(&requests[0].0).span().span_context().span_id(), effect.span_context.span_id());
+        assert_eq!(
+            requests[0], requests[1],
+            "redelivery preserves context and exact result identity"
+        );
+        assert_eq!(
+            crate::telemetry::extract(&requests[0].0)
+                .span()
+                .span_context()
+                .span_id(),
+            effect.span_context.span_id()
+        );
         assert_eq!(requests[0].0["tracestate"], "test=value");
-        assert_eq!(exporter.get_finished_spans().unwrap().len(), 2, "delivery must not retain or create execution spans");
+        assert_eq!(
+            exporter.get_finished_spans().unwrap().len(),
+            2,
+            "delivery must not retain or create execution spans"
+        );
         let exported = format!("{spans:?}");
         assert!(!exported.contains("storage-one"));
         assert!(!exported.contains(root.to_str().unwrap()));
