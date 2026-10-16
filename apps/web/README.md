@@ -303,6 +303,8 @@ An Assistant submission returning the typed `499 provider_call_aborted` confirms
 
 Goal uses one server-backed journey through `client.operations`: create with an optional origin Thread, revise intent, create or edit and cancel cards, inspect separate proposed and active immutable Plan versions, decide the exact shared Plan or completion request, read linked ordinary Tasks, and cancel the Goal. The view displays exact commitment bytes and digest and current request claim state. A completed Task leaves the Goal open. UI drafts remain local, while TanStack Query owns the joined server view; explicit retries retain the original command payload and request identity. Connection uncertainty, pending mutations and closed Goals disable writes.
 
+`ConversationGoalGroups.tsx` joins current Goal views with the authorized Thread list for Sidebar groups. Card identities and retained Task links determine membership; each linked Task retains all recorded Turn attempts, including archived history. Missing Tasks remain unavailable. A failed source read hides cached child facts and offers a read retry. Expansion resets with the Workspace and performs no receipt update or work admission. The [Goal navigation owner](../../docs/specs/20260628-web_product_surface_projection.md#goal-navigation-groups) defines this projection.
+
 ### Thread chrome and side panel
 
 Thread header icon commands use 20px glyphs in 32px square buttons without inherited horizontal padding. Shared icons retain their declared width inside flex layouts and inherit the active theme foreground. Task thread headers show the sidebar Worker-task glyph at 20px in a nonshrinking titled span labeled Task.

@@ -410,3 +410,5 @@ Web **Settings → Gateway** uses the same fields, an account-scoped Refresh act
 ## Conversation Read State
 
 The Web conversation list shows the current User's unread replies. Opening or prefetching data does not mark a reply read. A completed message body becomes read when it appears in the foreground viewport. Select **Mark read** to mark all current eligible replies in that Thread, including replies outside the viewport. Your own messages and unfinished messages do not add unread replies. If read state is unavailable or could not be saved, use its retry action. A Workspace export does not include personal read state; deployment data-root backup retains the User database.
+
+Expand a Goal in the conversation list to inspect its cards, linked Tasks and every recorded attempt. An archived linked Task remains available as history. A missing Task is shown as unavailable; expansion does not create a replacement or start work. Select a Task to open its existing conversation. If the Goal or Thread read fails, its child details are hidden until a retry succeeds. Expanding a group does not mark replies read.
