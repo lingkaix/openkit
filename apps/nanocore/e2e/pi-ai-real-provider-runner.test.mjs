@@ -36,9 +36,7 @@ const UNICODE_ESCAPED_NESTED_PUBLIC_MARKER =
 /**
  * Returns the current diagnostics.app projection for the five identical Google consumers.
  *
- * The projection has no options. It follows diagnostics.app: gateway status, endpoints,
- * default model, and logical models, plus provider diagnostics and registry rows. Each caller
- * adds only its own public notice.
+ * Each caller adds only its own public notice to the shared Google route projection.
  *
  * @returns {object} Google gemini-2.5-pro diagnostics.app body.
  */
