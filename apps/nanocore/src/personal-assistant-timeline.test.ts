@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS, type OperationId } from '@openkit/app-api-schemas';
@@ -225,22 +225,6 @@ describe('Personal Assistant Timeline admission', () => {
       { visibility: 'private', privateOwnerUserId: 'user_local' }
     );
     const administrationHistory = retainExchange(current.store, workspace.id, administration.id);
-    // This is retained input from the former kind, not a supported current write shape.
-    const workspacePath = join(
-      current.store.getDataRoot()!,
-      'workspaces',
-      workspace.id,
-      'workspace-record.json'
-    );
-    const retainedRecord = JSON.parse(readFileSync(workspacePath, 'utf8'));
-    writeFileSync(
-      workspacePath,
-      JSON.stringify({
-        ...retainedRecord,
-        kind: 'quick-chat',
-        migrationAnnotation: { retained: 'Keep authored descriptive additions.' },
-      })
-    );
     current.coreDb.sqlite.close();
 
     const restarted = current.reopen();
@@ -268,44 +252,6 @@ describe('Personal Assistant Timeline admission', () => {
         .sort()
     ).toEqual([thread.id, administration.id].sort());
     expect(restarted.store.getWorkspace(workspace.id).kind).toBe('personal');
-    expect(JSON.parse(readFileSync(workspacePath, 'utf8'))).toMatchObject({
-      kind: 'personal',
-      migrationAnnotation: { retained: 'Keep authored descriptive additions.' },
-    });
-  });
-
-  it('does not publish the home-kind migration when retained canonical history is invalid', () => {
-    const current = fixture();
-    const home = current.store.listWorkspaces()[0]!;
-    const thread = current.store.createThread(
-      home.id,
-      'Retained history',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: 'user_local',
-      }
-    );
-    retainExchange(current.store, home.id, thread.id);
-    const root = join(current.store.getDataRoot()!, 'workspaces', home.id);
-    const workspacePath = join(root, 'workspace-record.json');
-    const record = JSON.parse(readFileSync(workspacePath, 'utf8'));
-    const retained = JSON.stringify({
-      ...record,
-      kind: 'quick-chat',
-      migrationAnnotation: 'Keep unchanged on failure.',
-    });
-    writeFileSync(workspacePath, retained);
-    const threadPath = join(root, 'threads', thread.id, 'thread.json');
-    const malformed = JSON.stringify({
-      ...JSON.parse(readFileSync(threadPath, 'utf8')),
-      visibility: 'unknown-core-value',
-    });
-    writeFileSync(threadPath, malformed);
-    expect(() => new FsStore({ dataRoot: current.store.getDataRoot()! })).toThrow();
-    expect(readFileSync(workspacePath, 'utf8')).toBe(retained);
-    expect(readFileSync(threadPath, 'utf8')).toBe(malformed);
   });
 
   it('keeps retained extra private conversations readable but refuses new submissions before inference', async () => {

@@ -96,7 +96,7 @@ export function migrateThreadVisibilityCutover(
       const workspaceRoot = join(workspacesRoot, workspaceId);
       const workspaceRecordPath = join(workspaceRoot, 'workspace-record.json');
       if (!existsSync(workspaceRecordPath)) continue;
-      const workspaceRecord = readWorkspaceSystemRecord(workspaceRecordPath);
+      const workspaceRecord = WorkspaceSystemRecordSchema.parse(readJson(workspaceRecordPath));
       const threadsRoot = join(workspaceRoot, 'threads');
       for (const threadId of listDirectoryNames(threadsRoot)) {
         const threadPath = join(threadsRoot, threadId, 'thread.json');
@@ -242,7 +242,9 @@ export function migrateThreadVisibilityCutover(
         audience = { visibility: 'workspace' };
       } else {
         const workspaceRoot = join(dataRoot, 'workspaces', row.workspaceId);
-        const kind = readWorkspaceSystemRecord(join(workspaceRoot, 'workspace-record.json')).kind;
+        const kind = WorkspaceSystemRecordSchema.parse(
+          readJson(join(workspaceRoot, 'workspace-record.json'))
+        ).kind;
         audience = classifyThreadVisibilityCutover(dataRoot, workspaceRoot, kind, row.threadId);
       }
       const thread = ThreadSchema.parse({
@@ -457,12 +459,4 @@ function readJson(path: string): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-/** Reads predecessor home metadata for stopped Thread classification before its one-way kind migration. */
-function readWorkspaceSystemRecord(path: string) {
-  const value = readJson(path);
-  return WorkspaceSystemRecordSchema.parse(
-    isRecord(value) && value.kind === 'quick-chat' ? { ...value, kind: 'personal' } : value
-  );
 }
