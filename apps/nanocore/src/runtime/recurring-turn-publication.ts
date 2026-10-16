@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AutomationOccurrence } from '@openkit/app-api-schemas';
-import type { Turn } from '@openkit/protocol';
+import type { TurnSchema } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { SchedulerAdmissionEntryRecord } from '../scheduler-records.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
+
+/** Canonical protocol Turn consumed by the publication checks. */
+type Turn = import('zod').infer<typeof TurnSchema>;
 
 /** Checks the accepted source tuple against a canonical Turn without consulting derivative caches. */
 export function recurringCanonicalTurnPublicationIssue(
