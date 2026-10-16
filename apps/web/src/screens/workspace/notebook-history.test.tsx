@@ -144,7 +144,7 @@ function renderNotebook({ deferDiff = false, truncatedDiff = false } = {}) {
           baseRevision: body.baseRevision,
           fromRevision: body.fromRevision,
           forRestore: Boolean(body.forRestore),
-                  truncated: truncatedDiff && !body.forRestore,
+          truncated: truncatedDiff && !body.forRestore,
           changes: [
             {
               path: 'notes/one.md',
@@ -225,7 +225,9 @@ describe('Notebook history and restore', () => {
     await screen.findByRole('region', { name: 'Restored notes/one.md' });
     expect(f.diffs.at(-1)).toMatchObject({ forRestore: true, pageIds: ['notes/one'] });
     expect(screen.queryByText(/This diff is truncated/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Restored notes/obsolete.md' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Restored notes/obsolete.md' })
+    ).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review restore' })).toBeEnabled();
     expect(f.restores).toHaveLength(0);
   });

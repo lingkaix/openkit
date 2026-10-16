@@ -286,7 +286,8 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                   <>
                     {preview.truncated ? (
                       <p role="status" className="text-sm text-fg-muted">
-                        This diff is truncated. Select fewer pages to request a complete restore preview.
+                        This diff is truncated. Select fewer pages to request a complete restore
+                        preview.
                       </p>
                     ) : null}
                     {!forRestore ? (
@@ -302,31 +303,31 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                         Prepare restore
                       </Button>
                     ) : null}
-                        <CheckboxGroup
-                          aria-label="Pages to restore"
-                          value={selectedPaths ?? changes.map((change) => change.path)}
-                          isDisabled={blocked}
-                          onChange={setSelectedPaths}
-                          className="flex flex-col gap-2"
+                    <CheckboxGroup
+                      aria-label="Pages to restore"
+                      value={selectedPaths ?? changes.map((change) => change.path)}
+                      isDisabled={blocked}
+                      onChange={setSelectedPaths}
+                      className="flex flex-col gap-2"
+                    >
+                      {changes.map((change) => (
+                        <Checkbox
+                          key={change.path}
+                          value={change.path}
+                          className="flex cursor-pointer items-center gap-2 rounded-ok border border-border px-3 py-2 text-sm text-fg outline-none data-[selected]:border-accent data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus"
                         >
-                          {changes.map((change) => (
-                            <Checkbox
-                              key={change.path}
-                              value={change.path}
-                              className="flex cursor-pointer items-center gap-2 rounded-ok border border-border px-3 py-2 text-sm text-fg outline-none data-[selected]:border-accent data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus"
-                            >
-                              {({ isSelected }) => (
-                                <>
-                                  <span aria-hidden="true">{isSelected ? '✓' : '○'}</span>
-                                  <span>
-                                    {change.path}
-                                    {change.after === null ? ' (remove)' : ''}
-                                  </span>
-                                </>
-                              )}
-                            </Checkbox>
-                          ))}
-                        </CheckboxGroup>
+                          {({ isSelected }) => (
+                            <>
+                              <span aria-hidden="true">{isSelected ? '✓' : '○'}</span>
+                              <span>
+                                {change.path}
+                                {change.after === null ? ' (remove)' : ''}
+                              </span>
+                            </>
+                          )}
+                        </Checkbox>
+                      ))}
+                    </CheckboxGroup>
                     {chosen.map((change) => (
                       <DiffView
                         key={change.path}
