@@ -14,6 +14,8 @@ The authorized Thread dashboard derives taskInputs objective summaries through t
 
 The authorized Thread dashboard projects the authenticated viewer and only recorded Item actors and assigned Turn Agents with current User or Agent display names. It exposes no email or unrelated user directory; absent names retain stable actor ids.
 
+Public `turn.interrupt` records its admitted requester and exact Workspace, Thread, Turn and request in the existing Workspace Audit family after fresh successful command execution. Replay does not add or relabel that event. The success event means Stop-request acceptance, not completed runtime cleanup; it never reuses Turn.triggerActor. Audit errors remain explicit and cannot undo a reached runtime effect. Missing historical facts or crash gaps stay unavailable, with no new replay or repair owner. `audit.workspace-list` filters Thread-scoped events by current Thread audience as well as current Workspace admission. See [Turn Interruption Attribution](../../docs/specs/20260703-audit_usage_evidence_records.md#turn-interruption-attribution).
+
 Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.
 
 Thread dashboard work status projects selected Agent, active Turn status, pending attention counts and latest Artifact only. Workspace active-work rows project recorded Turn activity without a mode label. Product mode and handoff proof comes from the owning conversation, Task or Goal result and its exact Thread, Turn and Item lineage; dashboards compute no routing decision.

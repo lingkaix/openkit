@@ -74,6 +74,8 @@ For a reusable document or report, discover `artifact.import`, `artifact.read`, 
 
 Use an accepted refine, redo, interrupt, or stop operation only when operation discovery exposes it and the durable state permits it. Goal steering, pause, and resume belong only to the legacy implementation and are not operations of the new Goal contract. Never claim that an active-turn input was delivered merely because a local call completed; report the durable delivery outcome returned by NanoCore.
 
+To identify who requested a Stop, select the Workspace and open Web **Usage & audit**, or read `audit.workspace-list` through the supported interface. Match the recorded `turn.interrupt` event to the exact Thread, Turn and request. Its actor identifies the admitted requester; the Turn's triggerActor identifies who started the work. Follow the recorded Thread link to inspect current work state. A successful Stop-request event does not prove completed backend cleanup. **Actor not recorded**, missing events and unavailable reads do not identify a person; preserve those limits instead of guessing from the current user or initiator.
+
 ## Close or hand off
 
 Call the loop complete only when the requested stop condition is met, relevant evidence has been reviewed, no blocking Action Center decision remains, and any acceptance explicitly reserved to the user has been received. Ordinary completion under existing authorization does not require a new approval.
