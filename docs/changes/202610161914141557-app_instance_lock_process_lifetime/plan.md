@@ -22,3 +22,8 @@ The correction locks the existing runtime directory through `flock`, retains its
 ## Verification And Landing
 
 Run the two deciding regressions and the complete affected bootstrap, operator-recovery and cold-backup consumer suites, then focused formatting/type checks. Use one independent gpt-6.1-sol review and the express local gate. Merge P14 when it lands; do not land before it. Acquire the shared window only for land-express.sh, release immediately and observe main-push CI. No lane CI dispatch is needed. Record exact results and any unresolved boundary before closeout.
+
+
+## Main-Push Fixture Repair
+
+The initial landing passed its complete backend gate (636 cases) and App-entrypoint checks (11 cases). Its clean merged-head gate passed check:repo, lint and typecheck. Main-push CI then found a Web harness fixture that represented a live lock with diagnostic JSON alone. The fixture now holds the runtime-directory kernel lock through an inherited descriptor, retains the existing early-exit and data-root cleanup assertions, and closes the descriptor in finally. This changes no product code or acceptance predicate. Run the complete Web suites and Web e2e, obtain independent review and land the fixture correction as a main repair. Do not redeploy the App.
