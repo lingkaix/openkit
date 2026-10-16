@@ -26,6 +26,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { prepareMaterialSourceInput } from '../context/material-source-files.js';
 import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
@@ -369,28 +370,18 @@ export async function prepareWorkerTurnContextPackage(
       sensitivity: bindingCandidate.sensitivity,
     });
   } else if (bindingCandidate) {
-    const bindingContentBytes = Buffer.byteLength(bindingCandidate.content, 'utf8');
-    if (Math.ceil((selectedContextBytes + bindingContentBytes) / 4) > contextBudgetTokens) {
-      materialExclusions.push({
-        materialId: bindingCandidate.materialId,
-        reason: 'budget_exceeded',
-        revisionId: bindingCandidate.revisionId,
-        sensitivity: bindingCandidate.sensitivity,
-      });
-    } else {
-      materialSelections.push({
-        bindingMutationRequestId: bindingCandidate.bindingMutationRequestId,
-        content: bindingCandidate.content,
-        contentDigest: bindingCandidate.contentDigest,
-        inclusionReason: bindingCandidate.inclusionReason,
-        materialId: bindingCandidate.materialId,
-        mediaType: bindingCandidate.mediaType,
-        parentRevisionId: bindingCandidate.parentRevisionId,
-        revisionId: bindingCandidate.revisionId,
-        sensitivity: bindingCandidate.sensitivity,
-      });
-      queuedMaterialSelection = bindingCandidate;
-    }
+    materialSelections.push({
+      bindingMutationRequestId: bindingCandidate.bindingMutationRequestId,
+      content: bindingCandidate.content,
+      contentDigest: bindingCandidate.contentDigest,
+      inclusionReason: bindingCandidate.inclusionReason,
+      materialId: bindingCandidate.materialId,
+      mediaType: bindingCandidate.mediaType,
+      parentRevisionId: bindingCandidate.parentRevisionId,
+      revisionId: bindingCandidate.revisionId,
+      sensitivity: bindingCandidate.sensitivity,
+    });
+    queuedMaterialSelection = bindingCandidate;
   }
 
   const knowledgeSelections: WorkerContextPackageKnowledgeSelectionInput[] = [];
@@ -443,7 +434,7 @@ export async function prepareWorkerTurnContextPackage(
   const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
   const originalInputs = structuredClone(turn.fileInputs ?? []);
   const assertCurrentSources = () => {
-    if (!originalInputs.length) return;
+    if (!originalInputs.length && !materialSelections.length) return;
     if (!coreDb)
       throw new TurnStartValidationError(
         'source_unavailable',
@@ -486,6 +477,29 @@ export async function prepareWorkerTurnContextPackage(
       turn,
       assertCurrent: assertCurrentSources,
     });
+    for (const [index, selection] of materialSelections.entries()) {
+      const assertCurrentMaterial = () => {
+        assertCurrentSources();
+        if (
+          !isDeepStrictEqual(
+            selectQueuedThreadMaterialRevision(workspaceDb, input.threadId),
+            bindingCandidate
+          )
+        )
+          throw new TurnStartValidationError(
+            'source_unavailable',
+            'Current Material source is unavailable.',
+            503
+          );
+      };
+      const material = await prepareMaterialSourceInput({
+        workspaceId: input.workspaceId,
+        selection,
+        assertCurrent: assertCurrentMaterial,
+      });
+      materialSelections[index] = material.selection;
+      sourceFiles.push(material.source);
+    }
   } catch (error) {
     if (error instanceof TurnStartValidationError) throw error;
     const refusal = new TurnStartValidationError(

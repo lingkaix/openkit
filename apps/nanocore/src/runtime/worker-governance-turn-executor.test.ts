@@ -7925,7 +7925,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('excludes an automatic binding that exceeds the remaining Context Package budget', async () => {
+  it('delivers a bounded Material excerpt and the exact admitted original without bytes-per-token guessing', async () => {
     const fixture = await createWorkerContextExecutorFixture('binding-budget', {
       materialContent: 'B'.repeat(5_000),
       maxContextTokens: 1_000,
@@ -7934,7 +7934,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       agentSessionId,
       coreDb,
       material,
-      queuedMaterial,
       requestId,
       revision,
       sandboxBindingRef,
@@ -7968,18 +7967,67 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       expect(launchSpy).toHaveBeenCalledTimes(1);
       expect(JSON.parse(readFileSync(tracePath, 'utf8'))).toMatchObject({
-        materialExclusions: [
+        materialExclusions: [],
+        materialSelections: [
           {
             materialId: material.materialId,
-            reason: 'budget_exceeded',
             revisionId: revision.revisionId,
-            sensitivity: 'internal',
+            contentDigest: revision.contentDigest,
+            projection: {
+              kind: 'excerpt',
+              byteLength: 2_048,
+              representationByteLength: 5_000,
+              representationDigest: revision.contentDigest,
+              truncated: true,
+              availability: 'incomplete',
+            },
           },
         ],
-        materialSelections: [],
+        sourceFiles: [
+          {
+            source: { kind: 'material', revisionId: revision.revisionId },
+            byteLength: 5_000,
+            originalDigest: revision.contentDigest,
+          },
+        ],
       });
       const reopenedDb = openTestWorkspaceDb(coreDb);
-      expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toEqual(queuedMaterial);
+      expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toBeNull();
+      const contextRoot = join(
+        coreDb.dataRoot,
+        'workspaces',
+        turn.workspaceId,
+        'threads',
+        turn.threadId,
+        'turns',
+        turn.id,
+        'context-package'
+      );
+      expect(
+        readFileSync(
+          join(
+            contextRoot,
+            'workspace',
+            'materials',
+            material.materialId,
+            `${revision.revisionId}.md`
+          ),
+          'utf8'
+        )
+      ).toBe('B'.repeat(2_048));
+      expect(
+        readFileSync(
+          join(
+            contextRoot,
+            'originals',
+            'materials',
+            material.materialId,
+            revision.revisionId,
+            'payload'
+          ),
+          'utf8'
+        )
+      ).toBe('B'.repeat(5_000));
       reopenedDb.sqlite.close();
     } finally {
       launchSpy.mockRestore();
