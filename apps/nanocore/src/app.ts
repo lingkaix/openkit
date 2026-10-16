@@ -1822,6 +1822,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       store: sharedStore,
       mode,
       openWorkspace: repositoryWorkspaceDb,
+      ...(publicBaseUrl ? { publicBaseUrl } : {}),
       ...(discordConfig ? { discordConfig } : {}),
       ...(transport ? { transport } : {}),
       invokePending: (id, value, actor) =>

@@ -7,6 +7,9 @@ import { useWorkspaceStore } from '../workspace-store';
 /** The single TanStack owner for protected account admission reads. */
 export const accountAdmissionKey = ['account', 'authorized-workspaces'] as const;
 
+/** User-owned channel queries and transient mutation results cleared at every account transition. */
+export const accountChannelsKey = ['account', 'channels'] as const;
+
 /** The user-scoped TanStack query removed at every successful account transition. */
 export const myInvitationsKey = ['account', 'my-workspace-invitations'] as const;
 
@@ -104,6 +107,9 @@ export function useAccountMutation() {
     },
     onSuccess: () => {
       const mutationCache = queryClient.getMutationCache();
+      for (const mutation of mutationCache.findAll({ mutationKey: accountChannelsKey }))
+        mutationCache.remove(mutation);
+      queryClient.removeQueries({ queryKey: accountChannelsKey });
       for (const mutation of mutationCache.findAll({
         exact: true,
         mutationKey: myInvitationDecisionMutationKey,

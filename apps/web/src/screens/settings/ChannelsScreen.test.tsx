@@ -1,15 +1,17 @@
 import type { CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { surfaceById } from '../../app/surfaces';
+import { accountChannelsKey, useAccountMutation } from '../account/session';
 import { ChannelsScreen } from './ChannelsScreen';
 
 function client(operations: Partial<CoreClient['operations']> = {}) {
   return {
+    auth: { email: { signOut: vi.fn().mockResolvedValue({}) } },
     core: { meta: vi.fn().mockResolvedValue({}) },
     operations: {
       'channel.discord.status': vi
@@ -26,11 +28,12 @@ function client(operations: Partial<CoreClient['operations']> = {}) {
     },
   } as unknown as CoreClient;
 }
-function show(value: CoreClient) {
-  render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+function show(
+  value: CoreClient,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
+  return render(
+    <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={value}>
         <MemoryRouter>
           <ChannelsScreen />
@@ -41,6 +44,54 @@ function show(value: CoreClient) {
 }
 
 describe('Discord settings', () => {
+  it('removes prior-user bindings, private routes and pairing results at account transition', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    const oldStatusKey = [...accountChannelsKey, 'status'];
+    const oldDeliveriesKey = [...accountChannelsKey, 'deliveries'];
+    queryClient.setQueryData(oldStatusKey, {
+      configured: true,
+      sendingAvailable: true,
+      binding: { discordUserId: 'prior-account', pairedAt: 1 },
+    });
+    queryClient.setQueryData(oldDeliveriesKey, {
+      items: [{ appPath: '/chat/ws_private/th_private' }],
+    });
+    const pairing = queryClient.getMutationCache().build(queryClient, {
+      mutationKey: [...accountChannelsKey, 'pair'],
+      mutationFn: async () => ({ challenge: 'prior-user-challenge' }),
+    });
+    await pairing.execute(undefined);
+    const value = client();
+    const transition = renderHook(() => useAccountMutation(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          <CoreClientProvider client={value}>{children}</CoreClientProvider>
+        </QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await transition.result.current.mutateAsync({
+        operation: 'signOut',
+        email: '',
+        password: '',
+        name: '',
+      });
+    });
+    expect(queryClient.getQueryData(oldStatusKey)).toBeUndefined();
+    expect(queryClient.getQueryData(oldDeliveriesKey)).toBeUndefined();
+    expect(queryClient.getMutationCache().findAll({ mutationKey: accountChannelsKey })).toEqual([]);
+    transition.unmount();
+    const nextUser = client();
+    show(nextUser, queryClient);
+    expect(await screen.findByRole('button', { name: 'Pair Discord account' })).toBeInTheDocument();
+    expect(nextUser.operations['channel.discord.status']).toHaveBeenCalledOnce();
+    expect(nextUser.operations['notification.list']).toHaveBeenCalledOnce();
+    expect(screen.queryByText('prior-account')).not.toBeInTheDocument();
+    expect(screen.queryByText('prior-user-challenge')).not.toBeInTheDocument();
+  });
+
   it('publishes the live user settings surface and starts pairing only on an explicit action', async () => {
     const value = client();
     show(value);
@@ -65,6 +116,20 @@ describe('Discord settings', () => {
     expect(
       await screen.findByText('Discord is not configured on this deployment.')
     ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pair Discord account' })).not.toBeInTheDocument();
+  });
+
+  it('can revoke a retained binding after deployment configuration is removed', async () => {
+    const value = client({
+      'channel.discord.status': vi.fn().mockResolvedValue({
+        configured: false,
+        sendingAvailable: false,
+        binding: { discordUserId: '123456789012345678', pairedAt: 1 },
+      }),
+    });
+    show(value);
+    await userEvent.click(await screen.findByRole('button', { name: 'Revoke Discord binding' }));
+    expect(value.operations['channel.discord.revoke']).toHaveBeenCalledWith({});
     expect(screen.queryByRole('button', { name: 'Pair Discord account' })).not.toBeInTheDocument();
   });
 

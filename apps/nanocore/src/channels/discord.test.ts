@@ -56,6 +56,8 @@ function fixture() {
     sqlite,
     applicationId,
     publicKey,
+    appBaseUrl: 'https://openkit.invalid',
+    requestLink: () => 'https://openkit.invalid/tasks/ws_discord/th_discord?requestId=ap_discord',
     now: () => now,
     newRequestId: randomUUID,
     resolveActor: () => currentActor,
@@ -272,7 +274,9 @@ describe('Discord exact Pending Request projection', () => {
   it('returns grant requests to the App without reading protected content or dispatching an operation', async () => {
     const f = fixture();
     await f.pair();
-    expect(content(await f.send('approve', f.target))).toContain('channel_grant_requires_app');
+    expect(content(await f.send('approve', f.target))).toContain(
+      'https://openkit.invalid/tasks/ws_discord/th_discord?requestId=ap_discord'
+    );
     expect(f.inspectPending).not.toHaveBeenCalled();
     expect(f.invoke).not.toHaveBeenCalled();
   });
