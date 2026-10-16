@@ -7075,7 +7075,6 @@ describe('exact Review candidate draft handoff', () => {
   });
 
   it('refuses a newer candidate instead of silently adding its version', async () => {
-    const user = userEvent.setup();
     const submit = vi.fn();
     renderApp(path, makeClient({
       'artifact.read': vi.fn().mockResolvedValue({ ...artifact, version: 3 }),
@@ -7083,8 +7082,7 @@ describe('exact Review candidate draft handoff', () => {
       'conversation.submit': submit,
     }), undefined, { candidateInput: candidate });
     await screen.findByText('The selected candidate is unavailable or has changed. Return to its review and select an available candidate.');
-    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Keep this draft.');
-    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep this draft.');
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
     expect(submit).not.toHaveBeenCalled();
   });
