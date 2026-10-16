@@ -91,7 +91,7 @@ describe('Web admin recovery and user disable', () => {
     const client = makeClient();
     const { container, queryClient } = renderScreen(client);
     expect(await screen.findByRole('button', { name: 'Load recovery state' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Add myself as editor' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add myself as member' })).toBeDisabled();
     expect(client.operations['workspace.access-recovery-read']).not.toHaveBeenCalled();
     await loadRecovery();
     expect(client.operations['workspace.access-recovery-read']).toHaveBeenCalledExactlyOnceWith({
@@ -99,8 +99,8 @@ describe('Web admin recovery and user disable', () => {
     });
     for (const value of ['ws_fixture', 'user_owner', 'No active membership', '7'])
       expect(screen.getByText(value)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
-    await screen.findByText('editor');
+    await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
+    await screen.findByText('active');
     expect(client.operations['workspace.access-recover']).toHaveBeenCalledExactlyOnceWith({
       workspaceId: 'ws_fixture',
       ...{
@@ -132,7 +132,7 @@ describe('Web admin recovery and user disable', () => {
     await userEvent.clear(screen.getByLabelText('Confirm workspace ID'));
     await userEvent.type(screen.getByLabelText('Confirm workspace ID'), 'ws_fixture');
     await userEvent.click(transfer);
-    await screen.findByText('editor');
+    await screen.findByText('active');
     expect(client.operations['workspace.access-recover']).toHaveBeenCalledExactlyOnceWith({
       workspaceId: 'ws_fixture',
       ...{
@@ -144,7 +144,7 @@ describe('Web admin recovery and user disable', () => {
     expect(screen.getByLabelText('Confirm workspace ID')).toHaveValue('');
     await userEvent.type(screen.getByLabelText('Workspace ID'), '2');
     expect(screen.queryByText('user_owner')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add myself as editor' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add myself as member' })).toBeDisabled();
   });
 
   it('starts disable dry, requires matching confirmation, and projects only lifecycle fields', async () => {
@@ -241,7 +241,7 @@ describe('Web admin recovery and user disable', () => {
     if (method === 'user.disable') await confirmDisable();
     else if (method === 'workspace.access-recover') {
       await loadRecovery();
-      await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
     } else {
       await userEvent.type(await screen.findByLabelText('Workspace ID'), 'ws_fixture');
       await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
@@ -267,7 +267,7 @@ describe('Web admin recovery and user disable', () => {
     if (method === 'user.disable') await confirmDisable();
     else {
       await loadRecovery();
-      await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
     }
     await screen.findByRole('alert');
     expect(container.innerHTML).not.toContain(POISON);
@@ -275,7 +275,7 @@ describe('Web admin recovery and user disable', () => {
     expect(client.operations[method]).toHaveBeenCalledTimes(1);
     expect(
       screen.getByRole('button', {
-        name: method === 'user.disable' ? 'Disable user' : 'Add myself as editor',
+        name: method === 'user.disable' ? 'Disable user' : 'Add myself as member',
       })
     ).toBeDisabled();
   });
@@ -286,9 +286,9 @@ describe('Web admin recovery and user disable', () => {
     );
     renderScreen(client);
     await loadRecovery();
-    await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
     await screen.findByRole('alert');
-    expect(screen.getByRole('button', { name: 'Add myself as editor' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add myself as member' })).toBeDisabled();
     const firstRequest = vi.mocked(client.operations['workspace.access-recover']).mock.calls[0][0];
     expect(firstRequest.requestId).toMatch(/^[0-9a-f-]{36}$/);
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
@@ -297,8 +297,8 @@ describe('Web admin recovery and user disable', () => {
     });
     await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
     await screen.findByText('9');
-    await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
-    await screen.findByText('editor');
+    await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
+    await screen.findByText('active');
     const secondRequest = vi.mocked(client.operations['workspace.access-recover']).mock.calls[1][0];
     expect(secondRequest.expectedRegistryRevision).toBe(9);
     expect(secondRequest.requestId).not.toBe(firstRequest.requestId);
@@ -336,7 +336,7 @@ describe('Web admin recovery and user disable', () => {
     if (method === 'user.disable') await confirmDisable();
     else if (method === 'workspace.access-recover') {
       await loadRecovery();
-      await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
     } else {
       await userEvent.type(await screen.findByLabelText('Workspace ID'), 'ws_fixture');
       await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));

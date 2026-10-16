@@ -178,7 +178,7 @@ afterEach(() => {
 });
 
 describe('Workspace relationship consumers', () => {
-  it('keeps owner, editor and viewer choices for ordinary active membership discovery', async () => {
+  it('keeps ownership and shared membership choices for ordinary active membership discovery', async () => {
     const user = userEvent.setup();
     const view = renderConsumers({
       items: [

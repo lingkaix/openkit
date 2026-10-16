@@ -557,7 +557,7 @@ async function authorizeWorkspaceOperation(
   return denyIfThreadInaccessible(context, actor, input, authorized.workspaceId);
 }
 
-/** Checks current original-owner or administrator authority; the deletion owner still requires the exact recorded request. */
+/** Checks current initiating-user or administrator retry authority; the deletion owner validates the exact request before effects. */
 export function hasWorkspaceDeletionRetryAuthority(
   coreDb: CoreDb,
   actor: Actor,
@@ -581,6 +581,13 @@ export function hasWorkspaceDeletionRetryAuthority(
     .get(workspaceId) as
     | { ownerUserId: string; status: 'active' | 'deleting' | 'deleted'; userStatus: string }
     | undefined;
+  if (row?.userStatus !== 'active' || (row.status !== 'deleting' && row.status !== 'deleted')) {
+    return false;
+  }
+  // Administrators may inspect a contradictory request through the deletion owner, which returns recovery_required before effects. A malformed record never supplies member authority.
+  if (isCurrentDeploymentAdministrator(coreDb, actor)) {
+    return true;
+  }
   let deletion: ReturnType<typeof readWorkspaceDeletionRequest>;
   try {
     deletion = readWorkspaceDeletionRequest(request.dataRoot, workspaceId, request.requestId);
@@ -588,11 +595,8 @@ export function hasWorkspaceDeletionRetryAuthority(
     return false;
   }
   return (
-    deletion.originalOwnerUserId === row?.ownerUserId &&
-    ((deletion.initiatingUserId ?? deletion.originalOwnerUserId) === actor.userId ||
-      isCurrentDeploymentAdministrator(coreDb, actor)) &&
-    row?.userStatus === 'active' &&
-    (row.status === 'deleting' || row.status === 'deleted')
+    deletion.originalOwnerUserId === row.ownerUserId &&
+    (deletion.initiatingUserId ?? deletion.originalOwnerUserId) === actor.userId
   );
 }
 

@@ -327,6 +327,7 @@ describe('Workspace sharing routes', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             ...input,
+            inviteeEmail: 'different@example.com',
           }),
         }
       )
@@ -364,6 +365,7 @@ describe('Workspace sharing routes', () => {
     const fixture = createFixture();
     const noOp = await fixture.app.request(
       ...operationRequest(
+        'workspace.ownership-transfer',
         { workspaceId: fixture.workspaceId, targetUserId: 'user_owner' },
         {
           method: 'PATCH',
@@ -377,6 +379,7 @@ describe('Workspace sharing routes', () => {
     );
     const conflict = await fixture.app.request(
       ...operationRequest(
+        'workspace.ownership-transfer',
         { workspaceId: fixture.workspaceId, targetUserId: 'user_owner' },
         {
           method: 'PATCH',

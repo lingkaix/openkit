@@ -94,7 +94,7 @@ function ConfirmAction({
   );
 }
 
-/** Selected-Workspace owner projection for members and issued invitations. */
+/** Selected-Workspace member management and ownership projection. */
 export function MembersScreen() {
   const management = useWorkspaceMemberManagement();
   const selfLeave = useSelfLeave();
@@ -140,6 +140,7 @@ export function MembersScreen() {
               membershipRevision !== null &&
               selfLeave.selectedWorkspaceId ? (
                 <LeaveConfirmation
+                  key={selectedWorkspace.workspace.id}
                   errorMessage={selfLeave.leave.error?.message}
                   pending={selfLeave.leave.isPending}
                   workspaceName={selectedWorkspace.workspace.name}
@@ -207,7 +208,9 @@ export function MembersScreen() {
                   >
                     <tbody>
                       {management.members.data.items.map((member: AccountWorkspaceMember) => {
-                        const activeNonOwner = member.status === 'active' && !member.isOwner;
+                        // Transfer returns the current registry owner without changing membership revisions.
+                        const isOwner = member.userId === workspace.ownerUserId;
+                        const activeNonOwner = member.status === 'active' && !isOwner;
                         return (
                           <tr key={member.userId} className="align-top">
                             <td className="min-w-0 py-3 pr-3">
@@ -219,11 +222,8 @@ export function MembersScreen() {
                                   {member.status === 'removed' ? (
                                     'removed'
                                   ) : (
-                                    <span
-                                      role="status"
-                                      aria-label={member.isOwner ? 'owner' : 'member'}
-                                    >
-                                      {member.isOwner ? 'Owner' : 'Active member'}
+                                    <span role="status" aria-label={isOwner ? 'owner' : 'member'}>
+                                      {isOwner ? 'Owner' : 'Active member'}
                                     </span>
                                   )}
                                 </StatusChip>

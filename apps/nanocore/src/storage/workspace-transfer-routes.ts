@@ -320,7 +320,7 @@ export function canReadWorkspaceExport(
  * Checks whether an archive may cross the target deployment trust boundary.
  *
  * Foreign archives use the authenticated importer as target authority. Current or predecessor
- * archives still require the active source owner and workspace.export authority.
+ * archives still require current source Workspace eligibility and workspace.export authority.
  *
  * @param dataRoot Canonical target data root.
  * @param store Current user Store.
@@ -1001,17 +1001,9 @@ export function createVerifiedWorkspaceExport({
           workspaceId,
         }
       : undefined;
-  const deletionRecoveryAuthorized =
-    deletionRecoveryRequestId !== undefined
-      ? assertWorkspaceDeletionRecoveryExportAuthority({
-          authorityUserId,
-          coreDb,
-          dataRoot,
-          exportId,
-          requestId: deletionRecoveryRequestId,
-          workspaceId,
-        })
-      : false;
+  const deletionRecoveryAuthorized = deletionRecoveryContext
+    ? assertWorkspaceDeletionRecoveryExportAuthority(deletionRecoveryContext)
+    : false;
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
   if (

@@ -172,7 +172,7 @@ Resources should be scoped by workspace unless explicitly global or shared.
 Examples:
 
 - current workspace
-- current membership status and product access level
+- current membership status and Policy facts
 - token scope and Workspace binding
 - agent identity
 - AgentSession status

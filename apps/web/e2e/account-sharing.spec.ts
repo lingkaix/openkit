@@ -67,7 +67,7 @@ function isWorkspaceSelectionEnvelope(value: unknown): boolean {
  * Proves browser storage holds only UI presentation keys. `openkit-workspace` may
  * retain an explicit authorized switcher selection; passwords, names, emails, and
  * other server or auth secrets stay forbidden. After leave or logout the departed
- * Workspace id must be absent; a still-authorized selected id after role downgrade
+ * Workspace id must be absent; a still-authorized selected id after ownership transfer
  * may remain as currentWorkspaceId.
  */
 async function expectUiOnlyBrowserStorage(
@@ -160,7 +160,7 @@ async function createWorkspace(page: Page, webUrl: string): Promise<string> {
   return body.id;
 }
 
-/** Creates one owner invitation and proves its exact email leaves the rendered surface. */
+/** Creates one member-authorized invitation and proves its exact email leaves the rendered surface. */
 async function invite(page: Page, email: string): Promise<void> {
   const invitations = page.getByRole('region', { name: 'Workspace invitations' });
   await invitations.getByRole('textbox', { name: 'Invitee email' }).fill(email);
@@ -253,10 +253,8 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await openSelectedWorkspaceAccount(page);
   const members = page.getByRole('region', { name: 'Workspace members' });
   const acceptingRow = members.getByRole('row', { name: new RegExp(acceptingId) });
-  await acceptingRow.getByLabel('Access level').click();
-  await page.getByRole('option', { name: 'Viewer' }).click();
-  await acceptingRow.getByRole('button', { name: 'Save access' }).click();
-  await expect(acceptingRow).toContainText('Read only');
+  await expect(acceptingRow).toContainText('Active member');
+  await expect(acceptingRow.getByLabel('Access level')).toHaveCount(0);
 
   const staleOwnerContext = await browser.newContext({ viewport: { width: 800, height: 600 } });
   const staleOwnerPage = await staleOwnerContext.newPage();
@@ -278,6 +276,21 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
     await expect(page.getByRole('status', { name: 'Workspace ownership transfer' })).toContainText(
       acceptingId
     );
+
+    // Ownership transfer keeps ordinary member controls. Actual removal revokes the stale session.
+    await expect(page.getByRole('region', { name: 'Workspace members' })).toBeVisible();
+    await signOut(page, stack.webUrl);
+    await signIn(page, accepting);
+    await selectWorkspace(page, workspaceName);
+    await openSelectedWorkspaceAccount(page);
+    const currentMembers = page.getByRole('region', { name: 'Workspace members' });
+    const formerOwner = currentMembers.getByRole('row', { name: new RegExp(ownerId) });
+    await formerOwner.getByRole('button', { name: 'Remove member' }).click();
+    await page
+      .getByRole('dialog', { name: /confirm remove member/i })
+      .getByRole('button', { name: 'Confirm' })
+      .click();
+    await expect(formerOwner).toContainText('removed');
 
     const staleInvitations = staleOwnerPage.getByRole('region', { name: 'Workspace invitations' });
     await staleInvitations.getByRole('textbox', { name: 'Invitee email' }).fill(deniedEmail);
@@ -328,11 +341,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await openSelectedWorkspaceAccount(page);
   const newOwnerMembers = page.getByRole('region', { name: 'Workspace members' });
   const formerOwnerRow = newOwnerMembers.getByRole('row', { name: new RegExp(ownerId) });
-  await formerOwnerRow.getByRole('button', { name: 'Remove member' }).click();
-  await page
-    .getByRole('dialog', { name: /confirm remove member/i })
-    .getByRole('button', { name: 'Confirm' })
-    .click();
+  await expect(formerOwnerRow.getByRole('button', { name: 'Remove member' })).toHaveCount(0);
   await expect(formerOwnerRow).toContainText('removed');
   await expect(newOwnerMembers.getByRole('row', { name: new RegExp(decliningId) })).toHaveCount(0);
   await signOut(page, stack.webUrl);
@@ -340,7 +349,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await signIn(page, leaving);
   await selectWorkspace(page, workspaceName);
   await openSelectedWorkspaceAccount(page);
-  const role = page.getByRole('region', { name: 'Current Workspace role' });
+  const role = page.getByRole('region', { name: 'Current Workspace access' });
   await role.getByRole('button', { name: 'Leave Workspace' }).click();
   await page
     .getByRole('dialog', { name: /confirm leave workspace/i })

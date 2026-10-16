@@ -536,8 +536,16 @@ function makeSharingClient(overrides: SharingOverrides = {}) {
     declineWorkspaceInvitation: vi.fn(),
     leaveWorkspace: vi.fn(),
     listMyWorkspaceInvitations: vi.fn().mockResolvedValue({ items: [] }),
-    listWorkspaceInvitations: vi.fn().mockResolvedValue(WORKSPACE_INVITATIONS),
-    listWorkspaceMembers: vi.fn().mockResolvedValue(WORKSPACE_MEMBERS),
+    listWorkspaceInvitations: vi
+      .fn()
+      .mockImplementation(async ({ workspaceId }: { workspaceId: string }) =>
+        workspaceId === 'ws1' ? WORKSPACE_INVITATIONS : { items: [] }
+      ),
+    listWorkspaceMembers: vi
+      .fn()
+      .mockImplementation(async ({ workspaceId }: { workspaceId: string }) =>
+        workspaceId === 'ws1' ? WORKSPACE_MEMBERS : { items: [] }
+      ),
     removeWorkspaceMember: vi.fn(),
     revokeWorkspaceInvitation: vi.fn(),
     transferWorkspaceOwnership: vi.fn(),
@@ -1840,8 +1848,8 @@ describe('email/password session operations', () => {
   });
 });
 
-describe('selected-Workspace owner management', () => {
-  it('reads only the selected owner Workspace and renders effective roles and invitation lifecycle without email', async () => {
+describe('selected-Workspace member management', () => {
+  it('reads only the selected Workspace and renders ownership identity and invitation lifecycle without email', async () => {
     const memberRead = deferred<typeof WORKSPACE_MEMBERS>();
     const invitationRead = deferred<typeof WORKSPACE_INVITATIONS>();
     const listWorkspaceMembers = vi.fn().mockReturnValue(memberRead.promise);
@@ -1879,12 +1887,8 @@ describe('selected-Workspace owner management', () => {
     const members = screen.getByRole('region', { name: 'Workspace members' });
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
     expect(within(members).getByRole('row', { name: /user-owner.*owner/i })).toBeInTheDocument();
-    expect(
-      within(members).getByRole('row', { name: /user-editor.*Active member/i })
-    ).toBeInTheDocument();
-    expect(
-      within(members).getByRole('row', { name: /user-viewer.*Active member/i })
-    ).toBeInTheDocument();
+    expect(within(members).getByRole('row', { name: /user-editor.*member/i })).toBeInTheDocument();
+    expect(within(members).getByRole('row', { name: /user-viewer.*member/i })).toBeInTheDocument();
     expect(
       within(members).getByRole('row', { name: /user-removed.*removed/i })
     ).toBeInTheDocument();
@@ -1912,7 +1916,7 @@ describe('selected-Workspace owner management', () => {
     expect(
       await revealRowAction(
         user,
-        within(members).getByRole('row', { name: /user-editor.*Active member/i }),
+        within(members).getByRole('row', { name: /user-editor.*member/i }),
         /transfer ownership/i
       )
     ).toBeEnabled();
@@ -1920,7 +1924,7 @@ describe('selected-Workspace owner management', () => {
     expect(
       await revealRowAction(
         user,
-        within(members).getByRole('row', { name: /user-viewer.*Active member/i }),
+        within(members).getByRole('row', { name: /user-viewer.*member/i }),
         /transfer ownership/i
       )
     ).toBeEnabled();
@@ -2153,7 +2157,7 @@ describe('selected-Workspace owner management', () => {
           status: 'removed',
         },
       },
-      row: /user-editor.*Active member/i,
+      row: /user-editor.*member/i,
       settlementIdentity: /user-editor/i,
       settlementState: /removed/i,
       statusName: /workspace member operation/i,
@@ -2172,7 +2176,7 @@ describe('selected-Workspace owner management', () => {
           registryRevision: 10,
         },
       },
-      row: /user-editor.*Active member/i,
+      row: /user-editor.*member/i,
       settlementIdentity: /user-editor/i,
       settlementState: /owner/i,
       statusName: /workspace ownership transfer/i,
@@ -2191,7 +2195,7 @@ describe('selected-Workspace owner management', () => {
           registryRevision: 10,
         },
       },
-      row: /user-viewer.*Active member/i,
+      row: /user-viewer.*member/i,
       settlementIdentity: /user-viewer/i,
       settlementState: /owner/i,
       statusName: /workspace ownership transfer/i,
@@ -2303,16 +2307,17 @@ describe('selected-Workspace owner management', () => {
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
   });
 
-  it('does not restore stale owner reads or controls after navigating away and back following ownership transfer', async () => {
+  it('preserves member controls and current ownership identity after transfer and navigation', async () => {
     const guards = guardSensitiveSinks([EMAIL]);
-    const transferWorkspaceOwnership = vi.fn().mockResolvedValue({
-      workspace: {
-        ...OWNER_WORKSPACES.items[0],
-        isOwner: false,
-        ownerUserId: 'user-editor',
-        registryRevision: 10,
-      },
-    });
+    const transferredWorkspace = {
+      ...OWNER_WORKSPACES.items[0],
+      isOwner: false,
+      ownerUserId: 'user-editor',
+      registryRevision: 10,
+    };
+    const transferWorkspaceOwnership = vi
+      .fn()
+      .mockResolvedValue({ workspace: transferredWorkspace });
     const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
       methods: { transferWorkspaceOwnership },
     });
@@ -2321,7 +2326,7 @@ describe('selected-Workspace owner management', () => {
 
     await screen.findByText(/Workspace access:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
-    const editor = await within(members).findByRole('row', { name: /user-editor.*Active member/i });
+    const editor = await within(members).findByRole('row', { name: /user-editor.*member/i });
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
     const email = (await within(invitations).findByRole('textbox', {
       name: /invitee email/i,
@@ -2344,26 +2349,29 @@ describe('selected-Workspace owner management', () => {
       },
     });
     expect(await screen.findByText(/Workspace access: Active member/i)).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Workspace members' })).toBeInTheDocument();
+    expect(screen.getByText(/Current owner: user-editor/i)).toBeInTheDocument();
     expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads);
     expect(methods.listWorkspaceMembers).toHaveBeenCalledTimes(memberReads);
     expect(methods.listWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads);
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
     expectNoRetainedInviteEmail(queryClient, guards);
 
+    listAuthorizedWorkspaces.mockResolvedValue({
+      items: [transferredWorkspace, ...OWNER_WORKSPACES.items.slice(1)],
+    });
     const appearanceNavigation = screen.getByRole('button', { name: 'Appearance' });
     await user.click(appearanceNavigation);
     await waitFor(() => expect(appearanceNavigation).toHaveAttribute('aria-current', 'page'));
     await user.click(screen.getByRole('button', { name: 'Account' }));
 
     expect(await screen.findByText(/Workspace access: Active member/i)).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /invite|remove member|transfer ownership|revoke/i })
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Workspace members' })).toBeInTheDocument();
+    expect(screen.getByText(/Current owner: user-editor/i)).toBeInTheDocument();
+    expect(await screen.findByRole('textbox', { name: /invitee email/i })).toBeInTheDocument();
     expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads + 1);
-    expect(methods.listWorkspaceMembers).toHaveBeenCalledTimes(memberReads);
-    expect(methods.listWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads);
+    expect(methods.listWorkspaceMembers).toHaveBeenCalledTimes(memberReads + 1);
+    expect(methods.listWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads + 1);
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
     expectNoRetainedInviteEmail(queryClient, guards);
   });
@@ -2433,12 +2441,12 @@ describe('selected-Workspace owner management', () => {
 
     await screen.findByText(/Workspace access:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
-    const editor = await within(members).findByRole('row', { name: /user-editor.*Active member/i });
+    const editor = await within(members).findByRole('row', { name: /user-editor.*member/i });
     const user = userEvent.setup();
     const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
     await user.click(await revealRowAction(user, editor, /remove member/i));
     const confirmation = await screen.findByRole('dialog');
-    await user.click(within(confirmation).getByRole('button', { name: /confirm remove member/i }));
+    await user.click(within(confirmation).getByRole('button', { name: /^confirm$/i }));
 
     expect(await within(members).findByRole('alert')).toHaveTextContent(/access denied/i);
     expect(removeWorkspaceMember).toHaveBeenCalledTimes(1);
@@ -2507,7 +2515,7 @@ describe('selected-Workspace owner management', () => {
       outcome: /conflict|changed/i,
       precludedState: null,
       region: 'Workspace members',
-      row: /user-editor.*Active member/i,
+      row: /user-editor.*member/i,
       statusState: /user-editor.*Active member|Active member.*user-editor/i,
     },
     {
@@ -2532,7 +2540,7 @@ describe('selected-Workspace owner management', () => {
       outcome: /conflict|changed/i,
       precludedState: /owner/i,
       region: 'Workspace members',
-      row: /user-editor.*Active member/i,
+      row: /user-editor.*member/i,
       statusState: /user-editor.*owner|owner.*user-editor/i,
     },
   ] as const)('uses the safe current record for $code from $method instead of synthesizing success', async ({
@@ -2719,8 +2727,8 @@ describe('account-level My invitations', () => {
     await user.keyboard('{Escape}');
     expect(await revealRowAction(user, unknown, /^decline/i)).toBeEnabled();
     expect(listMyWorkspaceInvitations.mock.calls).toEqual([[{}]]);
-    expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
-    expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
+    expect(methods.listWorkspaceMembers.mock.calls).toEqual([[{ workspaceId: 'ws_7' }]]);
+    expect(methods.listWorkspaceInvitations.mock.calls).toEqual([[{ workspaceId: 'ws_7' }]]);
     expectNoRetainedInviteEmail(queryClient, guards);
   });
 
@@ -3052,10 +3060,10 @@ describe('selected-membership self-leave', () => {
     const { queryClient } = renderApp('/settings/account', client);
 
     expect(await screen.findByText(/Workspace access: Active member/i)).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Workspace members' })).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /invite|remove member|transfer ownership|revoke/i })
-    ).not.toBeInTheDocument();
+      await screen.findByRole('region', { name: 'Workspace invitations' })
+    ).toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /leave workspace/i }));
     expect(leaveWorkspace).not.toHaveBeenCalled();
@@ -3068,16 +3076,24 @@ describe('selected-membership self-leave', () => {
     ]);
     expect(confirm).toBeDisabled();
     const authorizedReads = listAuthorizedWorkspaces.mock.calls.length;
+    listAuthorizedWorkspaces.mockResolvedValue({ items: NON_OWNER_WORKSPACES.items.slice(1) });
     leave.resolve({ member: SELF_REMOVED_MEMBER });
 
     await waitFor(() => expectAuthorizedWorkspaceIds(queryClient, ['ws2']));
     expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads + 1);
-    expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
-    expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
-    expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();
+    expect(methods.listWorkspaceMembers.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws2' }],
+    ]);
+    expect(methods.listWorkspaceInvitations.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws2' }],
+    ]);
+    expect(await screen.findByRole('region', { name: 'Workspace members' })).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /invite|remove member|transfer ownership|revoke/i })
-    ).not.toBeInTheDocument();
+      await screen.findByRole('region', { name: 'Workspace invitations' })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('settles a removed safe-current membership conflict without replaying leave', async () => {
@@ -3087,7 +3103,7 @@ describe('selected-membership self-leave', () => {
     });
     expect(parseWorkspaceSharingError(failure)?.code).toBe('revision_conflict');
     const leaveWorkspace = vi.fn().mockRejectedValue(failure);
-    const { client, methods } = makeSharingClient({
+    const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
       authorizedWorkspaces: NON_OWNER_WORKSPACES,
       coreWorkspaces: [
         { id: 'ws1', name: 'Authorized Workspace' },
@@ -3095,6 +3111,11 @@ describe('selected-membership self-leave', () => {
       ],
       methods: { leaveWorkspace },
     });
+    listAuthorizedWorkspaces.mockImplementation(async () => ({
+      items: leaveWorkspace.mock.calls.length
+        ? NON_OWNER_WORKSPACES.items.slice(1)
+        : NON_OWNER_WORKSPACES.items,
+    }));
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
@@ -3109,8 +3130,14 @@ describe('selected-membership self-leave', () => {
       [{ workspaceId: 'ws1', ...{ expectedRevision: 17 } }],
     ]);
     await waitFor(() => expectAuthorizedWorkspaceIds(queryClient, ['ws2']));
-    expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
-    expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
+    expect(methods.listWorkspaceMembers.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws2' }],
+    ]);
+    expect(methods.listWorkspaceInvitations.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws2' }],
+    ]);
   });
 
   it.each([
@@ -3145,8 +3172,8 @@ describe('selected-membership self-leave', () => {
     ]);
     await Promise.resolve();
     expect(leaveWorkspace).toHaveBeenCalledTimes(1);
-    expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
-    expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
+    expect(methods.listWorkspaceMembers.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
+    expect(methods.listWorkspaceInvitations.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
     expectAuthorizedWorkspaceIds(queryClient, ['ws1', 'ws2']);
     expectNoRetainedInviteEmail(queryClient, guards);
   });

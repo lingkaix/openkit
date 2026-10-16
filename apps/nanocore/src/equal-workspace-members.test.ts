@@ -56,6 +56,10 @@ it('carries retained tiered membership and invitation records through the one-wa
     coreDb.sqlite
       .prepare("INSERT INTO workspace_registry VALUES ('ws_retained', 'owner', 'active', 7, ?, ?)")
       .run(now, now);
+    coreDb.sqlite
+      .prepare(`INSERT INTO workspace_invitations VALUES
+      ('inv_accepted', 'ws_retained', 'member', 'viewer', 'owner', 'accepted', '2099-01-01T00:00:00.000Z', ?, NULL, NULL, 2, ?, ?)`)
+      .run(now, now, now);
     for (const [id, status, level, removedAt] of [
       ['owner', 'active', 'editor', null],
       ['member', 'active', 'viewer', null],
@@ -64,8 +68,8 @@ it('carries retained tiered membership and invitation records through the one-wa
       coreDb.sqlite
         .prepare(`INSERT INTO workspace_members
       (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-      VALUES ('ws_retained', ?, ?, ?, NULL, ?, ?, 3, ?, ?)`)
-        .run(id, status, level, now, removedAt, now, now);
+      VALUES ('ws_retained', ?, ?, ?, ?, ?, ?, 3, ?, ?)`)
+        .run(id, status, level, id === 'member' ? 'inv_accepted' : null, now, removedAt, now, now);
     coreDb.sqlite
       .prepare(`INSERT INTO workspace_invitations VALUES
       ('inv_retained', 'ws_retained', 'invitee', 'viewer', 'member', 'pending', '2099-01-01T00:00:00.000Z', NULL, NULL, NULL, 4, ?, ?)`)
@@ -78,7 +82,7 @@ it('carries retained tiered membership and invitation records through the one-wa
         return retained;
       });
     const invitations = coreDb.sqlite
-      .prepare('SELECT * FROM workspace_invitations')
+      .prepare('SELECT * FROM workspace_invitations ORDER BY invitation_id')
       .all()
       .map((row) => {
         const { proposed_access_level: _retired, ...retained } = row as Record<string, unknown>;
@@ -91,7 +95,9 @@ it('carries retained tiered membership and invitation records through the one-wa
     expect(coreDb.sqlite.prepare('SELECT * FROM workspace_members ORDER BY user_id').all()).toEqual(
       members
     );
-    expect(coreDb.sqlite.prepare('SELECT * FROM workspace_invitations').all()).toEqual(invitations);
+    expect(
+      coreDb.sqlite.prepare('SELECT * FROM workspace_invitations ORDER BY invitation_id').all()
+    ).toEqual(invitations);
     expect(coreDb.sqlite.pragma('foreign_key_check')).toEqual([]);
     expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_retained', 'member')).toBe('member');
     expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_retained', 'removed')).toBeNull();
@@ -188,14 +194,32 @@ it('admits member management and exact member deletion replay while preserving p
     );
     expect(invitation.status, await invitation.clone().text()).toBe(201);
     expect(await invitation.json()).toMatchObject({ invitation: { inviterUserId: 'member' } });
-    const deniedPrivate = await call('thread.items', { threadId: privateThread.id }, member.secret);
-    expect(deniedPrivate.status).toBe(403);
+    const deniedPrivate = await call(
+      'thread.items',
+      { workspaceId: workspace.id, threadId: privateThread.id },
+      member.secret
+    );
+    expect(deniedPrivate.status, await deniedPrivate.clone().text()).toBe(404);
+    expect(await deniedPrivate.json()).toMatchObject({
+      code: 'not_found',
+      message: 'Thread not found.',
+    });
     const ordinaryExport = await call(
       'workspace.export',
       { workspaceId: workspace.id },
       member.secret
     );
-    expect(ordinaryExport.status).not.toBe(200);
+    expect(ordinaryExport.status, await ordinaryExport.clone().text()).toBe(500);
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: 'member',
+        coreDb,
+        dataRoot: root,
+        repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Private Thread history requires a separately authorized export.');
     const missingDeletionRequestId = randomUUID();
     expect(() =>
       createVerifiedWorkspaceExport({
@@ -234,7 +258,11 @@ it('admits member management and exact member deletion replay while preserving p
         request.recoveryExportId!
       ),
     });
-    const exportedThreads = JSON.parse(verified.fileContents.get('records/threads.json')!);
+    const exportedThreads = verified.fileContents
+      .get('records/threads.jsonl')!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
     expect(exportedThreads).toContainEqual(
       expect.objectContaining({ id: privateThread.id, privateOwnerUserId: 'private-owner' })
     );

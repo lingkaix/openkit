@@ -22,6 +22,7 @@ import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { readWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -611,7 +612,18 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
         { body: JSON.stringify(input), headers: { authorization: `Bearer ${ownerToken.secret}` } }
       )
     );
-    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(replay.status, await replay.clone().text()).toBe(403);
+    const adminReplay = await f.app.request(
+      ...operationRequest(
+        'workspace.delete',
+        {},
+        {
+          body: JSON.stringify(input),
+          headers: { authorization: `Bearer ${admin.secret}` },
+        }
+      )
+    );
+    expect(adminReplay.status, await adminReplay.clone().text()).toBe(200);
     const anotherId = randomUUID();
     const another = await f.app.request(
       ...operationRequest(
@@ -731,7 +743,7 @@ it('keeps a readonly Workspace credential from changing members or creating a co
   }
 });
 
-it('preserves private-history export refusal during administrator Workspace deletion', async () => {
+it('retains private ownership in the narrow administrator deletion recovery export', async () => {
   const f = fixture(undefined, 'server');
   try {
     f.store.createThread(f.workspaceId, 'Retained private history', undefined, 'conversation', {
@@ -759,30 +771,43 @@ it('preserves private-history export refusal during administrator Workspace dele
         }
       )
     );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: 'recovery_required' });
-    expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspaceId, requestId)).toMatchObject({
-      phase: 'deleting',
-      originalOwnerUserId: 'user_local',
-      recoveryExportId: null,
-      closureId: null,
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({
+      deletion: { phase: 'cleaned', status: 'deleted' },
     });
-    expect(f.store.listThreads(f.workspaceId)).toEqual([
+    const request = readWorkspaceDeletionRequest(f.dataRoot, f.workspaceId, requestId);
+    expect(request).toMatchObject({
+      phase: 'cleaned',
+      originalOwnerUserId: 'user_local',
+      initiatingUserId: 'target',
+    });
+    const exported = verifyWorkspaceExportTree({
+      exportRoot: join(
+        f.dataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        f.workspaceId,
+        request.recoveryExportId!
+      ),
+    });
+    expect(
+      exported.fileContents
+        .get('records/threads.jsonl')!
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+    ).toEqual([
       expect.objectContaining({ visibility: 'private', privateOwnerUserId: 'user_local' }),
     ]);
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id,status FROM workspace_registry WHERE workspace_id = ?')
         .get(f.workspaceId)
-    ).toEqual({ owner_user_id: 'user_local', status: 'deleting' });
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
-        .all(requestId)
-    ).toEqual([]);
+    ).toEqual({ owner_user_id: 'user_local', status: 'deleted' });
     expect(
       listServerAuditEvents(f.coreDb).filter((event) => event.action === 'workspace.delete')
-    ).toEqual([]);
+    ).toEqual([expect.objectContaining({ actor: { kind: 'user', id: 'target' } })]);
   } finally {
     f.close();
   }
