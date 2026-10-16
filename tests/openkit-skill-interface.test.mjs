@@ -530,6 +530,7 @@ test('the operations Skill includes the standalone administrator CLI and the pub
   assert.equal(existsSync(join(repoRoot, 'skills', 'openkit')), false);
   assert.deepEqual(listFiles(skillRoot), [
     'SKILL.md',
+    'THIRD-PARTY-NOTICES.md',
     'references/getting-started.en.md',
     'references/nanocore-data-root-config.en.md',
     'references/nanocore-deployment-modes.en.md',
