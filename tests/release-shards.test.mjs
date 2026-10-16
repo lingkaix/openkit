@@ -11,10 +11,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
-import { requireShardResults, shardPlan } from '../scripts/ci-l0-l2.mjs';
+import { coveragePlan, requireShardResults, runShard, shardPlan } from '../scripts/ci-l0-l2.mjs';
 import {
   rootNodeInventory,
   rootNodeSuite,
@@ -42,19 +42,193 @@ test('execution inventory refuses missing and repeated files or cases', () => {
   );
 });
 
-test('every deterministic package belongs to exactly one complete-suite shard', () => {
+test('the nine-job plan preserves every owner and all four static tasks', () => {
   const owners = testOwners(process.cwd());
   const plan = shardPlan();
+  assert.equal(plan.length, 9);
   assert.equal(new Set(plan.map((s) => s.id)).size, plan.length);
-  assert.deepEqual(plan.flatMap((s) => s.owners).sort(), owners.map((o) => o.name).sort());
   assert.equal(plan.filter((s) => s.kind === 'root').length, 1);
-  assert.equal(plan.filter((s) => s.kind === 'static').length, 1);
-  for (const owner of owners.filter((o) => o.vitest)) {
+  const statics = plan.filter((s) => s.kind === 'static');
+  assert.deepEqual(
+    statics.map((s) => s.id),
+    ['static']
+  );
+  assert.deepEqual(statics.flatMap((s) => s.tasks).sort(), [
+    'build',
+    'check:repo',
+    'lint',
+    'typecheck',
+  ]);
+  for (const owner of owners) {
     const matches = plan.filter((s) => s.owners.includes(owner.name));
-    assert.equal(matches.length, 1);
-    assert.equal(matches[0].kind, 'coverage');
-    assert.deepEqual(matches[0].owners, [owner.name]);
+    const count = owner.name === '@openkit/worker-shim' ? 2 : 1;
+    assert.equal(matches.length, count);
+    for (const shard of matches) assert.equal(shard.kind, owner.vitest ? 'coverage' : 'native');
+    if (count > 1) {
+      assert.ok(matches.every((s) => s.owners.length === 1));
+      assert.deepEqual(
+        matches.map((s) => s.partition),
+        Array.from({ length: count }, (_, index) => ({ index: index + 1, count }))
+      );
+      assert.deepEqual(
+        matches.map((s) => s.id),
+        Array.from(
+          { length: count },
+          (_, index) => `${owner.name.replace('@openkit/', '')}-${index + 1}`
+        )
+      );
+    } else assert.equal(matches[0].partition, undefined);
   }
+  assert.deepEqual(plan.find((s) => s.id === 'nanocore').owners, ['@openkit/nanocore']);
+  assert.deepEqual(plan.find((s) => s.id === 'web').owners, ['@openkit/web']);
+  assert.deepEqual(
+    plan
+      .find((s) => s.id === 'coverage-packages')
+      .owners.slice()
+      .sort(),
+    owners
+      .filter(
+        (o) =>
+          o.vitest &&
+          !['@openkit/nanocore', '@openkit/worker-shim', '@openkit/web'].includes(o.name)
+      )
+      .map((o) => o.name)
+      .sort()
+  );
+  assert.deepEqual(plan.find((s) => s.id === 'native-nanohost').owners, ['@openkit/nanohost']);
+  assert.deepEqual(
+    plan
+      .find((s) => s.id === 'native-other')
+      .owners.slice()
+      .sort(),
+    owners
+      .filter((o) => !o.vitest && o.name !== '@openkit/nanohost')
+      .map((o) => o.name)
+      .sort()
+  );
+});
+
+test('default aggregate requires split-owner coverage and the exact root inventory', () => {
+  const results = [...shardPlan().map((s) => s.id), 'worker-shim-coverage'].map((id) => ({
+    id,
+    conclusion: 'success',
+    ...(id === 'root' ? { files: rootNodeInventory().files } : {}),
+  }));
+  assert.doesNotThrow(() => requireShardResults(results));
+  for (const id of ['worker-shim-coverage']) {
+    assert.throws(() => requireShardResults(results.filter((r) => r.id !== id)));
+    assert.throws(() => requireShardResults([...results, { id, conclusion: 'success' }]));
+    assert.throws(() =>
+      requireShardResults(results.map((r) => (r.id === id ? { ...r, conclusion: 'failure' } : r)))
+    );
+  }
+});
+
+test('coverage merge matrix contains exactly the partitioned owners', () => {
+  assert.deepEqual(coveragePlan(), [
+    { id: 'worker-shim', owners: ['@openkit/worker-shim'], count: 2 },
+  ]);
+});
+
+test('native groups preserve guarded owners and prepare Core only for NanoHost', () => {
+  for (const shard of shardPlan().filter((s) => s.kind === 'native')) {
+    const commands = [],
+      packages = [];
+    runShard(shard.id, {
+      execute: (args) => commands.push(args),
+      runPackage: (selected) => packages.push(selected.name),
+    });
+    assert.deepEqual(packages, shard.owners);
+    assert.deepEqual(
+      commands,
+      shard.id === 'native-nanohost' ? [['pnpm', '--filter', '@openkit/nanocore...', 'build']] : []
+    );
+    for (const failed of shard.owners)
+      assert.throws(
+        () =>
+          runShard(shard.id, {
+            execute: () => {},
+            runPackage: (selected) => {
+              if (selected.name === failed) throw Error('guarded failure');
+            },
+          }),
+        /guarded failure/
+      );
+    assert.throws(() => runShard(shard.id, { inventoryOnly: true }), /coverage shards only/);
+  }
+});
+
+test('grouped coverage prepares once and writes a distinct original-owner execution report', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-coverage-group-'));
+  try {
+    for (const owner of testOwners(process.cwd())) {
+      const directory = join(root, relative(process.cwd(), owner.cwd));
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'package.json'),
+        JSON.stringify({
+          name: owner.name,
+          scripts: {
+            test: owner.vitest ? 'vitest run --reporter=tap-flat' : 'fixture test',
+            ...(owner.vitest ? { 'test:coverage': 'vitest run --coverage' } : {}),
+          },
+        })
+      );
+    }
+    const prepared = [],
+      executions = [];
+    const details = runShard('coverage-packages', {
+      root,
+      prepare: (owners) => prepared.push(owners.map((owner) => owner.name)),
+      runCoverage: (owner, options) => {
+        executions.push({ owner: owner.name, options });
+        return { name: owner.name, cases: 1 };
+      },
+    });
+    const expected = shardPlan(root).find((shard) => shard.id === 'coverage-packages').owners;
+    assert.equal(expected.length, 7);
+    assert.deepEqual(prepared, [expected]);
+    assert.deepEqual(
+      executions.map((item) => item.owner),
+      expected
+    );
+    assert.deepEqual(
+      details.executions.map((item) => item.name),
+      expected
+    );
+    assert.equal(new Set(executions.map((item) => item.options.reportFile)).size, 7);
+    for (const { owner, options } of executions) {
+      assert.equal(
+        options.reportFile,
+        join(root, 'temp/ci-shards', `${owner.replace('@openkit/', '')}-execution.report`)
+      );
+      assert.equal(options.partition, undefined);
+      assert.equal(options.blobFile, undefined);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('each static group runs every selected task and propagates command failure', () => {
+  for (const shard of shardPlan().filter((s) => s.kind === 'static')) {
+    const commands = [];
+    runShard(shard.id, { execute: (args) => commands.push(args) });
+    assert.deepEqual(
+      commands,
+      shard.tasks.map((task) => ['pnpm', '-w', task])
+    );
+    assert.throws(
+      () =>
+        runShard(shard.id, {
+          execute: () => {
+            throw Error('command failure');
+          },
+        }),
+      /command failure/
+    );
+  }
+  assert.throws(() => runShard('unknown'), /Unknown/);
 });
 
 test('aggregate refuses every missing, duplicate, failed, cancelled and skipped shard', () => {
@@ -212,7 +386,7 @@ if (process.platform === 'linux') {
       );
       writeFileSync(
         join(root, 'scripts/release-ci-reuse.mjs'),
-        "console.log('Fixture exact-source execution citation');\n"
+        "console.log('Reused run 10 attempt 2 job 20');\n"
       );
       const reuse = parse(readFileSync('.github/workflows/ci.yml', 'utf8')).jobs[
         'l0-l2-shards'
@@ -230,9 +404,11 @@ if (process.platform === 'linux') {
         },
       });
       assert.equal(reused.status, 0, reused.stderr);
-      const record = JSON.parse(readFileSync(join(root, 'temp/ci-shards/root.json'), 'utf8'));
-      assert.deepEqual(record.files, rootNodeInventory(root).files);
-      assert.equal(record.reuse, 'Fixture exact-source execution citation');
+      const outputs = readFileSync(join(root, 'outputs'), 'utf8').trim().split('\n');
+      assert.ok(outputs.includes('reused=true'));
+      assert.ok(outputs.includes('run_id=10'));
+      assert.ok(outputs.includes('attempt=2'));
+      assert.equal(existsSync(join(root, 'temp/ci-shards/root.json')), false);
       const workflowPath = join(root, '.github/workflows/ci.yml');
       const workflow = readFileSync(workflowPath, 'utf8');
       writeFileSync(
