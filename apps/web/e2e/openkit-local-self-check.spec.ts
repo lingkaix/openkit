@@ -138,7 +138,11 @@ async function getJson<T>(path: string, input?: Record<string, unknown>): Promis
 /** Downloads the exact authorized proposal original and verifies its digest before comparing applied Material bytes. */
 async function proposalOriginal(artifact: ProposalArtifactSummary): Promise<string> {
   if (!stack) throw new Error('The isolated Web stack is not running.');
-  const query = new URLSearchParams({ workspaceId: 'ws_demo', artifactId: artifact.id, artifactVersion: String(artifact.version) });
+  const query = new URLSearchParams({
+    workspaceId: 'ws_demo',
+    artifactId: artifact.id,
+    artifactVersion: String(artifact.version),
+  });
   const response = await fetch(`${stack.coreUrl}/api/app/operations/artifact.download?${query}`);
   expect(response.status).toBe(200);
   expect(response.headers.get('x-openkit-content-digest')).toBe(artifact.contentDigest);
@@ -543,7 +547,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).material;
   expect(materialAfterConflict.currentRevisionId).toBe(userRevision.revisionId);
   const retainedProposal = (
-    await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', { workspaceId: 'ws_demo' })
+    await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
+      workspaceId: 'ws_demo',
+    })
   ).items.find((artifact) => artifact.id === proposals[1]!.id)!;
   expect(retainedProposal.version).toBe(proposals[1]!.version);
   expect(retainedProposal.contentDigest).toBe(proposals[1]!.contentDigest);
