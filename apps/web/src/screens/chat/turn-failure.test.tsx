@@ -217,7 +217,7 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
   } as unknown as CoreClient;
 }
 
-function renderTask(client: CoreClient, path = '/tasks/ws1/th_82') {
+function renderTask(client: CoreClient, path = `/tasks/${THREAD.workspaceId}/${THREAD.id}`) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
@@ -255,7 +255,10 @@ describe('task runtime activity', () => {
           turns: [{ ...COMPLETED_DASHBOARD_TURN, status: 'pending', completedAt: null, items: [] }],
         }),
       });
-      renderTask(client, `/tasks/ws1/th_82?turnId=${encodeURIComponent(target)}`);
+      renderTask(
+        client,
+        `/tasks/${THREAD.workspaceId}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
+      );
       if (present) {
         expect(await screen.findByText(`Recorded Turn ${target} · pending`)).toBeInTheDocument();
         await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
