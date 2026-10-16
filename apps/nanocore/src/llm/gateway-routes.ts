@@ -29,6 +29,10 @@ import {
   writeGatewayRouteLineage,
 } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  admitModelRequest,
+  ModelRequestAdmissionError,
+} from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -87,6 +91,7 @@ import {
 } from './openai-compatible-client.js';
 import { resolveWorkerPromptCacheKey } from './prompt-cache-key.js';
 import {
+  type LLMGatewayDispatchContext,
   type LLMGatewayProviderDispatcher,
   resolveGatewaySubscriptionModels,
 } from './provider-dispatcher.js';
@@ -1628,7 +1633,10 @@ function createGatewayTerminalErrorSse(
     errorCode ?? publicGatewayFailureCode(normalized.code, 'gateway_stream_failed');
   const payload = {
     error: {
-      message: failureMessage ?? gatewayProviderFailureMessage(publicCode),
+      message:
+        publicCode === 'gateway_context_overflow'
+          ? gatewayProviderFailureMessage(publicCode)
+          : (failureMessage ?? gatewayProviderFailureMessage(publicCode)),
       type: normalized.type,
       code: publicCode,
       endpoint,
@@ -1712,7 +1720,7 @@ function gatewayProviderFailureMessage(code: string): string {
     case 'gateway_provider_rate_limited':
       return 'Provider rate limit exceeded.';
     case 'gateway_context_overflow':
-      return 'Provider context limit exceeded.';
+      return 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.';
     case 'gateway_provider_request_invalid':
       return 'Provider rejected the request.';
     case 'gateway_provider_unavailable':
@@ -1913,13 +1921,20 @@ export function registerWorkerInferenceRoutes({
         throw error;
       };
       let rawInitialized = false;
-      const rawObservers: Array<{ pending: number; started: number; events: number }> = [];
+      const rawObservers: Array<{
+        pending: number;
+        started: number;
+        events: number;
+        locallyRefused: boolean;
+      }> = [];
       durableCall.beforeFinished = (status) => {
         if (!rawInitialized) return;
         const complete =
           (status !== 'succeeded' || rawObservers.length > 0) &&
           rawObservers.every(
-            (observer) => observer.pending === 0 && observer.started > 0 && observer.events > 0
+            (observer) =>
+              observer.pending === 0 &&
+              (observer.locallyRefused || (observer.started > 0 && observer.events > 0))
           );
         let persisted = false;
         try {
@@ -2053,6 +2068,7 @@ export function registerWorkerInferenceRoutes({
           }) => {
             activeExecution = execution;
             phase = 'dispatch';
+            let admissionFailure: ModelRequestAdmissionError | undefined;
             try {
               const cache = resolveWorkerPromptCacheKey({
                 accountSlotId: provider.accountSlotId ?? null,
@@ -2084,9 +2100,9 @@ export function registerWorkerInferenceRoutes({
                 );
               let responseTurnState: string | undefined;
               const requestTurnState = c.req.header('x-codex-turn-state');
-              const rawObserver = { pending: 0, started: 0, events: 0 };
+              const rawObserver = { pending: 0, started: 0, events: 0, locallyRefused: false };
               rawObservers.push(rawObserver);
-              const dispatchContext = {
+              const dispatchContext: LLMGatewayDispatchContext = {
                 capture: captureForCall(durableCall, corr, attempt),
                 onUsage: (usage: unknown) =>
                   execution.addUsageRecordIds(
@@ -2099,6 +2115,28 @@ export function registerWorkerInferenceRoutes({
                   ),
                 ...(subscriptionModels ? { models: subscriptionModels } : {}),
                 transport: {
+                  finalRequestAdmission: (final) => {
+                    try {
+                      admitModelRequest({
+                        payload: final.payload,
+                        continuity: final.codexTurnState,
+                        contextWindowTokens: Math.min(
+                          final.contextWindowTokens,
+                          route.modelParameters?.contextWindow ?? Infinity,
+                          logicalModel.contract?.context ?? Infinity
+                        ),
+                        outputReserveTokens: final.outputReserveTokens,
+                      });
+                    } catch (error) {
+                      if (error instanceof ModelRequestAdmissionError) {
+                        admissionFailure = error;
+                        // This hook runs before inference: refusal has known zero model output.
+                        // Keep the existing raw-output closeout truthful without stopping the Worker.
+                        rawObserver.locallyRefused = true;
+                      }
+                      throw error;
+                    }
+                  },
                   rawOutput: {
                     sourceStarted: () => {
                       rawObserver.started += 1;
@@ -2228,8 +2266,22 @@ export function registerWorkerInferenceRoutes({
               );
               return workerResponse;
             } catch (error) {
-              observedFailure = (error as { failure?: PiAiFailure } | null)?.failure;
-              throw error;
+              // Stock flattens callback errors; retain only this trusted local failure category.
+              const failure = admissionFailure
+                ? new GatewayAttemptFailure(
+                    {
+                      kind:
+                        admissionFailure.code === 'internal_agent_context_exceeded'
+                          ? 'context_overflow'
+                          : 'invalid_request',
+                      settled: true,
+                    },
+                    admissionFailure,
+                    true
+                  )
+                : error;
+              observedFailure = (failure as { failure?: PiAiFailure } | null)?.failure;
+              throw failure;
             }
           },
         });

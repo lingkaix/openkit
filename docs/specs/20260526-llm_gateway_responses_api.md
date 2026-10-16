@@ -56,7 +56,7 @@ Codex and xAI subscription providers are not special Gateway backends. Their pro
 
 - Do not expose pi-ai, Codex app-server, or provider-private adapter vocabulary through public requests, responses, config, or diagnostics.
 - Do not copy Gateway request or response schemas into `packages/protocol`; this is an external provider-capability surface, not the UI-to-Core workflow protocol.
-- Do not admit Responses built-in tools, remote MCP, computer use, file input, image input, or another unrepresentable modality merely because a stock adapter or native hook exists.
+- Do not admit Responses built-in tools, remote MCP, computer use, file input, image input outside the explicit native PNG/JPEG mapping below, or another unrepresentable modality merely because a stock adapter or native hook exists.
 - Do not expose subscription credentials, raw provider account ids, Vault references, authorization headers, or raw account quota responses.
 - Do not accept pasted subscription tokens through Gateway routes or provider profiles.
 - Do not expose or implement `POST /v1/completions`.
@@ -80,6 +80,8 @@ Streaming uses OpenAI-compatible SSE chunks and terminates with `[DONE]`. If a p
 ### `POST /v1/responses`
 
 The route accepts OpenAI-compatible Responses requests with `model`, `input`, optional `stream`, and supported passthrough fields. It returns a Responses projection directly from the selected pi-ai result or event stream under the [backend mapping contract](20260708-pi_ai_unified_llm_backend.md#request-routing-contract). Same-protocol native content that stock Context, call options or result blocks cannot represent uses the admitted native channel; the public response never depends on conversion through Chat Completions.
+
+Native Responses admits inline PNG/JPEG data URLs in user `input_image` content and in `function_call_output.output` arrays containing text and images. The selected model's effective input modalities must include image input. Preserve the exact image bytes, content order, existing text, Tool history and attributed reasoning. Optional native image detail (`auto`, `low`, `high` or `original`) remains exact through the existing native channel. Apply existing request byte limits and complete final-request admission before Provider inference. Missing image capability, malformed inline encoding and unrepresentable image shapes fail with `unsupported_gateway_feature` before Provider access. This admission adds no decoding, transcoding, durable state or lifecycle; the backend owner's existing native-channel lifecycle applies. Chat images, other message roles, custom Tool output images, remote image URLs, file IDs, other media and cross-protocol image mapping remain unsupported.
 
 Complete historical local-tool pairs may be admitted as non-callable context on a same-protocol native Responses request under the [backend owner's historical-pair contract](20260708-pi_ai_unified_llm_backend.md#codex-turn-state-continuity), even when their tool is absent from the current declarations. This changes neither current callable authority nor validation of new Provider calls. Gateway preserves the admitted structured history; it does not synthesize declarations, convert the pairs to prose, or discard them. A runtime-native textual summary request using ordinary Responses inputs is governed by ordinary request admission; its summarization purpose alone is not a forbidden Provider-native compaction control.
 
@@ -318,7 +320,7 @@ The bounded mapping rejects the following shapes; a same-protocol native feature
 - Responses built-in tools
 - remote MCP tools
 - computer-use tools
-- file and image input
+- file input and image content outside the explicit native PNG/JPEG scope above, including every cross-protocol image mapping
 - structured content that cannot be reduced to text without semantic loss
 - non-function tool schemas, nested namespaces and deferred function declarations on a cross-protocol mapping
 
@@ -390,7 +392,7 @@ The removed Gateway and account dependencies do not remove or rename `vault.boot
 ## Testing Strategy / Acceptance Criteria
 
 - L1 route and resolution tests prove authentication order, logical-model and context-management validation, catalog-enriched capability intersection, admission of exact hand-authored IDs with missing model or family metadata, cross-family and unknown-family multi-route admission with shared-or-null family projection, ordered member eligibility, provider-neutral slot binding, no default-slot guess, bounded pre-commit failover, no post-commit retry, exact subscription pre-dispatch errors, stable cache priority, and absence of a Provider-specific backend branch. A regression must observe an uncatalogued configured default in public discovery and an inference dispatch retaining its exact upstream model ID.
-- L1 mapping tests prove direct public-to-stock-IR input and stock-result-to-public output for both formats, the accepted readable reasoning and native-channel boundaries, and refusal of every unrepresentable shape before Provider access.
+- L1 mapping tests prove direct public-to-stock-IR input and stock-result-to-public output for both formats, the accepted readable reasoning and native-channel boundaries, and refusal of every unrepresentable shape before Provider access. Native PNG/JPEG acceptance must observe unchanged user and MCP function-result image bytes on the actual stock HTTP payload, preserved text/Tool/reasoning history, final request admission, and zero Provider requests for a text-only selected model.
 - L2 contract tests prove public Chat Completions, Responses, logical models, SSE, error, usage, route-attempt attribution, and redaction behavior across API-key and subscription-backed profiles, including non-`2xx` JSON rather than SSE for every pre-start terminal failure.
 - L3 black-box tests prove two logical models can dispatch through different Provider profiles on the same `/v1/*` routes, one logical model can advance across two subscription-account profiles on an admitted pre-commit failure when failover is enabled, discovery advertises only dispatchable logical IDs, and overlapping account slots remain isolated.
 - L3 opt-in real-provider evidence proves one authenticated public Codex Gateway request per run, accepted streaming behavior, stable public envelopes, and redaction.
