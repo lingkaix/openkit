@@ -29,6 +29,9 @@ _maintenance = _load("nanohost-maintenance")
 _replacement = _load("nanohost-replacement")
 _systemd = _load("nanohost-systemd")
 _ACTIONS = {"preflight", "begin", "vacate", "install", "start", "finalize"}
+_REASONS = {"request", "machine-binding", "runtime-directory", "verified-archive", "retained-inputs",
+            "canonical-systemd-posture", "target-host-check", "maintenance-inhibition", "old-payload-custody",
+            "target-installation", "controlled-start", "controlled-inspection", "supervision-restoration", "native-inspection"}
 _PATH_KEYS = (
     "OPENKIT_NANOHOST_TOKEN_SLOT_A_SECRET_FILE", "OPENKIT_NANOHOST_TOKEN_SLOT_A_COMPANION_FILE",
     "OPENKIT_NANOHOST_TOKEN_SLOT_B_SECRET_FILE", "OPENKIT_NANOHOST_TOKEN_SLOT_B_COMPANION_FILE",
@@ -39,11 +42,16 @@ _PATH_KEYS = (
 class ProcedureRefusal(Exception):
     """Closed refusal; no host exception, private path or child output escapes."""
 
+    def __init__(self, reason="unavailable"):
+        """Retain only a locally selected phase, never an exception-derived reason."""
+        self.reason = reason if reason in _REASONS else "unavailable"
+        super().__init__("NanoHost operator step unavailable; inspect retained custody before any new effect.")
+
 
 def _need(condition):
     """Keep unknown host facts local and stop before the next dependent effect."""
     if not condition:
-        raise ProcedureRefusal("NanoHost operator step unavailable; inspect retained custody before any new effect.")
+        raise ProcedureRefusal()
 
 
 def _sha(data):
@@ -191,16 +199,20 @@ def run_step(request, workspace, machine_identity_digest, *, controlled_process=
     transport bootstrap, never an instruction field. Tests may replace only
     external observations; this entry always addresses the actual host root.
     """
+    phase = "request"
     try:
         identifier = _request(request)
         if controlled_process is not None:
             _need(request["action"] == "start")
             _maintenance._stamp(controlled_process)
         _need(os.geteuid() == 0 and os.getegid() == 0)
+        phase = "machine-binding"
         _maintenance._hash(machine_identity_digest)
         machine, _ = _regular(Path("/etc/machine-id"), limit=128)
         _need(_sha(machine) == machine_identity_digest)
+        phase = "runtime-directory"
         _volatile_run()
+        phase = "verified-archive"
         old, target = request["old"], request["target"]
         name = "openkit-nanohost-" + target["tag"] + "-" + target["platform"].replace("/", "-")
         workspace = Path(workspace)
@@ -209,29 +221,37 @@ def run_step(request, workspace, machine_identity_digest, *, controlled_process=
         _need(_sha(archive) == target["archiveSha256"])
         bundle = workspace / name
         manager = _maintenance.Maintenance(identifier)
+        phase = "retained-inputs"
         retained, private = _inputs()
         action = request["action"]
         result = {"action": action, "outcome": "passed"}
         if action == "preflight":
+            phase = "canonical-systemd-posture"
             before = _stock(manager, old["payloads"]["unitFileSha256"])
             manager._payloads(_payloads(old))
+            phase = "verified-archive"
             _run(["/usr/bin/tar", "-xzf", str(workspace / (name + ".tar.gz")), "-C", str(workspace), "--no-same-owner"], timeout_seconds=180)
+            phase = "target-host-check"
             check = json.loads(_run([str(bundle / "install.sh"), "--check-host"], timeout_seconds=180,
                                    max_stdout_bytes=65536, max_stderr_bytes=4096), object_pairs_hook=_systemd._unique)
             _need(check.get("hardVerdict") == "requirements-met" and check.get("archiveSha256") == target["archiveSha256"]
                   and check.get("productCommit") == target["sourceCommit"]
                   and check.get("machineIdentityDigest") == machine_identity_digest)
             _need(before == _stock(manager, old["payloads"]["unitFileSha256"]))
+            phase = "native-inspection"
             result.update(posture="canonical-systemd", retainedInputsDigest=retained,
                           stockEffectiveStateDigest=_inspection(before, old, manager))
         elif action == "begin":
+            phase = "maintenance-inhibition"
             manager.begin(old["payloads"]["unitFileSha256"])
             result.update(fenced=True, inhibited=True)
         elif action == "vacate":
+            phase = "old-payload-custody"
             _replacement.vacate_verified_payloads({"replacementId": identifier, "old": _payloads(old),
                                                    "target": _payloads(target)}, manager)
             result.update(custodyVerified=True, fenced=True, inhibited=True)
         elif action == "install":
+            phase = "target-installation"
             manager.assert_fenced_and_inhibited()
             before = _run([str(bundle / "install.sh"), "--check"], timeout_seconds=180,
                           max_stdout_bytes=65536, max_stderr_bytes=4096).decode("ascii").splitlines()
@@ -252,10 +272,12 @@ def run_step(request, workspace, machine_identity_digest, *, controlled_process=
             result.update(payloads=target["payloads"], retainedInputsDigest=retained, fenced=True, inhibited=True)
         elif action == "start":
             if controlled_process is None:
+                phase = "controlled-start"
                 # The external adapter next waits on public pending-readiness
                 # observations. This command must never be reissued on loss.
                 result.update(process=manager.start_once(_payloads(target)))
             else:
+                phase = "controlled-inspection"
                 # A separate fixed read-only subphase follows public readiness.
                 # It consumes no permit and has no authority to start a process.
                 manager._admit()
@@ -269,12 +291,15 @@ def run_step(request, workspace, machine_identity_digest, *, controlled_process=
                 result.update(process=controlled_process,
                               controlledEffectiveStateDigest=_inspection(controlled_process, target, manager, guarded=True))
         else:
+            phase = "supervision-restoration"
             process = request["process"]
             manager.finalize(process, _payloads(target))
             _need(_stock(manager, target["payloads"]["unitFileSha256"]) == process)
+            phase = "native-inspection"
             result.update(process=process, payloads=target["payloads"], retainedInputsDigest=retained,
                           supervisionRestored=True, effectiveStateDigest=_inspection(process, target, manager))
+        phase = "retained-inputs"
         _need(_inputs() == (retained, private))
         return result
     except Exception:
-        raise ProcedureRefusal("NanoHost operator step unavailable; inspect retained custody before any new effect.") from None
+        raise ProcedureRefusal(phase) from None
