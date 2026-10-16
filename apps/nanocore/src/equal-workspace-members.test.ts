@@ -1,10 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -51,7 +46,15 @@ it('requires the actual initiating user in the current deletion request', () => 
     expect(readWorkspaceDeletionRequest(root, 'ws_current', requestId)).toEqual(request);
     const { initiatingUserId: _initiatingUserId, ...missingInitiator } = request;
     writeFileSync(
-      join(root, 'server', 'exports', 'workspace-deletions', 'ws_current', requestId, 'request.json'),
+      join(
+        root,
+        'server',
+        'exports',
+        'workspace-deletions',
+        'ws_current',
+        requestId,
+        'request.json'
+      ),
       JSON.stringify(missingInitiator)
     );
     expect(() => readWorkspaceDeletionRequest(root, 'ws_current', requestId)).toThrow();

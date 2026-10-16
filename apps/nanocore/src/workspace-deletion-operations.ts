@@ -532,8 +532,7 @@ function selectDeletionRequest(input: {
   const existing = records.find((record) => record.requestId === input.request.requestId);
   if (existing) {
     if (
-      (!input.administratorEligible &&
-        existing.initiatingUserId !== input.actorId) ||
+      (!input.administratorEligible && existing.initiatingUserId !== input.actorId) ||
       existing.expectedRegistryRevision !== input.request.expectedRegistryRevision ||
       existing.confirmation !== input.request.confirmation
     ) {
