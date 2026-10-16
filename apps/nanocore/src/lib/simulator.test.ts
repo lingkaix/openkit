@@ -10,7 +10,7 @@ import {
   StartTaskModeResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import { deriveEntityId } from '@openkit/protocol';
+import { AgentSessionIdSchema, deriveEntityId } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getArtifactReview } from '../artifact-reviews.js';
@@ -287,7 +287,7 @@ describe('SimulatedTurnExecutor', () => {
         agentId: 'agent_codex_host',
         agentProfileId: 'default',
         agentSessionId: expect.stringMatching(
-          /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+          /^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
         ),
         status: 'completed',
       });
@@ -1186,7 +1186,9 @@ describe('SimulatedTurnExecutor', () => {
       triggerActor: firstTurn.triggerActor,
       workspaceRoots: [],
     });
-    const firstSession = store.getAgentSession(`session_sim_turn_${firstTurn.id}`);
+    const firstSession = store.getAgentSession(
+      AgentSessionIdSchema.parse(store.getTurnById(firstTurn.id).agentSessionId)
+    );
     const selectedAgentSetup = createTestAgentSetup({
       agentId: 'agent_manifest_selected',
       provider: null,
@@ -1218,14 +1220,15 @@ describe('SimulatedTurnExecutor', () => {
       workspaceRoots: [],
     });
 
+    const selectedSession = store.getAgentSession(
+      AgentSessionIdSchema.parse(store.getTurnById(turn.id).agentSessionId)
+    );
     expect(store.getTurnById(turn.id)).toMatchObject({
       agentId: selectedAgentSetup.manifest.id,
       agentProfileId: 'review',
-      agentSessionId: testEntityId('as', `session_sim_turn_${turn.id}`),
+      agentSessionId: selectedSession.id,
     });
-    expect(store.getAgentSession(`session_sim_turn_${turn.id}`).agentId).toBe(
-      selectedAgentSetup.manifest.id
-    );
+    expect(selectedSession.agentId).toBe(selectedAgentSetup.manifest.id);
     expect(store.getAgentSession(firstSession.id).agentId).toBe('agent_codex_host');
     expect(store.getTurnById(firstTurn.id).agentSessionId).not.toBe(
       store.getTurnById(turn.id).agentSessionId
