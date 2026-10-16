@@ -390,7 +390,15 @@ Invalid composed configuration leaves the last-known-good runtime snapshot activ
 
 The optional `channels.discord` object in `config/server.jsonc` selects the first channel. Set `applicationId` to the Discord application identity and `publicKey` to its 64-character hexadecimal interaction verification key. Both are public identity values. The object rejects unknown authority fields. Configuration changes require a NanoCore restart; runtime reload reports that requirement and retains the active configuration.
 
-Set the Discord interaction endpoint to `/api/channels/discord/interactions` on the deployment's public HTTPS origin. Register the release-authored `/openkit` command definition from the channel adapter. Register it for bot direct messages only. The endpoint verifies the signature over the original body, application identity, and timestamp. Ordinary OpenKit bearer authentication does not replace Discord signature verification.
+Set the Discord interaction endpoint to `/api/channels/discord/interactions` on the deployment's public HTTPS origin. The endpoint verifies the signature over the original body, application identity, and timestamp. Ordinary OpenKit bearer authentication does not replace Discord signature verification.
+
+Obtain a source checkout at the deployed release's exact revision. From its repository root, use the pinned Node.js 24.18.0 runtime to print the release-authored `/openkit` command body:
+
+```bash
+node --input-type=module -e 'import { DISCORD_OPENKIT_COMMAND } from "./apps/nanocore/src/channels/discord-command.ts"; console.log(JSON.stringify(DISCORD_OPENKIT_COMMAND, null, 2));'
+```
+
+This offline command reads the existing `DISCORD_OPENKIT_COMMAND` descriptor from the channel adapter. It makes no network request, registers no command, and sends no message. Register the printed command body for bot direct messages only.
 
 Every configured Discord adapter requires an HTTPS `server.publicBaseUrl` for authenticated App link-back. For attention sending, also configure `channels.discord.botTokenRef`. This field accepts an `env:` reference to an operator-held variable. Supply the credential through the deployment environment. Never put its value in configuration, command arguments, logs, or evidence. An absent send credential does not prevent fake-backed verification, account pairing, or signed request responses. The bot account and a specifically authorized real send are needed for real delivery proof.
 
