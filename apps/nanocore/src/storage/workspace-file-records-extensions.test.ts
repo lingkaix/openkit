@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import {
@@ -77,15 +78,11 @@ describe('descriptive canonical history extensions', () => {
     const review = {
       proposalId: proposal.id,
       workspaceId: workspace.id,
-      reviewId: `kr_${createHash('sha256')
-        .update(
-          JSON.stringify({
-            workspaceId: workspace.id,
-            proposalId: proposal.id,
-            requestId: reviewRequestId,
-          })
-        )
-        .digest('hex')}`,
+      reviewId: deriveEntityId('kr', {
+        ownerScope: { kind: 'workspace', workspaceId: workspace.id },
+        proposalId: proposal.id,
+        requestId: reviewRequestId,
+      }),
       requestId: reviewRequestId,
       decision: 'deferred' as const,
       actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },

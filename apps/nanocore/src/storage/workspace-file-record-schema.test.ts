@@ -6,11 +6,12 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { FsStore } from '../lib/store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 
 const TIMESTAMP = '2026-07-12T00:00:00.000Z';
 const PROPOSAL_REQUEST_ID = '00000000-0000-4000-8000-000000000117';
 const REVIEW_REQUEST_ID = '00000000-0000-4000-8000-000000000118';
-const VERIFIED_EXTERNAL_REFERENCE = 'turn:canonical-record-fixture';
+const VERIFIED_EXTERNAL_REFERENCE = `turn:${testEntityId('tu', 'canonical-record-fixture')}`;
 
 /**
  * Creates one strict immutable Proposal for canonical corruption tests.
