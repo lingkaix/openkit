@@ -307,6 +307,7 @@ The channel invokes the existing approval or answer command with one stable comm
 
 - A pairing challenge cannot bind twice, bind after expiry, or transfer another user's account.
 - After an account transition, Web shows only the current actor's binding and delivery history, including cached data and pending query results.
+- When Discord is configured and the user is paired, current notification cards show the exact private inspection command. Rendering the command makes no send or response call.
 - Invalid signatures, shared-channel input, disabled actors, revoked bindings, changed duplicate input, and stale disclosures cause no command dispatch.
 - Duplicate input and restart after incomplete dispatch cause no second dispatch or inferred decision.
 - A response after membership or audience revocation fails under the current owner, even if pairing and disclosure succeeded earlier.

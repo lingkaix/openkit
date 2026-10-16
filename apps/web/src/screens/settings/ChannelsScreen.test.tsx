@@ -44,6 +44,42 @@ function show(
 }
 
 describe('Discord settings', () => {
+  it('shows the exact private inspection command without requiring outbound sending', async () => {
+    const value = client({
+      'channel.discord.status': vi.fn().mockResolvedValue({
+        configured: true,
+        sendingAvailable: false,
+        binding: { discordUserId: '123456789012345678', pairedAt: 1 },
+      }),
+      'notification.list': vi.fn().mockResolvedValue({
+        items: [
+          {
+            id: '10000000-0000-4000-8000-000000000003',
+            appPath: '/tasks/ws_channels/th_channels?requestId=req_channels',
+            source: {
+              workspaceId: 'ws_channels',
+              threadId: 'th_channels',
+              requestId: 'req_channels',
+              kind: 'approval-request',
+            },
+            recipientUserId: 'user_local',
+            channel: null,
+            status: 'queued',
+            createdAt: '2026-10-16T00:00:00Z',
+            attempt: null,
+          },
+        ],
+      }),
+    });
+    show(value);
+    expect(
+      await screen.findByText(
+        '/openkit inspect workspace:ws_channels thread:th_channels request:req_channels'
+      )
+    ).toBeInTheDocument();
+    expect(value.operations['notification.send']).not.toHaveBeenCalled();
+  });
+
   it('removes prior-user bindings, private routes and pairing results at account transition', async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: 5_000 } },

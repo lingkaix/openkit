@@ -187,6 +187,16 @@ export function ChannelsScreen() {
               <Link to={delivery.appPath} className="text-sm text-accent underline">
                 Inspect request
               </Link>
+              {status.data?.configured && status.data.binding ? (
+                <div className="flex flex-col gap-2">
+                  <p className="text-sm text-fg-muted">
+                    Copy this command to a private message with the bot:
+                  </p>
+                  <code className="break-all">
+                    {`/openkit inspect workspace:${delivery.source.workspaceId} thread:${delivery.source.threadId} request:${delivery.source.requestId}`}
+                  </code>
+                </div>
+              ) : null}
               {delivery.status === 'delivery-unknown' ? (
                 <p className="text-sm text-fg-muted">
                   The channel might have received this message. Automatic resend is disabled.
