@@ -4,15 +4,18 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyNativeScopeMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   AttentionNotifications,
   type AttentionSource,
   type AttentionTransport,
 } from './attention.js';
 
+const aliceId = testEntityId('usr', 'attention-alice');
+const bobId = testEntityId('usr', 'attention-bob');
 const source: AttentionSource = {
-  workspaceId: 'ws_attention',
-  threadId: 'th_private',
+  workspaceId: testEntityId('ws', 'attention'),
+  threadId: testEntityId('th', 'attention-private'),
   kind: 'approval-request',
   requestId: 'apr_exact',
 };
@@ -26,7 +29,7 @@ function fixture(path = ':memory:') {
   sqlite.pragma('foreign_keys = ON');
   applyNativeScopeMigrations(sqlite, 'core');
   const notifications = new AttentionNotifications(sqlite, { now });
-  const delivery = notifications.enqueue({ source, recipientUserId: 'user_alice' });
+  const delivery = notifications.enqueue({ source, recipientUserId: aliceId });
   return { sqlite, notifications, delivery };
 }
 
@@ -46,15 +49,15 @@ describe('attention delivery owner', () => {
 
   it('deduplicates the exact source and recipient and preserves other identities', () => {
     const { notifications, delivery } = fixture();
-    expect(notifications.enqueue({ source, recipientUserId: 'user_alice' })).toEqual(delivery);
+    expect(notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(delivery);
     for (const changed of [
-      { source, recipientUserId: 'user_bob' },
-      { source: { ...source, requestId: 'apr_other' }, recipientUserId: 'user_alice' },
-      { source: { ...source, threadId: 'th_other' }, recipientUserId: 'user_alice' },
-      { source: { ...source, workspaceId: 'ws_other' }, recipientUserId: 'user_alice' },
+      { source, recipientUserId: bobId },
+      { source: { ...source, requestId: 'apr_other' }, recipientUserId: aliceId },
+      { source: { ...source, threadId: testEntityId('th', 'attention-other') }, recipientUserId: aliceId },
+      { source: { ...source, workspaceId: testEntityId('ws', 'attention-other') }, recipientUserId: aliceId },
       {
         source: { ...source, kind: 'user-input-request' as const },
-        recipientUserId: 'user_alice',
+        recipientUserId: aliceId,
       },
     ]) {
       expect(notifications.enqueue(changed).id).not.toBe(delivery.id);
@@ -63,22 +66,22 @@ describe('attention delivery owner', () => {
 
   it('bounds recipient reads and applies current source and audience admission', () => {
     const { notifications, delivery } = fixture();
-    notifications.enqueue({ source, recipientUserId: 'user_bob' });
+    notifications.enqueue({ source, recipientUserId: bobId });
     for (let index = 0; index < 4; index++) {
       notifications.enqueue({
         source: { ...source, requestId: `apr_${index}` },
-        recipientUserId: 'user_alice',
+        recipientUserId: aliceId,
       });
     }
     const eligible = vi.fn(() => true);
-    expect(notifications.listForActor('user_alice', { limit: 2 }, eligible)).toHaveLength(2);
+    expect(notifications.listForActor(aliceId, { limit: 2 }, eligible)).toHaveLength(2);
     expect(eligible).toHaveBeenCalledTimes(2);
-    expect(notifications.listForActor('user_alice', { limit: 2 }, () => false)).toEqual([]);
-    expect(notifications.getForActor(delivery.id, 'user_bob', eligible)).toBeNull();
-    expect(notifications.getForActor(delivery.id, 'user_alice', () => false)).toBeNull();
-    expect(notifications.getForActor(delivery.id, 'user_alice', () => true)).toEqual(delivery);
+    expect(notifications.listForActor(aliceId, { limit: 2 }, () => false)).toEqual([]);
+    expect(notifications.getForActor(delivery.id, bobId, eligible)).toBeNull();
+    expect(notifications.getForActor(delivery.id, aliceId, () => false)).toBeNull();
+    expect(notifications.getForActor(delivery.id, aliceId, () => true)).toEqual(delivery);
     for (const limit of [0, 101, 1.5]) {
-      expect(() => notifications.listForActor('user_alice', { limit }, eligible)).toThrow(
+      expect(() => notifications.listForActor(aliceId, { limit }, eligible)).toThrow(
         'invalid_attention_input'
       );
     }
@@ -87,10 +90,10 @@ describe('attention delivery owner', () => {
   it('rejects malformed identities and captured source arguments at admission', () => {
     const { notifications } = fixture();
     for (const input of [
-      { source: { ...source, workspaceId: 'bad' }, recipientUserId: 'user_alice' },
-      { source: { ...source, threadId: 'bad' }, recipientUserId: 'user_alice' },
+      { source: { ...source, workspaceId: 'bad' }, recipientUserId: aliceId },
+      { source: { ...source, threadId: 'bad' }, recipientUserId: aliceId },
       { source, recipientUserId: 'bad' },
-      { source: { ...source, arguments: { private: 'content' } }, recipientUserId: 'user_alice' },
+      { source: { ...source, arguments: { private: 'content' } }, recipientUserId: aliceId },
     ]) {
       expect(() => notifications.enqueue(input)).toThrow('invalid_attention_input');
     }
@@ -108,7 +111,7 @@ describe('attention delivery owner', () => {
     const result = await notifications.deliver(
       {
         deliveryId: delivery.id,
-        recipientUserId: 'user_alice',
+        recipientUserId: aliceId,
         expectedAttemptId: null,
         channel: 'discord',
       },
@@ -125,7 +128,7 @@ describe('attention delivery owner', () => {
           expect(payload).toEqual({
             kind: 'attention-link',
             deliveryId: delivery.id,
-            appPath: '/tasks/ws_attention/th_private?requestId=apr_exact',
+            appPath: `/tasks/${source.workspaceId}/${source.threadId}?requestId=apr_exact`,
           });
           return { status: 'sent' };
         },
@@ -136,7 +139,7 @@ describe('attention delivery owner', () => {
       status: 'sent',
       attempt: { status: 'sent', failureCode: null },
     });
-    expect(notifications.enqueue({ source, recipientUserId: 'user_alice' })).toEqual(result);
+    expect(notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(result);
   });
 
   it('makes no contact after authority loss or admission dependency failure', async () => {
@@ -153,7 +156,7 @@ describe('attention delivery owner', () => {
         notifications.deliver(
           {
             deliveryId: delivery.id,
-            recipientUserId: 'user_alice',
+            recipientUserId: aliceId,
             channel: 'discord',
             retry: true,
             expectedAttemptId: notifications.get(delivery.id)?.attempt?.id ?? null,
@@ -173,7 +176,7 @@ describe('attention delivery owner', () => {
     const { notifications, delivery } = fixture();
     const input = {
       deliveryId: delivery.id,
-      recipientUserId: 'user_alice',
+      recipientUserId: aliceId,
       expectedAttemptId: null,
       channel: 'email' as const,
     };
@@ -223,7 +226,7 @@ describe('attention delivery owner', () => {
     const { notifications, delivery } = fixture();
     const first = {
       deliveryId: delivery.id,
-      recipientUserId: 'user_alice',
+      recipientUserId: aliceId,
       channel: 'discord' as const,
       expectedAttemptId: null,
     };
@@ -247,7 +250,7 @@ describe('attention delivery owner', () => {
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
-      recipientUserId: 'user_alice',
+      recipientUserId: aliceId,
       channel: 'discord' as const,
     };
     const transport = vi.fn<AttentionTransport>().mockImplementation(async () => {
@@ -290,7 +293,7 @@ describe('attention delivery owner', () => {
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
-      recipientUserId: 'user_alice',
+      recipientUserId: aliceId,
       channel: 'discord' as const,
     };
     let complete: ((result: { status: 'sent' }) => void) | undefined;
@@ -302,7 +305,7 @@ describe('attention delivery owner', () => {
     );
     const dependencies = { isEligible: () => true, transport };
     await expect(
-      observer.deliver({ ...input, recipientUserId: 'user_bob' }, dependencies)
+      observer.deliver({ ...input, recipientUserId: bobId }, dependencies)
     ).rejects.toThrow('attention_not_found');
     const pending = notifications.deliver(input, dependencies);
     await expect(observer.deliver(input, dependencies)).rejects.toThrow(
@@ -321,7 +324,7 @@ describe('attention delivery owner', () => {
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
-      recipientUserId: 'user_alice',
+      recipientUserId: aliceId,
       channel: 'discord' as const,
     };
     sqlite.exec(`CREATE TRIGGER refuse_attempt_settlement BEFORE UPDATE ON notification_delivery_attempts
@@ -366,7 +369,7 @@ describe('attention delivery owner', () => {
       notifications.deliver(
         {
           deliveryId: delivery.id,
-          recipientUserId: 'user_alice',
+          recipientUserId: aliceId,
           channel: 'discord',
           expectedAttemptId: null,
         },
@@ -382,7 +385,7 @@ describe('attention delivery owner', () => {
     await conversation.deliver(
       {
         deliveryId: delivery.id,
-        recipientUserId: 'user_alice',
+        recipientUserId: aliceId,
         channel: 'discord',
         expectedAttemptId: 1,
         retry: true,
@@ -392,7 +395,7 @@ describe('attention delivery owner', () => {
     expect(transport).toHaveBeenCalledWith({
       kind: 'attention-link',
       deliveryId: delivery.id,
-      appPath: '/chat/ws_attention/th_private?requestId=apr_exact',
+      appPath: `/chat/${source.workspaceId}/${source.threadId}?requestId=apr_exact`,
     });
   });
 
@@ -401,7 +404,7 @@ describe('attention delivery owner', () => {
     await notifications.deliver(
       {
         deliveryId: delivery.id,
-        recipientUserId: 'user_alice',
+        recipientUserId: aliceId,
         channel: 'discord',
         expectedAttemptId: null,
       },
@@ -416,7 +419,7 @@ describe('attention delivery owner', () => {
       notifications.deliver(
         {
           deliveryId: delivery.id,
-          recipientUserId: 'user_alice',
+          recipientUserId: aliceId,
           channel: 'discord',
           expectedAttemptId: 2,
           retry: true,
@@ -438,7 +441,7 @@ describe('attention delivery owner', () => {
       notifications.deliver(
         {
           deliveryId: delivery.id,
-          recipientUserId: 'user_alice',
+          recipientUserId: aliceId,
           expectedAttemptId: null,
           channel: 'discord',
         },
@@ -446,12 +449,12 @@ describe('attention delivery owner', () => {
       )
     ).rejects.toThrow('attention_recovery_required');
     expect(transport).not.toHaveBeenCalled();
-    expect(notifications.getForActor(delivery.id, 'user_bob', () => true)).toBeNull();
+    expect(notifications.getForActor(delivery.id, bobId, () => true)).toBeNull();
     await expect(
       notifications.deliver(
         {
           deliveryId: delivery.id,
-          recipientUserId: 'user_bob',
+          recipientUserId: bobId,
           channel: 'discord',
           expectedAttemptId: null,
         },

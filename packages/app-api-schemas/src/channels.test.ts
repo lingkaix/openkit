@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { CHANNEL_OPERATION_DEFINITIONS, NotificationDeliverySchema } from './channels.js';
 import { operationMcpEligible } from './operation-contract.js';
@@ -14,7 +15,7 @@ describe('first channel contracts', () => {
     expect(schema.safeParse({ deliveryId }).success).toBe(false);
     expect(schema.safeParse({ deliveryId, expectedAttemptId: null }).success).toBe(true);
     expect(
-      schema.safeParse({ deliveryId, expectedAttemptId: 7, recipientUserId: 'user_other' }).success
+      schema.safeParse({ deliveryId, expectedAttemptId: 7, recipientUserId: allocateEntityId('usr') }).success
     ).toBe(false);
     expect(schema.safeParse({ deliveryId, expectedAttemptId: 7, channel: 'email' }).success).toBe(
       false

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type Actor, ensureLocalUser } from './auth/identity.js';
+import type { Actor } from './auth/identity.js';
 import { createChannelServices, type DiscordAttentionTransport } from './channel-services.js';
 import type { DiscordReply } from './channels/discord.js';
 import { FsStore } from './lib/store.js';
@@ -12,12 +12,14 @@ import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { removeWorkspaceMember } from './workspace-sharing.js';
 
-const actor: Actor = { userId: 'user_channel_member', kind: 'session' };
+const actor: Actor = { userId: testEntityId('usr', 'channel-member'), kind: 'session' };
 const applicationId = '123456789012345678';
 const discordUserId = '223456789012345678';
 const keys = generateKeyPairSync('ed25519');
@@ -46,25 +48,25 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
   ensureLocalUser(coreDb);
   coreDb.sqlite
     .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-    SELECT ?, 'Channel member', 'member-' || email, email_verified, created_at, updated_at, 'human' FROM users WHERE id = 'user_local'`)
-    .run(actor.userId);
+    SELECT ?, 'Channel member', 'member-' || email, email_verified, created_at, updated_at, 'human' FROM users WHERE id = ?`)
+    .run(actor.userId, FIXTURE_LOCAL_USER_ID);
   let store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: FIXTURE_LOCAL_USER_ID, workspaceId: DEMO_WORKSPACE_ID });
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,created_at,updated_at,revision)
-    SELECT workspace_id,?,status,access_level,joined_at,created_at,updated_at,revision FROM workspace_members WHERE workspace_id = 'ws_demo' AND user_id = 'user_local'`)
-    .run(actor.userId);
-  const thread = store.createThread('ws_demo', 'Exact channel request', undefined, 'conversation', {
+    SELECT workspace_id,?,status,access_level,joined_at,created_at,updated_at,revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?`)
+    .run(actor.userId, DEMO_WORKSPACE_ID, FIXTURE_LOCAL_USER_ID);
+  const thread = store.createThread(DEMO_WORKSPACE_ID, 'Exact channel request', undefined, 'conversation', {
     visibility: 'workspace',
   });
-  const turn = store.createTurn('ws_demo', thread.id, 'Request a decision', {
+  const turn = store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Request a decision', {
     kind: 'user',
     id: actor.userId,
   });
   const requestId = kind === 'approval' ? 'ap_channel_seam' : 'ui_channel_seam';
-  const itemId = `it_${requestId}`;
+  const itemId = testEntityId('it', `channel-seam-${requestId}`);
   const common = {
-    workspaceId: 'ws_demo',
+    workspaceId: DEMO_WORKSPACE_ID,
     threadId: thread.id,
     raisingTurnId: turn.id,
     responsibleUserId: actor.userId,
@@ -73,13 +75,13 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     requestItemId: itemId,
     requesterKind: 'person' as const,
   };
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
   applyScopedMigrations(workspaceDb);
   try {
     if (kind === 'approval') {
       store.createItem({
         id: itemId,
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         threadId: thread.id,
         turnId: turn.id,
         type: 'approval-request',
@@ -114,7 +116,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
       ];
       store.createItem({
         id: itemId,
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         threadId: thread.id,
         turnId: turn.id,
         responsibleUserId: actor.userId,
@@ -210,9 +212,9 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
   };
   const send = (command: string, values: Record<string, string>) =>
     services.discord!.handleSignedInteraction(signed(envelope(command, values)));
-  const target = { workspace: 'ws_demo', thread: thread.id, request: requestId };
+  const target = { workspace: DEMO_WORKSPACE_ID, thread: thread.id, request: requestId };
   const record = () => {
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     try {
       return readPendingRequest(db.sqlite, requestId)!;
     } finally {
@@ -266,8 +268,8 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
       const result = coreDb.sqlite.transaction(() =>
         removeWorkspaceMember({
           coreDb,
-          workspaceId: 'ws_demo',
-          ownerUserId: 'user_local',
+          workspaceId: DEMO_WORKSPACE_ID,
+          ownerUserId: FIXTURE_LOCAL_USER_ID,
           memberUserId: actor.userId,
           expectedRevision: 1,
         })
@@ -396,7 +398,7 @@ describe('Discord to native Pending Request seam', () => {
     );
     expect(f.nativeCalls).toHaveLength(1);
     expect(f.record()).toEqual(settled);
-    expect(f.store.listThreadTurns('ws_demo', f.target.thread)).toHaveLength(1);
+    expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, f.target.thread)).toHaveLength(1);
   });
 
   it('keeps approval grants in the App without invoking the native response owner', async () => {
@@ -407,7 +409,7 @@ describe('Discord to native Pending Request seam', () => {
     expect(link).toBeTruthy();
     const destination = new URL(link!);
     expect(destination.origin).toBe('https://openkit.invalid');
-    expect(destination.pathname).toBe(`/tasks/ws_demo/${f.target.thread}`);
+    expect(destination.pathname).toBe(`/tasks/${DEMO_WORKSPACE_ID}/${f.target.thread}`);
     expect(destination.searchParams.get('requestId')).toBe(f.target.request);
     expect(reply).not.toContain('page_exact');
     expect(reply).not.toContain('Disclosure:');
@@ -427,9 +429,9 @@ describe('Discord to native Pending Request seam', () => {
       f.removeMembership();
     } else if (loss === 'audience') {
       // Fault the real source audience after disclosure; the real current-source reader must refuse it.
-      Object.assign(f.store.getThread('ws_demo', f.target.thread), {
+      Object.assign(f.store.getThread(DEMO_WORKSPACE_ID, f.target.thread), {
         visibility: 'private',
-        privateOwnerUserId: 'user_other',
+        privateOwnerUserId: testEntityId('usr', 'channel-other'),
       });
     } else {
       f.services.discord!.revoke(actor);
