@@ -10,7 +10,7 @@ The engineer assigned P20 to lane L-AK after P19. Implement ordinary Knowledge, 
 
 ## Accepted Owners
 
-The Knowledge Core, Knowledge Store, Personal Memory And Scoped Knowledge Learning, Knowledge Notebook Editing And Publication, Knowledge Manager and Skill Catalog specifications own this work. Their accepted scope, fixed-base Git publication and source admission contracts apply together. Existing Workspace page writers and readers must cut over together; no second writable content authority is permitted.
+The [Knowledge Core](../../../core/knowledge.md), [Knowledge Store](../../../specs/20260703-knowledge_store_implementation.md), [Personal Memory And Scoped Knowledge Learning](../../../specs/20260909-personal_memory_and_knowledge_learning.md), [Knowledge Notebook Editing And Publication](../../../specs/20260909-knowledge_notebook_editing.md), Knowledge Manager and Skill Catalog specifications own this work. Their accepted scope, fixed-base Git publication and source admission contracts apply together. Existing Workspace page writers and readers must cut over together; no second writable content authority is permitted.
 
 ## Checkpoint
 
@@ -57,3 +57,9 @@ Versioned Skill import must accept ordinary ecosystem repositories without repac
 ## Simplicity Ruling Of 2026-10-16
 
 Remove the offline Notebook conversion implementation and tests; no pre-v0.1.0 predecessor qualification, compatibility reader or carry-forward migration lands. Fresh initialization and ordinary SQLite schema changes are sufficient under the approved reset boundary. Portability and backup work remains only where the existing paths break or lose notebook content without it. Build only accepted owner predicates, with one sufficient regression per behavior and simple errors/retry. Do not add proof, replay, ledger or recovery mechanisms beyond those owners. Current user/Workspace privacy, authorization, Worker/model secret protection and user-content preservation remain strict.
+
+## Workspace Notebook Landing Checkpoint
+
+P19 landed first at fa45b8aac6b4593ba5b1305416e95cf833565f49. This increment activates the Workspace Git reader/writer cutover, source-linked Proposal and Review, confirmed removal and bounded reversal, pinned indexes and S39 notebookRevision, public history/diff/restore/update, and existing archive/backup paths. The actual integrated source is independently reviewed; the exact feature gate and final Web editor review remain pending. No User/Server Memory lifecycle, automatic learning, virtual Agent editing or AI assessment acceptance is claimed.
+
+The coordinator approved ordinary Git publication and expected-old-value ref updates under the supported Git durability configuration, without custom recursive fsync or Git-internal scans as an owner requirement. The approved empty-seed amendment permits the existing system actor only for the exact service-created empty index; authored/public/import content retains explicit native User attribution. Current pre-stable data uses the reset boundary, with no conversion or legacy reader. Complete source scope, out-of-area paths and named regression evidence are retained in the L-AK landing review.
