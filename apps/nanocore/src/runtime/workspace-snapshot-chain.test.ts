@@ -18,16 +18,16 @@ import {
 } from './workspace-snapshot-chain.js';
 
 const identity: WorkspaceCollectionIdentity = {
-  workspaceId: 'ws_chain',
-  storageRef: 'store',
+  workspaceId: 'ws_00000000-0000-72e6-b64c-541357b6c42e',
+  storageRef: 'wst_01890f3e-0000-7000-8000-000000000001',
   scopeDigest: `sha256:${'1'.repeat(64)}`,
   attachmentGeneration: 1,
   sandboxId: 'sandbox',
   workSlot: 'slot',
   collectionId: 'baseline',
-  agentSessionId: 'session',
-  threadId: 'thread',
-  turnId: 'turn',
+  agentSessionId: 'as_01890f3e-0000-7000-8000-000000000001',
+  threadId: 'th_01890f3e-0000-7000-8000-000000000001',
+  turnId: 'tu_01890f3e-0000-7000-8000-000000000001',
   packageSnapshotId: 'package',
 };
 const base = { tree: '1'.repeat(40), manifest: '2'.repeat(40) };
@@ -38,6 +38,22 @@ function fixture() {
   return db;
 }
 describe('durable snapshot chain', () => {
+  it('refuses a retained collection whose storage reference has the wrong kind', () => {
+    const db = fixture();
+    try {
+      authorizeWorkspaceBaselineInitialization(db, identity);
+      acceptWorkspaceBaseline(db, identity, base, base.tree);
+      const capture = { ...identity, collectionId: 'kind-boundary' };
+      acceptWorkspaceCapture(db, capture, { outcome: 'no_new_head', unstable: false }, null);
+      const invalid = { ...capture, storageRef: identity.storageRef.replace('wst_', 'ws_') };
+      db.sqlite
+        .prepare('UPDATE workspace_snapshot_collections SET storage_ref = ?, identity_json = ?')
+        .run(invalid.storageRef, JSON.stringify(invalid));
+      expect(() => readWorkspaceCollection(db, invalid)).toThrow();
+    } finally {
+      db.sqlite.close();
+    }
+  });
   it('compares stored identity core while tolerating additive collection and baseline members', () => {
     const db = fixture();
     try {
@@ -342,7 +358,12 @@ describe('durable snapshot chain', () => {
         'baseline identity conflicts'
       );
       expect(() =>
-        acceptWorkspaceBaseline(db, { ...identity, agentSessionId: 'foreign' }, base, base.tree)
+        acceptWorkspaceBaseline(
+          db,
+          { ...identity, agentSessionId: 'as_01890f3e-0000-7000-8000-000000000002' },
+          base,
+          base.tree
+        )
       ).toThrow('accepted_base_unknown');
     } finally {
       db.sqlite.close();

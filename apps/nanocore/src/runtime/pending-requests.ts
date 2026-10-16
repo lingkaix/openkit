@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   ApprovalRequestSchema,
+  deriveEntityId,
   type Item,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
@@ -28,13 +29,13 @@ export const OUTCOME_DELIVERY_BOUND = 16;
 export const PENDING_REQUEST_NEXT_STEP =
   'The outcome arrives on a later Turn. Do not call again to claim it.';
 
-/** Hashes the exact existing Assistant outcome source tuple for its receipt-free Task handoff. */
-export function assistantPendingOutcomeSourceHash(
+/** Reads the complete frozen Assistant outcome name; its recorded order, nullable facts and strings stay exact. */
+export function assistantPendingOutcomeSource(
   turn: Turn,
   records: readonly PendingRequestRecord[],
   responsibleUserId: string
-): string {
-  return commandInputHash({
+) {
+  return {
     workspaceId: turn.workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
@@ -50,7 +51,16 @@ export function assistantPendingOutcomeSourceHash(
       decidedAt: record.decidedAt,
       endedAt: record.endedAt,
     })),
-  });
+  };
+}
+
+/** Hashes the unchanged source tuple for its excluded request-correlation identity. */
+export function assistantPendingOutcomeSourceHash(
+  turn: Turn,
+  records: readonly PendingRequestRecord[],
+  responsibleUserId: string
+): string {
+  return commandInputHash(assistantPendingOutcomeSource(turn, records, responsibleUserId));
 }
 
 /** Creates the existing Core actor for pending-request publication and machine input. */
@@ -486,7 +496,7 @@ const APPROVAL_KINDS = new Set<'permission' | 'destructive-action'>([
  * @returns Stable call id.
  */
 export function executionCallIdForRequest(requestId: string): string {
-  return `cap_pending_${requestId}`;
+  return deriveEntityId('cap', ['pending', requestId]);
 }
 
 /**
@@ -507,26 +517,7 @@ export function pendingRequestItemId(
     | 'ending'
     | 'invalidation'
 ): string {
-  switch (role) {
-    case 'request':
-      return `it_request_${requestId}`;
-    case 'decision':
-      return `it_approval_decision_${requestId}`;
-    case 'answer':
-      return `it_user_input_response_${requestId}`;
-    case 'disposition':
-      return `it_disposition_${requestId}`;
-    case 'disposition-status':
-      return `it_disposition_status_${requestId}`;
-    case 'ending':
-      return `it_ending_${requestId}`;
-    case 'invalidation':
-      return `it_invalidation_${requestId}`;
-    default: {
-      const exhaustive: never = role;
-      return exhaustive;
-    }
-  }
+  return deriveEntityId('it', [requestId, role]);
 }
 
 /**

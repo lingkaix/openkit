@@ -1,9 +1,9 @@
 import type { WorkerSandboxAccess } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
 
 const FILE_ID = 'agents/codex.agent.jsonc';
@@ -171,7 +171,7 @@ describe('registered Worker network configuration inspection', () => {
     current.sandbox.credentialDeclarations = [
       {
         id: CREDENTIAL_CANARY,
-        vaultGrantId: CREDENTIAL_CANARY,
+        vaultGrantId: testEntityId('grant', 'network_manifest_grant'),
         visibility: 'runtime-env',
         targetEnvVarName: 'PRIVATE_CREDENTIAL_CANARY',
       },

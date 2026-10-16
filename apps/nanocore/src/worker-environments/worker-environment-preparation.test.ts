@@ -33,10 +33,10 @@ const actor: Actor = {
   tokenId: 'token_admin',
   tokenScope: 'server-admin',
   tokenWorkspaceIds: [],
-  userId: 'user_admin',
+  userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
 };
 const timestamp = '2026-09-11T01:02:03.000Z';
-const storageRef = `wst_${'a'.repeat(32)}`;
+const storageRef = 'wst_00000000-0000-7b39-9ec2-cb19893c9f63';
 const imageDigest = `sha256:${'b'.repeat(64)}`;
 const layoutDigest = `sha256:${'c'.repeat(64)}`;
 const dataRoots: string[] = [];
@@ -236,8 +236,8 @@ describe('Worker environment preparation', () => {
     const request = prepareRequest(fixture.thread.id, fixture.configuration, buildDeclaration());
     request.replaceNow = {
       prompt: 'Check hf_publicFixture exactly.',
-      threadId: 'th_successor',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7dc4-8f6f-c2ba445ba465',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const response = await fixture.createService().prepare({ actor }, request);
 

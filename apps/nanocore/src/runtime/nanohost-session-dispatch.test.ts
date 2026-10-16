@@ -544,7 +544,7 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'workspace.collect' as never,
         requestId,
         input: {
-          storageRef: 'wst_collection',
+          storageRef: 'wst_00000000-0000-75b8-8427-7b4778a52c54',
           scopeDigest: `sha256:${'b'.repeat(64)}`,
           attachmentGeneration: 1,
           sandboxId: 'sandbox-collection',
@@ -566,7 +566,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).toBe(204);
       expect(await settled).toEqual({ outcome: 'baseline', head });
       const captureInput = {
-        storageRef: 'wst_collection',
+        storageRef: 'wst_00000000-0000-75b8-8427-7b4778a52c54',
         scopeDigest: `sha256:${'b'.repeat(64)}`,
         attachmentGeneration: 1,
         sandboxId: 'sandbox-collection',
@@ -1668,12 +1668,18 @@ describe('authoritative NanoHost session dispatch', () => {
           requestId: '1'.repeat(64),
         },
         {
-          input: { attachmentGeneration: 1, storageRef: 'wst_inspect' },
+          input: {
+            attachmentGeneration: 1,
+            storageRef: 'wst_00000000-0000-7961-a0ab-d2116f02fc2d',
+          },
           kind: 'storage.inspect' as const,
           requestId: '2'.repeat(64),
         },
         {
-          input: { attachmentGeneration: 1, storageRef: 'wst_purge' },
+          input: {
+            attachmentGeneration: 1,
+            storageRef: 'wst_00000000-0000-7408-95ec-23aa22e91333',
+          },
           kind: 'storage.purge' as const,
           requestId: '3'.repeat(64),
         },

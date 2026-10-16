@@ -717,7 +717,7 @@ describe('private NanoHost Harness records', () => {
       expect(
         coreDb.sqlite
           .prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_execution_leases'"
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tu_00000000-0000-72f1-bbf1-0357e359bf5e'"
           )
           .get()
       ).toBeUndefined();
@@ -2801,7 +2801,7 @@ function seedSubmittedAttempt(coreDb: ReturnType<typeof openCoreDb>, index = 1):
     requestId: `request-${index}`,
     requestedAgentId: 'agent-1',
     threadId: `thread-${index}`,
-    triggerActor: { id: 'user-1', kind: 'user' },
+    triggerActor: { id: 'usr_00000000-0000-7bb1-ad15-a58cc38146bf', kind: 'user' },
     turnId: `turn-${index}`,
     turnInput: 'Wait for a human decision',
     workspaceId: 'workspace-1',

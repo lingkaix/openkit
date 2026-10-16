@@ -4,14 +4,13 @@ import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
-
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -31,13 +30,13 @@ describe('worker recovery routes', () => {
     const workspace = store.createWorkspace('Recovery read refusal');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const thread = store.createThread(workspace.id, 'Interrupted retry');
     const turn = store.createTurn(workspace.id, thread.id, 'Retry interrupted worker', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
@@ -69,7 +68,7 @@ describe('worker recovery routes', () => {
       workspace.id,
       'runtime',
       'agent-sessions',
-      'as_corrupt',
+      'as_00000000-0000-7903-b33d-ca8a08f35a67',
       'aep-snapshots'
     );
     mkdirSync(snapshotsRoot, { recursive: true });
@@ -80,7 +79,7 @@ describe('worker recovery routes', () => {
     );
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       await next();
     });
     registerOperationJsonRoutes({
@@ -131,7 +130,7 @@ describe('worker recovery routes', () => {
     });
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       await next();
     });
     registerOperationJsonRoutes({
@@ -161,39 +160,51 @@ describe('worker recovery routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const localThread = store.createThread('ws_demo', 'Local recovery thread');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const localThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Local recovery thread'
+    );
     const foreignWorkspace = store.createWorkspace('Foreign recovery workspace');
     const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign recovery thread');
     const foreignTurn = store.createTurn(
       foreignWorkspace.id,
       foreignThread.id,
       'Foreign recovery turn',
-      { kind: 'user', id: 'user_local' }
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const privateThread = store.createThread(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'Hidden attempt',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_other' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
-    const privateTurn = store.createTurn('ws_demo', privateThread.id, 'Protected Turn content', {
-      kind: 'user',
-      id: 'user_other',
-    });
+    const privateTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      privateThread.id,
+      'Protected Turn content',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      }
+    );
     const getTurnContent = vi.spyOn(store, 'getTurnById');
     const repositoryWorkspaceDb = vi.fn(() => {
       throw new Error('Cross-Workspace recovery must fail before opening Workspace storage.');
     });
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
         effectiveRole: 'owner',
         kind: 'workspace',
         policyOperation: 'turn.run',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await next();
     });
@@ -215,14 +226,22 @@ describe('worker recovery routes', () => {
       const foreign = await app.request(
         ...operationRequest(
           'recovery.checkpoint-retry',
-          { workspaceId: 'ws_demo', threadId: localThread.id, turnId: foreignTurn.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: localThread.id,
+            turnId: foreignTurn.id,
+          },
           request
         )
       );
       const missing = await app.request(
         ...operationRequest(
           'recovery.checkpoint-retry',
-          { workspaceId: 'ws_demo', threadId: localThread.id, turnId: 'turn_missing' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: localThread.id,
+            turnId: 'tu_00000000-0000-76d4-be96-fe2dccab50f4',
+          },
           {
             ...request,
             body: JSON.stringify({ requestId: 'req_missing_retry' }),
@@ -233,7 +252,11 @@ describe('worker recovery routes', () => {
       const wrongThread = await app.request(
         ...operationRequest(
           'recovery.checkpoint-retry',
-          { workspaceId: 'ws_demo', threadId: localThread.id, turnId: privateTurn.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: localThread.id,
+            turnId: privateTurn.id,
+          },
           { ...request, body: JSON.stringify({ requestId: 'req_wrong_thread' }) }
         )
       );

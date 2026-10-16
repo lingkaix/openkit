@@ -15,21 +15,21 @@ import {
 describe('workspace apply plans', () => {
   it('records apply plans before workspace apply mutation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-'));
-    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       const plan = workspaceApplyPlan();
       const first = recordWorkspaceApplyPlan(workspaceDb, plan);
       workspaceDb.sqlite.close();
-      workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const replayed = recordWorkspaceApplyPlan(workspaceDb, plan);
 
       expect(first).toEqual(plan);
       expect(replayed).toEqual(plan);
       expect(
         ListWorkspaceApplyPlansResponseSchema.parse({
-          items: listWorkspaceApplyPlans(workspaceDb, 'ws_demo'),
+          items: listWorkspaceApplyPlans(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001'),
         })
       ).toEqual({ items: [plan] });
     } finally {
@@ -39,7 +39,7 @@ describe('workspace apply plans', () => {
 
   it('rejects a conflicting same-id apply plan replay and preserves the original', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -51,7 +51,9 @@ describe('workspace apply plans', () => {
           { ...original, plannedWrites: ['src/different.ts'] },
         ])
       ).toThrow(/conflict/i);
-      expect(listWorkspaceApplyPlans(workspaceDb, 'ws_demo')).toEqual([original]);
+      expect(
+        listWorkspaceApplyPlans(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([original]);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -59,7 +61,7 @@ describe('workspace apply plans', () => {
 
   it('reuses the first apply-plan timestamp when an accepted decision is retried', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-retry-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -72,7 +74,9 @@ describe('workspace apply plans', () => {
           createdAt: '2026-07-05T00:01:00.000Z',
         })
       ).toEqual(original);
-      expect(listWorkspaceApplyPlans(workspaceDb, 'ws_demo')).toEqual([original]);
+      expect(
+        listWorkspaceApplyPlans(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([original]);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -87,7 +91,7 @@ describe('workspace apply plans', () => {
 function workspaceApplyPlan(): Parameters<typeof recordWorkspaceApplyPlan>[1] {
   return {
     id: 'wap_swr_1',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     reviewId: 'swr_1',
     changeSetId: 'wcs_1',
     strategy: 'git',

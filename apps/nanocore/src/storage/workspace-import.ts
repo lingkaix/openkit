@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   ArchivedGitPushRecordSchema,
@@ -54,18 +54,31 @@ import {
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import {
+  AgentSessionIdSchema,
+  ArtifactIdSchema,
   ArtifactSchema,
+  AuditEventIdSchema,
   AuditEventSchema,
+  allocateEntityId,
+  CapabilityCallIdSchema,
   CapabilityCallSchema,
+  type EntityKind,
   ItemSchema,
   KnowledgeEntrySchema,
+  MaterialIdSchema,
+  PermissionDecisionIdSchema,
   parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
   SseEventEnvelopeSchema,
+  ThreadIdSchema,
   ThreadSchema,
+  TurnIdSchema,
   TurnSchema,
   UsageRecordSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  WorkspaceIdSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
@@ -178,9 +191,9 @@ const ImportedWorkspaceMaterialRevisionSchema = WorkspaceMaterialRevisionViewSch
 }).strip();
 const ImportedThreadMaterialBindingSchema = z
   .object({
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    materialId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    materialId: MaterialIdSchema,
     bindingState: z.enum(['bound', 'unbound']),
     latestQueuedRevisionId: z.string().min(1).nullable(),
     inclusionState: z.enum(['included', 'excluded']),
@@ -220,8 +233,8 @@ const ImportedKnowledgeConflictSchema = KnowledgeConflictSchema.strip();
 const ExportedResolvedAgentSetupSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
-    turnId: z.string().min(1).nullable(),
+    workspaceId: WorkspaceIdSchema,
+    turnId: TurnIdSchema.nullable(),
     requestId: z.string().min(1).nullable(),
     agentId: z.string().min(1),
     logicalModelId: z.string().min(1),
@@ -241,10 +254,10 @@ type ExportedResolvedAgentSetup = Omit<ResolvedAgentSetupRecord, 'setup'> & {
 const ExportedAgentEnvironmentPackageSnapshotSchema = z
   .object({
     snapshotId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    turnId: z.string().min(1),
-    threadId: z.string().min(1),
-    agentSessionId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    turnId: TurnIdSchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
     agentId: z.string().min(1),
     packageId: z.string().min(1),
     runtimeKind: z.string().min(1),
@@ -296,7 +309,7 @@ type ExportedGitPushRecord = z.infer<typeof ExportedGitPushRecordSchema>;
 
 const ExportedStagedWorkspaceReviewSchema = z
   .object({
-    artifactId: z.string().min(1),
+    artifactId: ArtifactIdSchema,
     review: StagedWorkspaceReviewSchema,
     patchPayload: WorkspaceSyncReviewPatchPayloadSchema.nullable(),
   })
@@ -324,7 +337,7 @@ const ExportedWorkspacePermissionDecisionSchema = z
   .object({
     action: z.string().min(1),
     approvalId: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     contextSummary: z.unknown(),
     createdAt: z.string().datetime(),
     decisionId: z.string().min(1),
@@ -345,7 +358,7 @@ const ExportedWorkspacePermissionDecisionSchema = z
       'error',
     ]),
     subjectSummary: z.unknown(),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strict();
 
@@ -364,9 +377,9 @@ const ExportedStopReasonSchema = z.enum([
 const ExportedWorkerCheckpointSchema = z
   .object({
     checkpointId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     goalId: z.string().min(1).nullable(),
     taskId: z.string().min(1).nullable(),
     requestId: z.string().min(1),
@@ -409,7 +422,7 @@ const ExportedMcpToolSchemaSnapshotSchema = z
         })
         .strip()
     ),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strip();
 
@@ -429,7 +442,7 @@ const ExportedWorkspaceVaultReferenceSchema = z
 const ImportedWorkspaceVaultReferenceSchema = ExportedWorkspaceVaultReferenceSchema.extend({
   referenceId: z.string().min(1),
   ownerScope: z.literal('workspace'),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   backendLocator: z.null(),
   status: z.literal('unbound'),
   currentVersion: z.literal(0),
@@ -439,18 +452,19 @@ type ImportedWorkspaceVaultReference = z.infer<typeof ImportedWorkspaceVaultRefe
 
 const ExportedVaultGrantSchema = z
   .object({
-    grantId: z.string().min(1),
-    vaultReferenceId: z.string().min(1),
+    issuance: z.enum(['target', 'imported-history']),
+    grantId: VaultGrantIdSchema,
+    vaultReferenceId: VaultReferenceIdSchema,
     ownerScope: z.literal('workspace'),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     userId: z.null(),
     subjectSummary: z.string().min(1).nullable(),
     targetAgentId: z.string().min(1).nullable(),
-    targetAgentSessionId: z.string().min(1).nullable(),
+    targetAgentSessionId: AgentSessionIdSchema.nullable(),
     targetCapabilityId: z.string().min(1).nullable(),
     allowedInjectionPaths: z.array(z.string().min(1)),
     lifetime: z.enum(['capability-call', 'turn', 'agent-session', 'workspace', 'server']),
-    policyDecisionId: z.string().min(1).nullable(),
+    policyDecisionId: PermissionDecisionIdSchema.nullable(),
     approvalId: z.string().min(1).nullable(),
     status: z.enum(['active', 'revoked', 'expired']),
     createdAt: z.string().datetime(),
@@ -463,7 +477,7 @@ type ExportedVaultGrant = z.infer<typeof ExportedVaultGrantSchema>;
 const ExportedVaultInjectionPlanSchema = z
   .object({
     planId: z.string().min(1),
-    grantId: z.string().min(1),
+    grantId: VaultGrantIdSchema,
     packageSnapshotId: z.string().min(1).nullable(),
     capabilityId: z.string().min(1).nullable(),
     injectionVisibility: InjectionVisibilitySchema,
@@ -484,14 +498,14 @@ const ExportedVaultInjectionReceiptSchema = z
   .object({
     receiptId: z.string().min(1),
     planId: z.string().min(1),
-    grantId: z.string().min(1),
-    agentSessionId: z.string().min(1).nullable(),
-    capabilityCallId: z.string().min(1).nullable(),
+    grantId: VaultGrantIdSchema,
+    agentSessionId: AgentSessionIdSchema.nullable(),
+    capabilityCallId: CapabilityCallIdSchema.nullable(),
     backendSummary: z.string().min(1),
     injectedAt: z.string().datetime(),
     expiresAt: z.string().datetime().nullable(),
     revocationStatus: z.enum(['active', 'revoked', 'expired', 'stale-session']),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
   })
   .strict();
 
@@ -501,19 +515,19 @@ const ExportedVaultUseRecordSchema = z
   .object({
     useId: z.string().min(1),
     ownerScope: z.literal('workspace'),
-    workspaceId: z.string().min(1),
-    vaultReferenceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    vaultReferenceId: VaultReferenceIdSchema,
     materialVersion: z.number().int().nonnegative().nullable(),
     backendKind: z.literal('encrypted-file'),
     resolvingPath: z.enum(['grant', 'plan', 'admin', 'provider']),
-    grantId: z.string().min(1).nullable(),
+    grantId: VaultGrantIdSchema.nullable(),
     planId: z.string().min(1).nullable(),
     receiptId: z.string().min(1).nullable(),
-    agentSessionId: z.string().min(1).nullable(),
-    capabilityCallId: z.string().min(1).nullable(),
+    agentSessionId: AgentSessionIdSchema.nullable(),
+    capabilityCallId: CapabilityCallIdSchema.nullable(),
     outcome: z.enum(['succeeded', 'failed', 'denied']),
     failureCode: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     usedAt: z.string().datetime(),
   })
   .strict();
@@ -688,6 +702,10 @@ function createImportedWorkerContextPackageAuthorityReader(
   const items = snapshot.turns.flatMap((turn) => turn.items);
   return {
     readAdmission: () => null,
+    readThreadParent: (workspaceId, threadId) =>
+      snapshot.threads.find(
+        (thread) => thread.workspaceId === workspaceId && thread.id === threadId
+      )?.parentThreadId ?? null,
     readAgentEnvironmentPackage: (workspaceId, packageSnapshotId) =>
       snapshot.agentEnvironmentPackageSnapshots.find(
         (record) => record.workspaceId === workspaceId && record.snapshotId === packageSnapshotId
@@ -807,6 +825,17 @@ interface ImportRemintContext {
   presentationIds: Map<string, string>;
 }
 
+/** Allocates once for each complete source owner key in this verified invocation. */
+function allocateImportedEntityIds(
+  kind: EntityKind,
+  sourceIds: Iterable<string>
+): Map<string, string> {
+  const ids = new Map<string, string>();
+  for (const sourceId of sourceIds)
+    if (!ids.has(sourceId)) ids.set(sourceId, allocateEntityId(kind));
+  return ids;
+}
+
 /**
  * Reads one verified workspace export into records ready for FsStore import.
  *
@@ -864,17 +893,15 @@ export function readWorkspaceImportSnapshot(
     itemIds: new Map(),
     itemLineage: new Map(),
     artifactIds: new Map(),
-    materialIds: new Map(
-      sourceWorkspaceMaterials.map((material, index) => [
-        material.materialId,
-        `mat_imported_${input.targetWorkspaceId}_${index + 1}`,
-      ])
+    materialIds: allocateImportedEntityIds(
+      'mat',
+      sourceWorkspaceMaterials.map((material) => material.materialId)
     ),
-    materialRevisionIds: new Map(
-      sourceWorkspaceMaterialRevisions.map((revision, index) => [
-        materialRevisionKey(revision.materialId, revision.revisionId),
-        `mrev_imported_${input.targetWorkspaceId}_${index + 1}`,
-      ])
+    materialRevisionIds: allocateImportedEntityIds(
+      'mrev',
+      sourceWorkspaceMaterialRevisions.map((revision) =>
+        materialRevisionKey(revision.materialId, revision.revisionId)
+      )
     ),
     agentSessionIds: new Map(),
     approvalRequestIds: new Map(),
@@ -1114,27 +1141,40 @@ function readCanonicalImportState(context: ImportRemintContext) {
     throw new Error('Workspace record id does not match the export manifest.');
   }
   const exportedThreads = readWorkspaceExportThreads(context.files);
-  const threads = exportedThreads.map((thread, index) =>
-    ThreadSchema.parse({
+  const threadIds = allocateImportedEntityIds(
+    'th',
+    exportedThreads.map((thread) => thread.id)
+  );
+  const targetThreadIds = new Set(threadIds.values());
+  const threads = exportedThreads.map((thread) => {
+    const mappedParent =
+      thread.parentThreadId === undefined ? undefined : threadIds.get(thread.parentThreadId);
+    if (
+      thread.parentThreadId !== undefined &&
+      mappedParent === undefined &&
+      targetThreadIds.has(thread.parentThreadId)
+    ) {
+      throw new Error('Unresolved source Thread parent collides with a target Thread.');
+    }
+    return ThreadSchema.parse({
       ...thread,
-      id: `th_imported_${context.targetWorkspaceId}_${index + 1}`,
+      id: requiredMapValue(threadIds, thread.id, 'Thread'),
       workspaceId: context.targetWorkspaceId,
-    })
-  );
-  const threadIds = new Map(
-    exportedThreads.map((thread, index) => [thread.id, threads[index]!.id])
-  );
+      // Core keeps missing or excluded parents as unresolved source lineage, never a target lookup.
+      ...(thread.parentThreadId === undefined
+        ? {}
+        : { parentThreadId: mappedParent ?? thread.parentThreadId }),
+    });
+  });
   const exportedKnowledge = readImportJsonl(context.files, 'records/knowledge.jsonl').map(
     (record) => KnowledgeEntrySchema.parse(record)
   );
   const exportedTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
     TurnSchema.parse(record)
   );
-  const turnIds = new Map(
-    exportedTurns.map((turn, index) => [
-      turn.id,
-      `tu_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
+  const turnIds = allocateImportedEntityIds(
+    'tu',
+    exportedTurns.map((turn) => turn.id)
   );
   const exportedArtifacts = readExportedArtifacts(context.files, report.manifest);
   const exportedWorkspace = WorkspaceRecordSchema.parse({
@@ -1156,20 +1196,16 @@ function readCanonicalImportState(context: ImportRemintContext) {
       manifestDigest: context.manifestDigest,
     },
   });
-  const artifactIds = new Map(
-    exportedArtifacts.map((artifact, index) => [
-      artifact.id,
-      `ar_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
+  const artifactIds = allocateImportedEntityIds(
+    'ar',
+    exportedArtifacts.map((artifact) => artifact.id)
   );
   const exportedAgentSessions = readImportJsonl(context.files, 'records/agent-sessions.jsonl').map(
     (record) => AgentSessionRecordSchema.parse(record) as AgentSession
   );
-  const agentSessionIds = new Map(
-    exportedAgentSessions.map((session, index) => [
-      session.id,
-      `as_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
+  const agentSessionIds = allocateImportedEntityIds(
+    'as',
+    exportedAgentSessions.map((session) => session.id)
   );
   const exportedItemRevisions = readImportJsonl(context.files, 'records/item-revisions.jsonl').map(
     (record) => ItemSchema.parse(record)
@@ -1195,7 +1231,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
               requiredMapValue(artifactIds, revision.artifactId, 'artifact'),
               requiredMapValue(turnIds, revision.turnId, 'turn')
             )
-          : `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`
+          : allocateEntityId('it')
       );
     }
     itemLineage.set(revision.id, revision);
@@ -1233,11 +1269,11 @@ function readCanonicalImportState(context: ImportRemintContext) {
     }
     const record = row as { id: string; lineage?: { itemId?: unknown } };
     if (!context.presentationIds.has(record.id)) {
-      context.presentationIds.set(record.id, randomUUID());
+      context.presentationIds.set(record.id, allocateEntityId('pres'));
     }
     const reservedItemId = record.lineage?.itemId;
     if (typeof reservedItemId === 'string' && !itemIds.has(reservedItemId)) {
-      itemIds.set(reservedItemId, `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`);
+      itemIds.set(reservedItemId, allocateEntityId('it'));
     }
   }
   const exportedAgentEnvironmentPackageSnapshots = readOptionalImportJsonl(
@@ -1493,10 +1529,14 @@ function readCanonicalImportState(context: ImportRemintContext) {
     assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
     return source;
   });
-  const knowledgeSources = exportedKnowledgeSources.map((parsed, index) =>
+  const knowledgeSourceIds = allocateImportedEntityIds(
+    'ks',
+    exportedKnowledgeSources.map((source) => source.id)
+  );
+  const knowledgeSources = exportedKnowledgeSources.map((parsed) =>
     KnowledgeSourceRecordSchema.parse({
       ...parsed,
-      id: `ks_imported_${context.targetWorkspaceId}_${index + 1}`,
+      id: requiredMapValue(knowledgeSourceIds, parsed.id, 'Knowledge source'),
       originatingThreadId: parsed.originatingThreadId
         ? requiredMapValue(threadIds, parsed.originatingThreadId, 'thread')
         : null,
@@ -1512,9 +1552,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
         : null,
       workspaceId: context.targetWorkspaceId,
     })
-  );
-  const knowledgeSourceIds = new Map(
-    exportedKnowledgeSources.map((source, index) => [source.id, knowledgeSources[index]!.id])
   );
   const knowledge = exportedKnowledge;
   parseCanonicalWorkspaceHistory({
@@ -1595,15 +1632,18 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     turnIds,
     workerCheckpointIds,
   } = context;
-  const vaultReferences = readOptionalImportJsonl(
+  const exportedVaultReferences = readOptionalImportJsonl(
     context.files,
     'records/vault-references.jsonl'
-  ).map((record, index) => {
-    const parsed = ExportedWorkspaceVaultReferenceSchema.parse(record);
-
-    return ImportedWorkspaceVaultReferenceSchema.parse({
+  ).map((record) => ExportedWorkspaceVaultReferenceSchema.parse(record));
+  const vaultReferenceIds = allocateImportedEntityIds(
+    'vault',
+    exportedVaultReferences.map((reference) => reference.sourceReferenceId)
+  );
+  const vaultReferences = exportedVaultReferences.map((parsed) =>
+    ImportedWorkspaceVaultReferenceSchema.parse({
       ...parsed,
-      referenceId: `vault_imported_${context.targetWorkspaceId}_${index + 1}`,
+      referenceId: requiredMapValue(vaultReferenceIds, parsed.sourceReferenceId, 'Vault reference'),
       ownerScope: 'workspace',
       workspaceId: context.targetWorkspaceId,
       backendLocator: null,
@@ -1611,19 +1651,21 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       currentVersion: 0,
       createdAt: report.manifest.exportCreatedAt,
       updatedAt: report.manifest.exportCreatedAt,
-    });
-  });
-  const vaultReferenceIds = new Map(
-    vaultReferences.map((reference) => [reference.sourceReferenceId, reference.referenceId])
+    })
   );
   const exportedVaultGrants = readOptionalImportJsonl(
     context.files,
     'records/vault-grants.jsonl'
   ).map((record) => ExportedVaultGrantSchema.parse(record));
-  const vaultGrants = exportedVaultGrants.map((grant, index) =>
+  const vaultGrantIds = allocateImportedEntityIds(
+    'grant',
+    exportedVaultGrants.map((grant) => grant.grantId)
+  );
+  const vaultGrants = exportedVaultGrants.map((grant) =>
     ExportedVaultGrantSchema.parse({
       ...grant,
-      grantId: `grant_imported_${context.targetWorkspaceId}_${index + 1}`,
+      issuance: 'imported-history',
+      grantId: requiredMapValue(vaultGrantIds, grant.grantId, 'Vault grant'),
       approvalId: grant.approvalId
         ? requiredMapValue(approvalRequestIds, grant.approvalId, 'approval request')
         : null,
@@ -1637,9 +1679,6 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       ),
       workspaceId: context.targetWorkspaceId,
     })
-  );
-  const vaultGrantIds = new Map(
-    exportedVaultGrants.map((grant, index) => [grant.grantId, vaultGrants[index]!.grantId])
   );
   const exportedVaultInjectionPlans = readOptionalImportJsonl(
     context.files,
@@ -4763,6 +4802,14 @@ function readWorkerRuntimeControlState(context: ImportRemintContext) {
       workspaceId: context.targetWorkspaceId,
       threadId,
       turnId,
+      workerSessionId:
+        parsed.workerSessionId === null
+          ? null
+          : requiredMapValue(
+              context.agentSessionIds,
+              parsed.workerSessionId,
+              'checkpoint AgentSession'
+            ),
       checkpointId: `${context.targetWorkspaceId}:${threadId}:${turnId}`,
     });
   });

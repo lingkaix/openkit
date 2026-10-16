@@ -13,13 +13,15 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -77,7 +79,7 @@ describe('workspace review application', () => {
       join(tmpdir(), 'openkit-workspace-review-disabled-user-staging-')
     );
     temporaryRoots.push(dataRoot, targetRoot, workerRoot, stagingRoot);
-    const workspaceId = 'ws_workspace_review_disabled_user';
+    const workspaceId = 'ws_00000000-0000-769d-bfe1-5a67ada4aec2';
     const reviewId = 'swr_workspace_review_disabled_user';
     const timestamp = '2026-07-19T00:00:00.000Z';
     writeFileSync(join(targetRoot, 'review.txt'), 'before\n', 'utf8');
@@ -110,7 +112,7 @@ describe('workspace review application', () => {
     applyScopedMigrations(workspaceDb);
     try {
       const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
-        artifactId: 'ar_workspace_review_disabled_user',
+        artifactId: 'ar_00000000-0000-761d-a0e1-b821a3910378',
         changeSet,
         patchPayload: null,
         review: {
@@ -250,7 +252,10 @@ describe('workspace review application', () => {
           contentDigest:
             lineageField === 'contentDigest' ? `sha256:${'0'.repeat(64)}` : before.contentDigest,
           resourceId: lineageField === 'resourceId' ? 'fs_other' : before.resourceId,
-          workspaceId: lineageField === 'workspaceId' ? 'ws_other' : before.workspaceId,
+          workspaceId:
+            lineageField === 'workspaceId'
+              ? 'ws_00000000-0000-71f5-922f-6fd42f52f580'
+              : before.workspaceId,
         },
         changeSetId: lineageField === 'changeSetId' ? 'wcs_other' : changeSetId,
         createdAt: timestamp,
@@ -319,7 +324,7 @@ describe('workspace review application', () => {
     const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-cleanup-worker-'));
     const stagingRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-cleanup-staging-'));
     temporaryRoots.push(dataRoot, targetRoot, workerRoot, stagingRoot);
-    const workspaceId = 'ws_filesystem_cleanup';
+    const workspaceId = 'ws_00000000-0000-7553-924e-bb938cbfc088';
     const reviewId = 'swr_filesystem_cleanup';
     const timestamp = '2026-07-11T00:10:00.000Z';
     writeFileSync(join(workerRoot, 'new.txt'), 'applied\n', 'utf8');
@@ -350,7 +355,7 @@ describe('workspace review application', () => {
 
     try {
       const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
-        artifactId: 'ar_filesystem_cleanup',
+        artifactId: 'ar_00000000-0000-7152-ab29-57a54004fc5b',
         changeSet,
         patchPayload: null,
         review: {
@@ -532,9 +537,9 @@ function gitRenameWorkspaceReviewItem(): Parameters<typeof recordWorkspaceSyncRe
   const timestamp = '2026-07-11T00:10:00.000Z';
 
   return {
-    artifactId: 'ar_git_rename_review',
+    artifactId: 'ar_00000000-0000-7b85-a7e1-7b8573fc52b8',
     changeSet: {
-      artifactIds: ['ar_git_rename_review'],
+      artifactIds: ['ar_00000000-0000-7b85-a7e1-7b8573fc52b8'],
       base: { commit: 'a'.repeat(40), contentDigest: null },
       bundle: null,
       changedPaths: [
@@ -546,7 +551,7 @@ function gitRenameWorkspaceReviewItem(): Parameters<typeof recordWorkspaceSyncRe
         },
       ],
       createdAt: timestamp,
-      evidenceRefs: [{ kind: 'worker', ref: 'turn_git_rename' }],
+      evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-71b5-836c-13a89c2c15f8' }],
       head: { commit: 'b'.repeat(40), contentDigest: null },
       id: 'wcs_git_rename',
       inputSnapshotId: 'wis_git_rename',
@@ -559,7 +564,7 @@ function gitRenameWorkspaceReviewItem(): Parameters<typeof recordWorkspaceSyncRe
       redaction: { notes: [], status: 'redacted' },
       resourceId: 'repo_default',
       strategy: 'git',
-      workspaceId: 'ws_git_rename',
+      workspaceId: 'ws_00000000-0000-7322-86eb-6ad8930b9033',
     },
     patchPayload: {
       bytes: Buffer.byteLength(patchText, 'utf8'),
@@ -582,7 +587,7 @@ function gitRenameWorkspaceReviewItem(): Parameters<typeof recordWorkspaceSyncRe
       status: 'pending',
       updatedAt: timestamp,
       validation: [],
-      workspaceId: 'ws_git_rename',
+      workspaceId: 'ws_00000000-0000-7322-86eb-6ad8930b9033',
     },
   };
 }

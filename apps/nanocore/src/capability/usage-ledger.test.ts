@@ -18,15 +18,15 @@ import {
 describe('capability usage ledger', () => {
   it('records a capability call before linked usage and terminal status', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const call = startCapabilityCall({
         agentId: 'agent_codex',
-        agentSessionId: 'as_worker',
-        authorityActor: { kind: 'user', id: 'user_ledger' },
+        agentSessionId: 'as_00000000-0000-78f3-a236-d324525fc901',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         capabilityId: 'llm.responses',
         family: 'llm',
         itemId: null,
@@ -40,10 +40,10 @@ describe('capability usage ledger', () => {
         serviceRef: null,
         sourceIds: ['repo_default'],
         summary: 'LLM responses call',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         now: new Date('2026-07-05T00:00:00.000Z'),
       });
 
@@ -91,7 +91,9 @@ describe('capability usage ledger', () => {
           unit: 'tokens',
         }),
       ]);
-      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')[0]).toMatchObject({
+      expect(
+        listWorkspaceCapabilityCalls(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')[0]
+      ).toMatchObject({
         packageSnapshotId: 'aepsnap_demo',
         runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
         runtimeOriginRef: `rto_${'a'.repeat(24)}`,
@@ -109,9 +111,9 @@ describe('capability usage ledger', () => {
           resource: 'capability:llm.responses',
           severity: 'info',
           summary: 'Capability call succeeded: LLM responses call',
-          thread_id: 'th_demo',
-          turn_id: 'turn_demo',
-          workspace_id: 'ws_demo',
+          thread_id: 'th_00000000-0000-7000-8000-000000000001',
+          turn_id: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
       expect(auditRows(workspaceDb, call.id)[0]).not.toHaveProperty('runtime_origin_ref');
@@ -354,14 +356,14 @@ describe('capability usage ledger', () => {
 
   it('uses the same recorder lifecycle for LLM and MCP usage producers', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-producers-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const producers = [
         {
-          authorityActor: { kind: 'user', id: 'user_gateway' } as const,
+          authorityActor: { kind: 'user', id: 'usr_00000000-0000-728a-a463-9175ccb87084' } as const,
           capabilityId: 'llm.responses',
           category: 'llm' as const,
           family: 'llm' as const,
@@ -369,7 +371,7 @@ describe('capability usage ledger', () => {
           providerRef: 'provider_anthropic',
           quantity: 12,
           requestId: '00000000-0000-4000-8000-000000000101',
-          responsibleUserId: 'user_gateway',
+          responsibleUserId: 'usr_00000000-0000-728a-a463-9175ccb87084',
           summary: 'LLM responses call',
           unit: 'tokens' as const,
         },
@@ -377,7 +379,7 @@ describe('capability usage ledger', () => {
           authorityActor: {
             kind: 'agent',
             id: 'agent_tool',
-            responsibleUserId: 'user_tool_owner',
+            responsibleUserId: 'usr_00000000-0000-7f8b-b50f-3f66b3a218da',
           } as const,
           capabilityId: 'mcp.github.issues.list',
           category: 'tool' as const,
@@ -386,15 +388,15 @@ describe('capability usage ledger', () => {
           providerRef: 'mcp.github',
           quantity: 1,
           requestId: '00000000-0000-4000-8000-000000000102',
-          responsibleUserId: 'user_tool_owner',
+          responsibleUserId: 'usr_00000000-0000-7f8b-b50f-3f66b3a218da',
           summary: 'MCP tool call',
           unit: 'tool_calls' as const,
         },
         {
           authorityActor: {
             kind: 'automation',
-            id: 'automation_worker',
-            responsibleUserId: 'user_worker_owner',
+            id: 'auto_00000000-0000-7724-8c5f-4aaaae6b3253',
+            responsibleUserId: 'usr_00000000-0000-7f8f-994a-d63f593d1d0e',
           } as const,
           capabilityId: 'runtime.worker_turn',
           category: 'runtime' as const,
@@ -403,12 +405,12 @@ describe('capability usage ledger', () => {
           providerRef: 'nanocore-runtime',
           quantity: 1,
           requestId: '00000000-0000-4000-8000-000000000103',
-          responsibleUserId: 'user_worker_owner',
+          responsibleUserId: 'usr_00000000-0000-7f8f-994a-d63f593d1d0e',
           summary: 'Worker turn runtime',
           unit: 'sandbox_sessions' as const,
         },
         {
-          authorityActor: { kind: 'user', id: 'user_export' } as const,
+          authorityActor: { kind: 'user', id: 'usr_00000000-0000-775c-a38b-92e90ebbce3f' } as const,
           capabilityId: 'storage.workspace_export',
           category: 'storage' as const,
           family: 'storage' as const,
@@ -416,7 +418,7 @@ describe('capability usage ledger', () => {
           providerRef: 'nanocore-storage',
           quantity: 123,
           requestId: '00000000-0000-4000-8000-000000000104',
-          responsibleUserId: 'user_export',
+          responsibleUserId: 'usr_00000000-0000-775c-a38b-92e90ebbce3f',
           summary: 'Workspace export storage',
           unit: 'bytes' as const,
         },
@@ -446,7 +448,7 @@ describe('capability usage ledger', () => {
           requestId: producer.requestId,
           summary: producer.summary,
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
 
         recordUsage({
@@ -497,21 +499,21 @@ describe('capability usage ledger', () => {
 
   it('rejects raw payload fields before they reach ledger rows', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-leak-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       expect(() =>
         startCapabilityCall({
-          authorityActor: { kind: 'user', id: 'user_ledger' },
+          authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
           capabilityId: 'llm.responses',
           family: 'llm',
           operation: 'responses.create',
           redactionClass: 'metadata-only',
           summary: 'LLM responses call',
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           promptText: 'raw prompt',
         } as Parameters<typeof startCapabilityCall>[0] & { promptText: string })
       ).toThrow('Capability usage ledger values must be redacted before recording.');
@@ -522,14 +524,14 @@ describe('capability usage ledger', () => {
 
   it('returns the existing call for the same request, family, and operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-idem-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const first = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_first',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-75dc-aab7-3ea61262bb7c',
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
@@ -537,11 +539,11 @@ describe('capability usage ledger', () => {
         requestId: '00000000-0000-4000-8000-000000000002',
         sourceIds: ['repo_beta', 'repo_alpha', 'repo_beta'],
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const second = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_second',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-782e-9bd8-eead654ad5df',
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
@@ -549,7 +551,7 @@ describe('capability usage ledger', () => {
         requestId: '00000000-0000-4000-8000-000000000002',
         sourceIds: ['repo_alpha', 'repo_beta'],
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const count = workspaceDb.sqlite
         .prepare('SELECT COUNT(*) AS count FROM capability_calls')
@@ -566,34 +568,34 @@ describe('capability usage ledger', () => {
 
   it('does not collapse explicit call ids when request id is absent', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-null-request-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const first = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_runtime_first',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-7967-bbe1-240c056d5680',
         capabilityId: 'runtime.worker_turn',
         family: 'runtime',
         operation: 'worker.checkpoint.terminal',
         redactionClass: 'metadata-only',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const second = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_runtime_second',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-79e7-a10b-a6c8afb658be',
         capabilityId: 'runtime.worker_turn',
         family: 'runtime',
         operation: 'worker.checkpoint.terminal',
         redactionClass: 'metadata-only',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
-      expect(first.id).toBe('cap_runtime_first');
-      expect(second.id).toBe('cap_runtime_second');
+      expect(first.id).toBe('cap_00000000-0000-7967-bbe1-240c056d5680');
+      expect(second.id).toBe('cap_00000000-0000-79e7-a10b-a6c8afb658be');
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -601,19 +603,19 @@ describe('capability usage ledger', () => {
 
   it('rejects contradictory immutable attribution for an existing idempotency key', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-retry-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const original = {
         agentId: 'agent_original',
-        agentSessionId: 'as_original',
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_original',
+        agentSessionId: 'as_00000000-0000-7faf-b418-a0c597b4f6e7',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-78ea-a8de-37d996fac033',
         capabilityId: 'llm.responses',
         family: 'llm',
-        itemId: 'it_original',
+        itemId: 'it_00000000-0000-7d59-ae27-86232be930df',
         operation: 'responses.create',
         packageSnapshotId: 'aepsnap_original',
         providerRef: 'provider_original',
@@ -623,20 +625,20 @@ describe('capability usage ledger', () => {
         runtimeOriginRef: `rto_${'a'.repeat(24)}`,
         serviceRef: 'service_original',
         sourceIds: ['repo_alpha', 'repo_beta'],
-        threadId: 'th_original',
-        turnId: 'turn_original',
+        threadId: 'th_00000000-0000-7199-a5ff-a91caa94c760',
+        turnId: 'tu_00000000-0000-769a-aad2-333c7165615f',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       } satisfies Parameters<typeof startCapabilityCall>[0];
       const first = startCapabilityCall(original);
       const originalRow = capabilityCallRow(workspaceDb, first.id);
       const contradictions = [
         ['capabilityId', { capabilityId: 'llm.chat-completions' }],
-        ['threadId', { threadId: 'th_changed' }],
-        ['turnId', { turnId: 'turn_changed' }],
-        ['itemId', { itemId: 'it_changed' }],
+        ['threadId', { threadId: 'th_00000000-0000-7295-b429-158628e64e61' }],
+        ['turnId', { turnId: 'tu_00000000-0000-7fb5-91ee-02fe963f55ef' }],
+        ['itemId', { itemId: 'it_00000000-0000-7527-9063-a3fdbfca2a0c' }],
         ['agentId', { agentId: 'agent_changed' }],
-        ['agentSessionId', { agentSessionId: 'as_changed' }],
+        ['agentSessionId', { agentSessionId: 'as_00000000-0000-7db5-b42a-ada5722461c5' }],
         ['packageSnapshotId', { packageSnapshotId: 'aepsnap_changed' }],
         ['runtimeOriginRef', { runtimeOriginRef: `rto_${'c'.repeat(24)}` }],
         ['runtimeCacheLineageRef', { runtimeCacheLineageRef: `rcl_${'d'.repeat(24)}` }],
@@ -670,20 +672,20 @@ describe('capability usage ledger', () => {
 
   it('marks the capability call failed when usage recording fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-usage-failure-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000004',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(() =>
@@ -713,7 +715,7 @@ describe('capability usage ledger', () => {
           resource: 'capability:llm.responses',
           severity: 'error',
           summary: 'Capability call failed: usage_record_failed',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
     } finally {
@@ -723,13 +725,13 @@ describe('capability usage ledger', () => {
 
   it('does not duplicate terminal audit events when finish is retried', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-audit-retry-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
@@ -737,7 +739,7 @@ describe('capability usage ledger', () => {
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000006',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       finishCapabilityCall({
@@ -761,20 +763,20 @@ describe('capability usage ledger', () => {
 
   it('atomically terminalizes calls and recovers uncertain effects as unknown', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-terminal-truth-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       const rejected = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_rejected_audit',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-7e1a-8e69-82f38a3844c2',
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
         now: new Date('2026-07-05T00:00:03.000Z'),
         redactionClass: 'metadata-only',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       workspaceDb.sqlite.exec(
         `CREATE TRIGGER reject_capability_finish_audit
@@ -801,14 +803,14 @@ describe('capability usage ledger', () => {
 
       workspaceDb.sqlite.exec('DROP TRIGGER reject_capability_finish_audit');
       const uncertain = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_uncertain_restart',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-7926-b356-5a41d8af7efb',
         capabilityId: 'mcp.probe.echo',
         family: 'mcp',
         operation: 'mcp.call_tool',
         redactionClass: 'metadata-only',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(recoverRunningCapabilityCalls({ workspaceDb })).toBe(2);
@@ -826,13 +828,13 @@ describe('capability usage ledger', () => {
 
   it('records terminal audit events when running calls are recovered', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-audit-recovery-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
@@ -840,7 +842,7 @@ describe('capability usage ledger', () => {
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000007',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(
@@ -858,7 +860,7 @@ describe('capability usage ledger', () => {
           error_code: 'capability_call_recovered_after_restart',
           outcome: 'unknown',
           severity: 'warning',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
     } finally {
@@ -868,25 +870,25 @@ describe('capability usage ledger', () => {
 
   it('reads only current-session category llm usage joined to a family llm call', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-current-session-llm-usage-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       const current = startCapabilityCall({
         agentId: 'agent_codex',
-        agentSessionId: 'as_current',
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_current_llm',
+        agentSessionId: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-7682-9329-8d28c3eddeef',
         capabilityId: 'llm.responses',
         family: 'llm',
         now: new Date('2026-09-17T02:00:00.000Z'),
         operation: 'responses.create',
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000301',
-        threadId: 'th_demo',
-        turnId: 'turn_current',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7e2b-8908-a810d8216ae9',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       recordUsage({
         call: current,
@@ -897,26 +899,26 @@ describe('capability usage ledger', () => {
             modelId: 'openai/gpt-current',
             quantity: 3,
             unit: 'tokens',
-            usageId: 'use_current_llm',
+            usageId: 'use_00000000-0000-720e-a059-ea2496d083a3',
           },
         ],
         workspaceDb,
       });
       const predecessor = startCapabilityCall({
         agentId: 'agent_codex',
-        agentSessionId: 'as_predecessor',
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_predecessor_llm',
+        agentSessionId: 'as_00000000-0000-7566-bb3c-0c317df86f2e',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-70c7-8f0b-db044f2644fa',
         capabilityId: 'llm.responses',
         family: 'llm',
         now: new Date('2026-09-17T02:00:02.000Z'),
         operation: 'responses.create',
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000302',
-        threadId: 'th_demo',
-        turnId: 'turn_predecessor',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7f9f-ae1e-82292b6a8d60',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       recordUsage({
         call: predecessor,
@@ -927,26 +929,26 @@ describe('capability usage ledger', () => {
             modelId: 'openai/gpt-predecessor',
             quantity: 5,
             unit: 'tokens',
-            usageId: 'use_predecessor_llm',
+            usageId: 'use_00000000-0000-7dc9-9cba-0a11208bcfd3',
           },
         ],
         workspaceDb,
       });
       const mismatchedFamily = startCapabilityCall({
         agentId: 'agent_codex',
-        agentSessionId: 'as_current',
-        authorityActor: { kind: 'user', id: 'user_ledger' },
-        callId: 'cap_current_mcp',
+        agentSessionId: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+        callId: 'cap_00000000-0000-7142-9de8-c6b18db70896',
         capabilityId: 'mcp.call',
         family: 'mcp',
         now: new Date('2026-09-17T02:00:04.000Z'),
         operation: 'mcp.call_tool',
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000303',
-        threadId: 'th_demo',
-        turnId: 'turn_current',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7e2b-8908-a810d8216ae9',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       recordUsage({
         call: mismatchedFamily,
@@ -957,7 +959,7 @@ describe('capability usage ledger', () => {
             modelId: 'openai/gpt-mcp-family',
             quantity: 1,
             unit: 'tokens',
-            usageId: 'use_current_mcp_family',
+            usageId: 'use_00000000-0000-76a5-ad4e-fb2392f232f0',
           },
         ],
         workspaceDb,
@@ -965,15 +967,15 @@ describe('capability usage ledger', () => {
 
       expect(
         readLatestCurrentAgentSessionLlmUsage(workspaceDb, {
-          agentSessionId: 'as_current',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          agentSessionId: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toEqual({
-        capabilityCallId: 'cap_current_llm',
+        capabilityCallId: 'cap_00000000-0000-7682-9329-8d28c3eddeef',
         modelId: 'openai/gpt-current',
         recordedAt: '2026-09-17T02:00:01.000Z',
-        turnId: 'turn_current',
+        turnId: 'tu_00000000-0000-7e2b-8908-a810d8216ae9',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -1032,15 +1034,18 @@ function auditRows(
 describe('retained call digest round-trip', () => {
   it('exports then imports a digest and preserves absence on an old row', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-digest-transfer-'));
-    const source = openWorkspaceDb(dataRoot, 'ws_source');
-    const target = openWorkspaceDb(dataRoot, 'ws_target');
+    const source = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71b1-9af2-985861a05396');
+    const target = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7b16-81e5-c0b623c0c636');
     try {
       applyScopedMigrations(source);
       applyScopedMigrations(target);
-      for (const callId of ['cap_digest', 'cap_absent']) {
+      for (const callId of [
+        'cap_00000000-0000-7409-878a-46cfc62378f7',
+        'cap_00000000-0000-7ff2-b713-d35db1d00ca0',
+      ]) {
         startCapabilityCall({
           workspaceDb: source,
-          workspaceId: 'ws_source',
+          workspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
           authorityActor: null,
           capabilityId: 'llm.responses',
           family: 'llm',
@@ -1052,37 +1057,44 @@ describe('retained call digest round-trip', () => {
       const digest = `sha256:${'a'.repeat(64)}`;
       source.sqlite
         .prepare('UPDATE capability_calls SET system_prompt_digest = ? WHERE call_id = ?')
-        .run(digest, 'cap_digest');
+        .run(digest, 'cap_00000000-0000-7409-878a-46cfc62378f7');
       const exported = JSON.parse(
-        JSON.stringify(listWorkspaceCapabilityCalls(source, 'ws_source'))
+        JSON.stringify(
+          listWorkspaceCapabilityCalls(source, 'ws_00000000-0000-71b1-9af2-985861a05396')
+        )
       );
       importWorkspaceCapabilityUsageLedger({
         workspaceDb: target,
         capabilityCalls: exported.map((call: Record<string, unknown>) => ({
           ...call,
-          workspaceId: 'ws_target',
+          workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636',
         })),
         usageRecords: [],
       });
       expect(
-        listWorkspaceCapabilityCalls(target, 'ws_target').find((call) => call.id === 'cap_digest')
-          ?.systemPromptDigest
+        listWorkspaceCapabilityCalls(target, 'ws_00000000-0000-7b16-81e5-c0b623c0c636').find(
+          (call) => call.id === 'cap_00000000-0000-7409-878a-46cfc62378f7'
+        )?.systemPromptDigest
       ).toBe(digest);
       expect(
-        listWorkspaceCapabilityCalls(target, 'ws_target').find((call) => call.id === 'cap_absent')
+        listWorkspaceCapabilityCalls(target, 'ws_00000000-0000-7b16-81e5-c0b623c0c636').find(
+          (call) => call.id === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0'
+        )
       ).not.toHaveProperty('systemPromptDigest');
       expect(
-        listWorkspaceCapabilityCalls(target, 'ws_target').find((call) => call.id === 'cap_absent')
+        listWorkspaceCapabilityCalls(target, 'ws_00000000-0000-7b16-81e5-c0b623c0c636').find(
+          (call) => call.id === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0'
+        )
       ).not.toHaveProperty('extensions');
       expect(
         target.sqlite
           .prepare('SELECT extensions_json FROM capability_calls WHERE call_id = ?')
-          .get('cap_absent')
+          .get('cap_00000000-0000-7ff2-b713-d35db1d00ca0')
       ).toEqual({ extensions_json: null });
       expect(
         target.sqlite
           .prepare('SELECT system_prompt_digest FROM capability_calls WHERE call_id = ?')
-          .get('cap_digest')
+          .get('cap_00000000-0000-7409-878a-46cfc62378f7')
       ).toEqual({ system_prompt_digest: digest });
     } finally {
       source.sqlite.close();
@@ -1095,12 +1107,12 @@ describe('retained call digest round-trip', () => {
 describe('Gateway lineage recovery', () => {
   it('keeps committed unknown attempt evidence when a running call is recovered', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-lineage-recovery-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_recovery');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7849-b543-b73e540db459');
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
         workspaceDb,
-        workspaceId: 'ws_recovery',
+        workspaceId: 'ws_00000000-0000-7849-b543-b73e540db459',
         authorityActor: null,
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -1130,7 +1142,9 @@ describe('Gateway lineage recovery', () => {
       expect(
         workspaceDb.sqlite.prepare('SELECT extensions_json FROM capability_calls').get()
       ).toEqual(before);
-      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_recovery')[0]).toMatchObject({
+      expect(
+        listWorkspaceCapabilityCalls(workspaceDb, 'ws_00000000-0000-7849-b543-b73e540db459')[0]
+      ).toMatchObject({
         status: 'unknown',
         extensions: {
           'openkit.gateway/routeLineage': {
@@ -1148,12 +1162,12 @@ describe('Gateway lineage recovery', () => {
 describe('slice 1d round 2 canonical extension rewrite', () => {
   it('keeps another stored namespace while validating and updating its owned namespace', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'canonical-extensions-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_extensions');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7993-ac5a-37822c1bf7ab');
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
         workspaceDb,
-        workspaceId: 'ws_extensions',
+        workspaceId: 'ws_00000000-0000-7993-ac5a-37822c1bf7ab',
         authorityActor: null,
         capabilityId: 'llm.responses',
         family: 'llm',

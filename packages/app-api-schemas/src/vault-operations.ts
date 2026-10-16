@@ -1,4 +1,4 @@
-import { WorkspaceIdSchema } from '@openkit/protocol';
+import { VaultGrantIdSchema, VaultReferenceIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 import {
@@ -127,7 +127,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     successStatus: 200,
     inputSchema: RotateWorkspaceVaultSecretRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      referenceId: z.string().min(1),
+      referenceId: VaultReferenceIdSchema,
     }).strict(),
     outputSchema: VaultAdminWorkspaceReferenceSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
@@ -144,7 +144,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     inputSchema: z
-      .object({ workspaceId: WorkspaceIdSchema, referenceId: z.string().min(1) })
+      .object({ workspaceId: WorkspaceIdSchema, referenceId: VaultReferenceIdSchema })
       .strict(),
     outputSchema: VaultAdminWorkspaceReferenceSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
@@ -177,7 +177,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     successStatus: 200,
     inputSchema: NarrowWorkspaceVaultGrantRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      grantId: z.string().min(1),
+      grantId: VaultGrantIdSchema,
     }).strict(),
     outputSchema: NarrowWorkspaceVaultGrantResponseSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
@@ -191,7 +191,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    inputSchema: z.object({ workspaceId: WorkspaceIdSchema, grantId: z.string().min(1) }).strict(),
+    inputSchema: z.object({ workspaceId: WorkspaceIdSchema, grantId: VaultGrantIdSchema }).strict(),
     outputSchema: WorkspaceVaultGrantSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -206,7 +206,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     successStatus: 200,
     inputSchema: VaultAdminRebindWorkspaceReferenceRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      referenceId: z.string().min(1),
+      referenceId: VaultReferenceIdSchema,
     }).strict(),
     outputSchema: VaultAdminRebindWorkspaceReferenceResponseSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],

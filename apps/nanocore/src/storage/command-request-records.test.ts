@@ -25,14 +25,18 @@ describe('retained conversation receipt metadata', () => {
       inputHash: 'sha256:owned-input',
       response: {
         kind: 'turn' as const,
-        id: 'tu_receiving',
+        id: 'tu_00000000-0000-775f-8a76-b1204634948f',
         conversationMetadata: {
           downstream:
             kind === 'task'
-              ? { kind, turnId: 'tu_downstream' }
-              : { kind, goalId: 'goal_downstream', turnId: 'tu_downstream' },
+              ? { kind, turnId: 'tu_00000000-0000-7c1e-94d2-e114d4a15de4' }
+              : {
+                  kind,
+                  goalId: 'goal_downstream',
+                  turnId: 'tu_00000000-0000-7c1e-94d2-e114d4a15de4',
+                },
           logicalModelId: 'reasoning',
-          receivingThreadId: 'th_receiving',
+          receivingThreadId: 'th_00000000-0000-7406-b2a7-192f628666f1',
           receivingWorkspaceId: workspace.id,
           resultKind: kind === 'task' ? ('task-handoff' as const) : ('goal-handoff' as const),
           status: 202 as const,

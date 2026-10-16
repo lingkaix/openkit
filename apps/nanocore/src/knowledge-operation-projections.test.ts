@@ -6,7 +6,6 @@ import * as schemas from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -14,6 +13,7 @@ import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -27,13 +27,15 @@ function fixture(member = true) {
   if (!member)
     coreDb.sqlite
       .prepare(
-        "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'user_foreign', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'user_local'"
+        "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
       )
       .run();
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: member ? 'user_local' : 'user_foreign',
-    workspaceId: 'ws_demo',
+    ownerUserId: member
+      ? 'usr_00000000-0000-7000-8000-000000000001'
+      : 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const app = createApp({ coreDb, dataRoot, store });
   const dependencies = {
@@ -159,29 +161,41 @@ function observationView(value: unknown): unknown {
 }
 
 const oldRoutes = [
-  ['GET', '/api/workspaces/ws_demo/knowledge'],
-  ['POST', '/api/workspaces/ws_demo/knowledge'],
-  ['PATCH', '/api/workspaces/ws_demo/knowledge/entry'],
-  ['DELETE', '/api/workspaces/ws_demo/knowledge/entry'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/manager/answer'],
-  ['GET', '/api/app/workspaces/ws_demo/knowledge/sources'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/sources'],
-  ['GET', '/api/app/workspaces/ws_demo/knowledge/sources/source'],
-  ['GET', '/api/app/workspaces/ws_demo/knowledge/observations'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/observations'],
-  ['GET', '/api/app/workspaces/ws_demo/knowledge/claims'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/claims'],
-  ['GET', '/api/app/workspaces/ws_demo/knowledge/conflicts'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/conflicts'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/conflicts/conflict/resolution'],
-  ['GET', '/api/app/workspaces/ws_demo/knowledge/indexes'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/retrievals'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/manager/context'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/manager/proposals'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/manager/repairs'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/manager/health'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/proposals/proposal/decision'],
-  ['POST', '/api/app/workspaces/ws_demo/knowledge/proposals/proposal/reversal'],
+  ['GET', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge'],
+  ['POST', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge'],
+  ['PATCH', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/entry'],
+  ['DELETE', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/entry'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/answer'],
+  ['GET', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/sources'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/sources'],
+  ['GET', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/sources/source'],
+  ['GET', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/observations'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/observations'],
+  ['GET', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/claims'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/claims'],
+  ['GET', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/conflicts'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/conflicts'],
+  [
+    'POST',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/conflicts/conflict/resolution',
+  ],
+  ['GET', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/indexes'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/retrievals'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/context'],
+  [
+    'POST',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/proposals',
+  ],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/repairs'],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/health'],
+  [
+    'POST',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/proposals/proposal/decision',
+  ],
+  [
+    'POST',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/proposals/proposal/reversal',
+  ],
 ] as const;
 
 describe('Knowledge operation definition cutover', () => {
@@ -233,14 +247,14 @@ describe('Knowledge operation definition cutover', () => {
       const token =
         authority === 'eligible administrator'
           ? createOpenKitAccessTokenRecord(f.coreDb, {
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               scope: 'server-admin',
               workspaceIds: [],
               expiresAt: '2099-01-01T00:00:00.000Z',
             }).secret
           : undefined;
       const projectors = await projections(f, token);
-      const selector = { workspaceId: 'ws_demo' };
+      const selector = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
       const compared = new Set<string>();
       async function compare<K extends schemas.ProductOperationId>(
         id: K,
@@ -270,27 +284,27 @@ describe('Knowledge operation definition cutover', () => {
         requestId: randomUUID(),
         kind: 'maintenance',
         summary: 'Inspect knowledge',
-        producer: 'user_local',
+        producer: 'usr_00000000-0000-7000-8000-000000000001',
       });
       await compare('knowledge.observation.list', {});
       await compare('knowledge.claim.record', {
         requestId: randomUUID(),
         statement: 'Source traced lesson',
-        producer: 'user_local',
+        producer: 'usr_00000000-0000-7000-8000-000000000001',
       });
       await compare('knowledge.claim.list', {});
       const conflict = await compare('knowledge.conflict.record', {
         requestId: randomUUID(),
         subjectReferences: ['knowledge:cutover-lesson'],
         summary: 'Competing lesson',
-        producer: 'user_local',
+        producer: 'usr_00000000-0000-7000-8000-000000000001',
       });
       await compare('knowledge.conflict.list', {});
       await compare('knowledge.conflict.resolve', {
         requestId: randomUUID(),
         conflictId: conflict.conflict.id,
         resolution: 'Resolved after inspection',
-        resolvedBy: 'user_local',
+        resolvedBy: 'usr_00000000-0000-7000-8000-000000000001',
       });
       const draft = await compare('knowledge.proposal.draft', proposalInput(source.source));
       const decision = await compare('knowledge.proposal.decide', {
@@ -298,9 +312,10 @@ describe('Knowledge operation definition cutover', () => {
         proposalId: draft.proposal.id,
         decision: 'accepted',
       });
-      expect(f.store.getKnowledgeEntry('ws_demo', 'cutover-lesson').content).toContain(
-        'Source traced'
-      );
+      expect(
+        f.store.getKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', 'cutover-lesson')
+          .content
+      ).toContain('Source traced');
       await compare('knowledge.list', {});
       await compare('knowledge.indexes', {});
       await compare('knowledge.retrieval', { query: 'cutover lesson' });
@@ -338,9 +353,9 @@ describe('Knowledge operation definition cutover', () => {
     const f = fixture();
     try {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const projectors = await projections(f, issued.secret);
@@ -357,28 +372,32 @@ describe('Knowledge operation definition cutover', () => {
           content: 'Denied content',
         },
         'knowledge.source.list': {},
-        'knowledge.source.read': { sourceId: 'ks_missing' },
+        'knowledge.source.read': { sourceId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb' },
         'knowledge.observation.record': {
           requestId,
           kind: 'maintenance',
           summary: 'Denied observation',
-          producer: 'user_local',
+          producer: 'usr_00000000-0000-7000-8000-000000000001',
         },
         'knowledge.observation.list': {},
-        'knowledge.claim.record': { requestId, statement: 'Denied claim', producer: 'user_local' },
+        'knowledge.claim.record': {
+          requestId,
+          statement: 'Denied claim',
+          producer: 'usr_00000000-0000-7000-8000-000000000001',
+        },
         'knowledge.claim.list': {},
         'knowledge.conflict.record': {
           requestId,
           subjectReferences: ['knowledge:missing'],
           summary: 'Denied conflict',
-          producer: 'user_local',
+          producer: 'usr_00000000-0000-7000-8000-000000000001',
         },
         'knowledge.conflict.list': {},
         'knowledge.conflict.resolve': {
           requestId,
-          conflictId: 'kf_missing',
+          conflictId: 'kf_00000000-0000-720e-9482-c126a411b6fe',
           resolution: 'Denied resolution',
-          resolvedBy: 'user_local',
+          resolvedBy: 'usr_00000000-0000-7000-8000-000000000001',
         },
         'knowledge.indexes': {},
         'knowledge.retrieval': { query: 'lesson' },
@@ -391,7 +410,7 @@ describe('Knowledge operation definition cutover', () => {
         'knowledge.proposal.reverse': {
           requestId,
           proposalId: 'kp_missing',
-          reviewId: 'kr_missing',
+          reviewId: 'kr_00000000-0000-7a1a-ae9e-91913ba8228d',
           knowledgePageId: 'missing',
           expectedContentDigest: `sha256:${'a'.repeat(64)}`,
         },
@@ -412,21 +431,31 @@ describe('Knowledge operation definition cutover', () => {
       expect(Object.keys(inputs)).toHaveLength(23);
       for (const project of Object.values(projectors)) {
         for (const [id, input] of Object.entries(inputs)) {
-          await expect(project(id, { ...input, workspaceId: 'ws_unknown' })).rejects.toMatchObject({
+          await expect(
+            project(id, { ...input, workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })
+          ).rejects.toMatchObject({
             code: 'workspace_access_denied',
           });
           expect(definitions[id], id).toBeDefined();
           if (definitions[id]!.mutating)
-            await expect(project(id, { ...input, workspaceId: 'ws_demo' })).rejects.toMatchObject({
+            await expect(
+              project(id, { ...input, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+            ).rejects.toMatchObject({
               code: 'workspace_access_denied',
             });
         }
         await expect(
-          project('knowledge.source.read', { workspaceId: 'ws_demo', sourceId: 'ks_missing' })
+          project('knowledge.source.read', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            sourceId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb',
+          })
         ).rejects.toMatchObject({ code: 'workspace_access_denied' });
       }
-      expect(f.store.listKnowledgeSources('ws_demo')).toEqual([]);
-      const traceRoot = join(f.dataRoot, 'workspaces/ws_demo/threads/th_demo/retrieval-traces');
+      expect(f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
+      const traceRoot = join(
+        f.dataRoot,
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/retrieval-traces'
+      );
       expect(existsSync(traceRoot) ? readdirSync(traceRoot) : []).toEqual([]);
     } finally {
       f.close();
@@ -436,7 +465,7 @@ describe('Knowledge operation definition cutover', () => {
   it('rejects a Workspace-qualified pin before opening the administrator-selected Server source', async () => {
     const f = fixture();
     const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -446,16 +475,21 @@ describe('Knowledge operation definition cutover', () => {
         createOperationInvocation(f.dependencies)(
           'knowledge.retrieval',
           {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             query: 'release cadence',
             sourceScope: 'server',
-            pinnedReferences: [{ scopeId: 'page/workspace/ws_demo', objectId: 'release-plan' }],
+            pinnedReferences: [
+              {
+                scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                objectId: 'release-plan',
+              },
+            ],
           },
           {
             kind: 'public',
             actor: {
               kind: 'token',
-              userId: 'user_local',
+              userId: 'usr_00000000-0000-7000-8000-000000000001',
               tokenId: administrator.record.tokenId,
               tokenScope: 'server-admin',
               tokenWorkspaceIds: [],
@@ -475,7 +509,7 @@ describe('Knowledge operation definition cutover', () => {
       const foreign = f.store.createWorkspace('Foreign source authority');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: foreign.id,
       });
       const registered = (await member.http('knowledge.source.register', {
@@ -485,19 +519,23 @@ describe('Knowledge operation definition cutover', () => {
         title: 'Foreign secret title',
         content: 'Foreign secret bytes',
       })) as schemas.OperationOutput<'knowledge.source.register'>;
-      const entry = f.store.createKnowledgeEntry('ws_demo', {
+      const entry = f.store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
         kind: 'project-context',
         title: 'Restricted audience lesson',
         content: 'audience budget baseline is forty two',
         sourceReferences: [],
       });
-      const page = join(f.dataRoot, 'workspaces/ws_demo/knowledge/pages', `${entry.id}.md`);
+      const page = join(
+        f.dataRoot,
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/pages',
+        `${entry.id}.md`
+      );
       writeFileSync(
         page,
         readFileSync(page, 'utf8').replace(/sensitivity: .*\n/, 'sensitivity: "restricted"\n')
       );
       const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
@@ -507,7 +545,7 @@ describe('Knowledge operation definition cutover', () => {
         for (const project of Object.values(projectors)) {
           try {
             await project('knowledge.source.read', {
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               sourceId: registered.source.id,
             });
             throw new Error('Foreign Source unexpectedly exposed.');
@@ -529,11 +567,16 @@ describe('Knowledge operation definition cutover', () => {
             'knowledge.answer',
           ]) {
             const result = await project(id, {
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               query: 'audience budget baseline',
               ...(id === 'knowledge.retrieval'
                 ? {
-                    pinnedReferences: [{ scopeId: 'page/workspace/ws_demo', objectId: entry.id }],
+                    pinnedReferences: [
+                      {
+                        scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                        objectId: entry.id,
+                      },
+                    ],
                   }
                 : {}),
             });
@@ -546,7 +589,10 @@ describe('Knowledge operation definition cutover', () => {
                 selected: [],
                 excluded: [
                   {
-                    reference: { scopeId: 'page/workspace/ws_demo', objectId: entry.id },
+                    reference: {
+                      scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                      objectId: entry.id,
+                    },
                     contentDigest: null,
                     reason: 'sensitive_content',
                   },
@@ -566,10 +612,10 @@ describe('Knowledge operation definition cutover', () => {
     const retrieve = vi.spyOn(retrieval, 'retrieveWorkspaceKnowledge');
     try {
       const invoke = createOperationInvocation(f.dependencies);
-      const input = { workspaceId: 'ws_demo', query: 'lesson' };
+      const input = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', query: 'lesson' };
       const publicResult = await invoke('knowledge.context.prepare', input, {
         kind: 'public',
-        actor: { kind: 'local', userId: 'user_local' },
+        actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
       });
       expect(publicResult).toMatchObject({
         caller: 'app-api',
@@ -582,13 +628,14 @@ describe('Knowledge operation definition cutover', () => {
       expect(retrieve).toHaveBeenCalledTimes(1);
       const traceId = `krt_${randomUUID()}`;
       const taskResult = await createTaskKnowledgePreparation(f.dependencies)(input, {
-        actor: { kind: 'local', userId: 'user_local' },
+        actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         traceId,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
       });
       expect(taskResult).toEqual({
         retrievalTraceRef: {
-          scopeId: 'retrieval-trace/thread/ws_demo/th_demo',
+          scopeId:
+            'retrieval-trace/thread/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001',
           objectId: traceId,
         },
       });
@@ -597,37 +644,47 @@ describe('Knowledge operation definition cutover', () => {
         'app-api',
         'task-mode',
       ]);
-      const traceRoot = join(f.dataRoot, 'workspaces/ws_demo/threads/th_demo/retrieval-traces');
+      const traceRoot = join(
+        f.dataRoot,
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/retrieval-traces'
+      );
       expect(readdirSync(traceRoot)).toEqual([`${traceId}.json`]);
       expect(JSON.parse(readFileSync(join(traceRoot, `${traceId}.json`), 'utf8'))).toEqual(
         expect.objectContaining({ traceId })
       );
-      expect(existsSync(join(f.dataRoot, 'workspaces/ws_demo/knowledge/traces'))).toBe(false);
+      expect(
+        existsSync(
+          join(f.dataRoot, 'workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/traces')
+        )
+      ).toBe(false);
       await expect(
         invoke(
           'knowledge.context.prepare',
           { ...input, caller: 'task-mode' },
-          { kind: 'public', actor: { kind: 'local', userId: 'user_local' } }
+          {
+            kind: 'public',
+            actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          }
         )
       ).rejects.toMatchObject({ code: 'invalid_request' });
       expect(retrieve).toHaveBeenCalledTimes(2);
       const readonly = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       await expect(
         createTaskKnowledgePreparation(f.dependencies)(input, {
           actor: {
             kind: 'token',
-            userId: 'user_local',
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
             tokenId: readonly.record.tokenId,
             tokenScope: 'workspace-readonly',
-            tokenWorkspaceIds: ['ws_demo'],
+            tokenWorkspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
           },
           traceId: `krt_${randomUUID()}`,
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });
       expect(retrieve).toHaveBeenCalledTimes(2);
@@ -647,8 +704,14 @@ describe('Knowledge operation definition cutover', () => {
       await expect(
         createOperationInvocation(f.dependencies)(
           id,
-          { workspaceId: 'ws_demo', ...(id === 'knowledge.retrieval' ? { query: 'lesson' } : {}) },
-          { kind: 'public', actor: { kind: 'local', userId: 'user_local' } }
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            ...(id === 'knowledge.retrieval' ? { query: 'lesson' } : {}),
+          },
+          {
+            kind: 'public',
+            actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          }
         )
       ).rejects.toMatchObject({ code: 'data_root_required', status: 409 });
     } finally {
@@ -665,9 +728,9 @@ it.each([
   const f = fixture();
   try {
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const app = createApp({
@@ -681,16 +744,16 @@ it.each([
       authorization: `Bearer ${issued.secret}`,
     };
     const input = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       requestId: randomUUID(),
       kind: 'document',
       title: 'Invalid lineage',
       content: 'Example',
-      originatingTurnId: 'tu_missing',
+      originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
     };
     const owner = vi.spyOn(f.store, 'createKnowledgeSource');
     const before = structuredClone({
-      sources: f.store.listKnowledgeSources('ws_demo'),
+      sources: f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001'),
       receipts: f.store.listCommandRequests(),
     });
     const response = await app.request(
@@ -719,19 +782,19 @@ it.each([
       }
     );
     expect({
-      sources: f.store.listKnowledgeSources('ws_demo'),
+      sources: f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001'),
       receipts: f.store.listCommandRequests(),
     }).toEqual(before);
     expect(owner).toHaveBeenCalledTimes(1);
     expect(owner.mock.calls[0]![0]).toMatchObject({
-      originatingTurnId: 'tu_missing',
+      originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
       originatingThreadId: null,
     });
     const code = 'knowledge_source_register_failed';
     const message = `Knowledge source turn requires a thread: ${owner.mock.calls[0]![0].id}`;
     if (projection === 'HTTP') {
       expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+      expect(await response.json()).toEqual({ protocolVersion: '0.6.0', code, message });
     } else {
       expect(response.status).toBe(200);
       const body = await response.json();

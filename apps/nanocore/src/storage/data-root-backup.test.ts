@@ -21,6 +21,7 @@ import {
 } from '../auth/access-token-store.js';
 import { createLightApp } from '../generative-kernel/commands.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   bindThreadMaterial,
   createWorkspaceMaterial,
@@ -37,7 +38,6 @@ import {
   writeHotDataRootBackup,
 } from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
-import { LOCAL_USER_ID } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
@@ -93,7 +93,7 @@ describe('data-root backup manifest', () => {
         dataRoot,
         backupRoot,
         backupId: 'drbak_vault_mode',
-        sourceDeploymentId: 'dep_local',
+        sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
         startedAt: timestamp,
         completedAt: timestamp,
       });
@@ -125,21 +125,27 @@ describe('data-root backup manifest', () => {
   it('writes and verifies a cold backup manifest over a copied data root', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-data-root-backup-'));
     mkdirSync(join(root, 'server'), { recursive: true });
-    mkdirSync(join(root, 'users', 'user_local'), { recursive: true });
+    mkdirSync(join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001'), { recursive: true });
     writeFileSync(join(root, 'server', 'layout.json'), '{"layoutVersion":1}\n');
-    writeFileSync(join(root, 'users', 'user_local', 'profile.json'), '{"id":"user_local"}\n');
+    writeFileSync(
+      join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'profile.json'),
+      '{"id":"usr_00000000-0000-7000-8000-000000000001"}\n'
+    );
 
     const verified = writeColdDataRootBackupManifest({
       backupRoot: root,
       backupId: 'drbak_demo',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
 
     expect(existsSync(join(root, DATA_ROOT_BACKUP_MANIFEST_FILE))).toBe(true);
     expect(verified.manifest.consistency).toBe('clean');
-    expect(verified.checkedFiles).toEqual(['server/layout.json', 'users/user_local/profile.json']);
+    expect(verified.checkedFiles).toEqual([
+      'server/layout.json',
+      'users/usr_00000000-0000-7000-8000-000000000001/profile.json',
+    ]);
   });
 
   it('rejects tampered backup files and extra files', () => {
@@ -149,7 +155,7 @@ describe('data-root backup manifest', () => {
     writeColdDataRootBackupManifest({
       backupRoot: root,
       backupId: 'drbak_demo',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -165,7 +171,7 @@ describe('data-root backup manifest', () => {
     writeColdDataRootBackupManifest({
       backupRoot: extraRoot,
       backupId: 'drbak_demo',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -183,7 +189,7 @@ describe('data-root backup manifest', () => {
     writeColdDataRootBackupManifest({
       backupRoot: root,
       backupId: 'drbak_demo',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -202,32 +208,37 @@ describe('data-root backup manifest', () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-hot-backup-'));
     const restoredDataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-hot-restored-'));
     mkdirSync(join(dataRoot, 'server', 'db'), { recursive: true });
-    mkdirSync(join(dataRoot, 'users', 'user_local'), { recursive: true });
+    mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001'), {
+      recursive: true,
+    });
     writeFileSync(
       join(dataRoot, 'server', 'layout.json'),
       '{"schemaVersion":1,"layoutVersion":2,"deploymentId":"deployment_backup_test"}\n'
     );
-    writeFileSync(join(dataRoot, 'users', 'user_local', 'profile.json'), '{"id":"user_local"}\n');
+    writeFileSync(
+      join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'profile.json'),
+      '{"id":"usr_00000000-0000-7000-8000-000000000001"}\n'
+    );
 
-    const workspaceId = 'ws_backup_materials';
+    const workspaceId = 'ws_00000000-0000-743a-9259-d9081224a961';
     const sourceDb = openCoreDb(dataRoot);
     applyMigrations(sourceDb);
-    sourceDb.sqlite.pragma('user_version = 7');
+    sourceDb.sqlite.pragma('usr_00000000-0000-77f0-baeb-06814897b29b = 7');
     const createdAt = new Date(timestamp).getTime();
     sourceDb.sqlite
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
         ) VALUES
-          ('user_backup_owner', 'Backup Owner', 'backup-owner@example.com', false, ?, ?, 'human', 'active', NULL),
-          ('user_backup_editor', 'Backup Editor', 'backup-editor@example.com', false, ?, ?, 'human', 'active', NULL),
-          ('user_backup_removed', 'Backup Removed', 'backup-removed@example.com', false, ?, ?, 'human', 'active', NULL),
-          ('user_backup_invitee', 'Backup Invitee', 'backup-invitee@example.com', false, ?, ?, 'human', 'active', NULL)`
+          ('usr_00000000-0000-780b-b93c-e2479beb99f1', 'Backup Owner', 'backup-owner@example.com', false, ?, ?, 'human', 'active', NULL),
+          ('usr_00000000-0000-76cb-b20d-44f52b4392e7', 'Backup Editor', 'backup-editor@example.com', false, ?, ?, 'human', 'active', NULL),
+          ('usr_00000000-0000-7165-91a2-29989585336e', 'Backup Removed', 'backup-removed@example.com', false, ?, ?, 'human', 'active', NULL),
+          ('usr_00000000-0000-76b4-848a-9317f97cc918', 'Backup Invitee', 'backup-invitee@example.com', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(createdAt, createdAt, createdAt, createdAt, createdAt, createdAt, createdAt, createdAt);
     recordWorkspaceOwnerMembership({
       coreDb: sourceDb,
-      ownerUserId: 'user_backup_owner',
+      ownerUserId: 'usr_00000000-0000-780b-b93c-e2479beb99f1',
       workspaceId,
       now: new Date(timestamp),
     });
@@ -237,8 +248,8 @@ describe('data-root backup manifest', () => {
           workspace_id, user_id, status, access_level, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
         ) VALUES
-          (?, 'user_backup_editor', 'active', 'editor', NULL, ?, NULL, 2, ?, ?),
-          (?, 'user_backup_removed', 'removed', 'viewer', NULL, ?, ?, 3, ?, ?)`
+          (?, 'usr_00000000-0000-76cb-b20d-44f52b4392e7', 'active', 'editor', NULL, ?, NULL, 2, ?, ?),
+          (?, 'usr_00000000-0000-7165-91a2-29989585336e', 'removed', 'viewer', NULL, ?, ?, 3, ?, ?)`
       )
       .run(
         workspaceId,
@@ -257,7 +268,7 @@ describe('data-root backup manifest', () => {
           invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
           status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
         ) VALUES (
-          'inv_backup_pending', ?, 'user_backup_invitee', 'viewer', 'user_backup_owner',
+          'inv_00000000-0000-7848-9a05-d8546fadfe1d', ?, 'usr_00000000-0000-76b4-848a-9317f97cc918', 'viewer', 'usr_00000000-0000-780b-b93c-e2479beb99f1',
           'pending', '2026-07-13T00:00:00.000Z', NULL, NULL, NULL, 4, ?, ?
         )`
       )
@@ -265,7 +276,7 @@ describe('data-root backup manifest', () => {
     const issuedToken = createOpenKitAccessTokenRecord(sourceDb, {
       expiresAt: '2026-08-06T00:00:00.000Z',
       now: new Date(timestamp),
-      ownerUserId: 'user_backup_editor',
+      ownerUserId: 'usr_00000000-0000-76cb-b20d-44f52b4392e7',
       scope: 'workspace',
       tokenId: 'token_backup_workspace',
       workspaceIds: [workspaceId],
@@ -286,7 +297,9 @@ describe('data-root backup manifest', () => {
       users: 'SELECT * FROM users ORDER BY id',
     } as const;
     const expectedAuthority = {
-      invitation: sourceDb.sqlite.prepare(authoritySql.invitation).get('inv_backup_pending'),
+      invitation: sourceDb.sqlite
+        .prepare(authoritySql.invitation)
+        .get('inv_00000000-0000-7848-9a05-d8546fadfe1d'),
       memberships: sourceDb.sqlite.prepare(authoritySql.memberships).all(workspaceId),
       registry: sourceDb.sqlite.prepare(authoritySql.registry).get(workspaceId),
       tokenMetadata: sourceDb.sqlite.prepare(authoritySql.tokenMetadata).get(issuedToken.tokenId),
@@ -296,7 +309,7 @@ describe('data-root backup manifest', () => {
     applyScopedMigrations(workspaceDb);
     const material = createWorkspaceMaterial(workspaceDb, {
       acceptedAt: timestamp,
-      actorId: LOCAL_USER_ID,
+      actor: { kind: 'user', id: LOCAL_USER_ID },
       kind: 'markdown',
       requestId: 'backup-material-create',
       sensitivity: 'internal',
@@ -305,7 +318,7 @@ describe('data-root backup manifest', () => {
     const content = '# Backup material';
     saveWorkspaceMaterialRevision(workspaceDb, {
       acceptedAt: timestamp,
-      actorId: LOCAL_USER_ID,
+      actor: { kind: 'user', id: LOCAL_USER_ID },
       content,
       contentDigest: `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`,
       expectedRevisionId: null,
@@ -317,7 +330,7 @@ describe('data-root backup manifest', () => {
       expectedBindingState: 'not_bound',
       materialId: material.materialId,
       requestId: 'backup-material-bind',
-      threadId: 'th_backup',
+      threadId: 'th_00000000-0000-71a4-b9b8-03317f9c1744',
     });
 
     const verified = await writeHotDataRootBackup({
@@ -329,7 +342,7 @@ describe('data-root backup manifest', () => {
       completedAt: '2026-07-06T00:00:01.000Z',
     });
 
-    sourceDb.sqlite.pragma('user_version = 8');
+    sourceDb.sqlite.pragma('usr_00000000-0000-77f0-baeb-06814897b29b = 8');
     sourceDb.sqlite.close();
     workspaceDb.sqlite.close();
 
@@ -342,7 +355,7 @@ describe('data-root backup manifest', () => {
       readonly: true,
     });
     try {
-      expect(backupDb.pragma('user_version', { simple: true })).toBe(7);
+      expect(backupDb.pragma('usr_00000000-0000-77f0-baeb-06814897b29b', { simple: true })).toBe(7);
     } finally {
       backupDb.close();
     }
@@ -373,7 +386,9 @@ describe('data-root backup manifest', () => {
     });
     try {
       expect({
-        invitation: restoredDb.prepare(authoritySql.invitation).get('inv_backup_pending'),
+        invitation: restoredDb
+          .prepare(authoritySql.invitation)
+          .get('inv_00000000-0000-7848-9a05-d8546fadfe1d'),
         memberships: restoredDb.prepare(authoritySql.memberships).all(workspaceId),
         registry: restoredDb.prepare(authoritySql.registry).get(workspaceId),
         tokenMetadata: restoredDb.prepare(authoritySql.tokenMetadata).get(issuedToken.tokenId),
@@ -391,7 +406,7 @@ describe('data-root backup manifest', () => {
           source: 'same-deployment-backup-test',
         })
       ).toMatchObject({
-        ownerUserId: 'user_backup_editor',
+        ownerUserId: 'usr_00000000-0000-76cb-b20d-44f52b4392e7',
         tokenId: issuedToken.tokenId,
         workspaceIds: [workspaceId],
       });
@@ -409,7 +424,7 @@ describe('data-root backup manifest', () => {
     writeColdDataRootBackupManifest({
       backupRoot,
       backupId: 'drbak_restore',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -433,7 +448,7 @@ describe('data-root backup manifest', () => {
     writeColdDataRootBackupManifest({
       backupRoot,
       backupId: 'drbak_restore',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -453,7 +468,7 @@ describe('data-root backup manifest', () => {
     writeColdDataRootBackupManifest({
       backupRoot,
       backupId: 'drbak_restore',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -509,8 +524,8 @@ describe('data-root backup manifest', () => {
         store,
         inflightCommands: new WeakMap(),
         dataRoot,
-        workspaceId: 'ws_demo',
-        actor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: randomUUID(),
       },
       schema
@@ -533,11 +548,23 @@ describe('data-root backup manifest', () => {
         (path) => path.includes('/light-apps/') && path.includes('/definitions/')
       )
     ).toBe(true);
-    const appDirs = readdirSync(join(backupRoot, 'workspaces', 'ws_demo', 'light-apps'));
-    rmSync(join(backupRoot, 'workspaces', 'ws_demo', 'light-apps', appDirs[0]!, 'definitions'), {
-      recursive: true,
-      force: true,
-    });
+    const appDirs = readdirSync(
+      join(backupRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001', 'light-apps')
+    );
+    rmSync(
+      join(
+        backupRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'light-apps',
+        appDirs[0]!,
+        'definitions'
+      ),
+      {
+        recursive: true,
+        force: true,
+      }
+    );
     expect(() => verifyDataRootBackupManifest({ backupRoot })).toThrow(/definition/i);
   });
 });

@@ -7,7 +7,6 @@ import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -17,6 +16,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
@@ -56,7 +56,11 @@ async function createFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const target = {
     deploymentId: 'deployment-test',
     identityId: 'nanohost-test',
@@ -129,20 +133,20 @@ async function createFixture() {
   await boot();
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     profileRef: 'profile_worker',
     queueEntryId: 'queue_backend_session',
     requestedAgentId: 'agent_codex_host',
     threadId: 'thread_backend_session',
-    turnId: 'turn_backend_session',
+    turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
     turnInput: 'Run worker',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => '2026-07-15T00:00:01.000Z',
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: 'lease_backend_session',
-    agentSessionId: 'as_backend_session',
+    agentSessionId: 'as_00000000-0000-741c-b104-26abc3a228bc',
     inputRef: 'aepsnap_backend_session',
     bindingRef: 'lease-binding:lease_backend_session',
     sessionCompatibilityKey: 'fixture-compatibility',
@@ -152,7 +156,7 @@ async function createFixture() {
     backendLineage: { kind: 'reference', imageRef: 'worker:test' },
     backendVersion: '0.0.99',
     identity: {
-      agentSessionId: 'as_backend_session',
+      agentSessionId: 'as_00000000-0000-741c-b104-26abc3a228bc',
       backendKind: 'openshell',
       backendSessionId,
       deploymentId: target.deploymentId,
@@ -163,8 +167,8 @@ async function createFixture() {
     },
     lineage: {
       threadId: 'thread_backend_session',
-      turnId: 'turn_backend_session',
-      workspaceId: 'ws_demo',
+      turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
     now: () => '2026-07-15T00:00:03.000Z',
     sandboxBindingRef: 'lease-binding:lease_backend_session',

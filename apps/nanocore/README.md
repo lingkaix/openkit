@@ -57,7 +57,7 @@ The same-Sandbox peer route regression seeds history in memory and publishes com
 - local-mode implicit single-user operation
 - server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
 - optional file-backed state through `OPENKIT_DATA_ROOT`
-- implicit local actor `user_local`
+- local actor bound to the unique recorded canonical User
 - governed container Worker AgentSessions
 - provider-neutral subscription account state for `openai-codex` and `xai`
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses, with one-level function namespace identity preserved on the chat-native bridge
@@ -309,7 +309,7 @@ First prove the predecessor NanoHost effect domain fully stopped and preserve it
 
 If an existing authoritative Core, User, or Workspace SQLite database fails its boot integrity check, NanoCore stops before product admission, bootstrap credential issuance, or listener binding and leaves the original file unchanged. Derived indexes remain disposable and rebuildable.
 
-In local mode, NanoCore upserts the implicit `user_local` row on boot and accepts requests without auth headers. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
+In local mode, NanoCore allocates one canonical User only on a fresh data root and uses the unique recorded local User on later boots. Missing or ambiguous local User authority on an initialized root stops boot. Local requests use that exact recorded identity and need no auth header. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
 
 ## Release Verification
 

@@ -10,7 +10,6 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient } from '../../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -26,6 +25,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -169,7 +169,11 @@ async function faultFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
   admitTestNativeEnvironment(coreDb, setup.manifest);
   const gateway = createDefaultWorkerControlGateway(coreDb);
@@ -264,17 +268,21 @@ async function faultFixture() {
   ).toEqual({ status: 204, body: '' });
   // The real dispatcher requires the exact pending Turn and initiating command receipt (D83).
   store.createTurn(
-    'ws_demo',
-    'th_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
     'Exercise a bounded worker fault',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     { turnId: 'fault-turn', agentId: setup.manifest.id, status: 'pending', executorKind: 'worker' }
   );
   store.recordCommandRequest({
     command: 'turn.start',
     requestId: 'fault-request',
-    scope: { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' },
+    scope: {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    },
     inputHash: 'fault-fixture',
     response: { kind: 'turn', id: 'fault-turn' },
   });
@@ -283,11 +291,11 @@ async function faultFixture() {
     queueEntryId: 'fault-queue',
     requestId: 'fault-request',
     requestedAgentId: setup.manifest.id,
-    threadId: 'th_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: 'fault-turn',
     turnInput: 'Exercise a bounded worker fault',
-    triggerActor: { kind: 'user', id: 'user_local' },
-    workspaceId: 'ws_demo',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   /** Retains enqueue readiness even when preparation finishes before the consumer awaits it. */
   const enqueueSignal = () => {
@@ -376,8 +384,8 @@ async function faultFixture() {
       baseUrl: 'http://core.test/api/worker-control',
       token: String(command.body.workerControlToken),
       lineage: {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'fault-turn',
         agentSessionId: 'fault-session',
         packageSnapshotId: String(command.body.packageSnapshotId),
@@ -426,8 +434,8 @@ async function faultFixture() {
       transcript.events = `${JSON.stringify(
         buildWorkerCanonicalTerminalEventRecord({
           lineage: {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: 'fault-turn',
             agentSessionId: 'fault-session',
             packageSnapshotId: String(command.body.packageSnapshotId),
@@ -448,7 +456,10 @@ describe('first-release worker faults (real Core crossings)', () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(new Date(NOW));
     const f = await faultFixture();
-    const workspaceDb = openWorkspaceDb(f.coreDb.dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(
+      f.coreDb.dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     applyScopedMigrations(workspaceDb);
     try {
       const opened = await f.dispatch('session.open');
@@ -467,8 +478,8 @@ describe('first-release worker faults (real Core crossings)', () => {
         'fault-lease'
       ).heartbeatDeadline;
       const request = {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         raisingTurnId: 'fault-turn',
         requestId: 'fault-question',
         requestItemId: 'fault-question-item',
@@ -476,7 +487,7 @@ describe('first-release worker faults (real Core crossings)', () => {
         requesterKind: 'worker' as const,
         agentId: f.store.getTurnById('fault-turn').agentId!,
         agentSessionId: 'fault-session',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         questions: [
           {
             id: 'continue',
@@ -491,13 +502,13 @@ describe('first-release worker faults (real Core crossings)', () => {
       };
       f.store.createItem({
         id: request.requestItemId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'fault-turn',
         type: 'user-input-request',
         status: 'completed',
         userInputRequestId: request.requestId,
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         prompt: 'Continue work?',
         questions: request.questions,
         createdAt: NOW,
@@ -526,7 +537,7 @@ describe('first-release worker faults (real Core crossings)', () => {
         answerPendingRequest(
           workspaceDb.sqlite,
           request.requestId,
-          { kind: 'user', id: 'user_local' },
+          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           { continue: ['yes'] },
           new Date().toISOString()
         )

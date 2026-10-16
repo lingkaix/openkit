@@ -26,9 +26,16 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
+import { testEntityId } from './test-support/entity-ids.js';
 
-const ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
-const REQUEST_ACTOR = { kind: 'local', userId: 'user_local' } as const;
+const ACTOR = {
+  kind: 'user',
+  id: 'usr_00000000-0000-7000-8000-000000000001',
+} as const satisfies ActorRef;
+const REQUEST_ACTOR = {
+  kind: 'local',
+  userId: 'usr_00000000-0000-7000-8000-000000000001',
+} as const;
 const NOW = '2026-10-15T12:00:00.000Z';
 
 const testRoots: string[] = [];
@@ -67,7 +74,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
         scopeId: 'page/user/0123456789abcdefghijklmnopqrstuv',
         objectId: 'release/plan',
       }).success
-    ).toBe(true);
+    ).toBe(false);
     expect(RetrievalTraceReferenceSchema.safeParse(turnTrace).success).toBe(true);
     expect(RetrievalTraceReferenceSchema.safeParse(threadTrace).success).toBe(true);
 
@@ -390,7 +397,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     const material = 'revocation source private bytes';
     const source = fixture.store.createKnowledgeSource(
       {
-        id: 'ks_00000000-0000-4000-8000-000000000901',
+        id: 'ks_00000000-0000-7bb4-9e84-6db11783ad59',
         workspaceId: fixture.workspaceId,
         kind: 'document',
         title: 'Private source',
@@ -419,7 +426,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     });
     expect(selection.retrievalTraceRef).toBeDefined();
 
-    Object.assign(sourceThread, { privateOwnerUserId: 'user_other' });
+    Object.assign(sourceThread, { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' });
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
         dataRoot: fixture.dataRoot,
@@ -519,7 +526,10 @@ describe('retrieval query context, references, and query-owned traces', () => {
     );
     const original = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
     const selected = original.selected[0]!;
-    const foreignReference = { scopeId: 'page/workspace/ws_foreign', objectId: page.id };
+    const foreignReference = {
+      scopeId: 'page/workspace/ws_00000000-0000-7f9c-aa14-53566c621405',
+      objectId: page.id,
+    };
     const variants = [
       {
         name: 'source metadata',
@@ -619,7 +629,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     const material = 'stale source reference private material';
     const source = fixture.store.createKnowledgeSource(
       {
-        id: 'ks_00000000-0000-4000-8000-000000000902',
+        id: 'ks_00000000-0000-7359-ac61-fab2907627df',
         workspaceId: fixture.workspaceId,
         kind: 'document',
         title: 'Former private source',
@@ -669,7 +679,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     expect(currentPageBytes).toContain(`source_refs: ${JSON.stringify([sourceReference])}`);
     const withoutFormerSource = currentPageBytes.replace(/^source_refs: .+$/m, 'source_refs: []');
     writeFileSync(pagePath(fixture, page.id), withoutFormerSource);
-    Object.assign(sourceThread, { privateOwnerUserId: 'user_other' });
+    Object.assign(sourceThread, { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' });
 
     let caught: unknown;
     try {
@@ -777,8 +787,8 @@ describe('retrieval query context, references, and query-owned traces', () => {
 
   it('keeps an imported Server reference unavailable under target-local context', async () => {
     const fixture = createFixture('imported-server', {
-      sourceDeploymentId: 'dep_source',
-      sourceWorkspaceId: 'ws_source',
+      sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
+      sourceWorkspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
       exportCreatedAt: NOW,
       manifestDigest: sha256('source export manifest'),
     });
@@ -805,8 +815,8 @@ describe('retrieval query context, references, and query-owned traces', () => {
     const original = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
     const targetServerId = readDataRootLayoutMarker(fixture.dataRoot).deploymentId;
     expect(fixture.store.getWorkspace(fixture.workspaceId).importedFrom).toMatchObject({
-      sourceDeploymentId: 'dep_source',
-      sourceWorkspaceId: 'ws_source',
+      sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
+      sourceWorkspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
     });
     expect(
       fixture.store.getWorkspace(fixture.workspaceId).importedFrom?.sourceDeploymentId
@@ -906,7 +916,7 @@ function createFixture(
   const workspace = importedFrom
     ? store.importWorkspaceSnapshot({
         workspace: WorkspaceRecordSchema.parse({
-          id: `ws_${label.replaceAll('-', '_')}`,
+          id: testEntityId('ws', `imported-${label}`),
           name: label,
           kind: 'general',
           status: 'active',
@@ -983,7 +993,7 @@ function findTraceFiles(root: string): string[] {
 }
 
 function traceId(index: number): string {
-  return `krt_00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+  return testEntityId('krt', `retrieval-trace-${index}`);
 }
 
 function sha256(value: string): `sha256:${string}` {

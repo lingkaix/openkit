@@ -34,7 +34,7 @@ function createPhysicalEpochFixture(
   mkdirSync(join(dataRoot, 'server', 'migrations'), { recursive: true });
   writeFileSync(
     join(dataRoot, 'server', 'layout.json'),
-    `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: 'dep_cutover' })}\n`
+    `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2' })}\n`
   );
   writeFileSync(join(dataRoot, 'preserved.txt'), 'preserved predecessor bytes\n');
 
@@ -159,7 +159,7 @@ function createPhysicalEpochFixture(
     INSERT INTO schema_migrations (id, applied_at)
       VALUES ('core_0000_setup', '2026-09-10T00:00:00.000Z');
     INSERT INTO nanohost_runtime_targets VALUES (
-      'target_1', 'identity_1', 'dep_cutover', 7, 1, 1, 1,
+      'target_1', 'identity_1', 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2', 7, 1, 1, 1,
       '2026-09-10T01:00:00.000Z', 2, '2026-09-10T01:00:00.000Z'
     );
     INSERT INTO sandbox_runtime_records VALUES (
@@ -175,8 +175,8 @@ function createPhysicalEpochFixture(
       'binding_1', 'harness_1', 'open', 'cleanup-pending'
     );
     INSERT INTO worker_backend_sessions VALUES (
-      'lease_1', 'workspace_1', 'thread_1', 'turn_1', 'session_1', 'snapshot_1',
-      'openshell', 'dep_cutover', '1.2.3', 'sha256:image', 'cell_1', 'remote',
+      'lease_1', 'workspace_1', 'thread_1', 'tu_00000000-0000-7b5c-9add-c4bfc5a04575', 'session_1', 'snapshot_1',
+      'openshell', 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2', '1.2.3', 'sha256:image', 'cell_1', 'remote',
       'gateway_1', NULL, 'backend_1', 'server/runtime/backend-1', 'provider_1',
       'complete', 'cleanup-pending', NULL, '2026-09-10T01:00:00.000Z',
       '2026-09-10T02:00:00.000Z', 'target_1', '{"kind":"reference"}',

@@ -12,18 +12,24 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
-import { getVaultReference, importUnboundWorkspaceVaultReference } from './vault-references.js';
+import {
+  getVaultReference,
+  importUnboundWorkspaceVaultReference,
+  revokeVaultReference,
+} from './vault-references.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 /**
@@ -44,8 +50,8 @@ function createVaultAdminApp() {
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
 
   return {
@@ -81,7 +87,7 @@ function createSignedInAuthStub(): BetterAuthServer {
     api: {
       getSession: async () => ({
         session: { id: 'session_vault_admin_default' },
-        user: { id: 'user_vault_admin_default' },
+        user: { id: 'usr_00000000-0000-75d9-8d08-835583035748' },
       }),
     },
     handler: async () => Response.json({ status: 'auth-ok' }),
@@ -124,7 +130,7 @@ describe('vault admin app API', () => {
       const original = await grantResponse.json();
       const exactTargets = {
         targetAgentId: randomUUID(),
-        targetAgentSessionId: randomUUID(),
+        targetAgentSessionId: allocateEntityId('as'),
         targetCapabilityId: 'mcp.list_tools',
       };
       const constrained = await send('vault.grant-create', {
@@ -177,6 +183,9 @@ describe('vault admin app API', () => {
       expect(response.status).toBe(200);
       const result = await response.json();
       expect(result.revokedGrant).toEqual({ ...original, status: 'revoked' });
+      expect(result.grant.grantId).toMatch(
+        /^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
       expect(result.grant).toMatchObject({
         vaultReferenceId: referenceId,
         targetAgentId,
@@ -208,7 +217,10 @@ describe('vault admin app API', () => {
           .all()
       ).toEqual([
         {
-          actor_json: JSON.stringify({ kind: 'user', id: 'user_local' }),
+          actor_json: JSON.stringify({
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }),
           resource: `vault-grant:${original.grantId}`,
           vault_grant_id: result.grant.grantId,
           workspace_id: workspaceId,
@@ -220,7 +232,7 @@ describe('vault admin app API', () => {
       const rollback = await send('vault.grant-narrow', {
         workspaceId,
         grantId: result.grant.grantId,
-        constraints: { targetAgentSessionId: randomUUID() },
+        constraints: { targetAgentSessionId: allocateEntityId('as') },
       });
       expect(rollback.status).toBe(409);
       expect(getVaultGrant(coreDb, result.grant.grantId)).toEqual(result.grant);
@@ -396,14 +408,14 @@ describe('vault admin app API', () => {
       expect(
         (
           await request('vault.secret-create', {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{ secretKind: 'github-token', material: 'fake' },
           })
         ).status
       ).toBe(423);
       vaultUnlockState.unlock({ masterKey });
       const malformed = await request('vault.secret-create', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           secretKind: 'github-token',
           material: '',
@@ -414,26 +426,29 @@ describe('vault admin app API', () => {
       expect(await malformed.text()).not.toContain('ghp_fake_error_canary');
       const created = await (
         await request('vault.secret-create', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           ...{ secretKind: 'github-token', material: 'fake' },
         })
       ).json();
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
-        workspaceId: 'ws_other',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
       });
       const foreign = await app.request(
         ...operationRequest(
           'vault.secret-revoke',
-          { workspaceId: 'ws_other', referenceId: created.referenceId },
+          {
+            workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+            referenceId: created.referenceId,
+          },
           { method: 'POST' }
         )
       );
       expect(foreign.status).toBe(404);
       const grant = await (
         await request('vault.grant-create', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           ...{ referenceId: created.referenceId },
         })
       ).json();
@@ -442,7 +457,7 @@ describe('vault admin app API', () => {
           await app.request(
             ...operationRequest(
               'vault.grant-revoke',
-              { workspaceId: 'ws_other', grantId: grant.grantId },
+              { workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580', grantId: grant.grantId },
               {
                 method: 'POST',
               }
@@ -457,7 +472,7 @@ describe('vault admin app API', () => {
       expect(
         (
           await request('vault.secret-rotate', {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             referenceId: created.referenceId,
             ...{ material: 'new' },
           })
@@ -466,7 +481,7 @@ describe('vault admin app API', () => {
       expect(
         (
           await request('vault.grant-create', {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{ referenceId: created.referenceId },
           })
         ).status
@@ -476,7 +491,7 @@ describe('vault admin app API', () => {
         throw new Error('ghp_fake_error_canary');
       });
       const failed = await request('vault.secret-create', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{ secretKind: 'github-token', material: 'fake' },
       });
       expect(failed.status).toBe(409);
@@ -491,9 +506,9 @@ describe('vault admin app API', () => {
     const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const app = createApp({
@@ -507,20 +522,67 @@ describe('vault admin app API', () => {
       for (const [id, input] of [
         [
           'vault.secret-create',
-          { workspaceId: 'ws_demo', secretKind: 'github-token', material: 'fake' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            secretKind: 'github-token',
+            material: 'fake',
+          },
         ],
         [
           'vault.secret-rotate',
-          { workspaceId: 'ws_demo', referenceId: 'vault_test', material: 'fake' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+            material: 'fake',
+          },
         ],
-        ['vault.secret-revoke', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
-        ['vault.grant-create', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
-        ['vault.grant-revoke', { workspaceId: 'ws_demo', grantId: 'grant_test' }],
+        [
+          'vault.secret-revoke',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+          },
+        ],
+        [
+          'vault.grant-create',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+          },
+        ],
+        [
+          'vault.grant-revoke',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            grantId: 'grant_00000000-0000-7d6a-8280-d44c8fe5aefa',
+          },
+        ],
+        [
+          'vault.secret-revoke',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+          },
+        ],
+        [
+          'vault.grant-create',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+          },
+        ],
+        [
+          'vault.grant-revoke',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            grantId: 'grant_00000000-0000-7d6a-8280-d44c8fe5aefa',
+          },
+        ],
         [
           'vault.grant-narrow',
           {
-            workspaceId: 'ws_demo',
-            grantId: 'grant_test',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            grantId: 'grant_00000000-0000-7d6a-8280-d44c8fe5aefa',
             constraints: { targetAgentId: randomUUID() },
           },
         ],
@@ -555,7 +617,7 @@ describe('vault admin app API', () => {
     const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const admin = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -564,7 +626,10 @@ describe('vault admin app API', () => {
       api: {
         getSession: async () =>
           kind === 'session'
-            ? { session: { id: 'session_admin' }, user: { id: 'user_local' } }
+            ? {
+                session: { id: 'session_admin' },
+                user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
+              }
             : null,
       },
       handler: async () => Response.json({}),
@@ -574,7 +639,7 @@ describe('vault admin app API', () => {
       const response = await app.request(
         ...operationRequest(
           'vault.secret-create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: {
@@ -586,7 +651,10 @@ describe('vault admin app API', () => {
         )
       );
       expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ workspaceId: 'ws_demo', status: 'active' });
+      expect(await response.json()).toMatchObject({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        status: 'active',
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -602,7 +670,7 @@ describe('vault admin app API', () => {
       const response = await app.request(
         ...operationRequest(
           'vault.secret-create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -646,7 +714,7 @@ describe('vault admin app API', () => {
           id: 'xai-api',
           kind: 'direct',
           models: ['grok-4'],
-          secretRef: 'vault://provider_xai_api',
+          secretRef: 'vault://vault_00000000-0000-744e-a961-43e45abf5a00',
           vendor: 'xai',
         },
         null,
@@ -673,15 +741,20 @@ describe('vault admin app API', () => {
       expect(firstBody).toEqual({ configured: true, providerId: 'xai-api' });
       expect(JSON.stringify(firstBody)).not.toContain(firstApiKey);
       expect(
-        vaultUnlockState.backend().resolve({ referenceId: 'provider_xai_api' }).toString('utf8')
+        vaultUnlockState
+          .backend()
+          .resolve({ referenceId: 'vault_00000000-0000-744e-a961-43e45abf5a00' })
+          .toString('utf8')
       ).toBe(firstApiKey);
-      expect(getVaultReference(coreDb, 'provider_xai_api')).toMatchObject({
-        currentVersion: 1,
-        displayName: 'Provider API key',
-        ownerScope: 'server',
-        secretKind: 'provider-api-key',
-        status: 'active',
-      });
+      expect(getVaultReference(coreDb, 'vault_00000000-0000-744e-a961-43e45abf5a00')).toMatchObject(
+        {
+          currentVersion: 1,
+          displayName: 'Provider API key',
+          ownerScope: 'server',
+          secretKind: 'provider-api-key',
+          status: 'active',
+        }
+      );
 
       const replacement = await app.request(
         ...operationRequest(
@@ -700,12 +773,17 @@ describe('vault admin app API', () => {
       expect(replacementBody).toEqual({ configured: true, providerId: 'xai-api' });
       expect(JSON.stringify(replacementBody)).not.toContain(replacementApiKey);
       expect(
-        vaultUnlockState.backend().resolve({ referenceId: 'provider_xai_api' }).toString('utf8')
+        vaultUnlockState
+          .backend()
+          .resolve({ referenceId: 'vault_00000000-0000-744e-a961-43e45abf5a00' })
+          .toString('utf8')
       ).toBe(replacementApiKey);
-      expect(getVaultReference(coreDb, 'provider_xai_api')).toMatchObject({
-        currentVersion: 2,
-        status: 'active',
-      });
+      expect(getVaultReference(coreDb, 'vault_00000000-0000-744e-a961-43e45abf5a00')).toMatchObject(
+        {
+          currentVersion: 2,
+          status: 'active',
+        }
+      );
       const row = latestVaultAdminAuditEvent(coreDb);
       const audit = serverAuditEvent(coreDb, row.audit_event_id as string);
       expect(row).toMatchObject({
@@ -780,7 +858,7 @@ describe('vault admin app API', () => {
         id: 'provider-demo',
         kind: 'custom',
         models: ['model-demo'],
-        secretRef: 'vault://provider_demo',
+        secretRef: 'vault://vault_00000000-0000-71e5-90f2-b762367a7e74',
       })}\n`
     );
     vaultUnlockState.unlock({ masterKey });
@@ -803,7 +881,7 @@ describe('vault admin app API', () => {
       await expect(response.json()).resolves.toMatchObject({
         code: 'provider_configuration_invalid',
       });
-      expect(getVaultReference(coreDb, 'provider_demo')).toBeNull();
+      expect(getVaultReference(coreDb, 'vault_00000000-0000-71e5-90f2-b762367a7e74')).toBeNull();
       expect(vaultUnlockState.backend().listReferences({ ownerScope: 'server' })).toEqual([]);
       expect(row).toMatchObject({
         action: 'vault.set_provider_api_key',
@@ -829,13 +907,13 @@ describe('vault admin app API', () => {
         id: 'provider-failure',
         kind: 'custom',
         models: ['model-demo'],
-        secretRef: 'vault://provider_failure',
+        secretRef: 'vault://vault_00000000-0000-71a0-b7d2-f1557ce8b9cf',
       })}\n`
     );
     coreDb.sqlite.exec(`
       CREATE TRIGGER fail_provider_reference_insert
       BEFORE INSERT ON vault_references
-      WHEN NEW.reference_id = 'provider_failure'
+      WHEN NEW.reference_id = 'vault_00000000-0000-71a0-b7d2-f1557ce8b9cf'
       BEGIN
         SELECT RAISE(ABORT, 'forced provider reference failure');
       END;
@@ -861,9 +939,11 @@ describe('vault admin app API', () => {
       await expect(response.json()).resolves.toMatchObject({
         code: 'provider_api_key_recovery_required',
       });
-      expect(getVaultReference(coreDb, 'provider_failure')).toBeNull();
+      expect(getVaultReference(coreDb, 'vault_00000000-0000-71a0-b7d2-f1557ce8b9cf')).toBeNull();
       expect(() =>
-        vaultUnlockState.backend().resolve({ referenceId: 'provider_failure' })
+        vaultUnlockState
+          .backend()
+          .resolve({ referenceId: 'vault_00000000-0000-71a0-b7d2-f1557ce8b9cf' })
       ).toThrow();
       expect(row).toMatchObject({
         action: 'vault.set_provider_api_key',
@@ -891,7 +971,7 @@ describe('vault admin app API', () => {
     ensureLocalUser(serverCoreDb);
     const admin = createOpenKitAccessTokenRecord(serverCoreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
     });
@@ -936,7 +1016,7 @@ describe('vault admin app API', () => {
   ] as const)('stores %s default Vault ciphertext only under DATA_ROOT/server/vault', (mode) => {
     const dataRoot = mkdtempSync(join(tmpdir(), `openkit-vault-${mode}-composition-`));
     const secret = `vault_${mode}_composition_plaintext`;
-    const referenceId = `vault_${mode}_composition`;
+    const referenceId = testEntityId('vault', `vault_${mode}_composition`);
     const vaultUnlockState = createDefaultVaultUnlockState({ dataRoot, mode });
 
     expect(vaultUnlockState.backend().health()).toMatchObject({
@@ -1134,6 +1214,7 @@ describe('vault admin app API', () => {
         )
       );
       expect(unlock.status).toBe(200);
+      const storeSecret = vi.spyOn(vaultUnlockState.backend(), 'store');
 
       const response = await app.request(
         ...operationRequest(
@@ -1152,27 +1233,35 @@ describe('vault admin app API', () => {
 
       expect(body).toMatchObject({
         backendKind: 'encrypted-file',
-        grantId: 'grant_codex_auth_json',
+        grantId: expect.stringMatching(
+          /^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        ),
         grantScope: 'agent-session',
-        referenceId: 'vault_codex_auth_json',
+        referenceId: expect.stringMatching(
+          /^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        ),
         secretKind: 'codex-auth-json',
         targetPath: '/sandbox/.codex/auth.json',
       });
-      expect(getVaultReference(coreDb, 'vault_codex_auth_json')).toMatchObject({
+      expect(getVaultReference(coreDb, body.referenceId)).toMatchObject({
         backendKind: 'encrypted-file',
-        referenceId: 'vault_codex_auth_json',
+        referenceId: expect.stringMatching(
+          /^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        ),
         secretKind: 'codex-auth-json',
       });
-      expect(getVaultGrant(coreDb, 'grant_codex_auth_json')).toMatchObject({
+      expect(getVaultGrant(coreDb, body.grantId)).toMatchObject({
         allowedInjectionPaths: ['runtime-file'],
-        grantId: 'grant_codex_auth_json',
+        grantId: expect.stringMatching(
+          /^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        ),
         lifetime: 'agent-session',
-        vaultReferenceId: 'vault_codex_auth_json',
+        vaultReferenceId: body.referenceId,
       });
       expect(
-        Buffer.from(
-          vaultUnlockState.backend().resolve({ referenceId: 'vault_codex_auth_json' })
-        ).toString('utf8')
+        Buffer.from(vaultUnlockState.backend().resolve({ referenceId: body.referenceId })).toString(
+          'utf8'
+        )
       ).toBe(authJson);
       expect(row).toMatchObject({
         action: 'vault.bootstrap_codex_auth_json',
@@ -1182,7 +1271,28 @@ describe('vault admin app API', () => {
       expect(JSON.stringify(body)).not.toContain(authJsonBase64);
       expect(JSON.stringify(row)).not.toContain('codex_bootstrap_secret');
       expect(JSON.stringify(row)).not.toContain(authJsonBase64);
+      expect(storeSecret).toHaveBeenCalledTimes(1);
+      revokeVaultReference(coreDb, { referenceId: body.referenceId });
+      const retainedReference = getVaultReference(coreDb, body.referenceId);
+      const retainedGrant = getVaultGrant(coreDb, body.grantId);
+      const duplicate = await app.request(
+        ...operationRequest(
+          'vault.bootstrap-codex-auth',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ authJsonBase64 }),
+          }
+        )
+      );
+      expect(duplicate.status).toBe(409);
+      expect(await duplicate.json()).toMatchObject({ code: 'vault_codex_auth_json_exists' });
+      expect(storeSecret).toHaveBeenCalledTimes(1);
+      expect(getVaultReference(coreDb, body.referenceId)).toEqual(retainedReference);
+      expect(getVaultGrant(coreDb, body.grantId)).toEqual(retainedGrant);
     } finally {
+      vi.restoreAllMocks();
       coreDb.sqlite.close();
     }
   });
@@ -1196,9 +1306,9 @@ describe('vault admin app API', () => {
       importUnboundWorkspaceVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'Imported API token',
-        referenceId: 'vault_imported',
+        referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
         secretKind: 'api-token',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await app.request(
         ...operationRequest(
@@ -1215,7 +1325,10 @@ describe('vault admin app API', () => {
       const response = await app.request(
         ...operationRequest(
           'vault.reference-rebind',
-          { workspaceId: 'ws_demo', referenceId: 'vault_imported' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1230,19 +1343,23 @@ describe('vault admin app API', () => {
         backendKind: 'encrypted-file',
         currentVersion: 1,
         ownerScope: 'workspace',
-        referenceId: 'vault_imported',
+        referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
         secretKind: 'api-token',
         status: 'active',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      expect(getVaultReference(coreDb, 'vault_imported')).toMatchObject({
-        currentVersion: 1,
-        status: 'active',
-      });
+      expect(getVaultReference(coreDb, 'vault_00000000-0000-7f9a-ae09-1112bc878c49')).toMatchObject(
+        {
+          currentVersion: 1,
+          status: 'active',
+        }
+      );
       expect(
-        Buffer.from(vaultUnlockState.backend().resolve({ referenceId: 'vault_imported' })).toString(
-          'utf8'
-        )
+        Buffer.from(
+          vaultUnlockState
+            .backend()
+            .resolve({ referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49' })
+        ).toString('utf8')
       ).toBe(material);
       expect(JSON.stringify(body)).not.toContain(material);
       expect(JSON.stringify(body)).not.toContain(materialBase64);
@@ -1259,9 +1376,9 @@ describe('vault admin app API', () => {
       const before = importUnboundWorkspaceVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'Foreign API token',
-        referenceId: 'vault_foreign',
+        referenceId: 'vault_00000000-0000-7c4e-b9ec-70a95b27f53e',
         secretKind: 'api-token',
-        workspaceId: 'ws_foreign',
+        workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405',
       });
       const unlock = await app.request(
         ...operationRequest(
@@ -1279,7 +1396,10 @@ describe('vault admin app API', () => {
       const foreign = await app.request(
         ...operationRequest(
           'vault.reference-rebind',
-          { workspaceId: 'ws_demo', referenceId: 'vault_foreign' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7c4e-b9ec-70a95b27f53e',
+          },
           {
             body: JSON.stringify({ materialBase64 }),
             headers: { 'content-type': 'application/json' },
@@ -1290,7 +1410,10 @@ describe('vault admin app API', () => {
       const missing = await app.request(
         ...operationRequest(
           'vault.reference-rebind',
-          { workspaceId: 'ws_demo', referenceId: 'vault_missing' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-722b-b433-75d118b2149c',
+          },
           {
             body: JSON.stringify({ materialBase64 }),
             headers: { 'content-type': 'application/json' },
@@ -1302,9 +1425,13 @@ describe('vault admin app API', () => {
       expect(foreign.status).toBe(403);
       await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
       expect(missing.status).toBe(404);
-      await expect(missing.json()).resolves.toMatchObject({ code: 'vault_reference_not_found' });
-      expect(getVaultReference(coreDb, 'vault_foreign')).toEqual(before);
-      expect(getVaultReference(coreDb, 'vault_missing')).toBeNull();
+      await expect(missing.json()).resolves.toMatchObject({
+        code: 'vault_reference_not_found',
+      });
+      expect(getVaultReference(coreDb, 'vault_00000000-0000-7c4e-b9ec-70a95b27f53e')).toEqual(
+        before
+      );
+      expect(getVaultReference(coreDb, 'vault_00000000-0000-722b-b433-75d118b2149c')).toBeNull();
     } finally {
       coreDb.sqlite.close();
     }
@@ -1317,13 +1444,17 @@ describe('vault admin app API', () => {
       importUnboundWorkspaceVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'Imported API token',
-        referenceId: 'vault_imported',
+        referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
         secretKind: 'api-token',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       const response = await app.request(
-        ...operationRequest('vault.reference-list', { workspaceId: 'ws_demo' }, {})
+        ...operationRequest(
+          'vault.reference-list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          {}
+        )
       );
 
       expect(response.status).toBe(200);
@@ -1334,13 +1465,13 @@ describe('vault admin app API', () => {
             backendKind: 'encrypted-file',
             currentVersion: 0,
             ownerScope: 'workspace',
-            referenceId: 'vault_imported',
+            referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
             secretKind: 'api-token',
             status: 'unbound',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(JSON.stringify(body)).not.toContain('backendLocator');
       expect(JSON.stringify(body)).not.toContain('Imported API token');
@@ -1357,7 +1488,7 @@ describe('vault admin app API', () => {
       .prepare(
         `INSERT INTO users
           (id, display_name, email, email_verified, created_at, updated_at, kind)
-         VALUES ('user_vault_admin_default', 'Vault User',
+         VALUES ('usr_00000000-0000-75d9-8d08-835583035748', 'Vault User',
                  'vault-user@example.com', false, ?, ?, 'human')`
       )
       .run(Date.now(), Date.now());
@@ -1419,15 +1550,15 @@ describe('vault admin app API', () => {
     ensureLocalUser(coreDb);
     const admin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
     });
     const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const masterKey = Buffer.alloc(32, 8);
     const vaultUnlockState = createVaultUnlockState({
@@ -1443,7 +1574,7 @@ describe('vault admin app API', () => {
         id: 'provider-demo',
         kind: 'custom',
         models: ['model-demo'],
-        secretRef: 'vault://provider_demo',
+        secretRef: 'vault://vault_00000000-0000-71e5-90f2-b762367a7e74',
       })}\n`
     );
     vaultUnlockState.unlock({ masterKey });

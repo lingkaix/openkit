@@ -16,7 +16,7 @@ import { applyScopedMigrations } from './storage/migrate.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 
 const stamp = '2026-10-15T00:00:00.000Z';
-const actor = { userId: 'user_local', kind: 'local' as const };
+const actor = { userId: 'usr_00000000-0000-7000-8000-000000000001', kind: 'local' as const };
 const hash = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`;
 const testRoots: string[] = [];
 afterEach(async () => {
@@ -38,7 +38,7 @@ describe('canonical product retrieval adapters', () => {
     message(store, turn, 'old conversation marker');
     const body = 'Artifact unique marker';
     store.createArtifact({
-      id: 'ar_retrieval',
+      id: 'ar_00000000-0000-7472-9b71-dafe5512cf50',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -62,7 +62,7 @@ describe('canonical product retrieval adapters', () => {
     const db = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(db);
     const material = createWorkspaceMaterial(db, {
-      actorId: actor.userId,
+      actor: { kind: 'user', id: actor.userId },
       acceptedAt: stamp,
       requestId: 'material_create',
       title: 'Material',
@@ -71,7 +71,7 @@ describe('canonical product retrieval adapters', () => {
     });
     const materialText = 'Material unique marker';
     saveWorkspaceMaterialRevision(db, {
-      actorId: actor.userId,
+      actor: { kind: 'user', id: actor.userId },
       acceptedAt: stamp,
       requestId: 'material_save',
       materialId: material.materialId,
@@ -168,7 +168,7 @@ describe('canonical product retrieval adapters', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-sidecar-'));
     testRoots.push(dataRoot);
     const identity = {
-      key: { namespace: 'artifact', id: 'ar_binary' },
+      key: { namespace: 'artifact', id: 'ar_00000000-0000-7361-99da-c4b29ba62194' },
       revision: 'version-1',
       digest: hash('binary-private-body-marker'),
       size: 999999,

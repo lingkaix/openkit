@@ -1,4 +1,4 @@
-import { RequestIdSchema } from '@openkit/protocol';
+import { ArtifactIdSchema, RequestIdSchema, ThreadIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { SubmitConversationResponseSchema } from './chat-mode.js';
@@ -9,7 +9,7 @@ export const SubmitAdministrationConversationRequestSchema = z
     input: z.string().min(1),
     logicalModelId: z.string().min(1).optional(),
     requestId: RequestIdSchema,
-    threadId: z.string().min(1).optional(),
+    threadId: ThreadIdSchema.optional(),
   })
   .strict();
 
@@ -28,7 +28,7 @@ export type SubmitAdministrationConversationResponse = z.infer<
 /** Exact immutable catalog candidate identity, never a mutable latest pointer. */
 export const ConfigurationCandidateRefSchema = z
   .object({
-    artifactId: z.string().min(1),
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.literal(1),
     contentDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })

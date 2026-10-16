@@ -74,7 +74,7 @@ vi.mock('node:fs', async (original) => {
 function createWorkspaceDb() {
   const workspaceDb = openWorkspaceDb(
     mkdtempSync(join(tmpdir(), 'openkit-aep-snapshot-ledger-')),
-    'ws_1'
+    'ws_00000000-0000-73c3-900f-8d310e4ba201'
   );
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
@@ -119,16 +119,16 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
         },
       },
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'as_1',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       backend: {
         kind: 'openshell',
       },
       requestId: 'req_1',
       turn: {
-        id: 'turn_1',
-        workspaceId: 'ws_1',
-        threadId: 'th_1',
+        id: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
         items: [],
         status: 'running',
         error: null,
@@ -136,7 +136,7 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
         startedAt: '2026-07-06T00:00:00.000Z',
         completedAt: null,
         durationMs: null,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
       turnInput: 'Run tests',
       workspaceCwd: '/workspace',
@@ -189,19 +189,34 @@ describe('AEP snapshot ledger', () => {
         });
         if (index === 63) writeFileSync(snapshotPath(db, other), '{malformed');
       }
-      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toEqual(
-        expected
-      );
-      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'missing')).toThrow(
-        'Agent environment package snapshot not found: missing'
-      );
-      expect(() => listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1')).toThrow(
-        'The retained record could not be read.'
-      );
+      expect(
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          named.snapshotId
+        )
+      ).toEqual(expected);
+      expect(() =>
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          'missing'
+        )
+      ).toThrow('Agent environment package snapshot not found: missing');
+      expect(() =>
+        listExportableAgentEnvironmentPackageSnapshots(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toThrow('The retained record could not be read.');
       writeFileSync(snapshotPath(db, named), '{malformed');
-      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toThrow(
-        'The retained record could not be read.'
-      );
+      expect(() =>
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          named.snapshotId
+        )
+      ).toThrow('The retained record could not be read.');
     } finally {
       db.sqlite.close();
     }
@@ -221,7 +236,9 @@ describe('AEP snapshot ledger', () => {
       const otherRoot = join(
         dirname(dirname(snapshotPath(db, named))),
         '..',
-        fixture === 'unsafe-empty-session' ? 'as_unsafe\\session' : 'as_other',
+        fixture === 'unsafe-empty-session'
+          ? 'as_00000000-0000-71da-995d-2a1aa4a33448\\session'
+          : 'as_00000000-0000-7436-9246-ac6dd3ca3fe4',
         'aep-snapshots'
       );
       mkdirSync(
@@ -230,10 +247,19 @@ describe('AEP snapshot ledger', () => {
           : otherRoot,
         { recursive: true }
       );
-      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toEqual(
-        expected
-      );
-      expect(listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1')).toEqual([expected]);
+      expect(
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          named.snapshotId
+        )
+      ).toEqual(expected);
+      expect(
+        listExportableAgentEnvironmentPackageSnapshots(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toEqual([expected]);
     } finally {
       db.sqlite.close();
     }
@@ -244,10 +270,10 @@ describe('AEP snapshot ledger', () => {
     try {
       const upper = createEnvironmentPackage();
       upper.snapshotId = 'Named';
-      upper.scope.agentSessionId = 'as_0';
+      upper.scope.agentSessionId = 'as_00000000-0000-700c-ad9c-2f2b80087807';
       const lower = structuredClone(upper);
       lower.snapshotId = 'named';
-      lower.scope.agentSessionId = 'as_1';
+      lower.scope.agentSessionId = 'as_00000000-0000-7b98-8803-ea4242ad797b';
       const expected = [upper, lower].map((environmentPackage) =>
         recordAgentEnvironmentPackageSnapshot(db, {
           environmentPackage,
@@ -263,11 +289,26 @@ describe('AEP snapshot ledger', () => {
       // Both alternate spellings resolve to real files, while readdir retains their actual names.
       expect(lstatSync(lowerAlias).ino).toBe(lstatSync(upperPath).ino);
       expect(lstatSync(upperAlias).ino).toBe(lstatSync(lowerPath).ino);
-      const listed = listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1');
+      const listed = listExportableAgentEnvironmentPackageSnapshots(
+        db,
+        'ws_00000000-0000-73c3-900f-8d310e4ba201'
+      );
       expect(listed).toEqual(expect.arrayContaining(expected));
       expect(listed).toHaveLength(2);
-      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'Named')).toEqual(expected[0]);
-      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'named')).toEqual(expected[1]);
+      expect(
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          'Named'
+        )
+      ).toEqual(expected[0]);
+      expect(
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          'named'
+        )
+      ).toEqual(expected[1]);
     } finally {
       caseFoldedSnapshotPaths.clear();
       db.sqlite.close();
@@ -287,11 +328,26 @@ describe('AEP snapshot ledger', () => {
       const alias = join(dirname(path), 'Named.json');
       caseFoldedSnapshotPaths.set(alias, path);
       expect(lstatSync(alias).ino).toBe(lstatSync(path).ino);
-      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'Named')).toThrow(
-        'Agent environment package snapshot not found: Named'
-      );
-      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'named')).toEqual(expected);
-      expect(listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1')).toEqual([expected]);
+      expect(() =>
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          'Named'
+        )
+      ).toThrow('Agent environment package snapshot not found: Named');
+      expect(
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          'named'
+        )
+      ).toEqual(expected);
+      expect(
+        listExportableAgentEnvironmentPackageSnapshots(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toEqual([expected]);
     } finally {
       caseFoldedSnapshotPaths.clear();
       db.sqlite.close();
@@ -302,16 +358,23 @@ describe('AEP snapshot ledger', () => {
     const db = createWorkspaceDb();
     const named = createEnvironmentPackage();
     try {
-      for (const sessionId of ['as_1', 'as_2']) {
+      for (const sessionId of [
+        'as_00000000-0000-7b98-8803-ea4242ad797b',
+        'as_00000000-0000-790a-b857-e646f4bf0020',
+      ]) {
         named.scope.agentSessionId = sessionId;
         recordAgentEnvironmentPackageSnapshot(db, {
           environmentPackage: named,
           createdAt: '2026-07-06T00:00:01.000Z',
         });
       }
-      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toThrow(
-        `Duplicate agent environment package snapshot: ${named.snapshotId}`
-      );
+      expect(() =>
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          named.snapshotId
+        )
+      ).toThrow(`Duplicate agent environment package snapshot: ${named.snapshotId}`);
     } finally {
       db.sqlite.close();
     }
@@ -399,7 +462,7 @@ describe('AEP snapshot ledger', () => {
     const db = createWorkspaceDb();
     const environmentPackage = createEnvironmentPackage();
     const now = '2026-07-06T00:00:01.000Z';
-    const actor = { kind: 'user' as const, id: 'user_local' };
+    const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
     const content = 'public fixture ghp_public-test-fixture "\\🙂'.repeat(3000);
     const args = {
       owner: 'fixture',
@@ -413,18 +476,18 @@ describe('AEP snapshot ledger', () => {
     const trigger = 'Independent trigger ghp_public-test-fixture';
     try {
       const common = {
-        workspaceId: 'ws_1',
-        threadId: 'th_1',
-        raisingTurnId: 'turn_raising',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+        raisingTurnId: 'tu_00000000-0000-7dd9-97cc-dcdaac49dbd1',
         requesterKind: 'worker' as const,
         agentId: 'agent_codex_host',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         now,
       };
       raisePendingRequest(db.sqlite, {
         ...common,
         requestId: 'ap_large',
-        requestItemId: 'it_ap_large',
+        requestItemId: 'it_00000000-0000-7977-9f8c-a83187614544',
         kind: 'approval',
         approval: {
           kind: 'permission',
@@ -441,11 +504,11 @@ describe('AEP snapshot ledger', () => {
           packageDigest: null,
           policyDecisionId: null,
           authorizationContext: {
-            threadId: 'th_1',
-            turnId: 'turn_raising',
+            threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+            turnId: 'tu_00000000-0000-7dd9-97cc-dcdaac49dbd1',
             agentSessionId: null,
             agentId: 'agent_codex_host',
-            responsibleUserId: 'user_local',
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
             packageDigest: null,
             policyDecisionId: null,
           },
@@ -476,30 +539,34 @@ describe('AEP snapshot ledger', () => {
       raisePendingRequest(db.sqlite, {
         ...common,
         requestId: 'uq_large',
-        requestItemId: 'it_uq_large',
+        requestItemId: 'it_00000000-0000-7785-9e83-eccc979ce4f1',
         kind: 'user-input',
         questions,
       });
       answerPendingRequest(db.sqlite, 'uq_large', actor, answers, now);
       const freeze = (turnId: string) =>
         freezeReadyOutcomes(db.sqlite, {
-          workspaceId: 'ws_1',
-          threadId: 'th_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
           turnId,
           executor: 'worker',
           agentId: 'agent_codex_host',
           cause: 'carried',
           now,
         });
-      expect(freeze('turn_1')).toHaveLength(2);
-      const input = frozenPendingOutcomeInput(db.sqlite, 'turn_1', trigger);
+      expect(freeze('tu_00000000-0000-7b5c-9add-c4bfc5a04575')).toHaveLength(2);
+      const input = frozenPendingOutcomeInput(
+        db.sqlite,
+        'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
+        trigger
+      );
       expect(input.length).toBeGreaterThan(90000);
       const decoded = JSON.parse(input);
       expect(decoded.triggerInput).toBe(trigger);
       expect(decoded.pendingOutcomes[0]).toMatchObject({
         requestId: 'ap_large',
-        requestItemId: 'it_ap_large',
-        publicationTurnId: 'turn_1',
+        requestItemId: 'it_00000000-0000-7977-9f8c-a83187614544',
+        publicationTurnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
         request: { call: { serverId: 'github', toolName: 'push_files', arguments: args } },
         resolution: 'granted',
         disposition: 'approved-executed',
@@ -514,20 +581,29 @@ describe('AEP snapshot ledger', () => {
       });
       expect(record.snapshot.extensions.openkit).toEqual({ turnInput: input });
       expect(
-        requireAgentEnvironmentPackageSnapshot(db, 'ws_1', record.snapshotId).snapshot.extensions
-          .openkit
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          record.snapshotId
+        ).snapshot.extensions.openkit
       ).toEqual({ turnInput: input });
       const { dataRoot, workspaceId } = db;
       db.sqlite.close();
       const reopened = openWorkspaceDb(dataRoot, workspaceId);
       try {
-        expect(frozenPendingOutcomeInput(reopened.sqlite, 'turn_1', trigger)).toBe(input);
-        releaseFrozenOutcomes(reopened.sqlite, 'turn_1', now);
+        expect(
+          frozenPendingOutcomeInput(
+            reopened.sqlite,
+            'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
+            trigger
+          )
+        ).toBe(input);
+        releaseFrozenOutcomes(reopened.sqlite, 'tu_00000000-0000-7b5c-9add-c4bfc5a04575', now);
         expect(
           freezeReadyOutcomes(reopened.sqlite, {
             workspaceId,
-            threadId: 'th_1',
-            turnId: 'turn_retry',
+            threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+            turnId: 'tu_00000000-0000-78e5-8562-2111aeb2e72e',
             executor: 'worker',
             agentId: 'agent_codex_host',
             cause: 'carried',
@@ -535,9 +611,17 @@ describe('AEP snapshot ledger', () => {
           })
         ).toHaveLength(2);
         expect(
-          JSON.parse(frozenPendingOutcomeInput(reopened.sqlite, 'turn_retry', trigger))
+          JSON.parse(
+            frozenPendingOutcomeInput(
+              reopened.sqlite,
+              'tu_00000000-0000-78e5-8562-2111aeb2e72e',
+              trigger
+            )
+          )
         ).toEqual(decoded);
-        expect(readPendingRequest(reopened.sqlite, 'ap_large')?.publicationTurnId).toBe('turn_1');
+        expect(readPendingRequest(reopened.sqlite, 'ap_large')?.publicationTurnId).toBe(
+          'tu_00000000-0000-7b5c-9add-c4bfc5a04575'
+        );
       } finally {
         reopened.sqlite.close();
       }
@@ -577,7 +661,8 @@ describe('AEP snapshot ledger', () => {
     const db = createWorkspaceDb();
     const environmentPackage = createEnvironmentPackage();
     const operations = createEnvironmentOperationImplementations({
-      repositoryWorkspaceDb: () => openWorkspaceDb(db.dataRoot, 'ws_1'),
+      repositoryWorkspaceDb: () =>
+        openWorkspaceDb(db.dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
     });
     try {
       recordAgentEnvironmentPackageSnapshot(db, {
@@ -588,10 +673,13 @@ describe('AEP snapshot ledger', () => {
       for (const read of [
         () =>
           operations['environment.snapshot-read']({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             snapshotId: environmentPackage.snapshotId,
           }),
-        () => operations['environment.snapshot-list']({ workspaceId: 'ws_1' }),
+        () =>
+          operations['environment.snapshot-list']({
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          }),
       ]) {
         try {
           read();
@@ -644,7 +732,11 @@ describe('AEP snapshot ledger', () => {
       const path = snapshotPath(db, environmentPackage);
       writeFileSync(path, marker);
       const read = caught(() =>
-        requireAgentEnvironmentPackageSnapshot(db, 'ws_1', environmentPackage.snapshotId)
+        requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          environmentPackage.snapshotId
+        )
       );
       for (const [error, message] of [
         [preparation, 'The agent environment snapshot could not be prepared.'],
@@ -682,9 +774,9 @@ describe('AEP snapshot ledger', () => {
     expect.soft(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null).toEqual(record);
     expect(record).toMatchObject({
       snapshotId: environmentPackage.snapshotId,
-      workspaceId: 'ws_1',
-      turnId: 'turn_1',
-      agentSessionId: 'as_1',
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
+      agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
       agentId: 'agent_codex_host',
       packageId: environmentPackage.packageId,
     });
@@ -698,9 +790,18 @@ describe('AEP snapshot ledger', () => {
 
     try {
       expect(
-        requireAgentEnvironmentPackageSnapshot(reopened, 'ws_1', environmentPackage.snapshotId)
+        requireAgentEnvironmentPackageSnapshot(
+          reopened,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          environmentPackage.snapshotId
+        )
       ).toEqual(record);
-      expect(listExportableAgentEnvironmentPackageSnapshots(reopened, 'ws_1')).toEqual([record]);
+      expect(
+        listExportableAgentEnvironmentPackageSnapshots(
+          reopened,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toEqual([record]);
     } finally {
       reopened.sqlite.close();
     }
@@ -750,7 +851,7 @@ describe('AEP snapshot ledger', () => {
 
       const read = requireAgentEnvironmentPackageSnapshot(
         workspaceDb,
-        'ws_1',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
         environmentPackage.snapshotId
       );
 
@@ -759,7 +860,10 @@ describe('AEP snapshot ledger', () => {
       expect(snapshotDigest(read.retainedSnapshot)).toBe(retained.contentDigest);
       expect(JSON.parse(JSON.stringify(read))).not.toHaveProperty('retainedSnapshot');
       expect(
-        listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')[0]!.snapshot
+        listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )[0]!.snapshot
       ).toEqual(read.snapshot);
       expect(read.snapshot.control.transcript).not.toHaveProperty('artifactsPath');
       expect(read.snapshot.control.transcript.itemsPath).toBe(
@@ -786,7 +890,7 @@ describe('AEP snapshot ledger', () => {
       writeFileSync(snapshotPath(source, environmentPackage), JSON.stringify(retained));
       const read = requireAgentEnvironmentPackageSnapshot(
         source,
-        'ws_1',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
         environmentPackage.snapshotId
       );
       expect(read.snapshot.control.transcript).not.toHaveProperty('retiredDescription');
@@ -834,11 +938,20 @@ describe('AEP snapshot ledger', () => {
       const unsafeBytes = JSON.stringify(retained);
       writeFileSync(path, unsafeBytes);
       expect(() =>
-        requireAgentEnvironmentPackageSnapshot(source, 'ws_1', environmentPackage.snapshotId)
+        requireAgentEnvironmentPackageSnapshot(
+          source,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          environmentPackage.snapshotId
+        )
       ).toThrow();
       expect(() => importAgentEnvironmentPackageSnapshots(target, [retained])).toThrow();
       expect(existsSync(snapshotPath(target, environmentPackage))).toBe(false);
-      expect(() => listExportableAgentEnvironmentPackageSnapshots(source, 'ws_1')).toThrow();
+      expect(() =>
+        listExportableAgentEnvironmentPackageSnapshots(
+          source,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toThrow();
       expect(readFileSync(path, 'utf8')).toBe(unsafeBytes);
       expect(snapshotDigest(JSON.parse(readFileSync(path, 'utf8')).snapshot)).toBe(
         retained.contentDigest
@@ -875,12 +988,23 @@ describe('AEP snapshot ledger', () => {
       expect(snapshotDigest(retained.snapshot)).toBe(retained.contentDigest);
       expect
         .soft(() =>
-          requireAgentEnvironmentPackageSnapshot(source, 'ws_1', environmentPackage.snapshotId)
+          requireAgentEnvironmentPackageSnapshot(
+            source,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            environmentPackage.snapshotId
+          )
         )
         .toThrow();
       expect.soft(() => importAgentEnvironmentPackageSnapshots(target, [retained])).toThrow();
       expect.soft(existsSync(snapshotPath(target, environmentPackage))).toBe(false);
-      expect.soft(() => listExportableAgentEnvironmentPackageSnapshots(source, 'ws_1')).toThrow();
+      expect
+        .soft(() =>
+          listExportableAgentEnvironmentPackageSnapshots(
+            source,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201'
+          )
+        )
+        .toThrow();
       expect(readFileSync(path, 'utf8')).toBe(unsafeBytes);
       expect(snapshotDigest(JSON.parse(readFileSync(path, 'utf8')).snapshot)).toBe(
         retained.contentDigest
@@ -911,8 +1035,10 @@ describe('AEP snapshot ledger', () => {
       });
       importAgentEnvironmentPackageSnapshots(target, [record]);
       expect(
-        listExportableAgentEnvironmentPackageSnapshots(target, 'ws_1')[0]!.snapshot.runtime
-          .environment
+        listExportableAgentEnvironmentPackageSnapshots(
+          target,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )[0]!.snapshot.runtime.environment
       ).toEqual(environmentPackage.runtime.environment);
       expect(
         snapshotDigest(
@@ -941,7 +1067,7 @@ describe('AEP snapshot ledger', () => {
       writeFileSync(path, JSON.stringify(retained));
       const read = requireAgentEnvironmentPackageSnapshot(
         source,
-        'ws_1',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
         environmentPackage.snapshotId
       );
       importAgentEnvironmentPackageSnapshots(target, [read]);
@@ -997,7 +1123,7 @@ describe('AEP snapshot ledger', () => {
       writeFileSync(snapshotPath(source, environmentPackage), JSON.stringify(retained));
       const read = requireAgentEnvironmentPackageSnapshot(
         source,
-        'ws_1',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
         environmentPackage.snapshotId
       );
       expect(read).not.toHaveProperty('annotation');
@@ -1005,7 +1131,7 @@ describe('AEP snapshot ledger', () => {
       importAgentEnvironmentPackageSnapshots(target, [read]);
       const reread = requireAgentEnvironmentPackageSnapshot(
         target,
-        'ws_1',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
         environmentPackage.snapshotId
       );
       expect(reread.retainedSnapshot).toEqual(retained.snapshot);
@@ -1036,12 +1162,20 @@ describe('AEP snapshot ledger', () => {
         .digest('hex');
       writeFileSync(path, `${JSON.stringify(retained)}\n`);
       // Establish the valid retained record before testing a mutation hidden from the live projection.
-      requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId);
+      requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        environmentPackage.snapshotId
+      );
       retained.snapshot.control.transcript.artifactsPath = '/openkit/session/changed.jsonl';
       writeFileSync(path, `${JSON.stringify(retained)}\n`);
 
       expect(() =>
-        requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId)
+        requireAgentEnvironmentPackageSnapshot(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          environmentPackage.snapshotId
+        )
       ).toThrow('Agent environment package snapshot digest mismatch');
     } finally {
       workspaceDb.sqlite.close();
@@ -1059,7 +1193,7 @@ describe('AEP snapshot ledger', () => {
       });
       const legacyScope = { ...record.snapshot.scope } as Record<string, unknown>;
       delete legacyScope.triggerActor;
-      legacyScope.userId = 'user_local';
+      legacyScope.userId = 'usr_00000000-0000-7000-8000-000000000001';
       const legacyRecord = {
         ...record,
         snapshot: { ...record.snapshot, schemaVersion: 1, scope: legacyScope },
@@ -1074,7 +1208,7 @@ describe('AEP snapshot ledger', () => {
         () =>
           requireAgentEnvironmentPackageSnapshot(
             workspaceDb,
-            'ws_1',
+            'ws_00000000-0000-73c3-900f-8d310e4ba201',
             environmentPackage.snapshotId
           ),
         () =>
@@ -1094,11 +1228,18 @@ describe('AEP snapshot ledger', () => {
       }
 
       expect(() =>
-        requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId)
+        requireAgentEnvironmentPackageSnapshot(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          environmentPackage.snapshotId
+        )
       ).toThrow('The retained record could not be read.');
-      expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')).toThrow(
-        'The retained record could not be read.'
-      );
+      expect(() =>
+        listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toThrow('The retained record could not be read.');
       expect(() =>
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           createdAt: '2026-07-06T00:00:02.000Z',
@@ -1128,7 +1269,7 @@ describe('AEP snapshot ledger', () => {
           ...record,
           snapshot: { ...record.snapshot, packageId: 'aep_tampered' },
         },
-        { ...record, agentSessionId: 'as_tampered' },
+        { ...record, agentSessionId: 'as_00000000-0000-7a2c-a8aa-2e6e0f27a26d' },
         { ...record, contentDigest: '0'.repeat(64) },
       ];
 
@@ -1140,13 +1281,18 @@ describe('AEP snapshot ledger', () => {
           .soft(() =>
             requireAgentEnvironmentPackageSnapshot(
               workspaceDb,
-              'ws_1',
+              'ws_00000000-0000-73c3-900f-8d310e4ba201',
               environmentPackage.snapshotId
             )
           )
           .toThrow();
         expect
-          .soft(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1'))
+          .soft(() =>
+            listExportableAgentEnvironmentPackageSnapshots(
+              workspaceDb,
+              'ws_00000000-0000-73c3-900f-8d310e4ba201'
+            )
+          )
           .toThrow();
       }
     } finally {
@@ -1170,9 +1316,18 @@ describe('AEP snapshot ledger', () => {
       rmSync(path);
       symlinkSync(linkedSnapshotTarget, path);
       expect(() =>
-        requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId)
+        requireAgentEnvironmentPackageSnapshot(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          environmentPackage.snapshotId
+        )
       ).toThrow();
-      expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')).toThrow();
+      expect(() =>
+        listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toThrow();
 
       const sessionRoot = dirname(dirname(path));
       const linkedSessionTarget = join(dirname(dirname(sessionRoot)), 'aep-session-symlink-target');
@@ -1184,7 +1339,12 @@ describe('AEP snapshot ledger', () => {
         `${JSON.stringify(record, null, 2)}\n`
       );
       symlinkSync(linkedSessionTarget, sessionRoot, 'dir');
-      expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')).toThrow();
+      expect(() =>
+        listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toThrow();
     } finally {
       workspaceDb.sqlite.close();
     }

@@ -562,7 +562,7 @@ describe('database setup', () => {
 
   it('applies the User and Workspace setup sections idempotently', () => {
     const dataRoot = createDataRoot();
-    const userDb = openUserDb(dataRoot, 'user_1');
+    const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
     const workspaceDb = openWorkspaceDb(dataRoot, 'workspace_1');
 
     try {
@@ -571,7 +571,9 @@ describe('database setup', () => {
       applyScopedMigrations(workspaceDb);
       applyScopedMigrations(workspaceDb);
 
-      expect(listMigrationIds(userDb, 'user')).toEqual(['user_0000_setup']);
+      expect(listMigrationIds(userDb, 'user')).toEqual([
+        'usr_00000000-0000-76f6-b592-f63edf15ea68',
+      ]);
       expect(listTableNames(userDb)).toEqual(['__drizzle_migrations', 'idempotency_requests']);
       expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(['workspace_0000_setup']);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
@@ -739,14 +741,14 @@ describe('database setup', () => {
           `INSERT INTO users (
             id, display_name, email, email_verified, created_at, updated_at, kind
           ) VALUES
-            ('user_owner', 'Owner', 'owner@example.com', false, ?, ?, 'human'),
-            ('user_invitee', 'Invitee', 'invitee@example.com', false, ?, ?, 'human')`
+            ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, ?, ?, 'human'),
+            ('usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'Invitee', 'invitee@example.com', false, ?, ?, 'human')`
         )
         .run(now, now, now, now);
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_owner',
-        workspaceId: 'ws_invitation_constraints',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        workspaceId: 'ws_00000000-0000-7c1f-9bfb-ef82611610b6',
       });
       const insertInvitation = coreDb.sqlite.prepare(
         `INSERT INTO workspace_invitations (
@@ -754,22 +756,42 @@ describe('database setup', () => {
           inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
           revision, created_at, updated_at
         ) VALUES (
-          ?, 'ws_invitation_constraints', 'user_invitee', 'editor', 'user_owner', ?,
+          ?, 'ws_00000000-0000-7c1f-9bfb-ef82611610b6', 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'editor', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', ?,
           '2026-07-26T00:00:00.000Z', ?, NULL, NULL, 1, ?, ?
         )`
       );
 
       expect(() =>
-        insertInvitation.run('inv_invalid', 'accepted', null, createdAt, createdAt)
+        insertInvitation.run(
+          'inv_00000000-0000-73d7-b2e3-893276fb5645',
+          'accepted',
+          null,
+          createdAt,
+          createdAt
+        )
       ).toThrow();
 
-      insertInvitation.run('inv_pending', 'pending', null, createdAt, createdAt);
+      insertInvitation.run(
+        'inv_00000000-0000-7193-8d2d-2af4371e1697',
+        'pending',
+        null,
+        createdAt,
+        createdAt
+      );
 
       expect(() =>
-        insertInvitation.run('inv_duplicate', 'pending', null, createdAt, createdAt)
+        insertInvitation.run(
+          'inv_00000000-0000-7ee2-bd01-709c0aef6e0e',
+          'pending',
+          null,
+          createdAt,
+          createdAt
+        )
       ).toThrow();
       expect(() =>
-        coreDb.sqlite.prepare('DELETE FROM users WHERE id = ?').run('user_invitee')
+        coreDb.sqlite
+          .prepare('DELETE FROM users WHERE id = ?')
+          .run('usr_00000000-0000-7a9e-8345-2bce44a3dce0')
       ).toThrow();
       expect(
         coreDb.sqlite
@@ -1065,7 +1087,7 @@ describe('native Drizzle migrate', () => {
       {
         tag: '0000_setup',
         when: 1000,
-        sql: 'CREATE TABLE user_only (id text PRIMARY KEY NOT NULL);',
+        sql: 'CREATE TABLE usr_00000000-0000-7567-978f-a2dc91f29370 (id text PRIMARY KEY NOT NULL);',
       },
     ]);
     const coreSqlite = new Database(join(coreFolder, 'db.sqlite'));
@@ -1076,12 +1098,15 @@ describe('native Drizzle migrate', () => {
       applyNativeScopeMigrations(userSqlite, 'user', userFolder);
 
       expect(listTableNames({ sqlite: coreSqlite })).toEqual(['__drizzle_migrations', 'core_only']);
-      expect(listTableNames({ sqlite: userSqlite })).toEqual(['__drizzle_migrations', 'user_only']);
+      expect(listTableNames({ sqlite: userSqlite })).toEqual([
+        '__drizzle_migrations',
+        'usr_00000000-0000-7567-978f-a2dc91f29370',
+      ]);
       expect(listAppliedNativeMigrationIds(coreSqlite, 'core', coreFolder)).toEqual([
         'core_0000_setup',
       ]);
       expect(listAppliedNativeMigrationIds(userSqlite, 'user', userFolder)).toEqual([
-        'user_0000_setup',
+        'usr_00000000-0000-76f6-b592-f63edf15ea68',
       ]);
     } finally {
       userSqlite.close();

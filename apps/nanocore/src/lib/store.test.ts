@@ -18,9 +18,10 @@ import { openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { parseCanonicalWorkspaceHistory } from '../storage/workspace-file-records.js';
-import { createDemoWorkspaceForUser, FsStore } from './store.js';
+import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { FsStore } from './store.js';
 
-const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
+const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 /**
  * Creates the legacy project workspace fixture used by store tests.
@@ -28,7 +29,7 @@ const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
  * @param store Store that should own the fixture.
  */
 function seedDemoWorkspace(store: FsStore): void {
-  const demo = createDemoWorkspaceForUser('user_local');
+  const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
 
   store.importWorkspaceSnapshot({
     workspace: demo.workspace,
@@ -127,7 +128,7 @@ function createImportedArtifact(
       sourceKind: 'direct-import',
       sourceId: requestId,
       sourceDigest: contentDigest,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId,
       recordedAt: acceptedAt,
     },
@@ -140,11 +141,14 @@ describe('FsStore persistence', () => {
   it('creates conversation Threads by default and preserves an administration entry path', () => {
     const store = new FsStore();
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const conversation = store.createThread('ws_quick_chat', 'Conversation');
+    const conversation = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Conversation'
+    );
     const administration = store.createThread(
-      'ws_quick_chat',
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Administration',
-      'th_administration',
+      'th_00000000-0000-7624-b3fa-287b4af56d2a',
       'administration'
     );
 
@@ -155,11 +159,19 @@ describe('FsStore persistence', () => {
   it('keeps Turn and human-input attribution immutable', () => {
     const store = new FsStore();
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const thread = store.createThread('ws_quick_chat', 'Attribution ownership');
-    const turn = store.createTurn('ws_quick_chat', thread.id, 'Record exact actor', LOCAL_ACTOR);
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Attribution ownership'
+    );
+    const turn = store.createTurn(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      thread.id,
+      'Record exact actor',
+      LOCAL_ACTOR
+    );
     const createdAt = turn.startedAt ?? new Date().toISOString();
     const message = store.createItem({
-      id: 'it_attribution_message',
+      id: 'it_00000000-0000-76cc-a288-2e47ea36ba13',
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -171,7 +183,7 @@ describe('FsStore persistence', () => {
       completedAt: createdAt,
     });
     const request = store.createItem({
-      id: 'it_attribution_request',
+      id: 'it_00000000-0000-76bd-82f1-334f95d2a847',
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -195,13 +207,13 @@ describe('FsStore persistence', () => {
     });
     expect(() =>
       store.createItem({
-        id: 'it_attribution_foreign_response',
+        id: 'it_00000000-0000-7d2f-9a91-7f939865f0c2',
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,
         type: 'user-input-response',
         status: 'completed',
-        actor: { kind: 'user', id: 'user_other' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
         causationId: 'request_foreign',
         userInputRequestId: 'uir_attribution',
         answers: { answer: ['no'] },
@@ -211,7 +223,7 @@ describe('FsStore persistence', () => {
       })
     ).toThrow('User-input response has invalid responsible user');
     const response = store.createItem({
-      id: 'it_attribution_response',
+      id: 'it_00000000-0000-79dc-91a5-2f09af6d2edb',
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -228,14 +240,21 @@ describe('FsStore persistence', () => {
 
     expect(turn.triggerActor).toEqual(LOCAL_ACTOR);
     expect(() =>
-      store.createItem({ ...message, actor: { kind: 'user', id: 'user_other' } })
+      store.createItem({
+        ...message,
+        actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+      })
     ).toThrow('Item attribution cannot change');
     expect(() =>
-      store.updateItem(message.id, { actor: { kind: 'user', id: 'user_other' } })
+      store.updateItem(message.id, {
+        actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+      })
     ).toThrow('Item attribution cannot change');
-    expect(() => store.updateItem(request.id, { responsibleUserId: 'user_other' })).toThrow(
-      'Item attribution cannot change'
-    );
+    expect(() =>
+      store.updateItem(request.id, {
+        responsibleUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      })
+    ).toThrow('Item attribution cannot change');
     expect(() => store.updateItem(response.id, { causationId: 'request_other' })).toThrow(
       'Item attribution cannot change'
     );
@@ -248,7 +267,7 @@ describe('FsStore persistence', () => {
 
     expect(workspaces).toHaveLength(1);
     expect(workspaces[0]).toMatchObject({
-      id: 'ws_quick_chat',
+      id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       name: 'Quick Chat',
       kind: 'quick-chat',
     });
@@ -267,10 +286,13 @@ describe('FsStore persistence', () => {
   it('uses an explicit Turn start timestamp without changing the default clock path', () => {
     const store = new FsStore();
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const thread = store.createThread('ws_quick_chat', 'Turn timestamp ownership');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Turn timestamp ownership'
+    );
     const beforeDefault = Date.now();
     const defaultTurn = store.createTurn(
-      'ws_quick_chat',
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       thread.id,
       'Use the store clock',
       LOCAL_ACTOR
@@ -278,12 +300,12 @@ describe('FsStore persistence', () => {
     const afterDefault = Date.now();
     const explicitStartedAt = '2026-07-18T03:00:00.000Z';
     const explicitTurn = store.createTurn(
-      'ws_quick_chat',
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       thread.id,
       'Use the accepted command time',
       LOCAL_ACTOR,
       null,
-      { turnId: 'tu_explicit_started_at', startedAt: explicitStartedAt }
+      { turnId: 'tu_00000000-0000-738b-b8cc-142547fa7aa1', startedAt: explicitStartedAt }
     );
 
     expect(new Date(defaultTurn.startedAt!).getTime()).toBeGreaterThanOrEqual(beforeDefault);
@@ -294,9 +316,12 @@ describe('FsStore persistence', () => {
   it('reserves portable-import Approval identities for historical rows', () => {
     const store = new FsStore();
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const thread = store.createThread('ws_quick_chat', 'Reserved approval identity');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Reserved approval identity'
+    );
     const turn = store.createTurn(
-      'ws_quick_chat',
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       thread.id,
       'Do not create imported authority',
       LOCAL_ACTOR
@@ -313,7 +338,7 @@ describe('FsStore persistence', () => {
         threadId: thread.id,
         title: 'Reserved Approval identity',
         turnId: turn.id,
-        workspaceId: 'ws_quick_chat',
+        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       })
     ).toThrow('Approval id uses the reserved portable-import authority namespace.');
   });
@@ -328,7 +353,7 @@ describe('FsStore persistence', () => {
     const requestId = 'artifact-create-lineage-1';
     const body = 'Artifact version one.';
     const artifact = store.createArtifact({
-      id: 'ar_turn_lineage',
+      id: 'ar_00000000-0000-750a-93de-0d8fc440eadc',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -383,7 +408,7 @@ describe('FsStore persistence', () => {
     const createdAt = producingTurn.startedAt ?? '2026-07-18T00:00:00.000Z';
     const versionOneBody = 'Artifact version one.';
     const artifact = store.createArtifact({
-      id: 'ar_revision_lineage',
+      id: 'ar_00000000-0000-7d63-be2e-21670a5f6326',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: producingTurn.id,
@@ -498,7 +523,7 @@ describe('FsStore persistence', () => {
       {
         name: 'non-deterministic current identity',
         producing: historicalReference,
-        current: { ...currentReference, id: 'it_wrong_artifact_reference' },
+        current: { ...currentReference, id: 'it_00000000-0000-7777-9d16-272a5a8a5b1c' },
       },
     ];
 
@@ -568,14 +593,14 @@ describe('FsStore persistence', () => {
       expectedArtifactVersion: 1,
       requestId: 'artifact-introduction-1',
       acceptedAt: '2026-07-18T00:01:00.000Z',
-      turnId: 'tu_artifact_introduction_1',
+      turnId: 'tu_00000000-0000-7536-8fbb-6949bc4c1fc1',
       triggerActor: LOCAL_ACTOR,
     } as const;
     const secondInput = {
       ...firstInput,
       requestId: 'artifact-introduction-2',
       acceptedAt: '2026-07-18T00:02:00.000Z',
-      turnId: 'tu_artifact_introduction_2',
+      turnId: 'tu_00000000-0000-76b7-b19d-0ee254bc0460',
     } as const;
 
     store.createTurn(workspace.id, busyThread.id, 'Keep this Thread active', LOCAL_ACTOR);
@@ -584,7 +609,7 @@ describe('FsStore persistence', () => {
       store.introduceArtifact({
         ...firstInput,
         threadId: busyThread.id,
-        turnId: 'tu_artifact_introduction_busy',
+        turnId: 'tu_00000000-0000-7f26-95e2-15f88faae1af',
       });
     } catch (caught) {
       error = caught;
@@ -645,7 +670,7 @@ describe('FsStore persistence', () => {
 
     const duplicate = {
       ...firstReference,
-      id: 'it_artifact_introduction_duplicate',
+      id: 'it_00000000-0000-7154-8cae-61e44aa74095',
       lastMutationRequestId: 'artifact-introduction-duplicate',
     };
     const turnRoot = join(
@@ -672,23 +697,38 @@ describe('FsStore persistence', () => {
   it('does not retain a turn when its owning thread is missing', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
-    const orphanTurnId = 'tu_missing_thread';
+    const orphanTurnId = 'tu_00000000-0000-7b75-ac5e-5a48515fb117';
 
     seedDemoWorkspace(store);
 
     expect(() =>
-      store.createTurn('ws_demo', 'th_missing', 'Reject this turn', LOCAL_ACTOR, null, {
-        turnId: orphanTurnId,
-      })
-    ).toThrow('Thread not found: th_missing');
+      store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-70ca-938d-c2a0530f9882',
+        'Reject this turn',
+        LOCAL_ACTOR,
+        null,
+        {
+          turnId: orphanTurnId,
+        }
+      )
+    ).toThrow('Thread not found: th_00000000-0000-70ca-938d-c2a0530f9882');
 
     let inMemoryOrphan: ReturnType<FsStore['getTurnById']> | null = null;
     try {
       inMemoryOrphan = store.getTurnById(orphanTurnId);
     } catch {}
 
-    const validThread = store.createThread('ws_demo', 'Persist after rejected turn');
-    store.createTurn('ws_demo', validThread.id, 'Persist valid work', LOCAL_ACTOR);
+    const validThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Persist after rejected turn'
+    );
+    store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      validThread.id,
+      'Persist valid work',
+      LOCAL_ACTOR
+    );
 
     const restarted = new FsStore({ dataRoot });
     let restartedOrphan: ReturnType<FsStore['getTurnById']> | null = null;
@@ -705,16 +745,19 @@ describe('FsStore persistence', () => {
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);
     const session = store.createAgentSession({
-      id: 'as_retained_fact',
+      id: 'as_00000000-0000-7042-83a0-3127fd547a0c',
       agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       status: 'initializing',
       message: null,
       createdAt: '2026-10-03T00:00:00.000Z',
       updatedAt: '2026-10-03T00:00:00.000Z',
     });
-    const retainedStorage = { storageRef: `wst_${'1'.repeat(32)}`, workSlotRef: 'slot-exact' };
+    const retainedStorage = {
+      storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
+      workSlotRef: 'slot-exact',
+    };
     store.updateAgentSession(session.id, { retainedStorage });
     store.updateAgentSession(session.id, { nativeHandleDigest: 'a'.repeat(64), status: 'closed' });
     const restarted = new FsStore({ dataRoot });
@@ -741,9 +784,17 @@ describe('FsStore persistence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);
-    const thread = store.createThread('ws_demo', 'Persistent thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Persist this work', LOCAL_ACTOR);
-    const knowledgeEntry = store.createKnowledgeEntry('ws_demo', {
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Persistent thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Persist this work',
+      LOCAL_ACTOR
+    );
+    const knowledgeEntry = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Persisted knowledge',
       content: 'Knowledge survived restart.',
@@ -751,8 +802,8 @@ describe('FsStore persistence', () => {
     const knowledgeSourceContent = 'Persisted source material.';
     const knowledgeSource = store.createKnowledgeSource(
       {
-        id: 'ks_persisted',
-        workspaceId: 'ws_demo',
+        id: 'ks_00000000-0000-7d21-9eb2-83eaddf3aec7',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'upload',
         title: 'Persisted source',
         uri: null,
@@ -767,9 +818,9 @@ describe('FsStore persistence', () => {
       knowledgeSourceContent
     );
     const agentSession = store.createAgentSession({
-      id: 'as_persisted',
+      id: 'as_00000000-0000-75c9-856b-dc71ec901f44',
       agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       status: 'busy',
       message: null,
@@ -780,8 +831,8 @@ describe('FsStore persistence', () => {
     const artifactBody = 'History survived restart.';
     const artifactRequestId = 'artifact-create-persisted';
     const artifact = store.createArtifact({
-      id: 'ar_persisted',
-      workspaceId: 'ws_demo',
+      id: 'ar_00000000-0000-7120-a42f-20aff7c025d4',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       kind: 'summary',
@@ -804,13 +855,13 @@ describe('FsStore persistence', () => {
 
     store.emitTurnEvent(turn.id, {
       event: 'artifact.created',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'artifact-created', artifact },
     });
 
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const artifactProjectionPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
     const artifactContentPath = join(
       workspaceRoot,
@@ -858,21 +909,34 @@ describe('FsStore persistence', () => {
     );
     expect(readFileSync(knowledgeSourceMaterialPath, 'utf8')).toBe(knowledgeSourceContent);
     expect(JSON.parse(readFileSync(agentSessionProjectionPath, 'utf8'))).toEqual(agentSession);
-    expect(restarted.listThreads('ws_demo').map((item) => item.id)).toContain(thread.id);
-    expect(restarted.getTurn('ws_demo', thread.id, turn.id).id).toBe(turn.id);
-    expect(restarted.getKnowledgeEntry('ws_demo', knowledgeEntry.id)).toEqual(knowledgeEntry);
-    expect(restarted.getKnowledgeSource('ws_demo', knowledgeSource.id)).toEqual(knowledgeSource);
-    expect(restarted.readKnowledgeSourceMaterial('ws_demo', knowledgeSource.id)).toBe(
-      knowledgeSourceContent
-    );
-    expect(restarted.listArtifacts('ws_demo').map((item) => item.id)).toContain(artifact.id);
+    expect(
+      restarted.listThreads('ws_00000000-0000-7000-8000-000000000001').map((item) => item.id)
+    ).toContain(thread.id);
+    expect(
+      restarted.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id).id
+    ).toBe(turn.id);
+    expect(
+      restarted.getKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', knowledgeEntry.id)
+    ).toEqual(knowledgeEntry);
+    expect(
+      restarted.getKnowledgeSource('ws_00000000-0000-7000-8000-000000000001', knowledgeSource.id)
+    ).toEqual(knowledgeSource);
+    expect(
+      restarted.readKnowledgeSourceMaterial(
+        'ws_00000000-0000-7000-8000-000000000001',
+        knowledgeSource.id
+      )
+    ).toBe(knowledgeSourceContent);
+    expect(
+      restarted.listArtifacts('ws_00000000-0000-7000-8000-000000000001').map((item) => item.id)
+    ).toContain(artifact.id);
     expect(restarted.getAgentSession(agentSession.id)).toEqual(agentSession);
     expect(restarted.getTurnEvents(turn.id).map((event) => event.event)).toContain(
       'artifact.created'
     );
     expect(
       restarted
-        .getWorkspaceResources('ws_demo')
+        .getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001')
         .agents.map((agent) => agent.id)
         .sort()
     ).toEqual([]);
@@ -882,14 +946,22 @@ describe('FsStore persistence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);
-    const thread = store.createThread('ws_demo', 'Product-safe session events');
-    const turn = store.createTurn('ws_demo', thread.id, 'Emit a product-safe session', LOCAL_ACTOR);
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Product-safe session events'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Emit a product-safe session',
+      LOCAL_ACTOR
+    );
     const timestamp = '2026-07-12T00:00:00.000Z';
     const sourcePath = '/safe/fake/internal/sse-host-path-marker';
     const agentSession = store.createAgentSession({
-      id: 'as_product_safe_event',
+      id: 'as_00000000-0000-7f97-a4ef-1ea5a4eed1e2',
       agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       status: 'busy',
       message: null,
@@ -912,7 +984,7 @@ describe('FsStore persistence', () => {
 
     const emitted = store.emitTurnEvent(turn.id, {
       event: 'agent.session.updated',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'agent-session-updated', agentSession },
@@ -936,23 +1008,38 @@ describe('FsStore persistence', () => {
   it('emits non-UUID completion and failure envelopes with one scoped protocol request id', () => {
     const store = new FsStore();
     seedDemoWorkspace(store);
-    const thread = store.createThread('ws_demo', 'Goal step event projection');
-    const otherThread = store.createThread('ws_demo', 'Other scoped command id');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Goal step event projection'
+    );
+    const otherThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Other scoped command id'
+    );
     const completionTurn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Complete projection',
       LOCAL_ACTOR
     );
-    const failureTurn = store.createTurn('ws_demo', thread.id, 'Fail projection', LOCAL_ACTOR);
+    const failureTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Fail projection',
+      LOCAL_ACTOR
+    );
     const otherTurn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       otherThread.id,
       'Same command id different thread',
       LOCAL_ACTOR
     );
     const commandId = 'human-approved-readonly-goal-step-20260917-th7';
-    const expectedRequestId = scopedProtocolTurnEventRequestId('ws_demo', thread.id, commandId);
+    const expectedRequestId = scopedProtocolTurnEventRequestId(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      commandId
+    );
     const repeated = store.emitTurnEvent(completionTurn.id, {
       data: {
         code: 'worker_governance_turn_failed',
@@ -963,7 +1050,7 @@ describe('FsStore persistence', () => {
       requestId: commandId,
       threadId: thread.id,
       turnId: completionTurn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const completedTurn = store.updateTurn(completionTurn.id, {
       completedAt: completionTurn.startedAt ?? new Date().toISOString(),
@@ -981,7 +1068,7 @@ describe('FsStore persistence', () => {
       requestId: commandId,
       threadId: thread.id,
       turnId: completionTurn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const failed = store.emitTurnEvent(failureTurn.id, {
       data: { stopReason: 'error', turn: failedTurn, type: 'turn-completed' },
@@ -989,7 +1076,7 @@ describe('FsStore persistence', () => {
       requestId: commandId,
       threadId: thread.id,
       turnId: failureTurn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const otherScope = store.emitTurnEvent(otherTurn.id, {
       data: { stopReason: 'error', turn: otherTurn, type: 'turn-completed' },
@@ -997,14 +1084,18 @@ describe('FsStore persistence', () => {
       requestId: commandId,
       threadId: otherThread.id,
       turnId: otherTurn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(RequestIdSchema.parse(completed.requestId)).toBe(expectedRequestId);
     expect(failed.requestId).toBe(expectedRequestId);
     expect(repeated.requestId).toBe(expectedRequestId);
     expect(otherScope.requestId).toBe(
-      scopedProtocolTurnEventRequestId('ws_demo', otherThread.id, commandId)
+      scopedProtocolTurnEventRequestId(
+        'ws_00000000-0000-7000-8000-000000000001',
+        otherThread.id,
+        commandId
+      )
     );
     expect(otherScope.requestId).not.toBe(expectedRequestId);
     expect(store.getTurnEvents(completionTurn.id).map((event) => event.event)).toEqual([
@@ -1019,8 +1110,16 @@ describe('FsStore persistence', () => {
   it('leaves a canonical protocol UUID request id unchanged on turn events', () => {
     const store = new FsStore();
     seedDemoWorkspace(store);
-    const thread = store.createThread('ws_demo', 'Canonical request id');
-    const turn = store.createTurn('ws_demo', thread.id, 'Keep UUID identity', LOCAL_ACTOR);
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Canonical request id'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Keep UUID identity',
+      LOCAL_ACTOR
+    );
     const requestId = '0190f4c8-0000-7000-8000-000000000701';
     const completedTurn = store.updateTurn(turn.id, {
       completedAt: turn.startedAt ?? new Date().toISOString(),
@@ -1033,7 +1132,7 @@ describe('FsStore persistence', () => {
       requestId,
       threadId: thread.id,
       turnId: turn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(emitted.requestId).toBe(requestId);
@@ -1042,8 +1141,16 @@ describe('FsStore persistence', () => {
   it('still rejects blank turn event request ids', () => {
     const store = new FsStore();
     seedDemoWorkspace(store);
-    const thread = store.createThread('ws_demo', 'Blank request id');
-    const turn = store.createTurn('ws_demo', thread.id, 'Reject blank identity', LOCAL_ACTOR);
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Blank request id'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Reject blank identity',
+      LOCAL_ACTOR
+    );
     const completedTurn = store.updateTurn(turn.id, {
       completedAt: turn.startedAt ?? new Date().toISOString(),
       status: 'completed',
@@ -1057,7 +1164,7 @@ describe('FsStore persistence', () => {
       event: 'turn.completed' as const,
       threadId: thread.id,
       turnId: turn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
 
     expect(() => store.emitTurnEvent(turn.id, { ...event, requestId: '' })).toThrow(
@@ -1081,11 +1188,11 @@ describe('FsStore persistence', () => {
       inputHash: 'sha256:live',
       response: {
         kind: 'turn',
-        id: 'tu_chat',
+        id: 'tu_00000000-0000-7548-b9e4-56b5633aac0e',
         conversationMetadata: {
           downstream: null,
           logicalModelId: 'reasoning',
-          receivingThreadId: 'th_chat',
+          receivingThreadId: 'th_00000000-0000-7ac9-b5d3-7c03840e3fbd',
           receivingWorkspaceId: workspace.id,
           resultKind: 'provider-answer',
           status: 200,
@@ -1100,7 +1207,7 @@ describe('FsStore persistence', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000502',
       scope: { workspaceId: workspace.id },
       inputHash: 'sha256:expired',
-      response: { kind: 'thread', id: 'th_old' },
+      response: { kind: 'thread', id: 'th_00000000-0000-7072-aae0-1071aac8c7ef' },
       createdAt: '2000-01-01T00:00:00.000Z',
       expiresAt: '2000-01-02T00:00:00.000Z',
     });
@@ -1113,11 +1220,11 @@ describe('FsStore persistence', () => {
       })?.response
     ).toEqual({
       kind: 'turn',
-      id: 'tu_chat',
+      id: 'tu_00000000-0000-7548-b9e4-56b5633aac0e',
       conversationMetadata: {
         downstream: null,
         logicalModelId: 'reasoning',
-        receivingThreadId: 'th_chat',
+        receivingThreadId: 'th_00000000-0000-7ac9-b5d3-7c03840e3fbd',
         receivingWorkspaceId: workspace.id,
         resultKind: 'provider-answer',
         status: 200,
@@ -1141,11 +1248,11 @@ describe('FsStore persistence', () => {
       store.recordCommandRequest({
         command: 'thread.create',
         requestId: '0190f4c8-0000-7000-8000-000000000503',
-        scope: { workspaceId: 'ws_quick_chat' },
+        scope: { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28' },
         inputHash: 'sha256:forbidden-snapshot',
         response: {
           kind: 'thread',
-          id: 'th_forbidden',
+          id: 'th_00000000-0000-7c1d-ab5b-151a7bbebfab',
           conversationMetadata: { state: 'queued' },
         },
       })
@@ -1154,11 +1261,11 @@ describe('FsStore persistence', () => {
       store.recordCommandRequest({
         command: 'thread.create',
         requestId: '0190f4c8-0000-7000-8000-000000000504',
-        scope: { workspaceId: 'ws_quick_chat' },
+        scope: { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28' },
         inputHash: 'sha256:forbidden-response-field',
         response: {
           kind: 'thread',
-          id: 'th_forbidden_field',
+          id: 'th_00000000-0000-7372-b75b-20a744140e8c',
           snapshot: { state: 'queued' },
         },
       } as Parameters<FsStore['recordCommandRequest']>[0])
@@ -1167,11 +1274,11 @@ describe('FsStore persistence', () => {
       store.recordCommandRequest({
         command: 'conversation.submit',
         requestId: '0190f4c8-0000-7000-8000-000000000505',
-        scope: { workspaceId: 'ws_quick_chat' },
+        scope: { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28' },
         inputHash: 'sha256:invalid-chat-metadata',
         response: {
           kind: 'turn',
-          id: 'tu_invalid_chat_metadata',
+          id: 'tu_00000000-0000-7a98-af46-ceb72d861586',
           conversationMetadata: { downstream: null, resultKind: 'answered', status: 200 },
         },
       })
@@ -1182,7 +1289,7 @@ describe('FsStore persistence', () => {
   it('does not create storage for workspace-scoped idempotency without a workspace', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = 'ws_missing';
+    const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
 
     expect(() =>
       store.recordCommandRequest({
@@ -1190,7 +1297,7 @@ describe('FsStore persistence', () => {
         requestId: '0190f4c8-0000-7000-8000-000000000505',
         scope: { workspaceId },
         inputHash: 'sha256:missing-workspace',
-        response: { kind: 'thread', id: 'th_missing' },
+        response: { kind: 'thread', id: 'th_00000000-0000-70ca-938d-c2a0530f9882' },
       })
     ).toThrow(`Workspace not found: ${workspaceId}`);
     expect(
@@ -1205,8 +1312,8 @@ describe('FsStore persistence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);
-    const userDb = openUserDb(dataRoot, 'user_local');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7000-8000-000000000001');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(userDb);
       applyScopedMigrations(workspaceDb);
@@ -1220,18 +1327,18 @@ describe('FsStore persistence', () => {
     store.recordCommandRequest({
       command: 'thread.create',
       requestId: workspaceRequestId,
-      scope: { workspaceId: 'ws_demo' },
+      scope: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       inputHash: 'sha256:workspace-database-owner',
-      response: { kind: 'thread', id: 'th_database_owned' },
+      response: { kind: 'thread', id: 'th_00000000-0000-7756-85e1-80371364cde9' },
       createdAt: '2026-07-12T00:00:00.000Z',
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     store.recordCommandRequest({
       command: 'workspace.create',
       requestId: userRequestId,
-      scope: { userId: 'user_local' },
+      scope: { userId: 'usr_00000000-0000-7000-8000-000000000001' },
       inputHash: 'sha256:user-database-owner',
-      response: { kind: 'workspace', id: 'ws_database_owned' },
+      response: { kind: 'workspace', id: 'ws_00000000-0000-7116-b5d0-d8be9495feba' },
       createdAt: '2026-07-12T00:00:01.000Z',
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
@@ -1239,12 +1346,12 @@ describe('FsStore persistence', () => {
     for (const expected of [
       {
         inputHash: 'sha256:user-database-owner',
-        path: userDbPath(dataRoot, 'user_local'),
+        path: userDbPath(dataRoot, 'usr_00000000-0000-7000-8000-000000000001'),
         requestId: userRequestId,
       },
       {
         inputHash: 'sha256:workspace-database-owner',
-        path: workspaceDbPath(dataRoot, 'ws_demo'),
+        path: workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
         requestId: workspaceRequestId,
       },
     ]) {
@@ -1283,7 +1390,7 @@ describe('FsStore persistence', () => {
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);
     const marker = 'runtime_only_test_marker';
-    const resources = store.getWorkspaceResources('ws_demo');
+    const resources = store.getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001');
 
     resources.models.push({
       id: `model_${marker}`,
@@ -1296,7 +1403,7 @@ describe('FsStore persistence', () => {
       name: 'Runtime-only test skill',
       enabled: true,
     });
-    store.upsertAgent('ws_demo', {
+    store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
       id: `agent_${marker}`,
       name: 'Runtime-only test agent',
       kind: 'coder',
@@ -1314,14 +1421,27 @@ describe('FsStore persistence', () => {
       },
     });
 
-    expect(findStorageFilesContaining(join(dataRoot, 'workspaces', 'ws_demo'), marker)).toEqual([]);
+    expect(
+      findStorageFilesContaining(
+        join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001'),
+        marker
+      )
+    ).toEqual([]);
   });
 
   it('clamps derived turn duration when completion time is earlier than start time', () => {
     const store = new FsStore();
     seedDemoWorkspace(store);
-    const thread = store.createThread('ws_demo', 'Clock drift thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Close under clock drift', LOCAL_ACTOR);
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Clock drift thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Close under clock drift',
+      LOCAL_ACTOR
+    );
 
     const updated = store.updateTurn(turn.id, {
       completedAt: '2000-01-01T00:00:00.000Z',

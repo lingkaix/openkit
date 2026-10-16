@@ -37,7 +37,7 @@ function captureBinding(value: 'off' | 'on' = 'off') {
     workspace.id,
     thread.id,
     'Request',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     { captureCoverage: { scope: 'server', value } }
   );
@@ -186,7 +186,11 @@ describe('internal Agent Gateway provider', () => {
     };
     const createResponses = vi.fn(async (_provider, _input, context) => {
       context.transport.onProviderHandoff();
-      throw new GatewayAttemptFailure({ kind: 'auth_rejected', settled: true, status: 401 });
+      throw new GatewayAttemptFailure({
+        kind: 'auth_rejected',
+        settled: true,
+        status: 401,
+      });
     });
     const resolveGatewayProvider = vi.fn((id: string) => {
       if (id === 'backup')
@@ -553,7 +557,7 @@ describe('internal Agent Gateway provider', () => {
       promptCacheScope: { sessionId: 'admin:missing', workspaceId: capture.turn.workspaceId },
       usageEndpoint: 'responses',
       callContext: {
-        authorityActor: { kind: 'user', id: 'user_local' },
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         agentId: 'assistant',
         workspaceId: capture.turn.workspaceId,
         family: 'llm',
@@ -604,7 +608,7 @@ describe('internal Agent Gateway provider', () => {
           type: 'function_call',
           call_id: 'call_status',
           name: 'environment_status',
-          arguments: '{"workspaceId":"ws_target"}',
+          arguments: '{"workspaceId":"ws_00000000-0000-7b16-81e5-c0b623c0c636"}',
         },
       ],
     });
@@ -622,7 +626,10 @@ describe('internal Agent Gateway provider', () => {
           gatewayCapabilities: {},
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
+      promptCacheScope: {
+        sessionId: 'admin:th_00000000-0000-7915-b626-0b698e2552dc',
+        workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
+      },
       usageEndpoint: 'responses',
       capture: captureBinding(),
       onDispatch,
@@ -650,7 +657,7 @@ describe('internal Agent Gateway provider', () => {
               type: 'toolCall',
               callId: 'earlier_status',
               name: 'environment.status',
-              arguments: { workspaceId: 'ws_target' },
+              arguments: { workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' },
             },
             {
               type: 'toolCall',
@@ -715,7 +722,7 @@ describe('internal Agent Gateway provider', () => {
         type: 'function_call',
         call_id: 'earlier_status',
         name: 'environment_status',
-        arguments: '{"workspaceId":"ws_target"}',
+        arguments: '{"workspaceId":"ws_00000000-0000-7b16-81e5-c0b623c0c636"}',
       },
       {
         type: 'function_call',
@@ -740,7 +747,7 @@ describe('internal Agent Gateway provider', () => {
           type: 'toolCall',
           callId: 'call_status',
           name: 'environment.status',
-          arguments: { workspaceId: 'ws_target' },
+          arguments: { workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' },
         },
       ],
     });
@@ -796,7 +803,7 @@ describe('internal Agent Gateway provider', () => {
     const execute = vi.fn(async () => ({
       content: [{ type: 'text' as const, text: 'Available.' }],
     }));
-    const args = { workspaceId: 'ws_target' };
+    const args = { workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' };
     const createResponses = vi
       .fn()
       .mockResolvedValueOnce({
@@ -1143,7 +1150,10 @@ describe('internal Agent Gateway provider', () => {
         modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         requiresApiKey: true,
       }),
-      promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
+      promptCacheScope: {
+        sessionId: 'administration:th_00000000-0000-7915-b626-0b698e2552dc',
+        workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
+      },
       usageEndpoint: 'responses' as const,
     };
     let admittedDb: WorkspaceDb | undefined;
@@ -1280,7 +1290,10 @@ describe('internal Agent Gateway provider', () => {
       providerSubscriptionAccountManager: {
         getPairHandle: async () => ({ models: pairModels }),
       } as never,
-      promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
+      promptCacheScope: {
+        sessionId: 'administration:th_00000000-0000-7915-b626-0b698e2552dc',
+        workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
+      },
       usageEndpoint: 'responses',
     });
 
@@ -1299,7 +1312,10 @@ describe('internal Agent Gateway provider', () => {
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () => ({}) as never,
-      promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
+      promptCacheScope: {
+        sessionId: 'administration:th_00000000-0000-7915-b626-0b698e2552dc',
+        workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
+      },
       usageEndpoint: 'responses',
       capture: captureBinding(),
     });

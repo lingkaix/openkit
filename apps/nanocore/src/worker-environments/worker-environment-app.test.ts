@@ -9,7 +9,6 @@ import type {
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -47,6 +46,7 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -55,7 +55,7 @@ import {
   recordWorkspaceOwnerMembership,
 } from '../workspace-membership.js';
 
-const USER_ID = 'user_worker_environment_app';
+const USER_ID = 'usr_00000000-0000-7609-8d0f-0dfaeefd507a';
 const OWNER_SESSION_HEADER = 'x-openkit-worker-environment-owner-session';
 const AGENT_ID = 'agent_codex_host';
 const CONFIGURATION_FILE_ID = 'agents/codex.agent.jsonc';
@@ -743,7 +743,7 @@ describe('Worker environment App composition', () => {
           status: 409,
         });
       }
-      const foreignUserId = 'user_worker_environment_foreign';
+      const foreignUserId = 'usr_00000000-0000-7d99-87e6-45245a236d32';
       coreDb.sqlite
         .prepare(
           `INSERT INTO users (id, display_name, email, email_verified, image, created_at, updated_at, kind, last_seen_at) VALUES (?, 'Foreign Administrator', 'foreign@example.test', false, NULL, ?, ?, 'human', NULL)`

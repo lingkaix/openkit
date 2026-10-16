@@ -1,4 +1,9 @@
-import { AuditEventSchema } from '@openkit/protocol';
+import {
+  AuditEventIdSchema,
+  AuditEventSchema,
+  PermissionDecisionIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 const PermissionDecisionResultSchema = z.enum([
@@ -14,9 +19,9 @@ const PermissionDecisionResultSchema = z.enum([
 /** Redacted workspace permission decision exposed through the App API. */
 export const WorkspacePermissionDecisionSchema = z
   .object({
-    decisionId: z.string().min(1),
+    decisionId: PermissionDecisionIdSchema,
     ownerScope: z.literal('workspace'),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     policyEngineVersion: z.string().min(1),
     policySnapshotId: z.string().min(1),
     subjectSummary: z.unknown(),
@@ -28,7 +33,7 @@ export const WorkspacePermissionDecisionSchema = z
     enforcementPoint: z.string().min(1),
     requiredApprovalKind: z.string().min(1).nullable(),
     approvalId: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     createdAt: z.string().datetime(),
   })
   .strict();
@@ -36,7 +41,7 @@ export const WorkspacePermissionDecisionSchema = z
 /** Redacted server permission decision exposed through the App API. */
 export const ServerPermissionDecisionSchema = z
   .object({
-    decisionId: z.string().min(1),
+    decisionId: PermissionDecisionIdSchema,
     ownerScope: z.literal('server'),
     workspaceId: z.null(),
     policyEngineVersion: z.string().min(1),
@@ -50,7 +55,7 @@ export const ServerPermissionDecisionSchema = z
     enforcementPoint: z.string().min(1),
     requiredApprovalKind: z.string().min(1).nullable(),
     approvalId: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     createdAt: z.string().datetime(),
   })
   .strict();
@@ -58,7 +63,7 @@ export const ServerPermissionDecisionSchema = z
 /** Read-only workspace audit event ledger for one workspace. */
 export const ListWorkspaceAuditEventsResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     auditEvents: z.array(AuditEventSchema),
   })
   .strict();
@@ -87,7 +92,7 @@ export const ListServerPermissionDecisionsResponseSchema = z
 /** Read-only workspace permission decision ledger for one workspace. */
 export const ListWorkspacePermissionDecisionsResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     permissionDecisions: z.array(WorkspacePermissionDecisionSchema),
   })
   .strict();

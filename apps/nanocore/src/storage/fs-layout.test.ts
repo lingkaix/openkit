@@ -93,7 +93,9 @@ describe('ensureLayout', () => {
     for (const path of [join(root, 'config', 'agents'), join(root, 'workspaces')]) {
       expectDirectory(path);
     }
-    expect(existsSync(join(root, 'users', 'user_local', 'workspaces'))).toBe(false);
+    expect(
+      existsSync(join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'workspaces'))
+    ).toBe(false);
   });
 
   it('is idempotent across repeated calls', async () => {
@@ -127,12 +129,12 @@ describe('ensureLayout', () => {
       'server/vendor',
       'server/vendor/models.dev',
       'users',
-      'users/user_local',
-      'users/user_local/config',
-      'users/user_local/data',
-      'users/user_local/db',
-      'users/user_local/files',
-      'users/user_local/logs',
+      'users/usr_00000000-0000-7000-8000-000000000001',
+      'users/usr_00000000-0000-7000-8000-000000000001/config',
+      'users/usr_00000000-0000-7000-8000-000000000001/data',
+      'users/usr_00000000-0000-7000-8000-000000000001/db',
+      'users/usr_00000000-0000-7000-8000-000000000001/files',
+      'users/usr_00000000-0000-7000-8000-000000000001/logs',
       'workspaces',
     ]);
   });
@@ -183,12 +185,12 @@ describe('ensureLayout', () => {
 
     ensureLayout(root);
     const originalDeploymentId = readDataRootLayoutMarker(root).deploymentId;
-    const marker = recordDataRootDeploymentMove(root, 'dep_moved');
+    const marker = recordDataRootDeploymentMove(root, 'dep_00000000-0000-7198-9759-a2c549718546');
 
     expect(marker).toEqual({
       schemaVersion: 1,
       layoutVersion: 2,
-      deploymentId: 'dep_moved',
+      deploymentId: 'dep_00000000-0000-7198-9759-a2c549718546',
       predecessorDeploymentId: originalDeploymentId,
     });
     expect(readDataRootLayoutMarker(root)).toEqual(marker);
@@ -233,7 +235,7 @@ describe('ensureLayout', () => {
       `${JSON.stringify({
         schemaVersion: 1,
         layoutVersion: 1,
-        deploymentId: 'dep_predecessor',
+        deploymentId: 'dep_00000000-0000-703d-a440-69be2389c753',
       })}\n`
     );
 
@@ -252,19 +254,45 @@ describe('ensureLayout', () => {
   it('fails closed when a legacy workspace memory directory exists', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    mkdirSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'memory'), {
-      recursive: true,
-    });
+    mkdirSync(
+      join(
+        root,
+        'users',
+        'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+        'workspaces',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        'memory'
+      ),
+      {
+        recursive: true,
+      }
+    );
 
     expect(() => ensureLayout(root)).toThrow(/legacy workspace memory directory/);
   });
 
   it('fails closed when a legacy workspace store snapshot exists', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    const storePath = join(root, 'users', 'user_1', 'workspaces', 'ws_1', 'store.json');
+    const storePath = join(
+      root,
+      'users',
+      'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+      'workspaces',
+      'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      'store.json'
+    );
     const legacySnapshot = '{"legacy":true}\n';
 
-    mkdirSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1'), { recursive: true });
+    mkdirSync(
+      join(
+        root,
+        'users',
+        'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+        'workspaces',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201'
+      ),
+      { recursive: true }
+    );
     writeFileSync(storePath, legacySnapshot);
 
     expect(() => ensureLayout(root)).toThrow(/Unsupported legacy workspace store snapshot/);
@@ -274,8 +302,13 @@ describe('ensureLayout', () => {
   it('fails closed when canonical database filenames appear under the wrong owner', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    mkdirSync(join(root, 'workspaces', 'ws_1', 'db'), { recursive: true });
-    writeFileSync(join(root, 'workspaces', 'ws_1', 'db', 'core.sqlite'), '');
+    mkdirSync(join(root, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'db'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'db', 'core.sqlite'),
+      ''
+    );
 
     expect(() => ensureLayout(root)).toThrow(/database ownership violation/);
   });
@@ -284,11 +317,21 @@ describe('ensureLayout', () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
     mkdirSync(join(root, 'server', 'db'), { recursive: true });
-    mkdirSync(join(root, 'users', 'user_1', 'db'), { recursive: true });
-    mkdirSync(join(root, 'workspaces', 'ws_1', 'db'), { recursive: true });
+    mkdirSync(join(root, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'db'), {
+      recursive: true,
+    });
+    mkdirSync(join(root, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'db'), {
+      recursive: true,
+    });
     writeFileSync(join(root, 'server', 'db', 'core.sqlite'), '');
-    writeFileSync(join(root, 'users', 'user_1', 'db', 'user.sqlite'), '');
-    writeFileSync(join(root, 'workspaces', 'ws_1', 'db', 'workspace.sqlite'), '');
+    writeFileSync(
+      join(root, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'db', 'user.sqlite'),
+      ''
+    );
+    writeFileSync(
+      join(root, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'db', 'workspace.sqlite'),
+      ''
+    );
 
     expect(() => ensureLayout(root)).not.toThrow();
   });
@@ -296,15 +339,23 @@ describe('ensureLayout', () => {
   it('fails closed when a canonical record envelope names an unknown family', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    mkdirSync(join(root, 'workspaces', 'ws_1', 'evidence'), { recursive: true });
+    mkdirSync(join(root, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'evidence'), {
+      recursive: true,
+    });
     writeFileSync(
-      join(root, 'workspaces', 'ws_1', 'evidence', 'future.json'),
+      join(
+        root,
+        'workspaces',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        'evidence',
+        'future.json'
+      ),
       `${JSON.stringify({
         schemaVersion: 1,
         recordType: 'future-canonical-family',
         id: 'future_1',
         ownerScope: 'workspace',
-        lineage: { workspaceId: 'ws_1' },
+        lineage: { workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' },
         createdAt: '2026-07-07T00:00:00.000Z',
         updatedAt: '2026-07-07T00:00:00.000Z',
         contentDigest: 'sha256:future',
@@ -328,7 +379,7 @@ describe('ensureLayout', () => {
         recordType: 'workspace-export',
         id: 'export_1',
         ownerScope: 'workspace',
-        lineage: { workspaceId: 'ws_1' },
+        lineage: { workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' },
         createdAt: '2026-07-07T00:00:00.000Z',
         updatedAt: '2026-07-07T00:00:00.000Z',
         contentDigest: 'sha256:export',
@@ -344,26 +395,26 @@ describe('ensureLayout', () => {
   it.each([
     [
       'aep-snapshot',
-      'workspaces/ws_mention/runtime/agent-sessions/session/aep-snapshots/snapshot.json',
+      'workspaces/ws_00000000-0000-7c7e-8bee-4b823f4bb792/runtime/agent-sessions/session/aep-snapshots/snapshot.json',
     ],
-    ['workspace-markdown', 'workspaces/ws_mention/files/README.md'],
+    ['workspace-markdown', 'workspaces/ws_00000000-0000-7c7e-8bee-4b823f4bb792/files/README.md'],
     [
       'backend-raw-stream',
-      'workspaces/ws_mention/evidence/backend/evb_stream/raw/stream-0000.jsonl',
+      'workspaces/ws_00000000-0000-7c7e-8bee-4b823f4bb792/evidence/backend/evb_stream/raw/stream-0000.jsonl',
     ],
     [
       'workspace-skill-snapshot',
-      'workspaces/ws_mention/catalog/skill-snapshots/skill_demo/deadbeef/SKILL.md',
+      'workspaces/ws_00000000-0000-7c7e-8bee-4b823f4bb792/catalog/skill-snapshots/skill_demo/deadbeef/SKILL.md',
     ],
     ['server-skill-snapshot', 'server/catalog/skill-snapshots/skill_server/cafe/SKILL.md'],
     [
       'workspace-plugin-snapshot',
-      'workspaces/ws_mention/catalog/plugin-snapshots/plugin_demo/deadbeef/plugin.json',
+      'workspaces/ws_00000000-0000-7c7e-8bee-4b823f4bb792/catalog/plugin-snapshots/plugin_demo/deadbeef/plugin.json',
     ],
     ['server-plugin-snapshot', 'server/catalog/plugin-snapshots/plugin_server/babe/plugin.json'],
   ] as const)('allows a data-root mention in %s content during verification and Workspace open', async (kind, relativePath) => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    ensureWorkspaceLayout(root, 'ws_mention');
+    ensureWorkspaceLayout(root, 'ws_00000000-0000-7c7e-8bee-4b823f4bb792');
     const record = join(root, relativePath);
     const content =
       kind === 'aep-snapshot'
@@ -378,7 +429,7 @@ describe('ensureLayout', () => {
     mkdirSync(join(record, '..'), { recursive: true });
     writeFileSync(record, content);
     expect(() => ensureLayout(root)).not.toThrow();
-    const db = openWorkspaceDb(root, 'ws_mention');
+    const db = openWorkspaceDb(root, 'ws_00000000-0000-7c7e-8bee-4b823f4bb792');
     try {
       expect(db.sqlite.prepare('SELECT 1 AS ready').get()).toEqual({ ready: 1 });
       expect(readFileSync(record, 'utf8')).toBe(content);
@@ -440,13 +491,13 @@ describe('ensureLayout', () => {
 
   it('creates user and owner-independent workspace skeletons without overwriting files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    const userPaths = ensureUserLayout(root, 'user_1');
-    const workspacePaths = ensureWorkspaceLayout(root, 'ws_1');
+    const userPaths = ensureUserLayout(root, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    const workspacePaths = ensureWorkspaceLayout(root, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
     const operatorFile = join(workspacePaths.data, 'operator.txt');
 
     writeFileSync(operatorFile, 'operator-data\n');
-    ensureUserLayout(root, 'user_1');
-    ensureWorkspaceLayout(root, 'ws_1');
+    ensureUserLayout(root, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    ensureWorkspaceLayout(root, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     for (const path of [
       userPaths.files,
@@ -478,8 +529,20 @@ describe('ensureLayout', () => {
     ]) {
       expectDirectory(path);
     }
-    expect(workspacePaths.root).toBe(join(root, 'workspaces', 'ws_1'));
-    expect(existsSync(join(root, 'users', 'user_1', 'workspaces', 'ws_1'))).toBe(false);
+    expect(workspacePaths.root).toBe(
+      join(root, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201')
+    );
+    expect(
+      existsSync(
+        join(
+          root,
+          'users',
+          'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+          'workspaces',
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      )
+    ).toBe(false);
     expect(readFileSync(operatorFile, 'utf8')).toBe('operator-data\n');
   });
 
@@ -489,7 +552,7 @@ describe('ensureLayout', () => {
     ensureLayout(root);
 
     expectDirectory(join(root, 'server', 'db'));
-    expectDirectory(join(root, 'users', 'user_local', 'db'));
+    expectDirectory(join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'db'));
   });
 
   it('keeps core.sqlite under the server ownership scope', async () => {
@@ -615,8 +678,8 @@ describe('resolveDataRootPath', () => {
   it('resolves relative paths below DATA_ROOT', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    expect(resolveDataRootPath(root, 'users', 'user_local')).toBe(
-      join(root, 'users', 'user_local')
+    expect(resolveDataRootPath(root, 'users', 'usr_00000000-0000-7000-8000-000000000001')).toBe(
+      join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001')
     );
   });
 

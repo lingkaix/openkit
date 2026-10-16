@@ -16,12 +16,12 @@ import {
 describe('workspace apply results', () => {
   it('normalizes retained verification additions and preserves exact replay bytes after reopening', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-apply-result-extensions-'));
-    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const input: RecordWorkspaceApplyResultInput = {
       requestId: 'request_apply_extensions',
       result: {
         id: 'war_extensions',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: 'swr_extensions',
         changeSetId: 'wcs_extensions',
         status: 'conflicted',
@@ -48,15 +48,15 @@ describe('workspace apply results', () => {
         .prepare('UPDATE workspace_apply_results SET verification_json = ?')
         .run(verification);
       db.sqlite.close();
-      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(
         GetWorkspaceApplyResultResponseSchema.parse(
-          getWorkspaceApplyResult(db, 'ws_demo', input.result.id)
+          getWorkspaceApplyResult(db, 'ws_00000000-0000-7000-8000-000000000001', input.result.id)
         )
       ).toEqual(input.result);
-      expect(listExportableWorkspaceApplyResults(db, 'ws_demo')).toEqual([
-        { ...input.result, requestId: input.requestId },
-      ]);
+      expect(
+        listExportableWorkspaceApplyResults(db, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([{ ...input.result, requestId: input.requestId }]);
       expect(recordWorkspaceApplyResult(db, input)).toEqual(input.result);
       expect(
         db.sqlite.prepare('SELECT verification_json FROM workspace_apply_results').get()
@@ -64,10 +64,10 @@ describe('workspace apply results', () => {
         verification_json: verification,
       });
       db.sqlite.close();
-      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(
         GetWorkspaceApplyResultResponseSchema.parse(
-          getWorkspaceApplyResult(db, 'ws_demo', input.result.id)
+          getWorkspaceApplyResult(db, 'ws_00000000-0000-7000-8000-000000000001', input.result.id)
         )
       ).toEqual(input.result);
       for (const invalid of [
@@ -77,19 +77,25 @@ describe('workspace apply results', () => {
         db.sqlite
           .prepare('UPDATE workspace_apply_results SET verification_json = ?')
           .run(JSON.stringify(invalid));
-        expect(() => getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toThrow();
+        expect(() =>
+          getWorkspaceApplyResult(db, 'ws_00000000-0000-7000-8000-000000000001', input.result.id)
+        ).toThrow();
       }
       db.sqlite
         .prepare('UPDATE workspace_apply_results SET verification_json = ?, status = ?')
         .run(verification, 'future');
-      expect(() => getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toThrow();
+      expect(() =>
+        getWorkspaceApplyResult(db, 'ws_00000000-0000-7000-8000-000000000001', input.result.id)
+      ).toThrow();
       db.sqlite
         .prepare('UPDATE workspace_apply_results SET status = ?, conflict_records_json = ?')
         .run(
           'conflicted',
           JSON.stringify([{ message: 'not a known conflict string', futureAnnotation: true }])
         );
-      expect(() => getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toThrow();
+      expect(() =>
+        getWorkspaceApplyResult(db, 'ws_00000000-0000-7000-8000-000000000001', input.result.id)
+      ).toThrow();
     } finally {
       db.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -98,7 +104,7 @@ describe('workspace apply results', () => {
 
   it('records one linked audit event when an apply result is stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-result-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -116,7 +122,7 @@ describe('workspace apply results', () => {
           skippedPaths: [],
           status: 'applied',
           verification: [],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       });
       recordWorkspaceApplyResult(workspaceDb, {
@@ -132,7 +138,7 @@ describe('workspace apply results', () => {
           skippedPaths: [],
           status: 'applied',
           verification: [],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       });
 
@@ -168,13 +174,13 @@ describe('workspace apply results', () => {
           resource: 'workspace-review:swr_1',
           severity: 'info',
           summary: 'Workspace apply result applied: 1 applied path, 0 skipped paths, 0 conflicts',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
       expect(evidenceBundles).toEqual([
         expect.objectContaining({
           evidence_bundle_id: 'evb_workspace_apply_war_1',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           source_kind: 'workspace-apply-result',
           summary: 'Workspace apply result applied: 1 applied path, 0 skipped paths, 0 conflicts',
           redacted_evidence_refs_json: JSON.stringify([
@@ -196,7 +202,7 @@ describe('workspace apply results', () => {
 
   it('rejects a replay when an existing apply result id has any different payload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-result-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const baseline = {
       requestId: '00000000-0000-4000-8000-000000000021',
       result: {
@@ -210,7 +216,7 @@ describe('workspace apply results', () => {
         skippedPaths: [],
         status: 'applied',
         verification: [],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
     } satisfies RecordWorkspaceApplyResultInput;
 

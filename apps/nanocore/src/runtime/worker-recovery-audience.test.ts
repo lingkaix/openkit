@@ -4,13 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempt-records.js';
@@ -36,7 +36,7 @@ function recordReleasedRestartLease(
 ): void {
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     profileRef: 'agent_codex_host',
     queueEntryId: `queue_${input.turnId}`,
     requestId: `request_${input.turnId}`,
@@ -81,7 +81,7 @@ function seedInterruptedWorker(input: {
 }): string {
   const turn = input.store.createTurn(input.workspaceId, input.threadId, input.diagnosticsSummary, {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const agentSessionId = `as_${turn.id}`;
   const completedAt = '2026-09-16T00:00:00.000Z';
@@ -159,19 +159,19 @@ describe('interrupted worker list Thread audience', () => {
     const workspace = store.createWorkspace('Recovery audience team');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const now = Date.now();
     coreDb.sqlite
       .prepare(
-        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('user_other', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
+        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(now, now);
     const stamp = '2026-09-16T00:00:00.000Z';
     coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, stamp, stamp, stamp);
 
@@ -180,14 +180,14 @@ describe('interrupted worker list Thread audience', () => {
       'Own private recovery thread',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const otherPrivateThread = store.createThread(
       workspace.id,
       'Other private recovery thread',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_other' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
     const sharedThread = store.createThread(
       workspace.id,
@@ -263,19 +263,19 @@ describe('interrupted worker list Thread audience', () => {
       store,
     });
     const ownerToken = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const memberToken = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_other',
+      ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const adminToken = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -367,7 +367,9 @@ describe('interrupted worker list Thread audience', () => {
 
       const sessionApp = createApp({
         auth: {
-          api: { getSession: async () => ({ user: { id: 'user_local' } }) },
+          api: {
+            getSession: async () => ({ user: { id: 'usr_00000000-0000-7000-8000-000000000001' } }),
+          },
           handler: async () => new Response(null, { status: 404 }),
         },
         coreDb,
@@ -421,7 +423,7 @@ describe('interrupted worker list Thread audience', () => {
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const thread = store.createThread(workspace.id, 'Original attempt');
     const turnId = seedInterruptedWorker({

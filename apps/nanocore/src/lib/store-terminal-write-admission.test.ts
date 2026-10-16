@@ -17,7 +17,7 @@ import {
   type FsStore,
 } from './store.js';
 
-const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
+const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 const COMPLETED_AT = '2026-09-22T00:00:00.000Z';
 
 /**
@@ -28,10 +28,20 @@ const COMPLETED_AT = '2026-09-22T00:00:00.000Z';
  * @returns Seeded turn.
  */
 function seedTurn(store: FsStore, status: 'running' | 'completed' | 'failed' = 'running') {
-  const thread = store.createThread('ws_demo', 'Terminal write admission');
-  const turn = store.createTurn('ws_demo', thread.id, 'Admit terminal writes', LOCAL_ACTOR, null, {
-    startedAt: COMPLETED_AT,
-  });
+  const thread = store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Terminal write admission'
+  );
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    thread.id,
+    'Admit terminal writes',
+    LOCAL_ACTOR,
+    null,
+    {
+      startedAt: COMPLETED_AT,
+    }
+  );
   if (status === 'running') {
     return turn;
   }
@@ -93,7 +103,7 @@ function seedMcpBootItem(input: {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-mcp-'));
   const store = createDemoStore({ dataRoot });
   const turn = seedTurn(store, 'completed');
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   const ledgerNow = new Date(COMPLETED_AT);
   try {
@@ -183,7 +193,9 @@ describe('post-terminal write admission', () => {
     const turn = seedTurn(store, 'completed');
 
     expect(() =>
-      store.createItem(statusItem(turn, 'it_plain_new_after_terminal', 'New after terminal'))
+      store.createItem(
+        statusItem(turn, 'it_00000000-0000-7087-af6f-85feb4828a44', 'New after terminal')
+      )
     ).toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
   });
 
@@ -191,16 +203,16 @@ describe('post-terminal write admission', () => {
     const store = createDemoStore();
     const turn = seedTurn(store, 'completed');
     const created = store.createItem(
-      statusItem(turn, 'it_gated_writers', 'Display'),
+      statusItem(turn, 'it_00000000-0000-72b3-a0f0-5a7ff4b63cfb', 'Display'),
       DISPLAY_PROJECTION_REFRESH_ADMISSION
     );
 
     expect(() => store.updateTurn(turn.id, { agentId: 'agent_codex_host' })).toThrow(
       `Turn ${turn.id} is terminal and does not admit this write.`
     );
-    expect(() => store.createItem(statusItem(turn, 'it_gated_create', 'Another item'))).toThrow(
-      `Turn ${turn.id} is terminal and does not admit this write.`
-    );
+    expect(() =>
+      store.createItem(statusItem(turn, 'it_00000000-0000-73ad-8da6-f6643485b939', 'Another item'))
+    ).toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
     expect(() =>
       store.emitTurnEvent(turn.id, {
         data: { type: 'error', code: 'plain', message: 'plain' },
@@ -219,18 +231,23 @@ describe('post-terminal write admission', () => {
     const store = createDemoStore();
     const turn = seedTurn(store, 'completed');
     const decided = store.createItem(
-      statusItem(turn, 'it_decided_bytes', 'Decided summary'),
+      statusItem(turn, 'it_00000000-0000-788b-954a-51d98089bbd8', 'Decided summary'),
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
     expect(
       store.createItem(
-        statusItem(turn, 'it_decided_bytes', 'Decided summary'),
+        statusItem(turn, 'it_00000000-0000-788b-954a-51d98089bbd8', 'Decided summary'),
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       )
     ).toEqual(decided);
     expect(() =>
       store.createItem(
-        statusItem(turn, 'it_decided_bytes', 'Decided summary', '2026-09-22T00:00:01.000Z'),
+        statusItem(
+          turn,
+          'it_00000000-0000-788b-954a-51d98089bbd8',
+          'Decided summary',
+          '2026-09-22T00:00:01.000Z'
+        ),
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       )
     ).toThrow(
@@ -238,7 +255,7 @@ describe('post-terminal write admission', () => {
     );
 
     const display = store.createItem(
-      statusItem(turn, 'it_display_refresh', 'Original summary'),
+      statusItem(turn, 'it_00000000-0000-726f-a328-737bcd0a4586', 'Original summary'),
       DISPLAY_PROJECTION_REFRESH_ADMISSION
     );
     const refreshed = store.updateItem(
@@ -273,7 +290,7 @@ describe('post-terminal write admission', () => {
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: COMPLETED_AT,
-      id: 'as_terminalize_grid',
+      id: 'as_00000000-0000-7b5a-a83a-78d4ea18d1f1',
       message: null,
       status: 'busy',
       threadId: turn.threadId,
@@ -281,7 +298,7 @@ describe('post-terminal write admission', () => {
       workspaceId: turn.workspaceId,
     });
     const input = {
-      agentSessionId: 'as_terminalize_grid',
+      agentSessionId: 'as_00000000-0000-7b5a-a83a-78d4ea18d1f1',
       completedAt: COMPLETED_AT,
       errorCode: 'worker_governance_turn_failed',
       message: 'Worker failed.',
@@ -313,7 +330,7 @@ describe('post-terminal write admission', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-mcp-admission-'));
     const store = createDemoStore({ dataRoot });
     const turn = seedTurn(store, 'completed');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     try {
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
@@ -325,10 +342,10 @@ describe('post-terminal write admission', () => {
         agentId: 'agent_codex',
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: turn.triggerActor,
-        callId: 'cap_mcp_admission',
+        callId: 'cap_00000000-0000-7093-9d26-a0fb6e745bde',
         capabilityId: 'mcp.call_tool',
         family: 'mcp',
-        itemId: 'it_mcp_admission',
+        itemId: 'it_00000000-0000-7716-8602-110ce91c304f',
         operation: 'mcp.call_tool',
         packageSnapshotId: environmentPackage.snapshotId,
         providerRef: 'echo',
@@ -348,23 +365,26 @@ describe('post-terminal write admission', () => {
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
     expect(store.listAllItems()).toContainEqual(
-      expect.objectContaining({ id: 'it_mcp_admission', causationId: 'cap_mcp_admission' })
+      expect.objectContaining({
+        id: 'it_00000000-0000-7716-8602-110ce91c304f',
+        causationId: 'cap_00000000-0000-7093-9d26-a0fb6e745bde',
+      })
     );
 
     const conflictRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-mcp-admission-conflict-'));
     const conflictStore = createDemoStore({ dataRoot: conflictRoot });
     const conflictTurn = seedTurn(conflictStore, 'completed');
-    const conflictDb = openWorkspaceDb(conflictRoot, 'ws_demo');
+    const conflictDb = openWorkspaceDb(conflictRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(conflictDb);
     try {
       const call = startCapabilityCall({
         agentId: 'agent_codex',
-        agentSessionId: 'as_mcp_conflict',
+        agentSessionId: 'as_00000000-0000-775f-b465-57ce886fa280',
         authorityActor: conflictTurn.triggerActor,
-        callId: 'cap_mcp_conflict',
+        callId: 'cap_00000000-0000-7e5e-b47c-e8154829070d',
         capabilityId: 'mcp.call_tool',
         family: 'mcp',
-        itemId: 'it_mcp_conflict',
+        itemId: 'it_00000000-0000-7585-88a1-d483d1404105',
         operation: 'mcp.call_tool',
         packageSnapshotId: 'aepsnap_conflict',
         providerRef: 'echo',
@@ -382,12 +402,12 @@ describe('post-terminal write admission', () => {
     conflictStore.createItem(
       {
         arguments: null,
-        causationId: 'cap_mcp_conflict',
+        causationId: 'cap_00000000-0000-7e5e-b47c-e8154829070d',
         completedAt: COMPLETED_AT,
         createdAt: COMPLETED_AT,
         durationMs: 0,
         error: null,
-        id: 'it_mcp_conflict',
+        id: 'it_00000000-0000-7585-88a1-d483d1404105',
         result: null,
         server: 'echo',
         status: 'failed',
@@ -409,7 +429,7 @@ describe('post-terminal write admission', () => {
     const store = createDemoStore();
     const turn = seedTurn(store, 'completed');
     const decision = {
-      id: 'it_approval_decision_grid',
+      id: 'it_00000000-0000-76be-a8ee-b6bc95c15d80',
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -424,10 +444,10 @@ describe('post-terminal write admission', () => {
       completedAt: COMPLETED_AT,
     };
     expect(store.createItem(decision, ALREADY_DECIDED_PUBLICATION_ADMISSION)).toMatchObject({
-      id: 'it_approval_decision_grid',
+      id: 'it_00000000-0000-76be-a8ee-b6bc95c15d80',
     });
     expect(store.createItem(decision, ALREADY_DECIDED_PUBLICATION_ADMISSION)).toMatchObject({
-      id: 'it_approval_decision_grid',
+      id: 'it_00000000-0000-76be-a8ee-b6bc95c15d80',
     });
     expect(() =>
       store.createItem({ ...decision, decision: 'denied' }, ALREADY_DECIDED_PUBLICATION_ADMISSION)
@@ -508,7 +528,7 @@ describe('post-terminal write admission', () => {
     const turn = seedTurn(store, 'completed');
     const marker = store.createItem(
       {
-        id: 'it_configuration_apply_pending',
+        id: 'it_00000000-0000-7930-99d0-7ca81784886e',
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,
@@ -574,9 +594,9 @@ describe('post-terminal write admission', () => {
 
   it('rejects MCP boot when createdAt disagrees with the reconstructed publication', () => {
     const { dataRoot, store } = seedMcpBootItem({
-      callId: 'cap_mcp_createdat',
+      callId: 'cap_00000000-0000-76ba-b8df-bac9d2a0c398',
       createdAt: '1999-01-01T00:00:00.000Z',
-      itemId: 'it_mcp_createdat',
+      itemId: 'it_00000000-0000-748c-8305-6a5f709ad4dc',
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
@@ -586,11 +606,11 @@ describe('post-terminal write admission', () => {
 
   it('rejects MCP boot when parentItemId disagrees with the snapshot-decided publication', () => {
     const { dataRoot, store } = seedMcpBootItem({
-      callId: 'cap_mcp_parent',
+      callId: 'cap_00000000-0000-7857-bc0e-eeefad7b0be3',
       createdAt: COMPLETED_AT,
-      itemId: 'it_mcp_parent',
-      parentItemId: 'it_other_parent',
-      scopeItemId: 'it_decided_parent',
+      itemId: 'it_00000000-0000-769e-be1f-7403aafc125a',
+      parentItemId: 'it_00000000-0000-7cf3-9109-8d6d8c869be2',
+      scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
@@ -600,16 +620,18 @@ describe('post-terminal write admission', () => {
 
   it('fills a missing MCP Item with the parentItemId its AEP snapshot decided', () => {
     const { dataRoot, store } = seedMcpBootItem({
-      callId: 'cap_mcp_parent_fill',
+      callId: 'cap_00000000-0000-7cdc-b914-b7a5d15e233e',
       createdAt: COMPLETED_AT,
-      itemId: 'it_mcp_parent_fill',
-      scopeItemId: 'it_decided_parent',
+      itemId: 'it_00000000-0000-771b-ae29-9f651adf70c6',
+      scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
       skipExistingItem: true,
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-    expect(store.listAllItems().find((item) => item.id === 'it_mcp_parent_fill')).toMatchObject({
-      parentItemId: 'it_decided_parent',
+    expect(
+      store.listAllItems().find((item) => item.id === 'it_00000000-0000-771b-ae29-9f651adf70c6')
+    ).toMatchObject({
+      parentItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
     });
   });
 
@@ -617,23 +639,25 @@ describe('post-terminal write admission', () => {
     // The decided publication cannot be rebuilt without its snapshot, and an Item without the parent
     // it carried is a different record. Leaving the row lets a later boot fill it truthfully.
     const missing = seedMcpBootItem({
-      callId: 'cap_mcp_no_snapshot_fill',
+      callId: 'cap_00000000-0000-7053-bc05-8a6277272c95',
       createdAt: COMPLETED_AT,
-      itemId: 'it_mcp_no_snapshot_fill',
+      itemId: 'it_00000000-0000-7cc3-9117-739fef9522e4',
       skipExistingItem: true,
       skipSnapshot: true,
     });
     verifyAndMigrateExistingScopedDatabases(missing.dataRoot);
     expect(reconcileWorkerMcpItems(missing.dataRoot, missing.store)).toBe(0);
     expect(
-      missing.store.listAllItems().find((item) => item.id === 'it_mcp_no_snapshot_fill')
+      missing.store
+        .listAllItems()
+        .find((item) => item.id === 'it_00000000-0000-7cc3-9117-739fef9522e4')
     ).toBeUndefined();
 
     const present = seedMcpBootItem({
-      callId: 'cap_mcp_no_snapshot_parent',
+      callId: 'cap_00000000-0000-71c8-aeb1-254bd7d88893',
       createdAt: COMPLETED_AT,
-      itemId: 'it_mcp_no_snapshot_parent',
-      parentItemId: 'it_other_parent',
+      itemId: 'it_00000000-0000-7b9c-ab46-70e2fb10d1b6',
+      parentItemId: 'it_00000000-0000-7cf3-9109-8d6d8c869be2',
       skipSnapshot: true,
     });
     verifyAndMigrateExistingScopedDatabases(present.dataRoot);
@@ -644,10 +668,10 @@ describe('post-terminal write admission', () => {
     // Nothing writes this pair any more: a row whose snapshot is unreadable is left unfilled rather
     // than published without its parent, so a stored null against a decided parent is a conflict.
     const { dataRoot, store } = seedMcpBootItem({
-      callId: 'cap_mcp_parent_backfilled',
+      callId: 'cap_00000000-0000-73aa-add4-e2d3c68bbad4',
       createdAt: COMPLETED_AT,
-      itemId: 'it_mcp_parent_backfilled',
-      scopeItemId: 'it_decided_parent',
+      itemId: 'it_00000000-0000-78cf-ac54-13510d8883d9',
+      scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
@@ -657,33 +681,38 @@ describe('post-terminal write admission', () => {
 
   it('still fills a row whose stored snapshot lineage is absent, without inventing a parent', () => {
     const { dataRoot, store } = seedMcpBootItem({
-      callId: 'cap_mcp_null_lineage',
+      callId: 'cap_00000000-0000-7ba9-b455-c6bed7426d40',
       createdAt: COMPLETED_AT,
-      itemId: 'it_mcp_null_lineage',
+      itemId: 'it_00000000-0000-7e65-81be-6ad9d7083cfc',
       nullSnapshotLineage: true,
       skipExistingItem: true,
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-    const filled = store.listAllItems().find((item) => item.id === 'it_mcp_null_lineage');
-    expect(filled).toMatchObject({ causationId: 'cap_mcp_null_lineage', status: 'completed' });
+    const filled = store
+      .listAllItems()
+      .find((item) => item.id === 'it_00000000-0000-7e65-81be-6ad9d7083cfc');
+    expect(filled).toMatchObject({
+      causationId: 'cap_00000000-0000-7ba9-b455-c6bed7426d40',
+      status: 'completed',
+    });
     expect(filled as unknown as { parentItemId?: string }).not.toHaveProperty('parentItemId');
   });
 
   it('leaves a generative MCP call row alone because it published no tool-call Item', () => {
     // Generative rows carry capability_id 'mcp.call_tool.<name>' and store the parent Item in item_id.
     const { dataRoot, store } = seedMcpBootItem({
-      callId: 'cap_mcp_generative',
+      callId: 'cap_00000000-0000-7bae-80ab-e61aec7becb8',
       capabilityId: 'mcp.call_tool.openkit_generative_present',
       createdAt: COMPLETED_AT,
-      itemId: 'it_mcp_generative_parent',
+      itemId: 'it_00000000-0000-7ab4-86dd-d5511a0d438e',
       skipExistingItem: true,
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
-    expect(store.listAllItems().find((item) => item.id === 'it_mcp_generative_parent')).toBe(
-      undefined
-    );
+    expect(
+      store.listAllItems().find((item) => item.id === 'it_00000000-0000-7ab4-86dd-d5511a0d438e')
+    ).toBe(undefined);
   });
 
   it('rejects a brand-new turn-output Artifact against a sealed Turn', () => {
@@ -694,7 +723,7 @@ describe('post-terminal write admission', () => {
 
     expect(() =>
       store.createArtifact({
-        id: 'ar_after_terminal',
+        id: 'ar_00000000-0000-78c4-95cd-6093ab5a4c37',
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,

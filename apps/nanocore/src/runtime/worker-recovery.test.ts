@@ -10,8 +10,6 @@ import {
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
-
-import { ensureLocalUser } from '../auth/identity.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
@@ -20,6 +18,7 @@ import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js'
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -66,16 +65,25 @@ function createCheckpointCloseoutFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const store = createDemoStore({ dataRoot });
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   const requestId = options.requestId ?? '00000000-0000-4000-8000-000000000501';
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Recover exact worker closeout', {
-    kind: 'user',
-    id: 'user_local',
-  });
-  const agentSessionId = 'as_checkpoint_closeout';
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Recover exact worker closeout',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
+  const agentSessionId = 'as_00000000-0000-73c3-bedd-d6971f391e97';
   store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId });
   const createdAt = new Date().toISOString();
   const environmentPackage = resolveAgentEnvironmentPackage({
@@ -264,7 +272,7 @@ function recordCloseoutConversationReceipt(
     requestId: checkpoint.requestId,
     inputHash: checkpoint.requestInputHash,
     scope: {
-      actorId: 'user_local',
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: checkpoint.workspaceId,
       threadId: checkpoint.threadId,
     },
@@ -291,7 +299,7 @@ function recordCloseoutConversationReceipt(
  */
 function createWorkspaceDb(): WorkspaceDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -351,22 +359,27 @@ function createRecoveryRuntimeStream(
  */
 async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Recover retained runtime provenance', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Recover retained runtime provenance',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup({
         requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
       }),
-      agentSessionId: 'as_recovery_provenance',
+      agentSessionId: 'as_00000000-0000-7463-af29-ca2c8a8a0308',
       backend: {
         kind: 'openshell',
       },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_recovery_provenance',
-      triggerActor: { kind: 'user', id: 'user_demo' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       turn,
       turnInput: 'Recover retained runtime provenance',
       workspaceCwd: '/workspace/repo',
@@ -495,10 +508,15 @@ describe('worker recovery materialization', () => {
   ] as const)('resolves historical attempt lineage with %s after %s', (scenario, outcome, expected) => {
     const f = createCheckpointCloseoutFixture(outcome);
     try {
-      const turn = f.store.createTurn('ws_demo', 'th_demo', 'Later package', {
-        kind: 'user',
-        id: 'user_local',
-      });
+      const turn = f.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Later package',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       f.store.updateTurn(turn.id, {
         agentId: 'agent_codex_host',
         agentSessionId: f.agentSessionId,
@@ -555,9 +573,14 @@ describe('worker recovery materialization', () => {
       expect(reloaded.getAgentSession(f.agentSessionId).environmentPackageSnapshotId).toBe(
         scenario === 'absent current pointer' ? null : environmentPackage.snapshotId
       );
-      expect(getWorkerCheckpoint(f.workspaceDb, 'ws_demo', 'th_demo', f.checkpoint.turnId)).toEqual(
-        f.checkpoint
-      );
+      expect(
+        getWorkerCheckpoint(
+          f.workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          f.checkpoint.turnId
+        )
+      ).toEqual(f.checkpoint);
     } finally {
       f.close();
     }
@@ -1024,22 +1047,25 @@ describe('worker recovery materialization', () => {
           events.splice(events.indexOf(session), 1);
           break;
         case 'AgentSession publication has wrong owner':
-          session.data.agentSession.id = 'as_foreign';
+          session.data.agentSession.id = 'as_00000000-0000-7b63-aa35-e1566fde2219';
           break;
         case 'AgentSession publication has wrong agent':
           session.data.agentSession.agentId = 'agent_foreign';
           break;
         case 'AgentSession publication has wrong Thread':
-          session.data.agentSession.threadId = 'th_foreign';
+          session.data.agentSession.threadId = 'th_00000000-0000-7856-9931-7f8680874d49';
           break;
         case 'AgentSession publication has wrong request':
           session.requestId = '00000000-0000-4000-8000-000000000502';
           break;
         case 'terminal event has wrong Turn':
-          terminal.data.turn.id = 'turn_foreign';
+          terminal.data.turn.id = 'tu_00000000-0000-7c16-9c53-35e89f566c39';
           break;
         case 'checkpoint has wrong AgentSession':
-          checkpoint = { ...checkpoint, workerSessionId: 'as_foreign' };
+          checkpoint = {
+            ...checkpoint,
+            workerSessionId: 'as_00000000-0000-7b63-aa35-e1566fde2219',
+          };
           break;
         case 'checkpoint has wrong request':
           checkpoint = { ...checkpoint, requestId: '00000000-0000-4000-8000-000000000502' };
@@ -1068,10 +1094,15 @@ describe('worker recovery materialization', () => {
     ['denied', 'interrupted', 'aborted'],
   ] as const)('classifies a %s human worker approval after a policy grant and terminal closeout', (decision, turnStatus, stopReason) => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Close a worker approval', {
-      id: 'user_local',
-      kind: 'user',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Close a worker approval',
+      {
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+        kind: 'user',
+      }
+    );
     // A prior policy grant is durable evidence, not the later human Gate response.
     const policyApproval = store.createApproval({
       createdAt: '2026-09-03T00:00:00.000Z',
@@ -1090,7 +1121,7 @@ describe('worker recovery materialization', () => {
       completedAt: policyApproval.createdAt,
       createdAt: policyApproval.createdAt,
       description: policyApproval.description,
-      id: 'it_policy_request',
+      id: 'it_00000000-0000-7027-9e4c-3a19493a1c80',
       kind: policyApproval.kind,
       status: 'completed',
       threadId: turn.threadId,
@@ -1102,11 +1133,11 @@ describe('worker recovery materialization', () => {
     store.createItem({
       actor: { id: 'nanocore-repo-push-policy', kind: 'system', responsibleUserId: null },
       approvalRequestId: policyApproval.id,
-      causationId: 'it_policy_request',
+      causationId: 'it_00000000-0000-7027-9e4c-3a19493a1c80',
       completedAt: policyApproval.createdAt,
       createdAt: policyApproval.createdAt,
       decision: 'granted',
-      id: 'it_policy_decision',
+      id: 'it_00000000-0000-7768-ab8d-e4c1bd990e58',
       decidedAt: policyApproval.createdAt,
       status: 'completed',
       threadId: turn.threadId,
@@ -1141,7 +1172,7 @@ describe('worker recovery materialization', () => {
       workspaceId: turn.workspaceId,
     });
     const response = store.createItem({
-      actor: { id: 'user_local', kind: 'user' },
+      actor: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
       approvalRequestId: approval.id,
       causationId: '00000000-0000-4000-8000-000000000401',
       completedAt: '2026-09-04T00:01:00.000Z',
@@ -1185,21 +1216,21 @@ describe('worker recovery materialization', () => {
 
     try {
       upsertWorkerCheckpoint(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_completed',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-76bd-938b-691bf839bfd7',
         requestId: 'req_turn_completed',
-        requestInputHash: 'sha256:turn_completed',
+        requestInputHash: 'sha256:tu_00000000-0000-76bd-938b-691bf839bfd7',
         stage: 'completed',
         iteration: 4,
         now: () => '2026-05-31T00:00:00.000Z',
       });
       upsertWorkerCheckpoint(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_running',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-79b8-b38a-2e414f9643c2',
         requestId: 'req_turn_running',
-        requestInputHash: 'sha256:turn_running',
+        requestInputHash: 'sha256:tu_00000000-0000-79b8-b38a-2e414f9643c2',
         stage: 'running_worker',
         iteration: 1,
         now: () => '2026-05-31T00:00:00.000Z',
@@ -1207,20 +1238,34 @@ describe('worker recovery materialization', () => {
 
       expect(
         await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_running',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-79b8-b38a-2e414f9643c2',
         })
       ).toBe(false);
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_running')).not.toBeNull();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-79b8-b38a-2e414f9643c2'
+        )
+      ).not.toBeNull();
       expect(
         await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_completed',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-76bd-938b-691bf839bfd7',
         })
       ).toBe(true);
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_completed')).toBeNull();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-76bd-938b-691bf839bfd7'
+        )
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -1231,10 +1276,15 @@ describe('worker recovery materialization', () => {
 
     try {
       const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Missing retained runtime provenance', {
-        kind: 'user',
-        id: 'user_local',
-      });
+      const turn = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Missing retained runtime provenance',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       const environmentPackage = AgentEnvironmentPackageSchema.parse(
         resolveAgentEnvironmentPackage({
           agentSetup: createTestAgentSetup({
@@ -1243,11 +1293,11 @@ describe('worker recovery materialization', () => {
               'worker.runtime-provenance.v1',
             ],
           }),
-          agentSessionId: 'as_recovery_provenance_missing',
+          agentSessionId: 'as_00000000-0000-7957-aadd-772e5050de60',
           backend: { kind: 'openshell' },
           createdAt: '2026-07-13T00:00:00.000Z',
           requestId: 'req_recovery_provenance_missing',
-          triggerActor: { kind: 'user', id: 'user_demo' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
           turn,
           turnInput: 'Missing retained runtime provenance',
           workspaceCwd: '/workspace/repo',
@@ -1264,27 +1314,34 @@ describe('worker recovery materialization', () => {
         requestId: `req_${turn.id}`,
         requestInputHash: `sha256:${turn.id}`,
         stage: 'completed',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         workerSessionId: environmentPackage.scope.agentSessionId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       await expect(
         clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow('Required retained runtime provenance is missing.');
       await expect(
         clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'recovery_retry_failed', status: 400 });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turn.id)).toEqual(checkpoint);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          turn.id
+        )
+      ).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -1297,8 +1354,8 @@ describe('worker recovery materialization', () => {
       const retained = await createRetainedRecoveryProvenance(workspaceDb);
       const checkpoint = () =>
         upsertWorkerCheckpoint(workspaceDb, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: retained.turnId,
           requestId: `req_${retained.turnId}`,
           requestInputHash: `sha256:${retained.turnId}`,
@@ -1309,14 +1366,21 @@ describe('worker recovery materialization', () => {
         });
       const clear = () =>
         clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: retained.turnId,
         });
 
       checkpoint();
       await expect(clear()).resolves.toBe(true);
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', retained.turnId)).toBeNull();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          retained.turnId
+        )
+      ).toBeNull();
 
       checkpoint();
       writeFileSync(
@@ -1329,7 +1393,14 @@ describe('worker recovery materialization', () => {
         .soft(clear())
         .rejects.toMatchObject({ code: 'recovery_retry_failed', status: 400 });
       expect
-        .soft(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', retained.turnId))
+        .soft(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            retained.turnId
+          )
+        )
         .not.toBeNull();
 
       checkpoint();
@@ -1341,7 +1412,14 @@ describe('worker recovery materialization', () => {
         .soft(clear())
         .rejects.toMatchObject({ code: 'recovery_retry_failed', status: 400 });
       expect
-        .soft(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', retained.turnId))
+        .soft(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            retained.turnId
+          )
+        )
         .not.toBeNull();
     } finally {
       workspaceDb.sqlite.close();

@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import {
   type ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS,
   type SubmitAdministrationConversationResponse,
@@ -7,6 +5,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { deriveEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -199,7 +198,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               });
               const createdAt = turn.startedAt ?? new Date().toISOString();
               store.createItem({
-                id: `it_administration_user_${turn.id}`,
+                id: deriveEntityId('it', ['administration_user', turn.id]),
                 workspaceId,
                 threadId: thread.id,
                 turnId: turn.id,
@@ -377,7 +376,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               try {
                 const completedAt = new Date().toISOString();
                 const item = store.createItem({
-                  id: `it_administration_answer_${turn.id}`,
+                  id: deriveEntityId('it', ['administration_answer', turn.id]),
                   workspaceId,
                   threadId: thread.id,
                   turnId: turn.id,
@@ -532,7 +531,7 @@ function failedAdministrationTurn(
   try {
     const item = store.createItem(
       {
-        id: `it_administration_refused_${turn.id}`,
+        id: deriveEntityId('it', ['administration_refused', turn.id]),
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,
@@ -611,11 +610,11 @@ function replayAdministrationTurn(
     }
     const itemId =
       resultKind === 'provider-answer'
-        ? `it_administration_answer_${turn.id}`
-        : `it_administration_refused_${turn.id}`;
+        ? deriveEntityId('it', ['administration_answer', turn.id])
+        : deriveEntityId('it', ['administration_refused', turn.id]);
     const item = turn.items.find((candidate) => candidate.id === itemId);
     const userItem = turn.items.find(
-      (candidate) => candidate.id === `it_administration_user_${turn.id}`
+      (candidate) => candidate.id === deriveEntityId('it', ['administration_user', turn.id])
     );
     const consistentUser =
       userItem?.type === 'user-message' &&
@@ -671,17 +670,11 @@ function hasAdministrationTurn(
 }
 
 function administrationThreadId(userId: string, requestId: string): string {
-  return `th_administration_${createHash('sha256')
-    .update(JSON.stringify([userId, requestId]))
-    .digest('hex')
-    .slice(0, 24)}`;
+  return deriveEntityId('th', ['administration', userId, requestId]);
 }
 
 function administrationTurnId(userId: string, threadId: string, requestId: string): string {
-  return `tu_administration_${createHash('sha256')
-    .update(JSON.stringify([userId, threadId, requestId]))
-    .digest('hex')
-    .slice(0, 24)}`;
+  return deriveEntityId('tu', ['administration', userId, threadId, requestId]);
 }
 
 function administrationThreadTitle(text: string): string {

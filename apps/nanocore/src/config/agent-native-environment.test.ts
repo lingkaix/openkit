@@ -6,7 +6,6 @@ import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
@@ -21,6 +20,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAgentNativeEnvironmentService } from './agent-native-environment.js';
@@ -41,7 +41,7 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   });
 });
-const actor = { kind: 'local' as const, userId: 'user_local' };
+const actor = { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' };
 const imageDigest = `sha256:${'d'.repeat(64)}`;
 const values = { DEFAULT: 'image', EMPTY: '', HOME: '/managed/image-home' };
 const defaultsDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
@@ -70,7 +70,7 @@ function fixture() {
   const fileId = 'agents/agent_native.agent.jsonc';
   mkdirSync(join(root, 'config/agents'), { recursive: true });
   const path = join(root, 'config', fileId);
-  writeFileSync(path, '// preserved comment\n' + JSON.stringify(manifest));
+  writeFileSync(path, `// preserved comment\n${JSON.stringify(manifest)}`);
   const manager = createRuntimeConfigManager({
     dataRoot: null,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({
@@ -93,7 +93,7 @@ function fixture() {
     filesForActor: () => files,
   });
   const candidate = {
-    authoredArtifactId: 'ar_defaults',
+    authoredArtifactId: 'ar_00000000-0000-7ce7-b2d8-9d02176fb5b5',
     authoredArtifactVersion: 1 as const,
     authoredContentDigest: `sha256:${'a'.repeat(64)}`,
     inputDigest: `sha256:${'b'.repeat(64)}`,
@@ -168,12 +168,16 @@ describe('Agent public native environment administration', () => {
     f.admit();
     recordWorkspaceOwnerMembership({
       coreDb: f.db,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: actor.userId,
     });
-    const thread = f.store.createThread('ws_demo', 'Visible', 'native-visible');
+    const thread = f.store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Visible',
+      'native-visible'
+    );
     const hidden = f.store.createThread(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'Private sibling',
       'native-hidden',
       'conversation',
@@ -232,7 +236,7 @@ describe('Agent public native environment administration', () => {
       });
     expect(f.service.view(actor, f.fileId).applied).toEqual([
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         state: 'pending',
         environment: null,
@@ -247,7 +251,7 @@ describe('Agent public native environment administration', () => {
       effectiveSetupGeneration: 1,
       resume: null,
       threadId: thread.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     for (const nativeEnvironment of [undefined, { DEFAULT: 'wrong', EMPTY: '' }])
       expect(() =>
@@ -265,7 +269,7 @@ describe('Agent public native environment administration', () => {
       .run();
     expect(f.service.view(actor, f.fileId).applied).toEqual([
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         state: 'acknowledged',
         environment,
@@ -301,7 +305,7 @@ describe('Agent public native environment administration', () => {
       .run();
     expect(f.service.view(actor, f.fileId).applied).toEqual([
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         state: 'unknown',
         environment: null,

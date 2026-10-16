@@ -18,8 +18,12 @@ import {
 
 const CREATED_AT = '2026-07-12T00:00:00.000Z';
 const DECIDED_AT = '2026-07-12T01:00:00.000Z';
-const PRODUCER = { kind: 'agent', id: 'agent_knowledge', responsibleUserId: 'user_local' } as const;
-const REVIEWER = { kind: 'user', id: 'user_local' } as const;
+const PRODUCER = {
+  kind: 'agent',
+  id: 'agent_knowledge',
+  responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+} as const;
+const REVIEWER = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 /** Computes the canonical SHA-256 digest used by Knowledge authority records. */
 function digest(content: string): string {
@@ -181,7 +185,7 @@ describe('knowledge proposal authority', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-proposal-source-authority-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge proposal source authority');
-    const sourceId = 'ks_00000000-0000-4000-8000-000000000001';
+    const sourceId = 'ks_00000000-0000-7a5f-abd1-664e5a6aadee';
     const sourceContent = 'Captured source bytes remain immutable evidence.\n';
     const sourceReference = `source:${sourceId}@${digest(sourceContent)}`;
     store.createKnowledgeSource(
@@ -324,7 +328,7 @@ describe('knowledge proposal authority', () => {
 
     rmSync(fixture.pagePath);
     fixture.store.recordKnowledgeConflict({
-      id: 'kf_missing_page_retry',
+      id: 'kf_00000000-0000-78ae-8f40-c52ee62fa437',
       workspaceId: fixture.workspaceId,
       subjectReferences: [`knowledge:${fixture.knowledgePageId}`],
       sourceReferences: [fixture.sourceReference],
@@ -343,10 +347,10 @@ describe('knowledge proposal authority', () => {
     );
     restarted.store.resolveKnowledgeConflict({
       workspaceId: fixture.workspaceId,
-      conflictId: 'kf_missing_page_retry',
+      conflictId: 'kf_00000000-0000-78ae-8f40-c52ee62fa437',
       status: 'resolved',
       resolution: 'The publication conflict was resolved.',
-      resolvedBy: 'user_local',
+      resolvedBy: 'usr_00000000-0000-7000-8000-000000000001',
       resolvedAt: DECIDED_AT,
     });
     const completed = decide(restarted, 'accepted', 'review-accepted-page');
@@ -395,8 +399,8 @@ describe('knowledge proposal authority', () => {
       query: 'Review authority lesson',
       access: {
         store: fixture.store,
-        actor: { kind: 'user', id: 'user_local' },
-        requestActor: { kind: 'local', userId: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
       },
       workspaceId: fixture.workspaceId,
       now: () => DECIDED_AT,
@@ -430,8 +434,8 @@ describe('knowledge proposal authority', () => {
         dataRoot: fixture.dataRoot,
         access: {
           store: fixture.store,
-          actor: { kind: 'user', id: 'user_local' },
-          requestActor: { kind: 'local', userId: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         },
         selection: retrieval,
         workspaceId: fixture.workspaceId,
@@ -452,11 +456,11 @@ describe('knowledge proposal authority', () => {
     const thread = fixture.store.createThread(fixture.workspaceId, 'Trace source authority');
     const access = {
       store: fixture.store,
-      actor: { kind: 'user', id: 'user_local' } as const,
-      requestActor: { kind: 'local', userId: 'user_local' } as const,
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
+      requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } as const,
       outputThreadId: thread.id,
     };
-    const traceId = 'krt_00000000-0000-4000-8000-000000000704';
+    const traceId = 'krt_00000000-0000-7d6e-9a78-233aee3563de';
     const retrieval = await retrieveWorkspaceKnowledge({
       access,
       caller: 'task-mode',
@@ -489,7 +493,7 @@ describe('knowledge proposal authority', () => {
     );
     const trace = JSON.parse(readFileSync(tracePath, 'utf8'));
     const arbitraryReferences = [
-      'item:it_private_history',
+      'item:it_00000000-0000-79e3-aff5-1c36e60fa428',
       'context-package:ctxpkg_private_history',
     ];
     trace.selected[0].sourceReferences = [fixture.sourceReference, ...arbitraryReferences];
@@ -581,8 +585,8 @@ describe('knowledge proposal authority', () => {
       ['knowledgePageId', 'review/foreign-page'],
       ['requestId', authorityRequestId('foreign-review-request')],
       ['reviewId', `kr_${'2'.repeat(64)}`],
-      ['workspaceId', 'ws_foreign'],
-      ['actor', { kind: 'user', id: 'user_foreign' }],
+      ['workspaceId', 'ws_00000000-0000-7f9c-aa14-53566c621405'],
+      ['actor', { kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }],
     ] as const) {
       const changed = JSON.parse(annotatedBytes);
       changed.decisions[1][key] = value;
@@ -648,7 +652,7 @@ describe('knowledge proposal authority', () => {
   it('does not block publication for an unrelated unresolved conflict', () => {
     const fixture = createFixture('proposal-unrelated-conflict');
     fixture.store.recordKnowledgeConflict({
-      id: 'kf_unrelated_proposal',
+      id: 'kf_00000000-0000-76ef-9a1b-23150acddb76',
       workspaceId: fixture.workspaceId,
       subjectReferences: ['knowledge:unrelated-page'],
       sourceReferences: [fixture.sourceReference],
@@ -704,7 +708,7 @@ describe('knowledge proposal authority', () => {
       conflictId,
       status: 'resolved',
       resolution: 'The conflicting evidence was reviewed.',
-      resolvedBy: 'user_local',
+      resolvedBy: 'usr_00000000-0000-7000-8000-000000000001',
       resolvedAt: DECIDED_AT,
     });
     const accepted = decide(fixture, 'accepted', `review-resolved-${name.replaceAll(' ', '-')}`);

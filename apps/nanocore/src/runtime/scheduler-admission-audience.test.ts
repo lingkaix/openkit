@@ -3,8 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
-
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
@@ -14,6 +12,7 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -25,21 +24,28 @@ describe('scheduler admission thread audience', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const shared = store.createThread('ws_demo', 'Shared admission');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const shared = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Shared admission'
+    );
     const privateThread = store.createThread(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'SECRET_PRIVATE_ADMISSION',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_outsider' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80' }
     );
     const ownPrivate = store.createThread(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'Owner private admission',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
 
     for (const [queueEntryId, threadId] of [
@@ -49,9 +55,9 @@ describe('scheduler admission thread audience', () => {
     ] as const) {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId,
         turnId: `turn_${queueEntryId}`,
         turnInput: `Admission for ${threadId}.`,
@@ -70,12 +76,12 @@ describe('scheduler admission thread audience', () => {
 
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
         effectiveRole: 'owner',
         kind: 'workspace',
         policyOperation: 'turn.run',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await next();
     });
@@ -93,7 +99,9 @@ describe('scheduler admission thread audience', () => {
 
     try {
       const listed = await app.request(
-        ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+        ...operationRequest('scheduler.list', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
       );
       const listedBody = await listed.json();
 
@@ -107,28 +115,34 @@ describe('scheduler admission thread audience', () => {
       const hiddenRetry = await app.request(
         ...operationRequest(
           'scheduler.retry',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_foreign_private' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            queueEntryId: 'queue_foreign_private',
+          },
           { method: 'POST' }
         )
       );
       const hiddenCancel = await app.request(
         ...operationRequest(
           'scheduler.cancel',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_foreign_private' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            queueEntryId: 'queue_foreign_private',
+          },
           { method: 'POST' }
         )
       );
       const missingRetry = await app.request(
         ...operationRequest(
           'scheduler.retry',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
           { method: 'POST' }
         )
       );
       const missingCancel = await app.request(
         ...operationRequest(
           'scheduler.cancel',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
           { method: 'POST' }
         )
       );
@@ -142,12 +156,12 @@ describe('scheduler admission thread audience', () => {
       expect(missingRetry.status).toBe(hiddenRetry.status);
       expect(missingCancel.status).toBe(hiddenCancel.status);
       expect(JSON.parse(hiddenRetryText)).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'not_found',
         message: 'Thread not found.',
       });
       expect(JSON.parse(hiddenCancelText)).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'not_found',
         message: 'Thread not found.',
       });

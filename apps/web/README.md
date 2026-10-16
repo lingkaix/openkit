@@ -432,3 +432,5 @@ Gateway account rows clear cached quota while pending or logged out, including l
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
+
+New API-key Provider profiles allocate one canonical Vault reference through the browser-safe Protocol codec. The form retains that candidate across a failed create retry and stores it in the authored Provider file; reads and key rotation use the recorded reference.

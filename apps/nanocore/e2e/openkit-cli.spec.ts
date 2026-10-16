@@ -45,7 +45,7 @@ describe('OpenKit administrator CLI e2e', () => {
     const coreDb = openCoreDb(dataRoot);
     try {
       administratorToken = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
