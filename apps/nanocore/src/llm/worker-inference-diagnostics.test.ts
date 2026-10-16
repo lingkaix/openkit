@@ -9,6 +9,7 @@ import { FsStore } from '../lib/store.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
+import { WorkerRawOutputBudgetExceededError } from '../runtime/worker-raw-output.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -616,6 +617,23 @@ it('blocks Provider access before execution when native stop coverage is absent'
   const f = fixture(true, undefined, false);
   expect((await f.post(false)).status).toBe(503);
   expect(f.dispatch).not.toHaveBeenCalled();
+});
+
+it('preserves raw-output exhaustion before native compaction commits', async () => {
+  const f = fixture(true, 'compaction');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+    context.transport!.rawOutput!.fail(new WorkerRawOutputBudgetExceededError());
+  });
+  const response = await f.post(true);
+  expect(response.status, await response.clone().text()).toBe(409);
+  expect(await response.json()).toMatchObject({
+    error: { code: 'worker_raw_output_exhausted' },
+  });
+  expect(f.calls()).toMatchObject([
+    { status: 'failed', error_code: 'worker_raw_output_exhausted' },
+  ]);
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
 });
 
 it('maps a confirmed pre-output native compaction failure to the owned envelope', async () => {

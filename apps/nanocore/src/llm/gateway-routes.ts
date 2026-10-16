@@ -2276,6 +2276,7 @@ export function registerWorkerInferenceRoutes({
           (failure as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
         // Unavailable supply can end admitted compaction before a Provider attempt starts.
         if (
+          !durableCall.rawOutputFailureCode &&
           runtimeHint?.requestKind === 'compaction' &&
           !activeExecution?.outputBegan &&
           (activeExecution !== undefined ||
