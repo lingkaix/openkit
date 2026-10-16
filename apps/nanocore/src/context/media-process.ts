@@ -269,7 +269,14 @@ export function mediaProcessInvocation(
       '/etc/fonts',
       // ImageMagick's installed read-only coder/color policy belongs to the selected utility, not the source file.
       ...(executable === '/usr/bin/identify' || executable === '/usr/bin/convert'
-        ? ['--ro-bind-try', '/etc/ImageMagick-6', '/etc/ImageMagick-6', '--ro-bind-try', '/etc/ImageMagick-7', '/etc/ImageMagick-7']
+        ? [
+            '--ro-bind-try',
+            '/etc/ImageMagick-6',
+            '/etc/ImageMagick-6',
+            '--ro-bind-try',
+            '/etc/ImageMagick-7',
+            '/etc/ImageMagick-7',
+          ]
         : []),
       ...(sourcePath ? ['--ro-bind', sourcePath, '/input.pdf'] : []),
       '--remount-ro',
