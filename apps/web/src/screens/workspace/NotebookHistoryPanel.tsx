@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Checkbox, CheckboxGroup } from 'react-aria-components';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
@@ -17,6 +17,7 @@ import {
   TextField,
 } from '../../primitives';
 import { knowledgeActionErrorMessage, workspaceKeys } from './data';
+import { NotebookPageEditor } from './NotebookPageEditor';
 
 type RestoreCommand = Parameters<CoreClient['operations']['knowledge.notebook.restore']>[0] & {
   requestId: string;
@@ -33,6 +34,8 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
   const queryClient = useQueryClient();
   const connection = useConnection();
   const [open, setOpen] = useState(false);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [editMessage, setEditMessage] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [fromRevision, setFromRevision] = useState<string | null>(null);
   const [forRestore, setForRestore] = useState(false);
@@ -86,6 +89,9 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
     diff.data.forRestore === forRestore
       ? diff.data
       : null;
+  useEffect(() => {
+    if (!preview) setEditingPath(null);
+  }, [preview]);
   const changes = preview?.changes ?? [];
   const chosen = changes.filter(
     (change) => selectedPaths === null || selectedPaths.includes(change.path)
@@ -105,7 +111,8 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
   });
   const unknownResult =
     restore.isError && !(restore.error instanceof ApiCallError && restore.error.status < 500);
-  const blocked = connection.checking || connection.failed || restore.isPending;
+  const blocked =
+    connection.checking || connection.failed || restore.isPending || editingPath !== null;
   const ready =
     !blocked &&
     !restore.isError &&
@@ -142,6 +149,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
 
   /** A read retry can clear a known refusal; an unknown command keeps its exact retry identity. */
   function refreshHistory() {
+    setEditingPath(null);
     if (!unknownResult) restore.reset();
     void history.refetch();
     if (baseRevision && fromRevision) void diff.refetch();
@@ -177,6 +185,8 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                   value={fromRevision ?? ''}
                   isDisabled={blocked}
                   onChange={(value) => {
+                    setEditingPath(null);
+                    setEditMessage(null);
                     setFromRevision(value);
                     setSelectedPaths(null);
                     setForRestore(false);
@@ -241,7 +251,12 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                       Newest revisions
                     </Button>
                   ) : null}
-                  <Button size="sm" variant="quiet" isDisabled={blocked} onPress={refreshHistory}>
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    isDisabled={connection.checking || connection.failed || restore.isPending}
+                    onPress={refreshHistory}
+                  >
                     Refresh history
                   </Button>
                 </div>
@@ -328,6 +343,58 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                         </Checkbox>
                       ))}
                     </CheckboxGroup>
+                    {!forRestore && !preview.truncated
+                      ? changes
+                          .filter(
+                            (change) =>
+                              change.before !== null &&
+                              new TextEncoder().encode(change.before).length <= 2 * 1024 * 1024
+                          )
+                          .map((change) => (
+                            <Button
+                              key={change.path}
+                              size="sm"
+                              variant="outline"
+                              isDisabled={blocked}
+                              onPress={() => {
+                                setEditingPath(change.path);
+                                setEditMessage(null);
+                              }}
+                            >
+                              Edit current {change.path}
+                            </Button>
+                          ))
+                      : null}
+                    {!forRestore && !preview.truncated
+                      ? changes
+                          .filter((change) => change.path === editingPath && change.before !== null)
+                          .map((change) => (
+                            <NotebookPageEditor
+                              key={`${workspaceId}:${preview.baseRevision}:${change.path}`}
+                              workspaceId={workspaceId}
+                              baseRevision={preview.baseRevision}
+                              path={change.path}
+                              content={change.before!}
+                              onClose={() => setEditingPath(null)}
+                              onInspect={() => {
+                                setFromRevision(null);
+                                refreshHistory();
+                              }}
+                              onDenied={() => {
+                                setEditingPath(null);
+                                setFromRevision(null);
+                                setEditMessage(
+                                  'Page access was denied. Read current history before another edit.'
+                                );
+                                void history.refetch();
+                              }}
+                              onPublished={() => {
+                                setEditingPath(null);
+                                setEditMessage('Page was published in a new revision.');
+                              }}
+                            />
+                          ))
+                      : null}
                     {chosen.map((change) => (
                       <DiffView
                         key={change.path}
@@ -402,6 +469,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                 )}
               </>
             ) : null}
+            {editMessage ? <p role="status">{editMessage}</p> : null}
             {restore.isPending ? <p role="status">Restoring selected pages…</p> : null}
             {restore.isSuccess ? (
               <p role="status">Selected pages were restored in a new revision.</p>

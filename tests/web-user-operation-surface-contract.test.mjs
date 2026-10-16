@@ -8,24 +8,20 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 240;
+const EXPECTED_CATALOG_SIZE = 245;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 180;
+const EXPECTED_INCLUDED_SIZE = 185;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
-  ['automation.create', 'R092'],
-  ['automation.delete', 'R092'],
   ['workspace.delete', 'R049'],
   ['workspace.archive-download', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
   ['workspace.archive-import-dry-run', 'R008'],
   ['workspace.archive-import', 'R008'],
-  ['automation.list', 'R092'],
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
-  ['automation.update', 'R092'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -85,10 +81,11 @@ const WEB_OPERATION_GROUPS = {
     'scheduler.cancel': { disposition: 'live', surface: 'Recovery' },
   },
   automation: {
-    'automation.create': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.delete': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.list': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.update': { disposition: 'roadmap', roadmap: 'R092' },
+    'automation.create': { disposition: 'live', surface: 'Automations' },
+    'automation.delete': { disposition: 'live', surface: 'Automations' },
+    'automation.list': { disposition: 'live', surface: 'Automations' },
+    'automation.history': { disposition: 'live', surface: 'Automations' },
+    'automation.update': { disposition: 'live', surface: 'Automations' },
   },
   Catalog: {
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },
@@ -142,6 +139,10 @@ const WEB_OPERATION_GROUPS = {
     'evidence.runtime-list': { disposition: 'live', surface: 'Debug' },
   },
   'Knowledge Manager': {
+    'knowledge.notebook.history': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.diff': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.restore': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.update': { disposition: 'workflow', surface: 'Knowledge' },
     'knowledge.answer': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.health.check': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.proposal.draft': { disposition: 'roadmap', roadmap: 'R070' },

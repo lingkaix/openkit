@@ -1,7 +1,8 @@
 import { operationHttpPath } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,7 +20,14 @@ const timestamp = '2026-10-16T00:00:00.000Z';
 const clients: QueryClient[] = [];
 
 /** Real hooks and public Core client replace only HTTP, including one unknown restore result. */
-function renderNotebook({ deferDiff = false, truncatedDiff = false } = {}) {
+function renderNotebook({
+  deferDiff = false,
+  truncatedDiff = false,
+  unknownUpdate = false,
+  deniedUpdate = false,
+  conflictUpdate = false,
+} = {}) {
+  const updates: Array<Record<string, unknown>> = [];
   const restores: Array<Record<string, unknown>> = [];
   const diffs: Array<Record<string, unknown>> = [];
   let currentRevision = BASE;
@@ -156,6 +164,42 @@ function renderNotebook({ deferDiff = false, truncatedDiff = false } = {}) {
             { path: 'notes/obsolete.md', before: 'Obsolete exact text.', after: null },
           ].filter((change) => !body.pageIds || body.pageIds.includes(change.path.slice(0, -3))),
         });
+      case operationHttpPath('knowledge.notebook.update'): {
+        const requestId = new Headers(init?.headers).get('x-openkit-request-id');
+        updates.push({ ...body, requestId });
+        if (deniedUpdate) {
+          historyDenied = true;
+          return Response.json(
+            {
+              protocolVersion: PROTOCOL_VERSION,
+              code: 'workspace_access_denied',
+              message: 'Source access denied.',
+            },
+            { status: 403 }
+          );
+        }
+        if (conflictUpdate && updates.length === 1) {
+          currentRevision = 'e'.repeat(40);
+          return Response.json(
+            { protocolVersion: PROTOCOL_VERSION, code: 'conflict', message: 'Notebook changed.' },
+            { status: 409 }
+          );
+        }
+        if (unknownUpdate && updates.length === 1) throw new TypeError('Response lost.');
+        currentRevision = PUBLISHED;
+        return Response.json({
+          outcome: 'published',
+          ownerScope: { kind: 'workspace', workspaceId: body.workspaceId },
+          baseRevision: body.baseRevision,
+          notebookRevision: PUBLISHED,
+          changedPageIds: ['notes/one'],
+          receiptRef: {
+            operation: 'knowledge.notebook.update',
+            requestId,
+            ownerScope: { kind: 'workspace', workspaceId: body.workspaceId },
+          },
+        });
+      }
       case operationHttpPath('knowledge.notebook.restore'): {
         const requestId = new Headers(init?.headers).get('x-openkit-request-id');
         restores.push({ ...body, requestId });
@@ -194,6 +238,7 @@ function renderNotebook({ deferDiff = false, truncatedDiff = false } = {}) {
   );
   return {
     restores,
+    updates,
     diffs,
     queryClient,
     denyHistory: () => {
@@ -219,6 +264,9 @@ describe('Notebook history and restore', () => {
     await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
     await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
     expect(await screen.findByText(/This diff is truncated/)).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: 'Edit current notes/one.md' })
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review restore' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('checkbox', { name: /notes\/obsolete.md/ }));
     await user.click(screen.getByRole('button', { name: 'Prepare restore' }));
@@ -238,6 +286,10 @@ describe('Notebook history and restore', () => {
     await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
     await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
     await screen.findByRole('region', { name: 'Historical notes/one.md' });
+    await user.click(screen.getByRole('button', { name: 'Edit current notes/one.md' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Page text/Markdown' }), {
+      target: { value: 'REVOKED-DRAFT-MARKER' },
+    });
     f.denyHistory();
     await user.click(screen.getByRole('button', { name: 'Refresh history' }));
     await waitFor(() => expect(screen.getAllByText('Unavailable revision')).toHaveLength(2));
@@ -245,6 +297,8 @@ describe('Notebook history and restore', () => {
       screen.queryByRole('region', { name: 'Historical notes/one.md' })
     ).not.toBeInTheDocument();
     expect(screen.queryByText('Current exact text.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Page text/Markdown' })).not.toBeInTheDocument();
+    expect(screen.queryByText('REVOKED-DRAFT-MARKER')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare restore' })).not.toBeInTheDocument();
     await waitFor(() => expect(f.diffs).toHaveLength(2));
     expect(f.restores).toHaveLength(0);
@@ -311,5 +365,134 @@ describe('Notebook history and restore', () => {
     expect(screen.queryByText('Private old Workspace text.')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review restore' })).not.toBeInTheDocument();
     expect(f.restores).toHaveLength(0);
+  });
+});
+
+describe('Notebook current page editing', () => {
+  it('publishes exact current page bytes and a fixed base through the composed client, then refreshes dependent views', async () => {
+    const user = userEvent.setup();
+    const f = renderNotebook({ conflictUpdate: true });
+    const invalidate = vi.spyOn(f.queryClient, 'invalidateQueries');
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    await user.click(await screen.findByRole('button', { name: 'Edit current notes/one.md' }));
+    const text = screen.getByRole('textbox', { name: 'Page text/Markdown' });
+    expect(text).toHaveValue('Current exact text.');
+    const edited = '---\ncustom: {preserved: true}\n---\nExact edited page.\n';
+    fireEvent.change(text, { target: { value: edited } });
+    await user.type(screen.getByRole('textbox', { name: 'Edit summary' }), 'Correct the page');
+    expect(screen.getByRole('region', { name: 'Current page text' })).toHaveTextContent(
+      'Current exact text.'
+    );
+    expect(screen.getByRole('region', { name: 'Edited page text' }).textContent).toBe(edited);
+    await user.click(screen.getByRole('button', { name: 'Apply page edit' }));
+    await screen.findByText(
+      'The Notebook changed. This edit was refused. Inspect current history and start a new edit.'
+    );
+    expect(screen.getByRole('textbox', { name: 'Page text/Markdown' })).toHaveValue(edited);
+    expect(screen.getByRole('textbox', { name: 'Page text/Markdown' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Apply page edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry saved page edit' })).not.toBeInTheDocument();
+    expect(f.updates).toEqual([
+      {
+        workspaceId: WORKSPACE,
+        baseRevision: BASE,
+        changes: [{ path: 'notes/one.md', content: edited }],
+        summary: 'Correct the page',
+        requestId: expect.any(String),
+      },
+    ]);
+    await user.click(
+      screen.getByRole('button', { name: 'Close edit and inspect current history' })
+    );
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    await user.click(await screen.findByRole('button', { name: 'Edit current notes/one.md' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Page text/Markdown' }), {
+      target: { value: edited },
+    });
+    await user.type(screen.getByRole('textbox', { name: 'Edit summary' }), 'Correct the page');
+    await user.click(screen.getByRole('button', { name: 'Apply page edit' }));
+    await screen.findByText('Page was published in a new revision.');
+    expect(f.updates).toHaveLength(2);
+    expect(f.updates[1]).toMatchObject({
+      workspaceId: WORKSPACE,
+      baseRevision: 'e'.repeat(40),
+      changes: [{ path: 'notes/one.md', content: edited }],
+      summary: 'Correct the page',
+    });
+    expect(f.updates[1]?.requestId).not.toBe(f.updates[0]?.requestId);
+    for (const key of [
+      ['knowledge', WORKSPACE],
+      ['knowledge-indexes', WORKSPACE],
+      ['attention', WORKSPACE],
+    ])
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: key });
+    expect(screen.queryByRole('textbox', { name: 'Page text/Markdown' })).not.toBeInTheDocument();
+  });
+
+  it('refuses oversized edits without clipping and retries an unknown result with only the saved identical command', async () => {
+    const user = userEvent.setup();
+    const f = renderNotebook({ unknownUpdate: true });
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    await user.click(await screen.findByRole('button', { name: 'Edit current notes/one.md' }));
+    const text = screen.getByRole('textbox', { name: 'Page text/Markdown' });
+    const summary = screen.getByRole('textbox', { name: 'Edit summary' });
+    const tooLarge = 'x'.repeat(2 * 1024 * 1024 + 1);
+    fireEvent.change(text, { target: { value: tooLarge } });
+    expect(text).toHaveValue(tooLarge);
+    expect(screen.getByRole('button', { name: 'Apply page edit' })).toBeDisabled();
+    fireEvent.change(text, { target: { value: 'Saved exact draft.' } });
+    fireEvent.change(summary, { target: { value: 'é'.repeat(2049) } });
+    expect(screen.getByRole('button', { name: 'Apply page edit' })).toBeDisabled();
+    fireEvent.change(summary, { target: { value: 'Fixed summary' } });
+    await user.click(screen.getByRole('button', { name: 'Apply page edit' }));
+    await screen.findByText(/Page edit result is unknown.*connection or response failure/);
+    expect(text).toBeDisabled();
+    expect(summary).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Retry saved page edit' }));
+    await screen.findByText('Page was published in a new revision.');
+    expect(f.updates).toHaveLength(2);
+    expect(f.updates[1]).toEqual(f.updates[0]);
+    expect(f.updates[0]).toMatchObject({
+      baseRevision: BASE,
+      changes: [{ path: 'notes/one.md', content: 'Saved exact draft.' }],
+      summary: 'Fixed summary',
+      requestId: expect.any(String),
+    });
+  });
+
+  it('hides draft and preview bytes on direct denial, refreshed denial and Workspace changes', async () => {
+    const user = userEvent.setup();
+    const f = renderNotebook({ deniedUpdate: true });
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    await user.click(await screen.findByRole('button', { name: 'Edit current notes/one.md' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Page text/Markdown' }), {
+      target: { value: 'PRIVATE-DRAFT-MARKER' },
+    });
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: OTHER }));
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    expect(screen.queryByRole('textbox', { name: 'Page text/Markdown' })).not.toBeInTheDocument();
+    expect(screen.queryByText('PRIVATE-DRAFT-MARKER')).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    await user.click(await screen.findByRole('button', { name: 'Edit current notes/one.md' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Page text/Markdown' }), {
+      target: { value: 'DENIED-DRAFT-MARKER' },
+    });
+    await user.type(screen.getByRole('textbox', { name: 'Edit summary' }), 'Correct page');
+    await user.click(screen.getByRole('button', { name: 'Apply page edit' }));
+    await screen.findByText('Page access was denied. Read current history before another edit.');
+    expect(screen.queryByText('PRIVATE-DRAFT-MARKER')).not.toBeInTheDocument();
+    expect(screen.queryByText('Current exact text.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Page text/Markdown' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText('Unavailable revision')).toHaveLength(2));
+    expect(f.updates).toHaveLength(1);
+    expect(screen.queryByText('DENIED-DRAFT-MARKER')).not.toBeInTheDocument();
+    expect(f.updates[0]).toMatchObject({ workspaceId: OTHER });
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE }));
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    expect(screen.queryByText('PRIVATE-DRAFT-MARKER')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry saved page edit' })).not.toBeInTheDocument();
   });
 });

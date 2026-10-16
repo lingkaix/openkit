@@ -287,9 +287,7 @@ export function admitOperation(
               resolvedLineage =
                 readAutomationOperationLineage(
                   dependencies.automationStore,
-                  selector(input, definition.scope.childField),
-                  actorRef.id,
-                  entry.kind === 'public' && isCurrentDeploymentAdministrator(coreDb, entry.actor)
+                  selector(input, definition.scope.childField)
                 ) ?? undefined;
               if (!resolvedLineage) throw denied();
               workspaceId = resolvedLineage.workspaceId;

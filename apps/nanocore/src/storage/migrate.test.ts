@@ -43,6 +43,9 @@ const CORE_TABLES = [
   'permission_decisions',
   'sandbox_runtime_records',
   'scheduler_admission_entries',
+  'recurring_schedules',
+  'recurring_occurrences',
+  'recurring_expired_ranges',
   'server_settings',
   'session',
   'users',
@@ -201,7 +204,8 @@ describe('database setup', () => {
       ).toEqual([
         '0000_setup.sql',
         '0001_concurrent_turn_capacity.sql',
-        '0002_notebook_admission.sql',
+        '0002_durable_recurring_schedules.sql',
+        '0003_notebook_admission.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -211,7 +215,8 @@ describe('database setup', () => {
       expect(listAppliedMigrationIds(coreDb)).toEqual([
         'core_0000_setup',
         'core_0001_concurrent_turn_capacity',
-        'core_0002_notebook_admission',
+        'core_0002_durable_recurring_schedules',
+        'core_0003_notebook_admission',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
