@@ -253,7 +253,11 @@ function createBrowserCors(
   mode: CoreMode,
   configuredOrigins: readonly string[]
 ): ReturnType<typeof cors> {
-  const allowedCors = cors({ credentials: true, origin: (origin) => origin });
+  const allowedCors = cors({
+    credentials: true,
+    exposeHeaders: ['X-OpenKit-Content-Digest'],
+    origin: (origin) => origin,
+  });
 
   return async (context, next) => {
     const origin = context.req.header('origin') ?? '';
