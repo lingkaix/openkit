@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -193,6 +193,73 @@ describe('Server health', () => {
     expect(error?.message).toBe('Server health unavailable.');
     expect(screen.queryByText('v0.1.0-rc.8')).not.toBeInTheDocument();
     expect(screen.queryByText('raw private error')).not.toBeInTheDocument();
+  });
+
+  it('replaces failed observations with pending state and blocks repeated retries', async () => {
+    const user = userEvent.setup();
+    let settle!: (value: ReturnType<typeof diagnostics>) => void;
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(diagnostics())
+      .mockRejectedValueOnce(new ApiCallError(403, 'denied'))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            settle = resolve;
+          })
+      );
+    renderPanel(read);
+    expect(await screen.findByText('v0.1.0-rc.8')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Refresh health' }));
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    const refresh = screen.getByRole('button', { name: 'Refresh health' });
+    expect(refresh).toBeDisabled();
+    await user.click(refresh);
+    expect(read).toHaveBeenCalledTimes(3);
+    await act(() => settle(diagnostics()));
+    expect(await screen.findByText('v0.1.0-rc.8')).toBeInTheDocument();
+  });
+
+  it('discards an earlier mount pending read instead of admitting its result on a new mount', async () => {
+    let oldResult!: (value: ReturnType<typeof diagnostics>) => void;
+    let currentResult!: (value: ReturnType<typeof diagnostics>) => void;
+    const read = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            oldResult = resolve;
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            currentResult = resolve;
+          })
+      );
+    const first = renderPanel(read);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    first.unmount();
+    renderPanel(read, first.queryClient);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    const old = diagnostics();
+    old.build.releaseTag = 'v0.1.0-rc.7';
+    await act(() => oldResult(old));
+    expect(screen.queryByText('v0.1.0-rc.7')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Boot readiness' })).not.toBeInTheDocument();
+    await act(() => currentResult(diagnostics()));
+    expect(await screen.findByText('v0.1.0-rc.8')).toBeInTheDocument();
+    expect(
+      JSON.stringify(
+        first.queryClient
+          .getQueryCache()
+          .getAll()
+          .map((query) => query.state.data)
+      )
+    ).not.toContain('v0.1.0-rc.7');
   });
 
   it('does not display cached administrator data before the remounted authority check completes', async () => {

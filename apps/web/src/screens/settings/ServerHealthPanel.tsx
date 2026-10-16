@@ -106,9 +106,12 @@ export function ServerHealthPanel() {
   const client = useCoreClient();
   const health = useQuery({
     queryKey: ['settings', 'server-operations', 'health'],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return projectHealth(await client.operations['diagnostics.app']({}));
+        const response = await client.operations['diagnostics.app']({});
+        // Discard a pending response when this mount loses its query observation.
+        signal.throwIfAborted();
+        return projectHealth(response);
       } catch (error) {
         if (error instanceof ApiCallError && (error.status === 401 || error.status === 403)) {
           throw new ApiCallError(error.status, 'Administrator access required.');
@@ -140,7 +143,9 @@ export function ServerHealthPanel() {
           Refresh health
         </Button>
       </div>
-      {health.isError ? (
+      {!health.isFetchedAfterMount || health.isFetching ? (
+        <Skeleton lines={8} />
+      ) : health.isError ? (
         denied ? (
           <EmptyState
             icon="key"
@@ -154,7 +159,7 @@ export function ServerHealthPanel() {
             onRetry={() => void health.refetch()}
           />
         )
-      ) : !health.isFetchedAfterMount || health.isFetching || !current ? (
+      ) : !current ? (
         <Skeleton lines={8} />
       ) : (
         <>

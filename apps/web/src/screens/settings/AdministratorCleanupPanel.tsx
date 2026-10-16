@@ -144,12 +144,12 @@ export function AdministratorCleanupPanel() {
   const headingId = useId();
   const query = useQuery({
     queryKey: ['settings', 'administrator-cleanup'],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
         // Strip unknown descriptive fields before TanStack Query admits response data to its cache.
-        return AdministratorCleanupReadResponseSchema.parse(
-          await client.operations['administration.cleanup-read']({})
-        );
+        const response = await client.operations['administration.cleanup-read']({});
+        signal.throwIfAborted();
+        return AdministratorCleanupReadResponseSchema.parse(response);
       } catch (error) {
         // Server messages, validation issues and error details can contain private source data.
         if (error instanceof ApiCallError && (error.status === 401 || error.status === 403)) {
@@ -159,6 +159,7 @@ export function AdministratorCleanupPanel() {
       }
     },
     retry: false,
+    refetchOnMount: 'always',
     gcTime: 0,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

@@ -4,7 +4,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -313,8 +313,39 @@ describe('Administrator cleanup inspection', () => {
     expect(screen.queryByText('request-one')).not.toBeInTheDocument();
   });
 
+  it('discards a previous mount pending response and requires a new current-authority read', async () => {
+    let oldResult!: (value: ReturnType<typeof response>) => void;
+    let currentResult!: (value: ReturnType<typeof response>) => void;
+    const read = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            oldResult = resolve;
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            currentResult = resolve;
+          })
+      );
+    const first = mount(read);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    first.unmount();
+    mount(read, first.queryClient);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await act(() => oldResult(response()));
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    await act(() => currentResult({ ...response(), items: [] }));
+    expect(await screen.findAllByText('No records returned.')).toHaveLength(6);
+    expect(screen.queryByText('request-one')).not.toBeInTheDocument();
+  });
+
   it('requires a read on this mount before showing cached source identifiers', async () => {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
     queryClient.setQueryData(['settings', 'administrator-cleanup'], response());
     let settle: (value: ReturnType<typeof response>) => void = () => {};
     const read = vi.fn().mockImplementation(
