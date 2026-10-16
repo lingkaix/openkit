@@ -289,7 +289,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                 <p className="px-3 pb-1 pt-3 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
                   Conversations
                 </p>
-                <AssistantEntry key={workspace.id} workspaceId={workspace.id} />
+                <AssistantEntry key={`assistant:${workspace.id}`} workspaceId={workspace.id} />
                 {navigation.isPending ? (
                   <p className="px-3 text-xs text-fg-muted">Loading conversations…</p>
                 ) : null}
