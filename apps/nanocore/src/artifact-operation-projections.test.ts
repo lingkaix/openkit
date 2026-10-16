@@ -234,7 +234,10 @@ const inputs = {
     contentDigest: original.sha256,
     requestId: 'import-projection',
   },
-  'artifact.download': { artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', artifactVersion: 1 },
+  'artifact.download': {
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    artifactVersion: 1,
+  },
   'artifact.introduce': {
     artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
     threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -275,10 +278,12 @@ const oldRoutes = [
 ];
 
 describe('Artifact definition projections', () => {
-  it('declares the seven Artifact operations without handwritten JSON projection catalogs', () => {
+  it('declares the nine Artifact operations without handwritten JSON projection catalogs', () => {
     const table = (schemas as unknown as Record<string, Record<string, unknown>>)
       .ARTIFACT_OPERATION_DEFINITIONS;
-    expect(Object.keys(table ?? {})).toEqual(Object.keys(inputs));
+    expect(Object.keys(table ?? {}).sort()).toEqual(
+      [...Object.keys(inputs), 'artifact.folder-read', 'artifact.folder-extract'].sort()
+    );
     for (const path of [
       'skills/openkit-operations.mjs',
       'apps/nanocore/src/openapi.ts',
@@ -358,7 +363,10 @@ describe('Artifact definition projections', () => {
       async function compare(id: string, input: Record<string, unknown>) {
         let expected: unknown;
         for (const project of Object.values(await projections(f, token, id))) {
-          const result = await project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input });
+          const result = await project(id, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            ...input,
+          });
           if (expected === undefined) expected = result;
           expect(result, id).toEqual(expected);
         }
@@ -483,7 +491,10 @@ describe('Artifact definition projections', () => {
     const f = fixture();
     try {
       const projectors = await projections(f, undefined, 'artifact.import');
-      const metadata = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...inputs['artifact.import'] };
+      const metadata = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        ...inputs['artifact.import'],
+      };
       const accepted = await projectors.http('artifact.import', metadata);
       let reads = 0;
       const retry = new ReadableStream<Uint8Array>(
@@ -532,7 +543,10 @@ describe('Artifact definition projections', () => {
       expect(imported).toBeDefined();
       for (const project of Object.values(projectors)) {
         await expect(
-          project('artifact.import', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...inputs['artifact.import'] })
+          project('artifact.import', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            ...inputs['artifact.import'],
+          })
         ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
       }
       expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
@@ -628,7 +642,9 @@ describe('Artifact definition projections', () => {
     const f = fixture();
     try {
       for (const project of Object.values(await projections(f, undefined, id)))
-        await expect(project(id, { ...input, workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })).rejects.toMatchObject({
+        await expect(
+          project(id, { ...input, workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })
+        ).rejects.toMatchObject({
           code: 'workspace_access_denied',
           status: 403,
         });
@@ -686,11 +702,19 @@ describe('Artifact definition projections', () => {
         expiresAt: '2099-01-01T00:00:00.000Z',
       }).secret;
       const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
-      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001');
-      if (id === 'artifact.review.decide') reviewDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const review = reviewDb ? getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1) : undefined;
+      const turns = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
+      if (id === 'artifact.review.decide')
+        reviewDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      const review = reviewDb
+        ? getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)
+        : undefined;
       for (const project of Object.values(await projections(f, token, id)))
-        await expect(project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })).rejects.toMatchObject({
+        await expect(
+          project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
+        ).rejects.toMatchObject({
           code: 'workspace_access_denied',
           status: 403,
         });
@@ -720,7 +744,9 @@ describe('Artifact definition projections', () => {
     try {
       const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
       for (const project of Object.values(await projections(f, undefined, id)))
-        await expect(project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })).rejects.toMatchObject({
+        await expect(
+          project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
+        ).rejects.toMatchObject({
           code: 'product_work_unavailable',
           status: 503,
         });

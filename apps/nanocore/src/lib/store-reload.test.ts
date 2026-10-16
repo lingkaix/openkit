@@ -23,8 +23,8 @@ import {
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { parseOkfDocument } from '../knowledge/okf.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { FsStore } from './store.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';

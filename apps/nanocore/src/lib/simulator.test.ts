@@ -13,7 +13,6 @@ import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openk
 import { AgentSessionIdSchema, deriveEntityId } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
 import * as artifactReviews from '../artifact-reviews.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
@@ -42,7 +41,6 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -759,7 +757,10 @@ describe('SimulatedTurnExecutor', () => {
           expect(pkg.scope.turnId).toBe(trace.turnId);
           expect(trace.materialSelections).toHaveLength(1);
           const beforeArtifacts = store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
-          const beforeItems = store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001');
+          const beforeItems = store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          );
           const beforeReviews = db.sqlite
             .prepare('SELECT * FROM artifact_reviews ORDER BY artifact_id')
             .all();
@@ -773,8 +774,15 @@ describe('SimulatedTurnExecutor', () => {
             publicationBytes: 0n,
           };
           const assertUnchanged = () => {
-            expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(beforeArtifacts);
-            expect(store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001')).toEqual(beforeItems);
+            expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(
+              beforeArtifacts
+            );
+            expect(
+              store.listThreadItems(
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001'
+              )
+            ).toEqual(beforeItems);
             expect(
               db.sqlite.prepare('SELECT * FROM artifact_reviews ORDER BY artifact_id').all()
             ).toEqual(beforeReviews);
@@ -851,7 +859,9 @@ describe('SimulatedTurnExecutor', () => {
               expect(retainedStage).toBeDefined();
               expect(existsSync(retainedStage!.path)).toBe(true);
               expect(() => admission.reserve(fullCapacity)).toThrow('Storage capacity');
-              expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(beforeArtifacts);
+              expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(
+                beforeArtifacts
+              );
             } finally {
               unprovedStage.mockRestore();
               // Fixture cleanup proves removal before it returns the retained capacity.
@@ -921,7 +931,9 @@ describe('SimulatedTurnExecutor', () => {
 
             await publish.apply(this, args);
             assertReleased();
-            expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(beforeArtifacts.length + 2);
+            expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+              beforeArtifacts.length + 2
+            );
           } finally {
             reserve.mockRestore();
           }
@@ -1219,7 +1231,12 @@ describe('SimulatedTurnExecutor', () => {
           )
         ).rejects.toThrow();
         expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(proposals);
-        expect(store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001')).toEqual(references);
+        expect(
+          store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual(references);
         expect(readFileSync(historyPath)).toEqual(history);
         expect(
           retained.map((artifact) => getArtifactReview(replayDb, artifact.id, artifact.version))

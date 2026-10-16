@@ -464,7 +464,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).filter((artifact): artifact is ProposalArtifactSummary => artifact !== null);
   expect(proposals).toHaveLength(2);
   const proposalTexts = await Promise.all(proposals.map(proposalOriginal));
-  await page.goto(`${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`);
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`
+  );
   await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toBeVisible();
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
@@ -487,7 +489,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
   await page.setViewportSize(previousViewport);
 
-  await page.goto(`${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   await expect(materialEditor).toHaveValue(proposalTexts[0]!);
   const revisionsAfterApply = await materialRevisions(primary.materialId);
   expect(revisionsAfterApply).toHaveLength(3);

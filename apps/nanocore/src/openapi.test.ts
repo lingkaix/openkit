@@ -13,9 +13,9 @@ import {
   SYNC_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import {
-  allocateEntityId,
   AgentIdSchema,
   ArtifactIdSchema,
+  allocateEntityId,
   PROTOCOL_VERSION,
   ThreadIdSchema,
   TurnIdSchema,
@@ -1155,9 +1155,7 @@ describe('app api openapi projection', () => {
     const artifactId = allocateEntityId('ar');
     expect(validateResult({ artifactId, artifactVersion: 1 })).toBe(true);
     expect(validateResult({ artifactId, artifactVersion: 2 })).toBe(false);
-    expect(validateResult({ artifactId, artifactVersion: 1, content: 'inline' })).toBe(
-      false
-    );
+    expect(validateResult({ artifactId, artifactVersion: 1, content: 'inline' })).toBe(false);
     const download = document.paths['/api/app/operations/artifact.download']?.get;
     expect(download).toMatchObject({
       operationId: 'artifact.download',
@@ -1557,7 +1555,9 @@ describe('app api openapi projection', () => {
   it('preserves preparation and recovery constraints in runtime JSON Schema and generated OpenAPI', () => {
     const document = createAppOpenApiDocument();
     const digest = `sha256:${'a'.repeat(64)}`;
-    const common = { administrationThreadId: testEntityId('th', 'th_00000000-0000-79b7-9009-e76cfeceddee') };
+    const common = {
+      administrationThreadId: testEntityId('th', 'th_00000000-0000-79b7-9009-e76cfeceddee'),
+    };
     const preparation = {
       ...common,
       configuration: { fileId: 'agents/codex.agent.jsonc', expectedRevision: digest },

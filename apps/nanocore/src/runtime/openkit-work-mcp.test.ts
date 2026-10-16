@@ -105,7 +105,11 @@ function submissionFixture() {
     const artifact = store.getArtifact('ws_00000000-0000-7000-8000-000000000001', id);
     expect(artifact.content.format).toBe('file');
     return readFileSync(
-      artifactFilePayloadPath(join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001'), id, artifact.version)
+      artifactFilePayloadPath(
+        join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001'),
+        id,
+        artifact.version
+      )
     );
   };
   const submit = (requestId = 'req_file_1', overrides: Record<string, unknown> = {}) =>
