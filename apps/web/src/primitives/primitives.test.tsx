@@ -1,3 +1,4 @@
+import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentType, Key, ReactElement, ReactNode } from 'react';
@@ -604,6 +605,103 @@ describe('primitive tier — behavior', () => {
     expect(onChange).toHaveBeenCalledWith(true);
   });
 
+  const availableComposerCatalog: ConversationTargetCatalog = {
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    defaultTargetRef: 'internal-role:assistant',
+    targets: [
+      {
+        targetRef: 'internal-role:assistant',
+        kind: 'assistant',
+        label: 'Assistant',
+        description: null,
+        availability: 'available',
+        unavailableReason: null,
+        threadId: null,
+        profileId: null,
+        logicalModels: [{ id: 'reasoning', label: 'Reasoning', capabilities: ['chat'] }],
+        defaultLogicalModelId: 'reasoning',
+      },
+    ],
+  };
+
+  it('waits for the delayed target catalog before click or Enter can submit the retained draft', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockRejectedValue(new Error('Uncertain result'));
+    const initialDraft = {
+      input: 'Keep this draft',
+      targetRef: '',
+      requestId: '00000000-0000-4000-8000-000000000217',
+    };
+    const { rerender } = render(
+      <Composer targetCatalog={null} initialDraft={initialDraft} onSubmit={onSubmit} />
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    const send = screen.getByRole('button', { name: 'Send message' });
+    expect(send).toBeDisabled();
+    await user.click(send);
+    await user.click(input);
+    await user.keyboard('{Enter}');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue(initialDraft.input);
+
+    rerender(
+      <Composer
+        targetCatalog={availableComposerCatalog}
+        initialDraft={initialDraft}
+        onSubmit={onSubmit}
+      />
+    );
+    await waitFor(() => expect(send).toBeEnabled());
+    await user.click(send);
+    const acceptedDraft = {
+      ...initialDraft,
+      targetRef: 'internal-role:assistant',
+      logicalModelId: 'reasoning',
+      artifactRefs: [],
+    };
+    expect(onSubmit).toHaveBeenCalledWith(acceptedDraft);
+    expect(input).toHaveValue(initialDraft.input);
+
+    for (const targetCatalog of [
+      null,
+      { ...availableComposerCatalog, targets: [] },
+      {
+        ...availableComposerCatalog,
+        targets: [
+          {
+            ...availableComposerCatalog.targets[0]!,
+            availability: 'unavailable' as const,
+            unavailableReason: 'Temporarily unavailable.',
+          },
+        ],
+      },
+      {
+        ...availableComposerCatalog,
+        targets: [{ ...availableComposerCatalog.targets[0]!, logicalModels: [] }],
+      },
+    ]) {
+      rerender(
+        <Composer targetCatalog={targetCatalog} initialDraft={initialDraft} onSubmit={onSubmit} />
+      );
+      expect(send).toBeDisabled();
+      await user.click(input);
+      await user.keyboard('{Enter}');
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(input).toHaveValue(initialDraft.input);
+    }
+    rerender(
+      <Composer
+        targetCatalog={availableComposerCatalog}
+        initialDraft={initialDraft}
+        onSubmit={onSubmit}
+      />
+    );
+    await user.click(send);
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(onSubmit).toHaveBeenLastCalledWith(acceptedDraft);
+  });
+
   it('dismisses Composer attachments with Escape and outside interaction and restores focus', async () => {
     const user = userEvent.setup();
     render(<Composer />);
@@ -625,6 +723,7 @@ describe('primitive tier — behavior', () => {
     const onImportFile = vi.fn().mockResolvedValue(uploaded);
     render(
       <Composer
+        targetCatalog={availableComposerCatalog}
         artifacts={[{ id: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', version: 2, label: 'Brief' }]}
         onImportFile={onImportFile}
         onSubmit={onSubmit}
@@ -650,7 +749,7 @@ describe('primitive tier — behavior', () => {
   it('Composer submits the structured draft and clears', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<Composer onSubmit={onSubmit} />);
+    render(<Composer targetCatalog={availableComposerCatalog} onSubmit={onSubmit} />);
     const input = screen.getByRole('textbox', { name: 'Message' });
     await user.type(input, '  hello  ');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -658,7 +757,8 @@ describe('primitive tier — behavior', () => {
       artifactRefs: [],
       input: '  hello  ',
       requestId: expect.any(String),
-      targetRef: '',
+      targetRef: 'internal-role:assistant',
+      logicalModelId: 'reasoning',
     });
     expect(input).toHaveValue('');
   });
