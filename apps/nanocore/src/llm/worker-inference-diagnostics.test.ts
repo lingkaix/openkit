@@ -560,6 +560,21 @@ it('maps a confirmed pre-output native compaction failure to the owned envelope'
   expect(f.dispatch).toHaveBeenCalledTimes(1);
 });
 
+it('maps unavailable routes for confirmed compaction without inventing a Provider attempt', async () => {
+  const f = fixture(false, 'compaction');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const response = await f.post(false);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'context_compaction_unavailable',
+      message: 'Context compaction is unavailable.',
+      type: 'provider_error',
+    },
+  });
+  expect(f.dispatch).not.toHaveBeenCalled();
+});
+
 it('keeps an indistinguishable ordinary native failure in its existing category', async () => {
   const f = fixture(true, 'turn');
   vi.spyOn(console, 'warn').mockImplementation(() => {});
