@@ -43,16 +43,13 @@ import {
   loadWorkspaceResourceCatalog,
   McpBindingValidationError,
   materializeCatalogTree,
-  purgeWorkspaceSkillVersion,
-  removeWorkspaceSkill,
   type SkillCandidateDecisionContext,
   selectWorkspaceMcpVersion,
-  selectWorkspaceSkillDefault,
-  setWorkspaceSkillPin,
   submitWorkspaceSkillCandidate,
   updateWorkspaceMcpBinding,
   validateCatalogTree,
 } from './resource-catalog.js';
+import { createSkillManagementCommands } from './skill-management-commands.js';
 import {
   diffWorkspaceSkillVersions,
   readWorkspaceSkillContent,
@@ -144,6 +141,7 @@ export function createCatalogOperationImplementations(
     dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
     void dependencies.closeWorkspaceMcpSessions?.(workspaceId);
   };
+  const management = createSkillManagementCommands(dependencies, hooks, afterMutation);
   const administrator = (context: AdmittedOperationContext) =>
     dependencies.coreDb !== undefined &&
     isCurrentDeploymentAdministrator(dependencies.coreDb, publicOperationActor(context));
@@ -459,54 +457,26 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'skill_diff_failed');
       }
     },
-    'catalog.skill-remove': (input) => {
+    'catalog.skill-remove': async (input, context) => {
       try {
-        const catalog = removeWorkspaceSkill({
-          dataRoot: root(),
-          entryId: input.skillId,
-          expectedRevision: input.expectedRevision,
-          workspaceId: input.workspaceId,
-        });
-        return { revision: catalog.revision };
+        return await management.mutateSkill('catalog.skill-remove', input, context);
       } catch (error) {
         catalogFailure(error, 'skill_remove_failed');
       }
     },
-    'catalog.skill-purge': (input) => {
+    'catalog.skill-purge': async (input, context) => {
       try {
-        const version = {
-          digest: input.digest,
-          entryId: input.skillId,
-          workspaceId: input.workspaceId,
-        };
-        const catalog = purgeWorkspaceSkillVersion({
-          ...version,
-          dataRoot: root(),
-          expectedRevision: input.expectedRevision,
-          retainedReferences: hooks.retainedSkillReferences?.(version) ?? null,
-        });
-        return { revision: catalog.revision };
+        return await management.mutateSkill('catalog.skill-purge', input, context);
       } catch (error) {
         catalogFailure(error, 'skill_purge_failed');
       }
     },
-    'catalog.skill-import': (input, context) => {
+    'catalog.skill-import': async (input, context) => {
       try {
-        const result = importWorkspaceSkill({
-          activate: input.activate,
-          createdAt: new Date().toISOString(),
-          dataRoot: root(),
-          displayName: input.displayName,
-          expectedRevision: input.expectedRevision,
-          ...(input.id ? { id: input.id } : {}),
-          producer: { id: publicOperationActor(context).userId, kind: 'user' },
-          tree: catalogTree(input.tree),
-          workspaceId: input.workspaceId,
-        });
+        const result = await management.importSkill(input, context, () => catalogTree(input.tree));
         const entry = result.catalog.skills.entries.find(
           (item) => item.id === result.version.entryId
         )!;
-        afterMutation(input.workspaceId);
         return {
           entry,
           revision: result.catalog.revision,
@@ -669,34 +639,16 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'skill_candidate_withdraw_failed');
       }
     },
-    'catalog.skill-select': (input) => {
+    'catalog.skill-select': async (input, context) => {
       try {
-        const catalog = selectWorkspaceSkillDefault({
-          dataRoot: root(),
-          digest: input.digest,
-          expectedCurrentDigest: input.expectedCurrentDigest,
-          entryId: input.skillId,
-          expectedRevision: input.expectedRevision,
-          workspaceId: input.workspaceId,
-        });
-        afterMutation(input.workspaceId);
-        return { revision: catalog.revision };
+        return await management.mutateSkill('catalog.skill-select', input, context);
       } catch (error) {
         catalogFailure(error, 'skill_select_failed');
       }
     },
-    'catalog.skill-pin': (input) => {
+    'catalog.skill-pin': async (input, context) => {
       try {
-        const catalog = setWorkspaceSkillPin({
-          dataRoot: root(),
-          digest: input.digest,
-          expectedPinDigest: input.expectedPinDigest,
-          entryId: input.skillId,
-          expectedRevision: input.expectedRevision,
-          workspaceId: input.workspaceId,
-        });
-        afterMutation(input.workspaceId);
-        return { revision: catalog.revision };
+        return await management.mutateSkill('catalog.skill-pin', input, context);
       } catch (error) {
         catalogFailure(error, 'skill_pin_failed');
       }
