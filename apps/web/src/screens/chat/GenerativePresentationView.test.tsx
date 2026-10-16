@@ -201,7 +201,7 @@ describe('GenerativePresentationView', () => {
   it('keeps exact grouped Tool text visible when native rendering fails', async () => {
     const source = ToolCallItemSchema.parse({
       ...ITEM,
-      id: 'tool-source',
+      id: 'it_00000000-0000-7000-8000-000000000059',
       type: 'tool-call',
       tool: 'query',
       server: null,
