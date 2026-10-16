@@ -316,8 +316,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       if (
         !selection ||
         !selection.logicalModel.capabilities.includes('responses') ||
-        !selection.logicalModel.capabilities.includes('tool-calling') ||
-        !selection.logicalModel.contextManagement
+        !selection.logicalModel.capabilities.includes('tool-calling')
       )
         throw new Error('Coordinator logical model is unavailable.');
       const systemPrompt = assembleBuiltInSystemPrompt('goal-orchestrator');
@@ -354,10 +353,6 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
                 logicalModelId: selection.logicalModel.id,
                 capabilities: selection.logicalModel.capabilities,
                 modelFamilyId: selection.logicalModel.modelFamilyId,
-              },
-              contextManagement: {
-                ...selection.logicalModel.contextManagement!,
-                authority: 'openkit',
               },
               limits: selection.profile?.limits ?? {
                 maxModelTurns: 8,
