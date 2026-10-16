@@ -547,9 +547,7 @@ async function runResidentTurnImplementation(
             summarizeProcessOutput(adapterResult.stopReason, credentialValues));
     }
     const terminalInput: WorkerTerminalOutcomeInput = {
-      ...(Object.keys(adapterDiagnostics).length > 0
-        ? { diagnostics: adapterDiagnostics }
-        : {}),
+      ...(Object.keys(adapterDiagnostics).length > 0 ? { diagnostics: adapterDiagnostics } : {}),
       status,
       stopReason:
         status === 'completed'

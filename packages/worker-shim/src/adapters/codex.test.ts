@@ -1279,8 +1279,8 @@ describe('Codex App Server adapter', () => {
       })
     );
     const finalStatuses: Array<{
+      sequence: number;
       body: {
-        sequence: number;
         status: string;
         stopReason: string;
         diagnostics?: Record<string, string>;
@@ -1331,9 +1331,14 @@ describe('Codex App Server adapter', () => {
       },
       turnDirectory: join(roots.control, 'warning-turn'),
     });
-    if (delivery === 'accepted') await expect(execution).resolves.toMatchObject({ status: 'completed' });
+    if (delivery === 'accepted')
+      await expect(execution).resolves.toMatchObject({ status: 'completed' });
     else if (delivery === 'drain-failed') await expect(execution).rejects.toBe(drainFailure);
-    else await expect(execution).rejects.toMatchObject({ code: 'worker_control_revoked', status: 403 });
+    else
+      await expect(execution).rejects.toMatchObject({
+        code: 'worker_control_revoked',
+        status: 403,
+      });
     expect(finalStatuses).toHaveLength(1);
     const terminal = finalStatuses[0]!.body;
     expect(terminal).toMatchObject({
@@ -1347,9 +1352,8 @@ describe('Codex App Server adapter', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    const { sequence, ...terminalData } = terminal;
-    expect(records.at(-1)?.sequence).toBe(sequence);
-    expect(records.at(-1)?.event.data).toEqual(terminalData);
+    expect(records.at(-1)?.sequence).toBe(finalStatuses[0]!.sequence);
+    expect(records.at(-1)?.event.data).toEqual(terminal);
     expect(inference.bodies.at(-1)).toContain('tool-done');
     expect(gateway.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
