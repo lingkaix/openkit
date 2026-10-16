@@ -4,6 +4,7 @@ import type { WorkspaceRole } from '../workspace-membership.js';
 /** Closed V1 product-operation to NGAC access-right registry. */
 export const PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'api.call': 'ar:core-api-call',
+  'administration.configuration.apply': 'ar:worker-git-read-maintenance-apply',
   'approval.respond': 'ar:approval-respond',
   'artifact.read': 'ar:artifact-read',
   'artifact.write': 'ar:artifact-write',
@@ -38,7 +39,7 @@ export type ProductOperation = keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS;
 /** Product operations governed directly by an active Workspace fixed role. */
 type WorkspaceRoleOperation = Exclude<
   ProductOperation,
-  'api.call' | 'deployment.recover' | 'invitation.respond'
+  'api.call' | 'deployment.recover' | 'invitation.respond' | 'administration.configuration.apply'
 >;
 
 /** Input for evaluating the fixed-role ceiling of one Workspace operation. */
