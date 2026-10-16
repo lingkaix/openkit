@@ -813,7 +813,7 @@ it('retains private ownership in the narrow administrator deletion recovery expo
     expect(request).toMatchObject({
       phase: 'cleaned',
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      initiatingUserId: 'target',
+      initiatingUserId: testEntityId('usr', 'target'),
     });
     const exported = verifyWorkspaceExportTree({
       exportRoot: join(
@@ -844,7 +844,9 @@ it('retains private ownership in the narrow administrator deletion recovery expo
     ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'deleted' });
     expect(
       listServerAuditEvents(f.coreDb).filter((event) => event.action === 'workspace.delete')
-    ).toEqual([expect.objectContaining({ actor: { kind: 'user', id: 'target' } })]);
+    ).toEqual([
+      expect.objectContaining({ actor: { kind: 'user', id: testEntityId('usr', 'target') } }),
+    ]);
   } finally {
     f.close();
   }
@@ -899,8 +901,8 @@ it('lets a non-owner member transfer ownership and replay after another member t
         )
         .all(f.workspaceId)
     ).toEqual([
-      { user_id: testEntityId('usr', 'member'), status: 'active', revision: 1 },
       { user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active', revision: 1 },
+      { user_id: testEntityId('usr', 'member'), status: 'active', revision: 1 },
     ]);
   } finally {
     f.close();
