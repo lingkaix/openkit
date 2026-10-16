@@ -22,6 +22,7 @@ import type {
   AgentAssistantMessage,
   AgentMessage,
   InternalAgentProviderCall,
+  InternalAgentProviderRequest,
 } from './internal-agent-loop.js';
 import { InternalAgentProviderError } from './internal-agent-loop.js';
 
@@ -80,33 +81,8 @@ export function createInternalAgentGatewayProvider(
     if (request.model.logicalModelId !== options.logicalModel.id) {
       throw new Error('Internal Agent logical model changed after admission.');
     }
-    // Transport aliases are request-local; only this exact map may restore canonical identity.
-    const canonicalToAlias = new Map<string, string>();
-    const aliasToCanonical = new Map<string, string>();
-    for (const { name } of request.tools) {
-      const alias = operationToolName(name);
-      if (
-        !RESPONSES_TOOL_NAME_PATTERN.test(alias) ||
-        aliasToCanonical.has(alias) ||
-        name === UNAVAILABLE_TOOL_NAME ||
-        alias === UNAVAILABLE_TOOL_NAME
-      ) {
-        throw new Error('Internal Agent Tool aliases must be unique Responses function names.');
-      }
-      canonicalToAlias.set(name, alias);
-      aliasToCanonical.set(alias, name);
-    }
-    const providerInput = request.messages.flatMap((message) =>
-      toResponsesInput(message, canonicalToAlias)
-    );
-    const providerTools = request.tools.map(({ name, description, inputSchema }) => ({
-      type: 'function',
-      name: canonicalToAlias.get(name)!,
-      description,
-      parameters: inputSchema,
-      // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as task_start's tuple prefixItems.
-      strict: false,
-    }));
+    const { canonicalToAlias, aliasToCanonical, providerInput, providerTools } =
+      projectInternalAgentRequest(request);
     const workspaceDb = options.capture.workspaceDb;
     const call = options.callContext
       ? startCapabilityCall({
@@ -472,6 +448,54 @@ function fromResponses(
       'Gateway returned empty internal Agent content.'
     );
   return { role: 'assistant', content, truncated };
+}
+
+/** Checks the same wire projection used by dispatch, without a Provider effect or context mutation. */
+export function assertInternalAgentContextFits(
+  request: Pick<InternalAgentProviderRequest, 'systemPrompt' | 'messages' | 'tools'>,
+  contextLimit: number | undefined,
+  outputReserve: number | undefined
+): void {
+  const { providerInput, providerTools } = projectInternalAgentRequest(request);
+  assertPhysicalContextFits(
+    { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
+    contextLimit,
+    outputReserve
+  );
+}
+
+/** Builds the one wire projection for both conservative admission and actual Provider dispatch. */
+function projectInternalAgentRequest(
+  request: Pick<InternalAgentProviderRequest, 'systemPrompt' | 'messages' | 'tools'>
+) {
+  // Transport aliases are request-local; only this exact map may restore canonical identity.
+  const canonicalToAlias = new Map<string, string>();
+  const aliasToCanonical = new Map<string, string>();
+  for (const { name } of request.tools) {
+    const alias = operationToolName(name);
+    if (
+      !RESPONSES_TOOL_NAME_PATTERN.test(alias) ||
+      aliasToCanonical.has(alias) ||
+      name === UNAVAILABLE_TOOL_NAME ||
+      alias === UNAVAILABLE_TOOL_NAME
+    ) {
+      throw new Error('Internal Agent Tool aliases must be unique Responses function names.');
+    }
+    canonicalToAlias.set(name, alias);
+    aliasToCanonical.set(alias, name);
+  }
+  const providerInput = request.messages.flatMap((message) =>
+    toResponsesInput(message, canonicalToAlias)
+  );
+  const providerTools = request.tools.map(({ name, description, inputSchema }) => ({
+    type: 'function',
+    name: canonicalToAlias.get(name)!,
+    description,
+    parameters: inputSchema,
+    // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as task_start's tuple prefixItems.
+    strict: false,
+  }));
+  return { canonicalToAlias, aliasToCanonical, providerInput, providerTools };
 }
 
 /** Checks assembled input conservatively without changing canonical history or adding a loop fuse. */

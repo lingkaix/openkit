@@ -366,6 +366,14 @@ export interface WorkerContextPackageTrace {
 
 /** Minimal durable authorities consumed by the shared trace verifier. */
 export interface WorkerContextPackageAuthorityReader {
+  /** Reads the existing confirmed Assistant source proof; absence never grants a null-selection exception. */
+  readonly readAssistantTaskHandoffSource?: (input: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly requestId: string;
+    readonly workerRequest: string;
+  }) => { readonly sourceInputHash: string; readonly sourceTurnId: string } | null;
   /** Reads canonical causal Thread lineage without granting access through it. */
   readonly readThreadParent: (workspaceId: string, threadId: string) => string | null;
   /** Reads the accepted scheduler admission for one Turn. */
@@ -1140,10 +1148,25 @@ function verifyWorkerContextPackagePortableOwners(
           turn,
         })
       : false;
+  const isConfirmedAssistantTask =
+    !importedHistory &&
+    isDirectTask &&
+    !isChatSubordinateTask &&
+    trace.knowledgeSelectionInput === null &&
+    Boolean(
+      authorities.readAssistantTaskHandoffSource?.({
+        workspaceId: trace.workspaceId,
+        threadId: trace.threadId,
+        turnId: trace.turnId,
+        requestId: trace.requestId,
+        workerRequest: requestItem.text,
+      })
+    );
   if (
     (!importedHistory &&
       isDirectTask &&
       !isChatSubordinateTask &&
+      !isConfirmedAssistantTask &&
       trace.knowledgeSelectionInput === null) ||
     (!isDirectTask && trace.knowledgeSelectionInput !== null)
   ) {

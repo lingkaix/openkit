@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   verifyOpenKitAccessTokenRecord,
@@ -122,6 +122,14 @@ describe('data-root backup manifest', () => {
       const restoredRoot = join(parent, 'restored', 'data');
       const vaultDir = join(dataRoot, 'server', 'vault');
       const vaultFile = join(vaultDir, 'secret.bin');
+      onTestFinished(() => {
+        // Restore only fixture permissions after the backup and restore mode assertions.
+        for (const root of [dataRoot, backupRoot, restoredRoot]) {
+          const path = join(root, 'server', 'readonly');
+          if (existsSync(path)) chmodSync(path, 0o755);
+        }
+        rmSync(parent, { recursive: true, force: true });
+      });
 
       mkdirSync(vaultDir, { recursive: true, mode: 0o700 });
       chmodSync(vaultDir, 0o700);

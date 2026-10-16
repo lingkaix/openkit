@@ -23,6 +23,11 @@ import {
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
 import { redactInternalAgentText } from './redaction.js';
+import {
+  type InternalAgentContext,
+  type InternalAgentContextInput,
+  prepareInternalAgentContext,
+} from './rolling-context.js';
 
 /** The existing ordinary Assistant answer shape, without Turn or Item publication. */
 export interface AssistantCommandResult {
@@ -30,6 +35,8 @@ export interface AssistantCommandResult {
   readonly content: string;
   readonly providerId: string;
   readonly usage?: unknown;
+  /** Transient source proof retained only until canonical answer publication. */
+  readonly assertContextCurrent?: () => void;
 }
 
 /** One fixed command assembly; reuse it only when the command owner authorizes re-entry. */
@@ -57,6 +64,7 @@ export interface AssistantCommandRunInput {
   >;
   readonly limits: InternalAgentLoopInput['limits'];
   readonly signal: AbortSignal;
+  readonly readContextEvidence?: InternalAgentContextInput['readEvidence'];
 }
 
 /**
@@ -72,6 +80,7 @@ export function assembleAssistantCommandRun(input: {
   readonly resources: AssistantSkillResources;
   readonly messages: readonly AgentMessage[];
   readonly tools: readonly AgentTool[];
+  readonly assertCurrent?: () => void;
 }): AssistantCommandAssembly {
   const index = input.resources.index.map((skill) => ({
     skillId: skill.skillId,
@@ -106,7 +115,10 @@ export function assembleAssistantCommandRun(input: {
     ]),
     tools: Object.freeze(tools),
     assistantSkillAdmission: input.resources.admission,
-    assertCurrent: input.resources.assertCurrent.bind(input.resources),
+    assertCurrent: (context: Parameters<AssistantSkillResources['assertCurrent']>[0]) => {
+      input.resources.assertCurrent(context);
+      input.assertCurrent?.();
+    },
   });
 }
 
@@ -159,96 +171,166 @@ export async function runAssistantCommand(
         assistantSkillAdmission: assembly.assistantSkillAdmission,
       },
     },
-    async (capture) => {
-      const state: {
-        result?: Omit<AssistantCommandResult, 'content'>;
-        failure?: { error: unknown };
-      } = {};
-      const provider = createInternalAgentGatewayProvider({
-        ...input.gateway,
-        capture,
-        auditLineage: { commandRequestId },
-        callContext: {
-          workspaceId: turn.workspaceId,
-          authorityActor: { kind: 'user', id: actor.userId },
-          agentId: turn.agentId ?? 'quick-chat',
-          agentSessionId: null,
-          capabilityId: 'inference.local.quick_chat',
-          family: 'llm',
-          operation: 'quick_chat',
-          providerRef: null,
-          redactionClass: 'metadata-only',
-          // Each logical invocation owns a fresh call; the command owner excludes replay.
-          requestId: null,
-          serviceRef: 'llm-gateway',
-          summary: 'QuickChatAgent LLM call.',
-        },
-        usageEndpoint: 'quick_chat',
-        onDispatch: (result) => {
-          state.result = result;
-        },
-      });
-      const model = input.gateway.logicalModel;
-      const exit = await runInternalAgentLoop(
-        {
-          systemPrompt: assembly.systemPrompt,
-          messages: assembly.messages,
-          tools: assembly.tools,
-          model: {
-            logicalModelId: model.id,
-            capabilities: model.capabilities,
-            modelFamilyId: model.modelFamilyId,
+    (capture) =>
+      runAssistantModel({
+        systemPrompt: assembly.systemPrompt,
+        messages: assembly.messages,
+        tools: assembly.tools,
+        limits: input.limits,
+        signal: input.signal,
+        assertCurrent,
+        ...(input.readContextEvidence
+          ? {
+              context: {
+                store: input.store,
+                turn,
+                readEvidence: input.readContextEvidence,
+                environmentFacts: assembly.assistantSkillAdmission,
+                prefixMessages: assembly.messages.slice(0, 1),
+              },
+            }
+          : {}),
+        gateway: {
+          ...input.gateway,
+          capture,
+          auditLineage: { commandRequestId },
+          callContext: {
+            workspaceId: turn.workspaceId,
+            authorityActor: { kind: 'user', id: actor.userId },
+            agentId: turn.agentId ?? 'quick-chat',
+            agentSessionId: null,
+            capabilityId: 'inference.local.quick_chat',
+            family: 'llm',
+            operation: 'quick_chat',
+            providerRef: null,
+            redactionClass: 'metadata-only',
+            // Each logical invocation owns a fresh call; the command owner excludes replay.
+            requestId: null,
+            serviceRef: 'llm-gateway',
+            summary: 'Personal Assistant LLM call.',
           },
-          limits: input.limits,
-          signal: input.signal,
+          usageEndpoint: 'quick_chat',
         },
-        async (request) => {
-          try {
-            assertCurrent();
-            return await provider(request);
-          } catch (error) {
-            // The role-neutral loop returns a code; ordinary entry preserves its original error.
-            state.failure = { error };
-            throw error;
-          }
-        }
-      );
-      if (exit.kind === 'aborted') throw aborted();
-      if (exit.kind === 'limit_reached' && exit.limit === 'deadline')
-        throw new TurnStartValidationError(
-          'provider_call_timeout',
-          'Provider call timed out.',
-          504
-        );
-      if (exit.kind === 'failed' && state.failure) {
-        const error = state.failure.error;
-        // Only the private projection's typed invalid-content outcome becomes an entry error.
-        if (
-          !(error instanceof InternalAgentProviderError) ||
-          error.code !== 'provider_response_invalid'
-        )
-          throw error;
+      })
+  );
+}
+
+/**
+ * Runs the shared Assistant inference and result projection for an already captured Turn.
+ *
+ * Command and pending-outcome owners retain admission, replay and publication. Each Provider dispatch rechecks the existing owner through assertCurrent, and no continuation creates a synthetic conversation command.
+ *
+ * @param input Admitted prompt, canonical messages, fixed Tools, capture and current-authority guard.
+ * @returns The complete bounded Assistant answer with its Provider usage identity.
+ */
+export async function runAssistantModel(input: {
+  readonly systemPrompt: string;
+  readonly messages: readonly AgentMessage[];
+  readonly tools: readonly AgentTool[];
+  readonly limits: InternalAgentLoopInput['limits'];
+  readonly signal: AbortSignal;
+  readonly assertCurrent: () => void;
+  readonly gateway: Omit<InternalAgentGatewayProviderOptions, 'onDispatch'>;
+  readonly context?: Pick<
+    InternalAgentContextInput,
+    'store' | 'turn' | 'readEvidence' | 'environmentFacts' | 'prefixMessages'
+  >;
+}): Promise<AssistantCommandResult> {
+  const state: {
+    result?: Omit<AssistantCommandResult, 'content'>;
+    failure?: { error: unknown };
+  } = {};
+  const provider = createInternalAgentGatewayProvider({
+    ...input.gateway,
+    onDispatch: (result) => {
+      state.result = result;
+    },
+  });
+  const model = input.gateway.logicalModel;
+  const guardedProvider: typeof provider = (request) => {
+    input.assertCurrent();
+    prepared?.assertCurrent();
+    return provider(request);
+  };
+  let prepared: InternalAgentContext | undefined;
+  if (input.context)
+    prepared = await prepareInternalAgentContext({
+      ...input.context,
+      systemPrompt: input.systemPrompt,
+      requiredMessages: input.messages.slice(input.context.prefixMessages?.length ?? 0),
+      tools: input.tools,
+      model: {
+        logicalModelId: model.id,
+        capabilities: model.capabilities,
+        modelFamilyId: model.modelFamilyId,
+      },
+      bounds: { context: model.contract?.context, output: model.contract?.output },
+      limits: input.limits,
+      signal: input.signal,
+      assertCurrent: input.assertCurrent,
+      callProvider: guardedProvider,
+    });
+  const exit = await runInternalAgentLoop(
+    {
+      systemPrompt: input.systemPrompt,
+      messages: prepared?.messages ?? input.messages,
+      tools: input.tools,
+      model: {
+        logicalModelId: model.id,
+        capabilities: model.capabilities,
+        modelFamilyId: model.modelFamilyId,
+      },
+      limits: prepared?.limits ?? input.limits,
+      signal: prepared?.signal ?? input.signal,
+    },
+    async (request) => {
+      try {
+        return await guardedProvider(request);
+      } catch (error) {
+        // The role-neutral loop returns a code; ordinary entry preserves its original error.
+        state.failure = { error };
+        throw error;
       }
-      const final = exit.messages.at(-1);
-      const content =
-        final?.role === 'assistant'
-          ? final.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
-          : '';
-      if (
-        exit.kind !== 'quiescent' ||
-        final?.role !== 'assistant' ||
-        final.truncated ||
-        !content.trim() ||
-        !state.result
-      )
-        throw new TurnStartValidationError(
-          'provider_response_invalid',
-          'Provider returned no complete Assistant answer.',
-          502
-        );
-      return { ...state.result, content };
     }
   );
+  if (exit.kind === 'aborted') {
+    if (!input.signal.aborted && prepared?.signal.aborted)
+      throw new TurnStartValidationError('provider_call_timeout', 'Provider call timed out.', 504);
+    throw aborted();
+  }
+  if (exit.kind === 'limit_reached' && exit.limit === 'deadline')
+    throw new TurnStartValidationError('provider_call_timeout', 'Provider call timed out.', 504);
+  if (exit.kind === 'failed' && state.failure) {
+    const error = state.failure.error;
+    // Only the private projection's typed invalid-content outcome becomes an entry error.
+    if (
+      !(error instanceof InternalAgentProviderError) ||
+      error.code !== 'provider_response_invalid'
+    )
+      throw error;
+  }
+  const final = exit.messages.at(-1);
+  const content =
+    final?.role === 'assistant'
+      ? final.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
+      : '';
+  if (
+    exit.kind !== 'quiescent' ||
+    final?.role !== 'assistant' ||
+    final.truncated ||
+    !content.trim() ||
+    !state.result
+  )
+    throw new TurnStartValidationError(
+      'provider_response_invalid',
+      'Provider returned no complete Assistant answer.',
+      502
+    );
+  return {
+    ...state.result,
+    content,
+    ...(prepared ? { assertContextCurrent: prepared.assertCurrent } : {}),
+  };
 }
 
 /** Keeps the existing ordinary entry cancellation result. */
