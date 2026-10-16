@@ -1,4 +1,4 @@
-import { WorkspaceIdSchema } from '@openkit/protocol';
+import { ArtifactSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 import {
@@ -34,6 +34,26 @@ const credentials = [
   'user-bearer',
   'deployment-administrator',
 ] as const;
+
+/** One exact retained Artifact alternative; the addressed Workspace owns its source and destination. */
+const candidateInput = SubmitSkillCandidateRequestSchema.omit({ tree: true })
+  .safeExtend({
+    workspaceId: WorkspaceIdSchema,
+    skillId: z.string().min(1),
+    tree: SubmitSkillCandidateRequestSchema.shape.tree.optional(),
+    artifact: z
+      .object({
+        artifactId: ArtifactSchema.shape.id,
+        version: ArtifactSchema.shape.version,
+        contentDigest: ArtifactSchema.shape.contentDigest,
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((input) => (input.tree === undefined) !== (input.artifact === undefined), {
+    message: 'Supply exactly one inline tree or retained Artifact selection.',
+  });
 
 /** Catalog declarations reuse native payloads and closed admission strategies. */
 export const CATALOG_OPERATION_DEFINITIONS = {
@@ -186,10 +206,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 201,
     description: 'Submit a Skill candidate against its base digest.',
-    inputSchema: SubmitSkillCandidateRequestSchema.safeExtend({
-      workspaceId: WorkspaceIdSchema,
-      skillId: z.string().min(1),
-    }).strict(),
+    inputSchema: candidateInput,
     outputSchema: SkillCandidateResponseSchema,
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },

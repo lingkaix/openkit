@@ -1,10 +1,14 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CATALOG_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app-api-schemas';
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
-import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from '../auth/operation-authorizer.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import {
   type AdmittedOperationContext,
@@ -12,6 +16,17 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import {
+  IdempotencyKeyConflictError,
+  runIdempotentCommand,
+} from '../runtime/idempotent-command.js';
+import {
+  readSkillCandidateArtifact,
+  requireSkillCandidateArtifactAccess,
+  SkillCandidateArtifactError,
+  type SkillCandidateArtifactSelection,
+} from '../skill-candidate-artifact.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import {
   CatalogConflictError,
   CatalogContentUnavailableError,
@@ -36,6 +51,7 @@ import {
   setWorkspaceSkillPin,
   submitWorkspaceSkillCandidate,
   updateWorkspaceMcpBinding,
+  validateCatalogTree,
 } from './resource-catalog.js';
 import {
   diffWorkspaceSkillVersions,
@@ -53,6 +69,7 @@ export interface CatalogOperationHooks {
       readonly expectedRevision: number;
       readonly requestId: string;
       readonly workspaceId: string;
+      readonly operation: 'catalog.skill-candidate-decide' | 'catalog.skill-candidate-withdraw';
     },
     context: AdmittedOperationContext
   ) => SkillCandidateDecisionContext;
@@ -62,6 +79,55 @@ export interface CatalogOperationHooks {
     readonly entryId: string;
     readonly workspaceId: string;
   }) => readonly string[] | null;
+}
+
+/** Records a real current human decision admission through the existing Workspace Audit owner. */
+export function prepareCatalogSkillDecision(
+  dependencies: OperationInvocationDependencies,
+  input: Parameters<NonNullable<CatalogOperationHooks['prepareSkillDecision']>>[0],
+  context: AdmittedOperationContext
+): SkillCandidateDecisionContext {
+  const actor = publicOperationActor(context);
+  const policyOperation = CATALOG_OPERATION_DEFINITIONS[input.operation].policyOperation;
+  if (
+    !dependencies.coreDb ||
+    !dependencies.repositoryWorkspaceDb ||
+    context.actorRef.kind !== 'user' ||
+    !isWorkspaceOperationAuthorized(dependencies.coreDb, actor, input.workspaceId, {
+      mutating: true,
+      policyOperation,
+    })
+  )
+    throw new CatalogForbiddenError('Current Skill decision authority is unavailable.');
+  const workspaceDb = dependencies.repositoryWorkspaceDb(input.workspaceId);
+  try {
+    const event = recordWorkspaceAuditEvent({
+      workspaceDb,
+      workspaceId: input.workspaceId,
+      requestId: input.requestId,
+      actor: context.actorRef,
+      action: `${input.operation}.admit`,
+      resource: `skill-candidate:${input.candidateId}`,
+      resourceRevision: input.expectedRevision,
+      outcome: 'succeeded',
+      summary: `Human Skill candidate ${input.decision} admission.`,
+    });
+    return {
+      actor: { kind: 'user', id: actor.userId },
+      auditRef: event.id,
+      decidedAt: new Date().toISOString(),
+    };
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+const ARTIFACT_EVIDENCE_PREFIX = 'artifact:';
+
+/** Keeps the complete selected Artifact identity in the existing candidate evidence references. */
+function artifactEvidence(selection: SkillCandidateArtifactSelection): string {
+  const { workspaceId, artifactId, version, contentDigest } = selection;
+  return `${ARTIFACT_EVIDENCE_PREFIX}${JSON.stringify({ workspaceId, artifactId, version, contentDigest })}`;
 }
 
 /** Joins catalog definitions to immutable supply and compare-and-set publication under existing admission owners. */
@@ -81,6 +147,247 @@ export function createCatalogOperationImplementations(
   const administrator = (context: AdmittedOperationContext) =>
     dependencies.coreDb !== undefined &&
     isCurrentDeploymentAdministrator(dependencies.coreDb, publicOperationActor(context));
+  /** Reuses the existing receipt/Audit owners; no catalog-specific ledger is created. */
+  const commandOwners = (workspaceId: string) => {
+    if (
+      !dependencies.store ||
+      !dependencies.coreDb ||
+      !dependencies.inflightCommands ||
+      !dependencies.repositoryWorkspaceDb
+    )
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'Skill command storage is unavailable.',
+        503
+      );
+    return {
+      store: dependencies.store,
+      inflightCommands: dependencies.inflightCommands,
+      workspaceDb: dependencies.repositoryWorkspaceDb(workspaceId),
+    };
+  };
+  const readArtifact = (
+    selection: SkillCandidateArtifactSelection,
+    context: AdmittedOperationContext
+  ) => {
+    if (!dependencies.store || !dependencies.coreDb)
+      throw new CatalogIntegrityError('Skill Artifact authority is unavailable.');
+    return readSkillCandidateArtifact({
+      store: dependencies.store,
+      coreDb: dependencies.coreDb,
+      actor: publicOperationActor(context),
+      selection,
+      destination: 'workspace-skill',
+    });
+  };
+  const requireArtifactAccess = (
+    selection: SkillCandidateArtifactSelection,
+    context: AdmittedOperationContext
+  ) => {
+    if (!dependencies.store || !dependencies.coreDb)
+      throw new CatalogIntegrityError('Skill Artifact authority is unavailable.');
+    requireSkillCandidateArtifactAccess({
+      store: dependencies.store,
+      coreDb: dependencies.coreDb,
+      actor: publicOperationActor(context),
+      selection,
+      destination: 'workspace-skill',
+    });
+  };
+  const revalidate = (
+    workspaceId: string,
+    operation:
+      | 'catalog.skill-candidate-submit'
+      | 'catalog.skill-candidate-decide'
+      | 'catalog.skill-candidate-withdraw',
+    context: AdmittedOperationContext
+  ) => {
+    if (
+      !dependencies.coreDb ||
+      !isWorkspaceOperationAuthorized(
+        dependencies.coreDb,
+        publicOperationActor(context),
+        workspaceId,
+        {
+          mutating: true,
+          policyOperation: CATALOG_OPERATION_DEFINITIONS[operation].policyOperation,
+        }
+      )
+    )
+      throw new CatalogForbiddenError('Current Skill command authority is unavailable.');
+  };
+  /** Existing Audit admission makes an interrupted cross-store result visible without replaying its effect. */
+  const refuseInterrupted = (
+    workspaceDb: WorkspaceDb,
+    operation: string,
+    input: { requestId: string; workspaceId: string; expectedRevision: number },
+    context: AdmittedOperationContext
+  ) => {
+    const admitted = workspaceDb.sqlite
+      .prepare(
+        'SELECT actor_json AS actor FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ?'
+      )
+      .all(input.workspaceId, input.requestId, `${operation}.admit`) as { actor: string | null }[];
+    if (
+      loadWorkspaceResourceCatalog(root(), input.workspaceId).revision !== input.expectedRevision
+    ) {
+      if (admitted.some((row) => row.actor === JSON.stringify(context.actorRef)))
+        throw new CatalogIntegrityError(
+          'Skill command has an interrupted result. Inspect it before a new request.'
+        );
+      throw new CatalogConflictError();
+    }
+  };
+  const auditResult = (
+    workspaceDb: WorkspaceDb,
+    operation: string,
+    input: { workspaceId: string; requestId: string },
+    context: AdmittedOperationContext,
+    candidateId: string,
+    revision: number
+  ) =>
+    recordWorkspaceAuditEvent({
+      workspaceDb,
+      workspaceId: input.workspaceId,
+      requestId: input.requestId,
+      actor: context.actorRef,
+      action: operation,
+      resource: `skill-candidate:${candidateId}`,
+      resourceRevision: revision,
+      outcome: 'succeeded',
+      summary: 'Skill candidate command completed.',
+    });
+  const decision = async (
+    operation: 'catalog.skill-candidate-decide' | 'catalog.skill-candidate-withdraw',
+    input:
+      | OperationInput<'catalog.skill-candidate-decide'>
+      | OperationInput<'catalog.skill-candidate-withdraw'>,
+    context: AdmittedOperationContext
+  ) => {
+    const owners = commandOwners(input.workspaceId);
+    let published = false;
+    const selectedDecision = 'decision' in input ? input.decision : 'withdrawn';
+    const currentCandidate = () => {
+      revalidate(input.workspaceId, operation, context);
+      const catalog = loadWorkspaceResourceCatalog(root(), input.workspaceId);
+      const candidate = catalog.skills.candidates.find((item) => item.id === input.candidateId);
+      if (!candidate) throw new CatalogNotFoundError('Skill candidate not found.');
+      for (const ref of candidate.evidenceRefs.filter((value) =>
+        value.startsWith(ARTIFACT_EVIDENCE_PREFIX)
+      )) {
+        let selection: SkillCandidateArtifactSelection;
+        try {
+          selection = JSON.parse(
+            ref.slice(ARTIFACT_EVIDENCE_PREFIX.length)
+          ) as SkillCandidateArtifactSelection;
+        } catch {
+          throw new SkillCandidateArtifactError('source_unavailable');
+        }
+        if (
+          !selection ||
+          selection.workspaceId !== input.workspaceId ||
+          typeof selection.artifactId !== 'string' ||
+          !selection.artifactId ||
+          !Number.isSafeInteger(selection.version) ||
+          selection.version < 1 ||
+          typeof selection.contentDigest !== 'string' ||
+          !/^sha256:[a-f0-9]{64}$/.test(selection.contentDigest)
+        )
+          throw new SkillCandidateArtifactError('source_unavailable');
+        requireArtifactAccess(selection, context);
+      }
+      return { catalog, candidate };
+    };
+    try {
+      return await runIdempotentCommand({
+        ...owners,
+        command: operation,
+        requestId: input.requestId,
+        scope: {
+          workspaceId: input.workspaceId,
+          actorId: publicOperationActor(context).userId,
+          candidateId: input.candidateId,
+        },
+        input,
+        responseKind: 'skill_candidate',
+        responseId: () => input.candidateId,
+        replay: (receipt) => {
+          const { catalog, candidate } = currentCandidate();
+          if (
+            receipt.response.kind !== 'skill_candidate' ||
+            receipt.response.id !== candidate.id ||
+            candidate.disposition !== selectedDecision ||
+            candidate.decision?.actor.kind !== 'user' ||
+            candidate.decision?.actor.id !== publicOperationActor(context).userId
+          )
+            throw new CatalogIntegrityError('Skill decision receipt does not match its candidate.');
+          return { revision: catalog.revision };
+        },
+        execute: () => {
+          const { catalog: current, candidate } = currentCandidate();
+          refuseInterrupted(owners.workspaceDb, operation, input, context);
+          if (candidate.disposition !== 'proposed')
+            throw new CatalogNotFoundError('Skill candidate is not proposed.');
+          const currentDigest = current.skills.entries.find(
+            (entry) => entry.id === candidate.entryId
+          )?.currentDigest;
+          if (
+            ('expectedCurrentDigest' in input && input.expectedCurrentDigest !== currentDigest) ||
+            (selectedDecision === 'promoted' && candidate.baseDigest !== currentDigest)
+          )
+            throw new CatalogConflictError(
+              'Skill candidate base no longer matches current selection.'
+            );
+          if (!hooks.prepareSkillDecision)
+            throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
+          const catalog = decideWorkspaceSkillCandidate({
+            candidateId: input.candidateId,
+            dataRoot: root(),
+            decision: selectedDecision,
+            decisionContext: hooks.prepareSkillDecision(
+              { ...input, operation, decision: selectedDecision },
+              context
+            ),
+            configurationOwner:
+              operation === 'catalog.skill-candidate-decide' ||
+              Boolean(
+                dependencies.coreDb &&
+                  isWorkspaceOperationAuthorized(
+                    dependencies.coreDb,
+                    publicOperationActor(context),
+                    input.workspaceId,
+                    { mutating: true, policyOperation: 'workspace.configure' }
+                  )
+              ),
+            ...('expectedCurrentDigest' in input
+              ? { expectedCurrentDigest: input.expectedCurrentDigest }
+              : {}),
+            expectedRevision: input.expectedRevision,
+            workspaceId: input.workspaceId,
+          });
+          published = true;
+          auditResult(
+            owners.workspaceDb,
+            operation,
+            input,
+            context,
+            input.candidateId,
+            catalog.revision
+          );
+          afterMutation(input.workspaceId);
+          return { revision: catalog.revision };
+        },
+      });
+    } catch (error) {
+      if (published)
+        throw new CatalogIntegrityError(
+          'Skill decision completion evidence is unavailable. Inspect the result before a new request.'
+        );
+      throw error;
+    } finally {
+      owners.workspaceDb.sqlite.close();
+    }
+  };
   return {
     'catalog.read': (input) => {
       try {
@@ -209,62 +516,155 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'skill_import_failed');
       }
     },
-    'catalog.skill-candidate-submit': (input, context) => {
-      try {
-        const result = submitWorkspaceSkillCandidate({
-          baseDigest: input.baseDigest,
-          createdAt: new Date().toISOString(),
-          dataRoot: root(),
-          entryId: input.skillId,
-          expectedRevision: input.expectedRevision,
-          producer: { id: publicOperationActor(context).userId, kind: 'user' },
-          summary: input.summary,
-          submitter: { id: publicOperationActor(context).userId, kind: 'user' },
-          tree: catalogTree(input.tree),
-          workspaceId: input.workspaceId,
-        });
-        afterMutation(input.workspaceId);
+    'catalog.skill-candidate-submit': async (input, context) => {
+      const owners = commandOwners(input.workspaceId);
+      let published = false;
+      const source = () => {
+        revalidate(input.workspaceId, 'catalog.skill-candidate-submit', context);
+        if (input.artifact !== undefined) {
+          const admitted = readArtifact(
+            { workspaceId: input.workspaceId, ...input.artifact },
+            context
+          );
+          const producer = admitted.producer;
+          if (
+            !producer ||
+            (producer.kind !== 'agent' && producer.kind !== 'user' && producer.kind !== 'system')
+          )
+            throw new SkillCandidateArtifactError('source_unavailable');
+          const reference = artifactEvidence(admitted.source);
+          return {
+            tree: admitted.tree,
+            digest: admitted.digest,
+            producer: { kind: producer.kind, id: producer.id },
+            uploadedSourceId: reference,
+            evidenceRefs: [
+              reference,
+              ...(admitted.producingTurn ? [`turn:${JSON.stringify(admitted.producingTurn)}`] : []),
+            ],
+            admitted,
+          };
+        }
+        const tree = catalogTree(input.tree!);
         return {
-          candidate: publicSkillCandidate(result.candidate),
-          revision: result.catalog.revision,
+          tree,
+          digest: validateCatalogTree(tree).digest,
+          producer: { kind: 'user' as const, id: publicOperationActor(context).userId },
+          uploadedSourceId: null,
+          evidenceRefs: [],
+          admitted: null,
         };
+      };
+      try {
+        return await runIdempotentCommand({
+          ...owners,
+          command: 'catalog.skill-candidate-submit',
+          requestId: input.requestId,
+          scope: { workspaceId: input.workspaceId, actorId: publicOperationActor(context).userId },
+          input,
+          responseKind: 'skill_candidate',
+          responseId: (result) => result.candidate.id,
+          replay: (receipt) => {
+            revalidate(input.workspaceId, 'catalog.skill-candidate-submit', context);
+            if (input.artifact !== undefined)
+              requireArtifactAccess({ workspaceId: input.workspaceId, ...input.artifact }, context);
+            const catalog = loadWorkspaceResourceCatalog(root(), input.workspaceId);
+            const candidate = catalog.skills.candidates.find(
+              (item) => item.id === receipt.response.id
+            );
+            if (
+              receipt.response.kind !== 'skill_candidate' ||
+              !candidate ||
+              candidate.entryId !== input.skillId ||
+              candidate.baseDigest !== input.baseDigest ||
+              candidate.summary !== input.summary ||
+              candidate.submitter?.id !== publicOperationActor(context).userId ||
+              (input.artifact !== undefined
+                ? !candidate.evidenceRefs.includes(
+                    artifactEvidence({ workspaceId: input.workspaceId, ...input.artifact })
+                  )
+                : candidate.candidateDigest !==
+                  validateCatalogTree(catalogTree(input.tree!)).digest)
+            )
+              throw new CatalogIntegrityError(
+                'Skill submission receipt does not match its candidate.'
+              );
+            return { candidate: publicSkillCandidate(candidate), revision: catalog.revision };
+          },
+          execute: () => {
+            const admitted = source();
+            refuseInterrupted(owners.workspaceDb, 'catalog.skill-candidate-submit', input, context);
+            recordWorkspaceAuditEvent({
+              workspaceDb: owners.workspaceDb,
+              workspaceId: input.workspaceId,
+              requestId: input.requestId,
+              actor: context.actorRef,
+              ...(admitted.admitted?.producingTurn
+                ? {
+                    threadId: admitted.admitted.producingTurn.threadId,
+                    turnId: admitted.admitted.producingTurn.turnId,
+                    agentId: admitted.admitted.producingTurn.agentId,
+                  }
+                : {}),
+              action: 'catalog.skill-candidate-submit.admit',
+              resource: `skill:${input.skillId}@${admitted.digest}`,
+              resourceRevision: input.expectedRevision,
+              outcome: 'succeeded',
+              summary: `Skill candidate admission from ${input.baseDigest ?? 'none'} to ${admitted.digest}.`,
+            });
+            const result = submitWorkspaceSkillCandidate({
+              baseDigest: input.baseDigest,
+              createdAt: new Date().toISOString(),
+              dataRoot: root(),
+              entryId: input.skillId,
+              expectedRevision: input.expectedRevision,
+              producer: admitted.producer,
+              summary: input.summary,
+              submitter: { id: publicOperationActor(context).userId, kind: 'user' },
+              tree: admitted.tree,
+              uploadedSourceId: admitted.uploadedSourceId,
+              evidenceRefs: admitted.evidenceRefs,
+              workspaceId: input.workspaceId,
+            });
+            published = true;
+            auditResult(
+              owners.workspaceDb,
+              'catalog.skill-candidate-submit',
+              input,
+              context,
+              result.candidate.id,
+              result.catalog.revision
+            );
+            afterMutation(input.workspaceId);
+            return {
+              candidate: publicSkillCandidate(result.candidate),
+              revision: result.catalog.revision,
+            };
+          },
+        });
       } catch (error) {
+        if (published)
+          throw new OperationError(
+            'recovery_required',
+            'Skill submission completion evidence is unavailable. Inspect the result before a new request.',
+            409,
+            { cause: error }
+          );
         catalogFailure(error, 'skill_candidate_failed');
+      } finally {
+        owners.workspaceDb.sqlite.close();
       }
     },
-    'catalog.skill-candidate-decide': (input, context) => {
+    'catalog.skill-candidate-decide': async (input, context) => {
       try {
-        if (!hooks.prepareSkillDecision)
-          throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
-        const catalog = decideWorkspaceSkillCandidate({
-          candidateId: input.candidateId,
-          dataRoot: root(),
-          decision: input.decision,
-          decisionContext: hooks.prepareSkillDecision(input, context),
-          configurationOwner: true,
-          expectedCurrentDigest: input.expectedCurrentDigest,
-          expectedRevision: input.expectedRevision,
-          workspaceId: input.workspaceId,
-        });
-        afterMutation(input.workspaceId);
-        return { revision: catalog.revision };
+        return await decision('catalog.skill-candidate-decide', input, context);
       } catch (error) {
         catalogFailure(error, 'skill_candidate_decision_failed');
       }
     },
-    'catalog.skill-candidate-withdraw': (input, context) => {
+    'catalog.skill-candidate-withdraw': async (input, context) => {
       try {
-        if (!hooks.prepareSkillDecision)
-          throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
-        const catalog = decideWorkspaceSkillCandidate({
-          candidateId: input.candidateId,
-          dataRoot: root(),
-          decision: 'withdrawn',
-          decisionContext: hooks.prepareSkillDecision({ ...input, decision: 'withdrawn' }, context),
-          expectedRevision: input.expectedRevision,
-          workspaceId: input.workspaceId,
-        });
-        return { revision: catalog.revision };
+        return await decision('catalog.skill-candidate-withdraw', input, context);
       } catch (error) {
         catalogFailure(error, 'skill_candidate_withdraw_failed');
       }
@@ -533,6 +933,10 @@ function pluginEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatalog>)
 /** Classifies known native catalog refusals locally; unexpected exceptions keep their identity. */
 function catalogFailure(error: unknown, code: string): never {
   if (error instanceof OperationError) throw error;
+  if (error instanceof IdempotencyKeyConflictError)
+    throw new OperationError(error.code, error.message, error.status, { cause: error });
+  if (error instanceof SkillCandidateArtifactError)
+    throw new OperationError(error.code, error.message, error.status, { cause: error });
   if (error instanceof CatalogConflictError)
     throw new OperationError('conflict', error.message, 409, { cause: error });
   if (error instanceof CatalogRetentionError)

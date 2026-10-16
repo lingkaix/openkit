@@ -13,7 +13,7 @@ import {
 } from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { type CatalogTreeFile, validateCatalogTree } from './catalog/resource-catalog.js';
-import type { FsStore } from './lib/store.js';
+import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import type { CoreDb } from './storage/db.js';
 
 type Artifact = ReturnType<FsStore['getArtifact']>;
@@ -74,6 +74,56 @@ export class SkillCandidateArtifactError extends Error {
   }
 }
 
+/** Checks current source and destination audiences without re-admitting retained candidate bytes. */
+export function requireSkillCandidateArtifactAccess(input: {
+  readonly store: FsStore;
+  readonly coreDb: CoreDb;
+  readonly actor: Actor;
+  readonly selection: Pick<SkillCandidateArtifactSelection, 'workspaceId' | 'artifactId'>;
+  readonly destination?: 'workspace-skill';
+}): Artifact {
+  try {
+    if (
+      !isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.selection.workspaceId, {
+        mutating: false,
+        policyOperation: 'artifact.read',
+      })
+    )
+      throw new SkillCandidateArtifactError('source_unavailable');
+    const artifact = ArtifactSchema.parse(
+      input.store.getArtifact(input.selection.workspaceId, input.selection.artifactId)
+    );
+    if (
+      !isArtifactVisible(
+        input.store,
+        artifact,
+        input.actor.userId,
+        isCurrentDeploymentAdministrator(input.coreDb, input.actor)
+      )
+    ) {
+      throw new SkillCandidateArtifactError('source_unavailable');
+    }
+    if (input.destination === 'workspace-skill' && artifact.origin.kind === 'turn-output') {
+      const thread = input.store.getThread(input.selection.workspaceId, artifact.origin.threadId);
+      const workspace = input.store.getWorkspace(input.selection.workspaceId);
+      // Administrator readability does not disclose a private origin to shared supply.
+      if (
+        thread.visibility !== 'workspace' &&
+        !(
+          workspace.kind === 'personal' &&
+          thread.privateOwnerUserId &&
+          workspace.id === quickChatWorkspaceIdForUser(thread.privateOwnerUserId)
+        )
+      )
+        throw new SkillCandidateArtifactError('source_unavailable');
+    }
+    return artifact;
+  } catch (error) {
+    if (error instanceof SkillCandidateArtifactError) throw error;
+    throw new SkillCandidateArtifactError('source_unavailable');
+  }
+}
+
 /**
  * Reads one exact authorized retained JSON Artifact without creating a version or candidate.
  * The native command must bind selection.workspaceId to its own addressed catalog Workspace.
@@ -87,6 +137,8 @@ export function readSkillCandidateArtifact(input: {
   readonly coreDb: CoreDb;
   readonly actor: Actor;
   readonly selection: SkillCandidateArtifactSelection;
+  /** Native publication additionally checks the destination audience; source inspection grants no transfer. */
+  readonly destination?: 'workspace-skill';
 }): SkillCandidateArtifactInput {
   const selection = { ...input.selection };
   try {
@@ -95,26 +147,10 @@ export function readSkillCandidateArtifact(input: {
         !isWorkspaceOperationAuthorized(input.coreDb, input.actor, selection.workspaceId, {
           mutating: true,
           policyOperation: 'workspace.write',
-        }) ||
-        !isWorkspaceOperationAuthorized(input.coreDb, input.actor, selection.workspaceId, {
-          mutating: false,
-          policyOperation: 'artifact.read',
         })
       )
         throw new SkillCandidateArtifactError('source_unavailable');
-      const artifact = ArtifactSchema.parse(
-        input.store.getArtifact(selection.workspaceId, selection.artifactId)
-      );
-      if (
-        !isArtifactVisible(
-          input.store,
-          artifact,
-          input.actor.userId,
-          isCurrentDeploymentAdministrator(input.coreDb, input.actor)
-        )
-      ) {
-        throw new SkillCandidateArtifactError('source_unavailable');
-      }
+      const artifact = requireSkillCandidateArtifactAccess({ ...input, selection });
       if (
         artifact.version !== selection.version ||
         artifact.contentDigest !== selection.contentDigest

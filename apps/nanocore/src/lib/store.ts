@@ -200,6 +200,14 @@ const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * Stable command names tracked by the app-local idempotency ledger.
  */
 export type CommandRequestName =
+  | 'catalog.skill-import'
+  | 'catalog.skill-select'
+  | 'catalog.skill-pin'
+  | 'catalog.skill-remove'
+  | 'catalog.skill-purge'
+  | 'catalog.skill-candidate-submit'
+  | 'catalog.skill-candidate-decide'
+  | 'catalog.skill-candidate-withdraw'
   | 'workspace.create'
   | 'workspace.update'
   | 'workspace.invitation.create'
@@ -285,6 +293,9 @@ export type CommandRequestName =
  * Resource kind returned by an idempotent command.
  */
 export type CommandRequestResponseKind =
+  | 'skill_version'
+  | 'skill_catalog'
+  | 'skill_candidate'
   | 'workspace'
   | 'workspace_invitation'
   | 'workspace_member'
