@@ -161,6 +161,64 @@ function selectionFor(p) {
   return { manifest, distribution, app, child };
 }
 
+/**
+ * Admit the exact protected App-first release pair before any component effect.
+ * Both the whole composition and the standalone NanoHost stage require the same independent archive, binding and current-grant observations.
+ * @param {string} target Explicit HTTPS staging origin.
+ * @param {object} params Selected manifest/platform and asserted bounded grant.
+ * @param {object} io Independent deployment, current-grant and verified archive readers.
+ * @returns {Promise<object>} Stripped release selection, binding, current grant and verified archive pair.
+ */
+export async function admitNanoHostReleasePair(target, params, io) {
+  const url = new URL(target);
+  requireFact(
+    url.protocol === 'https:' &&
+      url.origin === target &&
+      !url.username &&
+      !url.password &&
+      url.hostname !== 'a2',
+    'explicit HTTPS staging origin required'
+  );
+  noSecrets(params);
+  const selection = selectionFor(params);
+  const binding = admit(
+    bindingSchema,
+    await io.deploymentRecord(),
+    'retained staging deployment binding unavailable'
+  );
+  requireFact(binding.origin === target, 'retained staging target differs');
+  const grant = admit(grantSchema, params.grant, 'current bounded NanoHost grant unavailable');
+  requireFact(
+    grant.target === target &&
+      grant.deploymentReference === binding.reference &&
+      grant.operations.includes('nanohost') &&
+      grant.operations.includes('app-update'),
+    'bounded NanoHost and preceding App authority required'
+  );
+  const currentGrant = admit(
+    grantSchema,
+    await io.currentGrant(),
+    'current bounded NanoHost grant unavailable'
+  );
+  requireFact(canonical(currentGrant) === canonical(grant), 'grant changed; inspection required');
+  const old = admitArchiveAttribution(await io.archiveAttribution('old'));
+  const candidate = admitArchiveAttribution(await io.archiveAttribution('target'));
+  const assessment = grant.transitionalPairAssessment;
+  requireFact(
+    old.platform === params.platform &&
+      candidate.platform === params.platform &&
+      candidate.archiveSha256 === selection.distribution.sha256 &&
+      candidate.tag === selection.manifest.tag &&
+      candidate.sourceCommit === selection.manifest.sourceCommit &&
+      assessment.previousNanoHostArchiveSha256 === old.archiveSha256 &&
+      assessment.targetNanoHostArchiveSha256 === candidate.archiveSha256 &&
+      assessment.appSourceCommit === selection.manifest.sourceCommit &&
+      assessment.appDigest === selection.app.digest,
+    'verified archive pair or protected App-first assessment does not match release'
+  );
+  return { selection, binding, grant, old, candidate };
+}
+
 /** Compare an entire observed incarnation, allowing only the public observation time to advance. */
 function sameIncarnation(left, right) {
   return (
@@ -199,15 +257,6 @@ export async function updateNanoHost(target, params, evidenceDir, io) {
   await fs.mkdir(evidenceDir, { mode: 0o700 });
   const result = { domain: 'nanohost', outcome: 'stopped', stage: 'admission' };
   try {
-    const url = new URL(target);
-    requireFact(
-      url.protocol === 'https:' &&
-        url.origin === target &&
-        !url.username &&
-        !url.password &&
-        url.hostname !== 'a2',
-      'explicit HTTPS staging origin required'
-    );
     const p = structuredClone(params);
     noSecrets(p);
     requireFact(
@@ -258,36 +307,12 @@ export async function updateNanoHost(target, params, evidenceDir, io) {
       ].every((key) => typeof io?.[key] === 'function'),
       'independent administrator adapters required'
     );
-    const selection = selectionFor(p);
-    const binding = admit(
-      bindingSchema,
-      await io.deploymentRecord(),
-      'retained staging deployment binding unavailable'
+    const { selection, binding, grant, old, candidate } = await admitNanoHostReleasePair(
+      target,
+      p,
+      io
     );
-    requireFact(binding.origin === target, 'retained staging target differs');
-    const grant = admit(grantSchema, p.grant, 'current bounded NanoHost grant unavailable');
-    requireFact(
-      grant.target === target &&
-        grant.deploymentReference === binding.reference &&
-        grant.operations.includes('nanohost') &&
-        grant.operations.includes('app-update'),
-      'bounded NanoHost and preceding App authority required'
-    );
-    const old = admitArchiveAttribution(await io.archiveAttribution('old'));
-    const candidate = admitArchiveAttribution(await io.archiveAttribution('target'));
     const assessment = grant.transitionalPairAssessment;
-    requireFact(
-      old.platform === p.platform &&
-        candidate.platform === p.platform &&
-        candidate.archiveSha256 === selection.distribution.sha256 &&
-        candidate.tag === selection.manifest.tag &&
-        candidate.sourceCommit === selection.manifest.sourceCommit &&
-        assessment.previousNanoHostArchiveSha256 === old.archiveSha256 &&
-        assessment.targetNanoHostArchiveSha256 === candidate.archiveSha256 &&
-        assessment.appSourceCommit === selection.manifest.sourceCommit &&
-        assessment.appDigest === selection.app.digest,
-      'verified archive pair or protected App-first assessment does not match release'
-    );
 
     /** Re-read every authority and instantaneous impact before the next fixed host effect. */
     const authority = async () => {
