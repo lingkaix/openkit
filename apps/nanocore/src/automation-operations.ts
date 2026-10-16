@@ -2,8 +2,8 @@ import type {
   AUTOMATION_OPERATION_DEFINITIONS,
   AutomationHistoryResponse,
 } from '@openkit/app-api-schemas';
-import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { AutomationMutationError, AutomationRecordNotFoundError } from './lib/automation-store.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';

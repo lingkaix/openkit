@@ -6,7 +6,7 @@ import { ensureLocalUser } from './auth/identity.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
-import { openCoreDb, type CoreDb } from './storage/db.js';
+import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { initializeRecurringScheduleStorage } from './storage/recurring-schema.js';
 import { createApp } from './test-support/app.js';
