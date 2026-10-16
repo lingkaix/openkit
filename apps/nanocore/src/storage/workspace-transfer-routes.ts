@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  constants,
   chmodSync,
+  constants,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -11,8 +11,6 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { type FileStorageAdmission } from './artifacts/file-admission.js';
-import { reserveCanonicalFileWrite, withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
 import { PassThrough, Readable } from 'node:stream';
 import { createZstdCompress } from 'node:zlib';
 import {
@@ -129,7 +127,12 @@ import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
+import type { FileStorageAdmission } from './artifacts/file-admission.js';
 import { verifyArtifactFilePayload } from './artifacts/file-records.js';
+import {
+  reserveCanonicalFileWrite,
+  withCanonicalFileWriteAdmission,
+} from './canonical-write-capacity.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -1545,14 +1548,16 @@ export function registerWorkspaceTransferRoutes({
         );
       }
       return c.json(
-        withCanonicalFileWriteAdmission(fileAdmission, () => importVerifiedWorkspace({
-          authorityUserId: c.get('actor').userId,
-          coreDb,
-          dataRoot,
-          requestId,
-          store,
-          verified,
-        }))
+        withCanonicalFileWriteAdmission(fileAdmission, () =>
+          importVerifiedWorkspace({
+            authorityUserId: c.get('actor').userId,
+            coreDb,
+            dataRoot,
+            requestId,
+            store,
+            verified,
+          })
+        )
       );
     } catch {
       return asApiError(

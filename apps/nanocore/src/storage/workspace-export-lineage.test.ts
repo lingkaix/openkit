@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
-import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  constants,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RuntimeEvidenceRecordSchema } from '@openkit/app-api-schemas';
@@ -67,7 +76,10 @@ import {
   readWorkspaceImportSnapshot,
   verifyImportedWorkerContextPackageSnapshot,
 } from './workspace-import.js';
-import { readWorkspacePortableFileState, writeWorkspacePortableFileState } from './workspace-portable-file-state.js';
+import {
+  readWorkspacePortableFileState,
+  writeWorkspacePortableFileState,
+} from './workspace-portable-file-state.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';
 const source = {
@@ -710,10 +722,13 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
  * @returns Complete export fixture covering the accepted work-resource lineage.
  * @throws Error when the structured worker request or package fixture cannot be built.
  */
-function createWorkResourceLineageExportInput(followUp?: {
-  artifactMediaType?: 'text/markdown' | 'text/plain' | 'application/json';
-  decisionRequestId?: string;
-}, sourceSnapshotRoot?: string): WriteWorkspaceExportTreeInput {
+function createWorkResourceLineageExportInput(
+  followUp?: {
+    artifactMediaType?: 'text/markdown' | 'text/plain' | 'application/json';
+    decisionRequestId?: string;
+  },
+  sourceSnapshotRoot?: string
+): WriteWorkspaceExportTreeInput {
   const input = createLineageExportInput();
   const materialId = 'mat_source';
   const baseRevisionId = 'mrev_source_1';
@@ -849,7 +864,10 @@ function createWorkResourceLineageExportInput(followUp?: {
   const inputDescriptor = JSON.stringify({
     status: 'unavailable',
     reason: 'unsupported',
-    source: { scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`, objectId: '0' },
+    source: {
+      scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`,
+      objectId: '0',
+    },
     originalDigest: binaryDigest,
     byteLength: binaryOriginal.byteLength,
     mediaType: 'application/octet-stream',
@@ -858,7 +876,14 @@ function createWorkResourceLineageExportInput(followUp?: {
     input.sourceWorkspaceRoot = sourceSnapshotRoot;
     input.turns = input.turns.map((turn) => ({
       ...(turn as Record<string, unknown>),
-      fileInputs: [{ name: 'binary.dat', mediaType: 'application/octet-stream', sizeBytes: binaryOriginal.byteLength, contentDigest: binaryDigest }],
+      fileInputs: [
+        {
+          name: 'binary.dat',
+          mediaType: 'application/octet-stream',
+          sizeBytes: binaryOriginal.byteLength,
+          contentDigest: binaryDigest,
+        },
+      ],
     }));
     const packageRoot = `threads/${source.threadId}/turns/${source.turnId}/context-package`;
     for (const [path, bytes] of [
@@ -885,7 +910,9 @@ function createWorkResourceLineageExportInput(followUp?: {
       {
         bindingMutationRequestId: 'request_material_bind',
         content: baseContent,
-        ...(sourceSnapshotRoot ? { deliveredContent: materialPreview, projection: materialProjection } : {}),
+        ...(sourceSnapshotRoot
+          ? { deliveredContent: materialPreview, projection: materialProjection }
+          : {}),
         contentDigest: baseContentDigest,
         inclusionReason: 'thread_binding',
         materialId,
@@ -895,38 +922,65 @@ function createWorkResourceLineageExportInput(followUp?: {
         sensitivity: 'internal',
       },
     ],
-    ...(sourceSnapshotRoot ? { sourceFiles: [
-      {
-        source: { kind: 'material' as const, reference: { scopeId: `material/workspace/${source.workspaceId}`, objectId: materialId }, revisionId: baseRevisionId },
-        originalDigest: baseContentDigest,
-        byteLength: Buffer.byteLength(baseContent),
-        mediaType: 'text/markdown',
-        originalSnapshotPath: materialOriginalPath,
-        packagePath: `workspace/materials/${materialId}/${baseRevisionId}.md`,
-        projection: materialProjection,
-        deliveredBytes: Buffer.from(materialPreview),
-        async *open() { yield Buffer.from(baseContent); },
-        assertUnchanged() {},
-      },
-      {
-        source: { kind: 'turn-input' as const, reference: { scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`, objectId: '0' } },
-        originalDigest: binaryDigest,
-        byteLength: binaryOriginal.byteLength,
-        mediaType: 'application/octet-stream',
-        originalSnapshotPath: inputOriginalPath,
-        packagePath: 'sources/turn-inputs/0.txt',
-        projection: {
-          kind: 'descriptor' as const, sourceRevision: '0', representationId: 'unavailable-original-view-v1',
-          representationDigest: binaryDigest, representationByteLength: binaryOriginal.byteLength,
-          deliveredDigest: `sha256:${createHash('sha256').update(inputDescriptor).digest('hex')}`,
-          ranges: [], byteLength: Buffer.byteLength(inputDescriptor), truncated: true,
-          availability: 'unavailable' as const, originalSnapshotPath: inputOriginalPath,
-        },
-        deliveredBytes: Buffer.from(inputDescriptor),
-        async *open() { yield binaryOriginal; },
-        assertUnchanged() {},
-      },
-    ] } : {}),
+    ...(sourceSnapshotRoot
+      ? {
+          sourceFiles: [
+            {
+              source: {
+                kind: 'material' as const,
+                reference: {
+                  scopeId: `material/workspace/${source.workspaceId}`,
+                  objectId: materialId,
+                },
+                revisionId: baseRevisionId,
+              },
+              originalDigest: baseContentDigest,
+              byteLength: Buffer.byteLength(baseContent),
+              mediaType: 'text/markdown',
+              originalSnapshotPath: materialOriginalPath,
+              packagePath: `workspace/materials/${materialId}/${baseRevisionId}.md`,
+              projection: materialProjection,
+              deliveredBytes: Buffer.from(materialPreview),
+              async *open() {
+                yield Buffer.from(baseContent);
+              },
+              assertUnchanged() {},
+            },
+            {
+              source: {
+                kind: 'turn-input' as const,
+                reference: {
+                  scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`,
+                  objectId: '0',
+                },
+              },
+              originalDigest: binaryDigest,
+              byteLength: binaryOriginal.byteLength,
+              mediaType: 'application/octet-stream',
+              originalSnapshotPath: inputOriginalPath,
+              packagePath: 'sources/turn-inputs/0.txt',
+              projection: {
+                kind: 'descriptor' as const,
+                sourceRevision: '0',
+                representationId: 'unavailable-original-view-v1',
+                representationDigest: binaryDigest,
+                representationByteLength: binaryOriginal.byteLength,
+                deliveredDigest: `sha256:${createHash('sha256').update(inputDescriptor).digest('hex')}`,
+                ranges: [],
+                byteLength: Buffer.byteLength(inputDescriptor),
+                truncated: true,
+                availability: 'unavailable' as const,
+                originalSnapshotPath: inputOriginalPath,
+              },
+              deliveredBytes: Buffer.from(inputDescriptor),
+              async *open() {
+                yield binaryOriginal;
+              },
+              assertUnchanged() {},
+            },
+          ],
+        }
+      : {}),
     threadId: source.threadId,
     turnId: source.turnId,
     workerRequestBytes: workerRequest,
@@ -2191,10 +2245,22 @@ describe('workspace auxiliary lineage reminting', () => {
         threads: [{ threadId: source.threadId }],
         turns: [{ threadId: source.threadId, turnId: source.turnId }],
       });
-      expect([...input.portableFileState.workerContextPackageFiles.keys()].some((path) => path.includes('/originals/'))).toBe(false);
+      expect(
+        [...input.portableFileState.workerContextPackageFiles.keys()].some((path) =>
+          path.includes('/originals/')
+        )
+      ).toBe(false);
       const verified = writeWorkspaceExportTree(input);
-      expect([...verified.artifactPayloadFiles.keys()].filter((path) => path.includes('/context-package/originals/'))).toHaveLength(2);
-      const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId, targetServerId: 'server_target' });
+      expect(
+        [...verified.artifactPayloadFiles.keys()].filter((path) =>
+          path.includes('/context-package/originals/')
+        )
+      ).toHaveLength(2);
+      const imported = readWorkspaceImportSnapshot({
+        verified,
+        targetWorkspaceId,
+        targetServerId: 'server_target',
+      });
       const stagedRoot = join(root, 'staged');
       mkdirSync(stagedRoot);
       writeWorkspacePortableFileState(stagedRoot, imported.portableFileState);
@@ -2203,23 +2269,51 @@ describe('workspace auxiliary lineage reminting', () => {
         copyFileSync(original, join(stagedRoot, path), constants.COPYFILE_EXCL);
       }
       expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).not.toThrow();
-      const [traceText] = [...imported.portableFileState.workerContextPackageFiles].filter(([path]) => path.endsWith('/context-package.json')).map(([, text]) => text);
+      const [traceText] = [...imported.portableFileState.workerContextPackageFiles]
+        .filter(([path]) => path.endsWith('/context-package.json'))
+        .map(([, text]) => text);
       const trace = parseWorkerContextPackageTrace(JSON.parse(traceText!));
       expect(trace.sourceFiles).toHaveLength(2);
       const material = trace.sourceFiles!.find((entry) => entry.source.kind === 'material')!;
       const binary = trace.sourceFiles!.find((entry) => entry.source.kind === 'turn-input')!;
-      const packageRoot = join(stagedRoot, 'threads', trace.threadId, 'turns', trace.turnId, 'context-package');
+      const packageRoot = join(
+        stagedRoot,
+        'threads',
+        trace.threadId,
+        'turns',
+        trace.turnId,
+        'context-package'
+      );
       expect(readFileSync(join(packageRoot, material.packagePath), 'utf8')).toBe('# Portable');
       expect(material.originalDigest).not.toBe(material.projection.deliveredDigest);
-      expect(readFileSync(join(packageRoot, material.originalSnapshotPath), 'utf8')).toBe('# Portable base\n');
-      expect(readFileSync(join(packageRoot, binary.originalSnapshotPath)).equals(Buffer.from([0, 255, 10, 128, 65]))).toBe(true);
-      expect(material.source).toMatchObject({ reference: { scopeId: `material/workspace/${targetWorkspaceId}`, objectId: imported.workspaceMaterials[0]!.materialId }, revisionId: imported.workspaceMaterialRevisions[0]!.revisionId });
-      expect(binary.source).toMatchObject({ reference: { scopeId: `input/turn/${targetWorkspaceId}/${trace.threadId}/${trace.turnId}`, objectId: '0' } });
+      expect(readFileSync(join(packageRoot, material.originalSnapshotPath), 'utf8')).toBe(
+        '# Portable base\n'
+      );
+      expect(
+        readFileSync(join(packageRoot, binary.originalSnapshotPath)).equals(
+          Buffer.from([0, 255, 10, 128, 65])
+        )
+      ).toBe(true);
+      expect(material.source).toMatchObject({
+        reference: {
+          scopeId: `material/workspace/${targetWorkspaceId}`,
+          objectId: imported.workspaceMaterials[0]!.materialId,
+        },
+        revisionId: imported.workspaceMaterialRevisions[0]!.revisionId,
+      });
+      expect(binary.source).toMatchObject({
+        reference: {
+          scopeId: `input/turn/${targetWorkspaceId}/${trace.threadId}/${trace.turnId}`,
+          objectId: '0',
+        },
+      });
       expect(material.originalSnapshotPath).not.toContain('mat_source');
       expect(material.packagePath).not.toContain('mat_source');
       const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
       expect(JSON.parse(descriptorText).source).toEqual(binary.source.reference);
-      expect(binary.projection.deliveredDigest).toBe(`sha256:${createHash('sha256').update(descriptorText).digest('hex')}`);
+      expect(binary.projection.deliveredDigest).toBe(
+        `sha256:${createHash('sha256').update(descriptorText).digest('hex')}`
+      );
       expect(binary.projection.representationDigest).toBe(binary.originalDigest);
       expect(material.projection.ranges).toEqual([{ start: 0, end: 10 }]);
       rmSync(join(packageRoot, binary.originalSnapshotPath));

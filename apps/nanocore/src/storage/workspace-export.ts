@@ -1,12 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  constants,
-  copyFileSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  rmSync,
-} from 'node:fs';
+import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import {
   parseWorkspaceDataSourceCatalog,
@@ -42,13 +35,13 @@ import {
   CaptureCoverageBindingSchema,
   listUnresolvedUserInputRequestItemIds,
   measureCanonicalFile,
-  writeFileAtomic,
   parseCanonicalWorkspaceHistory,
   projectWorkspaceSystemRecord,
   readCanonicalFile,
   readCanonicalTextFile,
   turnFilePayloadPath,
   verifyTurnFileInputs,
+  writeFileAtomic,
 } from './workspace-file-records.js';
 import {
   parseWorkspaceRetrievalTraceFile,
@@ -479,12 +472,16 @@ export function writeWorkspaceExportTree(
       const manifest = WorkerContextPackageManifestSchema.parse(JSON.parse(text));
       const packageRoot = path.slice(0, -'/package.json'.length);
       for (const original of manifest.sourceFiles ?? []) {
-        if (!input.sourceWorkspaceRoot) throw new Error('Context Package original source is unavailable.');
+        if (!input.sourceWorkspaceRoot)
+          throw new Error('Context Package original source is unavailable.');
         const relativePath = `${packageRoot}/${original.originalSnapshotPath}`;
         assertWorkspaceArchiveFilePath(relativePath);
         const sourcePath = join(input.sourceWorkspaceRoot, relativePath);
         const measured = measureCanonicalFile(sourcePath);
-        if (measured.byteLength !== original.byteLength || measured.contentDigest !== original.originalDigest)
+        if (
+          measured.byteLength !== original.byteLength ||
+          measured.contentDigest !== original.originalDigest
+        )
           throw new Error('Context Package original source integrity is inconsistent.');
         const target = join(input.exportRoot, 'workspace-files', relativePath);
         mkdirSync(dirname(target), { recursive: true });
@@ -984,7 +981,9 @@ export function verifyWorkspaceExportTree(
   for (const entry of manifest.contentInventory) {
     if (
       /^artifacts\/[^/]+\/versions\/[1-9][0-9]*\/payload$/.test(entry.path) ||
-      /^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\/.+/.test(entry.path) ||
+      /^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\/.+/.test(
+        entry.path
+      ) ||
       /^threads\/[^/]+\/turns\/[^/]+\/inputs\/(0|[1-9][0-9]*)\/payload$/.test(entry.path)
     ) {
       const path = join(input.exportRoot, entry.path);
