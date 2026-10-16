@@ -805,7 +805,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
     const inputDigest = commandInputHash(runtimeImage);
     const requestId = createHash('sha256').update(`worker-mcp-smoke:${inputDigest}`).digest('hex');
     const candidate = {
-      authoredArtifactId: `ar_smoke_${requestId}`,
+      authoredArtifactId: 'ar_0190f4c8-0000-7000-8000-000000000603',
       authoredArtifactVersion: 1,
       authoredContentDigest: inputDigest,
       inputDigest,
