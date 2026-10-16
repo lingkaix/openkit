@@ -1178,7 +1178,7 @@ impl From<RuntimeEffectKind> for OuterSessionOperation {
 
 impl OuterSessionOperation {
     /// Returns the exact fixed operation literal or `none`.
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::CreateSandbox => "sandbox.create",
@@ -1354,6 +1354,69 @@ fn is_physical_epoch(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Projects the actual H2 driver's completion into closed, value-free journal fields.
+/// Peer debug bytes and underlying I/O messages are never formatted.
+fn format_h2_driver_close(result: &Result<(), h2::Error>) -> String {
+    let (outcome, initiator, reason, io) = match result {
+        Ok(()) => ("clean_end", "none", "none", "none"),
+        Err(error) => {
+            let outcome = if error.is_io() {
+                "io_error"
+            } else if error.is_go_away() {
+                "goaway"
+            } else if error.is_reset() {
+                "reset"
+            } else {
+                "protocol_error"
+            };
+            let initiator = if error.is_io() {
+                "none"
+            } else if error.is_remote() {
+                "remote"
+            } else if error.is_library() {
+                "library"
+            } else {
+                "other"
+            };
+            let reason = match error.reason() {
+                None => "none",
+                Some(h2::Reason::NO_ERROR) => "no_error",
+                Some(h2::Reason::PROTOCOL_ERROR) => "protocol_error",
+                Some(h2::Reason::INTERNAL_ERROR) => "internal_error",
+                Some(h2::Reason::FLOW_CONTROL_ERROR) => "flow_control_error",
+                Some(h2::Reason::SETTINGS_TIMEOUT) => "settings_timeout",
+                Some(h2::Reason::STREAM_CLOSED) => "stream_closed",
+                Some(h2::Reason::FRAME_SIZE_ERROR) => "frame_size_error",
+                Some(h2::Reason::REFUSED_STREAM) => "refused_stream",
+                Some(h2::Reason::CANCEL) => "cancel",
+                Some(h2::Reason::COMPRESSION_ERROR) => "compression_error",
+                Some(h2::Reason::CONNECT_ERROR) => "connect_error",
+                Some(h2::Reason::ENHANCE_YOUR_CALM) => "enhance_your_calm",
+                Some(h2::Reason::INADEQUATE_SECURITY) => "inadequate_security",
+                Some(h2::Reason::HTTP_1_1_REQUIRED) => "http_1_1_required",
+                Some(_) => "unknown",
+            };
+            let io = match error.get_io().map(std::io::Error::kind) {
+                None => "none",
+                Some(std::io::ErrorKind::ConnectionReset) => "connection_reset",
+                Some(std::io::ErrorKind::ConnectionAborted) => "connection_aborted",
+                Some(std::io::ErrorKind::UnexpectedEof) => "unexpected_eof",
+                Some(std::io::ErrorKind::TimedOut) => "timed_out",
+                Some(std::io::ErrorKind::BrokenPipe) => "broken_pipe",
+                Some(std::io::ErrorKind::NotConnected) => "not_connected",
+                Some(std::io::ErrorKind::InvalidData) => "invalid_data",
+                Some(std::io::ErrorKind::Interrupted) => "interrupted",
+                Some(std::io::ErrorKind::WouldBlock) => "would_block",
+                Some(_) => "other",
+            };
+            (outcome, initiator, reason, io)
+        }
+    };
+    format!(
+        "nanohost physical connection ended: source=h2_driver outcome={outcome} initiator={initiator} reason={reason} io={io}"
+    )
 }
 
 /// Runs one authenticated outbound HTTP/2 connection to NanoCore.
@@ -1765,6 +1828,11 @@ where
     let lost_inspection = inspection.clone();
     let mut connection = tokio::spawn(async move {
         let result = connection.await;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "{}",
+            format_h2_driver_close(&result)
+        );
         if let Some(inspection) = lost_inspection {
             inspection.clear();
         }
@@ -1790,7 +1858,17 @@ where
             let generation = admitted_generation.load(Ordering::Acquire);
             Err(startup_failure().with_reconnect_after((generation != 0).then_some(generation).or(reconnect_after)))
         },
-        _ = &mut connection => {
+        result = &mut connection => {
+            if let Err(error) = result {
+                let outcome = if error.is_cancelled() {
+                    "cancelled"
+                } else if error.is_panic() {
+                    "panicked"
+                } else {
+                    "unknown"
+                };
+                let _ = writeln!(std::io::stderr().lock(), "nanohost physical connection ended: source=driver_task outcome={outcome} initiator=local reason=none io=none");
+            }
             let generation = admitted_generation.load(Ordering::Acquire);
             Err(OuterSessionFailure::reconnect(
                 OuterSessionStage::Connect,
@@ -2938,6 +3016,10 @@ impl OuterSessionState {
 #[cfg(test)]
 #[path = "nanocore_tls_tests.rs"]
 pub(crate) mod native_tls_tests;
+
+#[cfg(test)]
+#[path = "nanocore_connection_tests.rs"]
+mod nanocore_connection_tests;
 
 #[cfg(test)]
 mod tests {
