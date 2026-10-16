@@ -33,8 +33,8 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
-afterEach(() => {
-  closeRetrievalServices();
+afterEach(async () => {
+  await closeRetrievalServices();
   vi.restoreAllMocks();
   for (const db of databases.splice(0)) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
