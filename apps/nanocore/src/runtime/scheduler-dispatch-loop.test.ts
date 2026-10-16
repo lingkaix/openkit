@@ -495,6 +495,94 @@ describe('route B durable intent before effects', () => {
 });
 
 describe('scheduler dispatch loop', () => {
+  it('dispatches one monthly UTC occurrence in its existing Thread through the ordinary modeled Worker port', async () => {
+    const coreDb = createMigratedCoreDb();
+    const root = coreDb.dataRoot;
+    const store = createDemoStore({ dataRoot: root });
+    const manifest = agentManifest();
+    const executor = new RecordingTurnExecutor(coreDb);
+    const thread = store.createThread('ws_demo', 'Monthly existing target');
+    const instant = '2026-10-28T09:30:00.000Z';
+    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+    const schedule = schedules.createAutomation('user_local', {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      name: 'Monthly instruction',
+      prompt: 'Exact monthly input',
+      monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 },
+    });
+    schedules.updateAutomation('user_local', schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const service = startRecurringScheduleService({
+      schedules,
+      store,
+      prepare: async () => ({
+        kind: 'ready',
+        payload: {
+          backendId: executor.executionBackend.id,
+          requestedAgentId: manifest.id,
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+          workspaceRoots: [],
+          workspaceCwd: null,
+        },
+      }),
+      now: () => instant,
+      setInterval: () => 'timer',
+      clearInterval: () => {},
+    });
+    try {
+      await service.runOnce();
+      await service.runOnce();
+      const occurrences = schedules
+        .listHistory(schedule.id)
+        .items.filter((entry) => entry.kind === 'occurrence');
+      expect(occurrences).toHaveLength(1);
+      const accepted = occurrences[0]!.record;
+      expect(accepted).toMatchObject({
+        state: 'admission-accepted',
+        threadId: thread.id,
+        scheduledAt: instant,
+        attempts: [{ number: 1 }],
+        snapshot: { monthlyUtc: schedule.monthlyUtc },
+      });
+      expect(executor.prepareCalls).toEqual([]);
+      expect(executor.calls).toEqual([]);
+      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+      expect(entry).toMatchObject({
+        threadId: thread.id,
+        turnId: accepted.turnId,
+        turnInput: 'Exact monthly input',
+      });
+      const dispatched = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+      });
+      expect(dispatched.startedTurns).toEqual([
+        expect.objectContaining({ turnId: accepted.turnId }),
+      ]);
+      expect(executor.prepareCalls).toEqual([{ threadId: thread.id, turnId: accepted.turnId }]);
+      expect(executor.calls).toEqual([
+        expect.objectContaining({ input: 'Exact monthly input', turnId: accepted.turnId }),
+      ]);
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+      expect(store.getTurnById(entry.turnId).threadId).toBe(thread.id);
+      expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+    } finally {
+      service.stop();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     'dispatch-then-cancel',
     'cancel-only',
