@@ -447,7 +447,7 @@ export async function prepareWorkerTurnContextPackage(
       isSealedTurnTerminal(current.status) ||
       !isDeepStrictEqual(current.fileInputs ?? [], originalInputs) ||
       !admission ||
-      !currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, 'thread.read', false) ||
+      !currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, 'thread.read', true) ||
       !isThreadVisible(
         store,
         store.getThread(input.workspaceId, input.threadId),
