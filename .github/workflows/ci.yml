@@ -245,12 +245,15 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      coverage: ${{ steps.plan.outputs.coverage }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Derive complete deterministic owners
         id: plan
-        run: echo "matrix=$(node scripts/ci-l0-l2.mjs --matrix)" >> "${GITHUB_OUTPUT}"
+        run: |
+          echo "matrix=$(node scripts/ci-l0-l2.mjs --matrix)" >> "${GITHUB_OUTPUT}"
+          echo "coverage=$(node scripts/ci-l0-l2.mjs --coverage-matrix)" >> "${GITHUB_OUTPUT}"
 
   l0-l2-shards:
     name: L0-L2 shard (${{ matrix.id }})
@@ -281,18 +284,25 @@ jobs:
           SHARD_ID: ${{ matrix.id }}
         run: |
           if proof="$(node scripts/release-ci-reuse.mjs --repository "${GITHUB_REPOSITORY}" --workflow ci.yml --sha "${GITHUB_SHA}" --job "L0-L2 shard (${SHARD_ID})")"; then
+            identity="$(printf '%s\n' "${proof}" | sed -n 's/^Reused run \([1-9][0-9]*\) attempt \([1-9][0-9]*\) job \([1-9][0-9]*\)$/\1 \2 \3/p')"
+            [ -n "${identity}" ] || { echo 'Invalid exact-job reuse proof.' >&2; exit 1; }
+            set -- ${identity}
+            [ "${proof}" = "Reused run $1 attempt $2 job $3" ] || { echo 'Invalid exact-job reuse proof.' >&2; exit 1; }
             echo "reused=true" >> "${GITHUB_OUTPUT}"
+            echo "run_id=$1" >> "${GITHUB_OUTPUT}"
+            echo "attempt=$2" >> "${GITHUB_OUTPUT}"
             printf '%s\n' "${proof}" >> "${GITHUB_STEP_SUMMARY}"
-            mkdir -p temp/ci-shards
-            PROOF="${proof}" node --input-type=module <<'NODE'
-          import { writeFileSync } from 'node:fs';
-          import { rootNodeInventory } from './scripts/release-tests.mjs';
-          const files = process.env.SHARD_ID === 'root' ? rootNodeInventory().files : undefined;
-          writeFileSync(`temp/ci-shards/${process.env.SHARD_ID}.json`, JSON.stringify({id: process.env.SHARD_ID, conclusion: 'success', reuse: process.env.PROOF, files}));
-          NODE
           else
             echo "reused=false" >> "${GITHUB_OUTPUT}"
           fi
+      - name: Restore exact-commit execution evidence
+        if: steps.reuse.outputs.reused == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.reuse.outputs.run_id }}
+          name: l0-l2-${{ matrix.id }}-attempt-${{ steps.reuse.outputs.attempt }}
+          path: temp/ci-shards
       - name: Cache pnpm store
         if: steps.reuse.outputs.reused != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -302,7 +312,7 @@ jobs:
           restore-keys: pnpm-store-
       - name: Cache locked build inputs and outputs
         if: steps.reuse.outputs.reused != 'true'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             .turbo
@@ -327,27 +337,109 @@ jobs:
       - name: Retain successful shard evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: l0-l2-${{ matrix.id }}
+          name: l0-l2-${{ matrix.id }}-attempt-${{ github.run_attempt }}
           path: temp/ci-shards/
+          if-no-files-found: error
+
+  l0-l2-coverage:
+    name: L0-L2 coverage (${{ matrix.id }})
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
+    needs: [test-image, l0-l2-plan, l0-l2-shards]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.l0-l2-plan.outputs.coverage) }}
+    container:
+      image: ${{ needs.test-image.outputs.image }}
+      options: --init
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Reuse exact-commit candidate coverage
+        id: reuse
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHARD_ID: ${{ matrix.id }}
+        run: |
+          if proof="$(node scripts/release-ci-reuse.mjs --repository "${GITHUB_REPOSITORY}" --workflow ci.yml --sha "${GITHUB_SHA}" --job "L0-L2 coverage (${SHARD_ID})")"; then
+            identity="$(printf '%s\n' "${proof}" | sed -n 's/^Reused run \([1-9][0-9]*\) attempt \([1-9][0-9]*\) job \([1-9][0-9]*\)$/\1 \2 \3/p')"
+            [ -n "${identity}" ] || { echo 'Invalid exact-job reuse proof.' >&2; exit 1; }
+            set -- ${identity}
+            [ "${proof}" = "Reused run $1 attempt $2 job $3" ] || { echo 'Invalid exact-job reuse proof.' >&2; exit 1; }
+            echo "reused=true" >> "${GITHUB_OUTPUT}"
+            echo "run_id=$1" >> "${GITHUB_OUTPUT}"
+            echo "attempt=$2" >> "${GITHUB_OUTPUT}"
+            printf '%s\n' "${proof}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "reused=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Restore exact-commit execution evidence
+        if: steps.reuse.outputs.reused == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.reuse.outputs.run_id }}
+          name: l0-l2-${{ matrix.id }}-coverage-attempt-${{ steps.reuse.outputs.attempt }}
+          path: temp/ci-shards
+      - name: Cache pnpm store
+        if: steps.reuse.outputs.reused != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /pnpm/store
+          key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-
+      - name: Install dependencies
+        if: steps.reuse.outputs.reused != 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Download current-attempt coverage partitions
+        if: steps.reuse.outputs.reused != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: l0-l2-${{ matrix.id }}-*-attempt-${{ github.run_attempt }}
+          merge-multiple: true
+          path: temp/ci-shards
+      - name: Merge whole-owner coverage as the unprivileged image user
+        if: steps.reuse.outputs.reused != 'true'
+        env:
+          SHARD_ID: ${{ matrix.id }}
+        run: |
+          chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store"
+          runuser -u node -- env HOME="${HOME}" node scripts/ci-l0-l2.mjs --merge-coverage "${SHARD_ID}"
+      - name: Retain successful coverage evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l0-l2-${{ matrix.id }}-coverage-attempt-${{ github.run_attempt }}
+          path: |
+            temp/ci-shards/${{ matrix.id }}-coverage.json
+            temp/ci-shards/${{ matrix.id }}/${{ matrix.id }}-merged-execution.report
           if-no-files-found: error
 
   l0-l2:
     name: L0-L2 static, unit, contract
     if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate)))
-    needs: [l0-l2-plan, l0-l2-shards]
+    needs: [l0-l2-plan, l0-l2-shards, l0-l2-coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Require every shard job
         env:
           PLAN_RESULT: ${{ needs.l0-l2-plan.result }}
           SHARDS_RESULT: ${{ needs.l0-l2-shards.result }}
-        run: test "${PLAN_RESULT}" = success && test "${SHARDS_RESULT}" = success
+          COVERAGE_RESULT: ${{ needs.l0-l2-coverage.result }}
+        run: test "${PLAN_RESULT}" = success && test "${SHARDS_RESULT}" = success && test "${COVERAGE_RESULT}" = success
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Download complete shard observations
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: l0-l2-*
+          pattern: l0-l2-*-attempt-${{ github.run_attempt }}
           merge-multiple: true
           path: temp/ci-shards
       - name: Require exactly one successful observation per shard
@@ -492,7 +584,7 @@ jobs:
 
   web-e2e:
     name: L4 Web e2e
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["web-e2e","full"]'), inputs.gate)
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["web-e2e","release-gate","full"]'), inputs.gate))
     needs: test-image
     runs-on: ubuntu-latest
     permissions:
@@ -1151,8 +1243,8 @@ jobs:
 
   candidate-registry:
     name: Prerelease registry admission
-    if: always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' && needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.smoke.result == 'success' && needs.workspace-portability-target.result == 'success' && needs.app-image-admin-recovery.result == 'success' && needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate == 'registry-admission'))
-    needs: [candidate-plan, candidate-index, l0-l2, nano-core-e2e, smoke, workspace-portability-target, app-image-admin-recovery, nanohost-installer]
+    if: always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' && needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.web-e2e.result == 'success' && needs.smoke.result == 'success' && needs.workspace-portability-target.result == 'success' && needs.app-image-admin-recovery.result == 'success' && needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate == 'registry-admission'))
+    needs: [candidate-plan, candidate-index, l0-l2, nano-core-e2e, web-e2e, smoke, workspace-portability-target, app-image-admin-recovery, nanohost-installer]
     runs-on: ubuntu-latest
     permissions:
       contents: read
