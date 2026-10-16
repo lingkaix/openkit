@@ -3088,7 +3088,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             },
           }
         );
-        artifactId = result.structuredContent.artifactId as string;
+        artifactId = result.structuredContent!.artifactId as string;
       } finally {
         workspaceDb.sqlite.close();
       }
