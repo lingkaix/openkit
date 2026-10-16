@@ -308,7 +308,7 @@ class PrivateManager:
             write(root / "etc" / name, data.encode())
         write(root / "etc/dbus-1/system.conf", b'<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">\n<busconfig><type>system</type><user>root</user><listen>unix:path=/run/dbus/system_bus_socket</listen><policy context="default"><allow user="root"/><allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>\n')
         units = {"openkit-fixture.target": "[Unit]\nDefaultDependencies=no\nWants=dbus.service openkit-nanohost.service\n",
-                 "dbus.service": "[Unit]\nDefaultDependencies=no\n[Service]\nType=simple\nRuntimeDirectory=dbus\nStandardError=append:/fixture/dbus.log\nExecStart=/usr/bin/dbus-daemon --system --nofork --nopidfile --nosyslog --config-file=/etc/dbus-1/system.conf\n",
+                 "dbus.service": "[Unit]\nDefaultDependencies=no\n[Service]\nType=simple\nRuntimeDirectory=dbus\nStandardError=append:/fixture/dbus.log\nExecStart=/usr/bin/dbus-daemon --nofork --nopidfile --nosyslog --config-file=/etc/dbus-1/system.conf\n",
                  "openkit-fixture-oracle.service": "[Unit]\nDefaultDependencies=no\n[Service]\nExecStart=/usr/bin/sleep infinity\n",
                  "openkit.slice": "[Unit]\nDefaultDependencies=no\n",
                  "openkit-nanohost.slice": "[Unit]\nDefaultDependencies=no\n",
@@ -506,6 +506,20 @@ if __name__ == "__main__":
                 observed = state()
                 facts = {"mainPidAbsent": observed["MainPID"] == "0", "activeState": observed["ActiveState"],
                          "subState": observed["SubState"], "domainEmpty": domain_empty()}
+                for name, signature in (("UnitPath", "as"), ("Job", "(uo)"), ("Conditions", "a(sbbsi)")):
+                    manager = name == "UnitPath"
+                    result = command(["/usr/bin/busctl", "--system", "--json=short", "get-property", "org.freedesktop.systemd1",
+                                      "/org/freedesktop/systemd1" if manager else "/org/freedesktop/systemd1/unit/openkit_2dnanohost_2eservice",
+                                      "org.freedesktop.systemd1.Manager" if manager else "org.freedesktop.systemd1.Unit", name])
+                    if result.returncode == 0:
+                        value = json.loads(result.stdout)
+                        facts[name + "SignatureMatches"] = value.get("type") == signature
+                        body = value.get("data")
+                        if type(body) is list:
+                            facts[name + "BodyLength"] = len(body)
+                            facts[name + "FirstIsArray"] = bool(body) and type(body[0]) is list
+                            if body and type(body[0]) is list:
+                                facts[name + "ArrayLength"] = len(body[0])
             except Exception:
                 pass
             print(json.dumps({"outcome": "failed", "cause": str(error) if isinstance(error, FixtureFailure) else "maintenance_recipe_refused", "facts": facts}))
