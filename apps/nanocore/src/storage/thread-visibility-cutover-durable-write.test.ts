@@ -84,7 +84,7 @@ describe('Thread visibility cutover durable publication', () => {
     const formal = store.createThread(workspace.id, 'Formal worker history');
     const turn = store.createTurn(workspace.id, formal.id, 'Work', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const current = threadRecord(dataRoot, workspace.id, formal.id);

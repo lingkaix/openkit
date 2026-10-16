@@ -20,15 +20,20 @@ function submissionFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = createDemoStore({ dataRoot });
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Submit a finished file', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Submit a finished file',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup(),
-    agentSessionId: 'as_submit_1',
+    agentSessionId: 'as_00000000-0000-75c5-83d7-1a74418e3a38',
     triggerActor: turn.triggerActor,
-    userId: 'user_local',
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     backend: { kind: 'openshell' },
     createdAt: '2026-10-05T00:00:00.000Z',
     requestId: 'req_turn_start',
@@ -39,9 +44,9 @@ function submissionFixture() {
   store.updateTurn(turn.id, {
     status: 'running',
     agentId: environmentPackage.agent.agentId,
-    agentSessionId: 'as_submit_1',
+    agentSessionId: 'as_00000000-0000-75c5-83d7-1a74418e3a38',
   });
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   onTestFinished(() => {
     workspaceDb.sqlite.close();
@@ -73,17 +78,21 @@ function submissionFixture() {
   const submit = (requestId = 'req_file_1', overrides: Record<string, unknown> = {}) =>
     dispatchOpenkitWorkTool(input, 'work_submit_artifact', {
       requestId,
-      path: '/openkit/sessions/as_submit_1/outputs/report.md',
+      path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
       kind: 'report',
       title: 'Report',
       mediaType: 'text/markdown',
       ...overrides,
     });
   const counts = () => ({
-    artifacts: store.listArtifacts('ws_demo').filter((artifact) => artifact.turnId === turn.id)
-      .length,
+    artifacts: store
+      .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
+      .filter((artifact) => artifact.turnId === turn.id).length,
     references: store
-      .listThreadItems('ws_demo', 'th_demo')
+      .listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
       .filter((item) => item.type === 'artifact-reference' && item.turnId === turn.id).length,
     reviews: (
       workspaceDb.sqlite.prepare('SELECT count(*) AS n FROM artifact_reviews').get() as {
@@ -108,7 +117,7 @@ function acknowledgedArtifactId(
 describe('synchronous Worker file submission', () => {
   it('captures a real finished file from the empty-roots package output and reads back its Artifact', async () => {
     const fixture = submissionFixture();
-    const path = '/openkit/sessions/as_submit_1/outputs/report.md';
+    const path = '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md';
     const localRoot = join(fixture.dataRoot, 'sandbox-output');
     mkdirSync(localRoot);
     writeFileSync(join(localRoot, 'report.md'), '# Session report\n');
@@ -121,13 +130,17 @@ describe('synchronous Worker file submission', () => {
     });
     const id = acknowledgedArtifactId(await fixture.submit());
     expect(fixture.captureArtifact).toHaveBeenCalledOnce();
-    expect(fixture.store.getArtifact('ws_demo', id).content?.body).toBe('# Session report\n');
+    expect(
+      fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', id).content?.body
+    ).toBe('# Session report\n');
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
     await expect(
       fixture.submit('req_undeclared', { path: '/workspace/outputs/report.md' })
     ).rejects.toMatchObject({ code: 'invalid_request' });
     await expect(
-      fixture.submit('req_sibling', { path: '/openkit/sessions/as_submit_2/outputs/report.md' })
+      fixture.submit('req_sibling', {
+        path: '/openkit/sessions/as_00000000-0000-7a5a-b02b-c33d9bb7bf5c/outputs/report.md',
+      })
     ).rejects.toMatchObject({ code: 'invalid_request' });
     expect(fixture.captureArtifact).toHaveBeenCalledOnce();
   });
@@ -141,7 +154,9 @@ describe('synchronous Worker file submission', () => {
     const id = acknowledgedArtifactId(await fixture.submit());
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
     expect(
-      fixture.store.listArtifacts('ws_demo').find((artifact) => artifact.id === id)
+      fixture.store
+        .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
+        .find((artifact) => artifact.id === id)
     ).toMatchObject({
       content: { body: 'Finished report\n' },
       turnId: fixture.turn.id,
@@ -153,14 +168,24 @@ describe('synchronous Worker file submission', () => {
     expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
     // Reopening canonical owners checks persistence rather than just the producer's live indexes.
     const reopened = new FsStore({ dataRoot: fixture.dataRoot });
-    expect(reopened.listArtifacts('ws_demo').map((artifact) => artifact.id)).toContain(id);
-    expect(reopened.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
-      expect.objectContaining({ type: 'artifact-reference', artifactId: id })
-    );
+    expect(
+      reopened
+        .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
+        .map((artifact) => artifact.id)
+    ).toContain(id);
+    expect(
+      reopened.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(expect.objectContaining({ type: 'artifact-reference', artifactId: id }));
     expect(reopened.listCommandRequests()).toContainEqual(
       expect.objectContaining({ requestId: 'req_file_1', response: { kind: 'artifact', id } })
     );
-    const reopenedWorkspaceDb = openWorkspaceDb(fixture.dataRoot, 'ws_demo');
+    const reopenedWorkspaceDb = openWorkspaceDb(
+      fixture.dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     try {
       expect(getArtifactReview(reopenedWorkspaceDb, id, 1)).toMatchObject({
         sourceTurnId: fixture.turn.id,
@@ -191,8 +216,9 @@ describe('synchronous Worker file submission', () => {
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
     expect(
-      fixture.store.listArtifacts('ws_demo').find((artifact) => artifact.id === first)?.content
-        ?.body
+      fixture.store
+        .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
+        .find((artifact) => artifact.id === first)?.content?.body
     ).toBe('Finished report\n');
   });
 
@@ -309,7 +335,9 @@ describe('synchronous Worker file submission', () => {
       });
       return clean;
     });
-    await expect(fixture.submit()).rejects.toMatchObject({ code: 'turn_not_active' });
+    await expect(fixture.submit()).rejects.toMatchObject({
+      code: 'turn_not_active',
+    });
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   });
@@ -373,9 +401,9 @@ describe('submission authority and byte evidence', () => {
   });
 
   it.each([
-    '/openkit/sessions/as_submit_1/outputs',
-    '/openkit/sessions/as_submit_1/outputs/../report.md',
-    '/openkit/sessions/as_submit_1/outputs//report.md',
+    '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs',
+    '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/../report.md',
+    '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs//report.md',
     '/undeclared/report.md',
   ])('rejects path %s before export', async (path) => {
     const fixture = submissionFixture();
@@ -405,7 +433,7 @@ describe('submission authority and byte evidence', () => {
       fixture.environmentPackage.workspace.outputs.push({
         ...fixture.environmentPackage.workspace.outputs[0]!,
         id: 'nested',
-        path: '/openkit/sessions/as_submit_1/outputs/report.md',
+        path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
       });
     await expect(fixture.submit()).rejects.toMatchObject({ code: 'invalid_request' });
     expect(fixture.captureArtifact).not.toHaveBeenCalled();
@@ -527,7 +555,7 @@ describe('submission authority and byte evidence', () => {
     await expect(
       dispatchOpenkitWorkTool({ ...fixture, signal: abort.signal }, 'work_submit_artifact', {
         requestId: 'cancelled',
-        path: '/openkit/sessions/as_submit_1/outputs/report.md',
+        path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
         kind: 'report',
         title: 'Report',
         mediaType: 'text/markdown',
@@ -561,7 +589,9 @@ describe('submission seals and immutable exact output', () => {
       });
       return captured;
     });
-    await expect(fixture.submit()).rejects.toMatchObject({ code: 'turn_not_active' });
+    await expect(fixture.submit()).rejects.toMatchObject({
+      code: 'turn_not_active',
+    });
     expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   });
@@ -579,14 +609,14 @@ describe('submission seals and immutable exact output', () => {
     fixture.captureArtifact.mockResolvedValue({ ...captured, bytes });
     const overrides = { title: 'synthetic-injected-secret report' };
     const id = acknowledgedArtifactId(await fixture.submit('exact-output', overrides));
-    const artifact = fixture.store.getArtifact('ws_demo', id);
+    const artifact = fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', id);
     expect(artifact.content.body).toBe(bytes.toString('utf8'));
     expect(artifact.contentDigest).toBe(
       `sha256:${createHash('sha256').update(bytes).digest('hex')}`
     );
     expect(artifact.title).toBe('[redacted] report');
     decideArtifactReview(fixture.workspaceDb, {
-      actorId: 'user_local',
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
       artifactContent: artifact.content.body,
       artifactId: id,
       artifactMediaType: 'text/markdown',
@@ -621,12 +651,12 @@ describe('submission publication and handled rollback', () => {
   it('removes the new reference revision as well as Artifact authority when receipt persistence fails', async () => {
     const fixture = submissionFixture();
     fixture.store.createItem({
-      id: 'it_prior',
+      id: 'it_00000000-0000-767c-97eb-d0af46940f44',
       type: 'assistant-message',
       status: 'completed',
       text: 'Keep existing history.',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: fixture.turn.id,
       createdAt: '2026-10-05T00:00:00.000Z',
       completedAt: '2026-10-05T00:00:00.000Z',
@@ -634,9 +664,9 @@ describe('submission publication and handled rollback', () => {
     const historyPath = join(
       fixture.dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'threads',
-      'th_demo',
+      'th_00000000-0000-7000-8000-000000000001',
       'turns',
       fixture.turn.id,
       'items.jsonl'
@@ -653,11 +683,16 @@ describe('submission publication and handled rollback', () => {
     expect(readFileSync(historyPath, 'utf8')).toBe(priorBytes);
     const reopened = new FsStore({ dataRoot: fixture.dataRoot });
     expect(
-      reopened.listArtifacts('ws_demo').filter((artifact) => artifact.turnId === fixture.turn.id)
+      reopened
+        .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
+        .filter((artifact) => artifact.turnId === fixture.turn.id)
     ).toHaveLength(0);
     expect(
       reopened
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .filter((item) => item.turnId === fixture.turn.id && item.type === 'artifact-reference')
     ).toHaveLength(0);
     expect(fixture.store.getTurnEvents(fixture.turn.id)).toHaveLength(0);

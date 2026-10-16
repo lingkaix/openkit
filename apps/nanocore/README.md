@@ -57,7 +57,7 @@ The same-Sandbox peer route regression seeds history in memory and publishes com
 - local-mode implicit single-user operation
 - server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
 - optional file-backed state through `OPENKIT_DATA_ROOT`
-- implicit local actor `user_local`
+- local actor bound to the unique recorded canonical User
 - governed container Worker AgentSessions
 - provider-neutral subscription account state for `openai-codex` and `xai`
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses, with one-level function namespace identity preserved on the chat-native bridge
@@ -309,7 +309,7 @@ First prove the predecessor NanoHost effect domain fully stopped and preserve it
 
 If an existing authoritative Core, User, or Workspace SQLite database fails its boot integrity check, NanoCore stops before product admission, bootstrap credential issuance, or listener binding and leaves the original file unchanged. Derived indexes remain disposable and rebuildable.
 
-In local mode, NanoCore upserts the implicit `user_local` row on boot and accepts requests without auth headers. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
+In local mode, NanoCore allocates one canonical User only on a fresh data root and uses the unique recorded local User on later boots. Missing or ambiguous local User authority on an initialized root stops boot. Local requests use that exact recorded identity and need no auth header. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
 
 ## Release Verification
 
@@ -553,3 +553,7 @@ Vault injection plans and receipts preserve immutable intent and completion line
 Server-shared MCP extends the existing catalog owner with required explicit Server or Workspace scope. See the [catalog guide](src/catalog/README.md), [administration guide](src/administration/README.md) and [Vault guide](src/vault/README.md). Native package admission and Worker routes compose current Server supply without a copied Workspace declaration; the final tool boundary rechecks canonical selection after discovery. Shared material use is Core-owned while linked Audit and Gateway sessions retain the consuming Workspace. Run the scope, Server administration and Server-shared MCP tests with one worker.
 
 All NanoCore Vitest unit and e2e configurations use the shared [temporary-directory setup](../../tests/support/vitest-global-setup.mjs), including the default-off real Codex gate. Workers inherit one private invocation directory; normal teardown reclaims it after success or failure. Tests close database handles and remove owned fixtures before the run-level backstop.
+
+Direct Task command replay uses the current worker Turn and existing command owner. Historical Task-to-Goal replay is removed under the authorized pre-stable reset because its producer is retired. Run the complete `src/server.test.ts` suite for current replay and lineage refusal.
+
+Command receipt normalization selects the existing per-kind validator from the response discriminator before memory, SQLite or owner-directory publication and on retained-row readback. Direct Workspace, User, Thread, Turn, Artifact, Material, Review, Knowledge, invitation, presentation and Worker storage pointers use their declared owners; composite, request, Goal and native keys retain their own opaque contracts. Run the complete `src/storage/command-request-records.test.ts` suite for malformed and wrong-kind refusal, unchanged inventory, retained-row refusal and opaque-owner controls.

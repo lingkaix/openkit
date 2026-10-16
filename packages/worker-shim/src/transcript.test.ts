@@ -39,12 +39,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 const lineage: WorkerLineage = {
-  agentSessionId: 'as_worker_1',
+  agentSessionId: 'as_00000000-0000-7b9e-b1e6-bde4a0770a73',
   packageSnapshotId: 'aepsnap_worker_1',
   requestId: 'req_worker_1',
-  threadId: 'th_demo',
-  turnId: 'turn_worker_1',
-  workspaceId: 'ws_demo',
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
+  turnId: 'tu_00000000-0000-70bb-b641-bbcd02b08432',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
 };
 
 describe('WorkerTranscriptWriter', () => {

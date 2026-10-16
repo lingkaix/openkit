@@ -1,4 +1,12 @@
-import { TimestampSchema } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  ExecutionAttemptIdSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkerStorageTargetIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkspaceDeletionPhaseSchema } from './workspace-sharing.js';
 
@@ -45,7 +53,7 @@ const physicalEpochRelation = z.enum(['same', 'different', 'unknown']);
  * Defines one known-field observation branch without importing a runtime record owner.
  *
  * @param source Existing record family.
- * @param targetShape Exact opaque identity fields admitted by that source.
+ * @param targetShape Exact Core and opaque native identity fields admitted by that source.
  * @param stateShape Fixed source-owned state projection, without raw private record payloads.
  * @returns A descriptive reader with exact evidence and inspection correlation.
  */
@@ -107,7 +115,7 @@ export const AdministratorCleanupWorkspaceDeletionItemSchema = cleanupItemSchema
   'workspace-deletion',
   {
     kind: z.literal('workspace-deletion'),
-    workspaceId: opaqueId,
+    workspaceId: WorkspaceIdSchema,
     requestId: opaqueId,
   },
   {
@@ -122,11 +130,11 @@ export const AdministratorCleanupExecutionAttemptItemSchema = cleanupItemSchema(
   'execution-attempt',
   {
     kind: z.literal('execution-attempt'),
-    attemptId: opaqueId,
-    workspaceId: opaqueId,
-    threadId: opaqueId,
-    turnId: opaqueId,
-    agentSessionId: opaqueId.nullable(),
+    attemptId: ExecutionAttemptIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    agentSessionId: AgentSessionIdSchema.nullable(),
   },
   {
     phase: z.enum(['open', 'closing', 'closed']),
@@ -139,11 +147,11 @@ export const AdministratorCleanupBackendSessionItemSchema = cleanupItemSchema(
   'backend-session',
   {
     kind: z.literal('backend-session'),
-    attemptId: opaqueId,
-    workspaceId: opaqueId,
-    threadId: opaqueId,
-    turnId: opaqueId,
-    agentSessionId: opaqueId,
+    attemptId: ExecutionAttemptIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    agentSessionId: AgentSessionIdSchema,
   },
   {
     state: z.enum([
@@ -167,9 +175,9 @@ export const AdministratorCleanupAgentSessionBindingItemSchema = cleanupItemSche
   {
     kind: z.literal('agent-session-binding'),
     agentSessionRuntimeBindingId: opaqueId,
-    agentSessionId: opaqueId,
-    workspaceId: opaqueId,
-    threadId: opaqueId,
+    agentSessionId: AgentSessionIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
   },
   {
     lifecycleState: z.enum(['opening', 'open', 'active', 'closing', 'closed', 'failed']),
@@ -199,8 +207,8 @@ export const AdministratorCleanupWorkerStorageItemSchema = cleanupItemSchema(
   'worker-storage',
   {
     kind: z.literal('worker-storage'),
-    storageRef: opaqueId,
-    workspaceId: opaqueId,
+    storageRef: WorkerStorageTargetIdSchema,
+    workspaceId: WorkspaceIdSchema,
     runtimeTargetId: opaqueId,
   },
   {

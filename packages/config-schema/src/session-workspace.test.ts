@@ -17,9 +17,9 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
     packageId: 'aepkg_demo',
     snapshotId: 'aepsnap_demo',
     scope: {
-      agentSessionId: 'as_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     },
     agent: {
       agentId: 'agent_codex',
@@ -67,7 +67,13 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
       transcript: { root: '/openkit/session' },
     },
     vault: {
-      references: [{ id: 'vault_github', kind: 'secret-ref', secretRef: 'secret://github' }],
+      references: [
+        {
+          id: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+          kind: 'secret-ref',
+          secretRef: 'secret://github',
+        },
+      ],
     },
     policy: { snapshotId: 'policy_1' },
     backend: {
@@ -82,10 +88,17 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
 
 describe('session workspace layout schema', () => {
   it('keeps generated output slots private to each admitted AgentSession', () => {
-    for (const agentSessionId of ['as_a', 'as_b']) {
+    for (const agentSessionId of [
+      'as_00000000-0000-75c4-8f9b-15087ed5df6e',
+      'as_00000000-0000-7740-893b-01cca0bea5fd',
+    ]) {
       const planned = planSessionWorkspaceMaterialization({
         environmentPackage: packageFixture({
-          scope: { agentSessionId, threadId: 'th_demo', turnId: 'turn_demo' },
+          scope: {
+            agentSessionId,
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          },
         }),
       });
       expect(planned.layout.slots.find((slot) => slot.id === 'turn-output')?.path).toBe(
@@ -95,10 +108,17 @@ describe('session workspace layout schema', () => {
   });
 
   it('binds Context slots to distinct admitted AgentSessions', () => {
-    const roots = ['as_a', 'as_b'].map((agentSessionId) => {
+    const roots = [
+      'as_00000000-0000-75c4-8f9b-15087ed5df6e',
+      'as_00000000-0000-7740-893b-01cca0bea5fd',
+    ].map((agentSessionId) => {
       const planned = planSessionWorkspaceMaterialization({
         environmentPackage: packageFixture({
-          scope: { agentSessionId, threadId: 'th_demo', turnId: 'turn_demo' },
+          scope: {
+            agentSessionId,
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          },
         }),
       });
       expect(planned.layout.slots.find((slot) => slot.id === 'context')?.path).toBe(
@@ -107,11 +127,20 @@ describe('session workspace layout schema', () => {
       return planned.layout.control.contextRoot;
     });
     expect(new Set(roots).size).toBe(2);
-    for (const agentSessionId of ['../as_a', 'as:a', 'as?a', '']) {
+    for (const agentSessionId of [
+      '../as_00000000-0000-75c4-8f9b-15087ed5df6e',
+      'as:a',
+      'as?a',
+      '',
+    ]) {
       expect(() =>
         planSessionWorkspaceMaterialization({
           environmentPackage: packageFixture({
-            scope: { agentSessionId, threadId: 'th_demo', turnId: 'turn_demo' },
+            scope: {
+              agentSessionId,
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+            },
           }),
         })
       ).toThrow();
@@ -214,7 +243,7 @@ describe('session workspace planner', () => {
           inputs: [
             {
               access: 'read-only',
-              id: 'context_turn_demo',
+              id: 'context_tu_00000000-0000-77e3-bfde-66477d556f64',
               kind: 'generated',
               materialization: {
                 strategy: 'filesystem',
@@ -223,9 +252,10 @@ describe('session workspace planner', () => {
               },
               source: {
                 kind: 'generated',
-                pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+                pathRef:
+                  'threads/th_00000000-0000-7000-8000-000000000001/turns/tu_00000000-0000-77e3-bfde-66477d556f64/context-package',
               },
-              target: '/openkit/sessions/as_demo/context',
+              target: '/openkit/sessions/as_00000000-0000-7860-9e37-d1a60b30c856/context',
             },
           ],
           outputs: [],
@@ -236,7 +266,7 @@ describe('session workspace planner', () => {
     expect(planned.materialization.inputs).toEqual([
       expect.objectContaining({
         access: 'read-only',
-        inputId: 'context_turn_demo',
+        inputId: 'context_tu_00000000-0000-77e3-bfde-66477d556f64',
         mode: 'copy',
         slotId: 'context',
       }),
@@ -251,7 +281,8 @@ describe('session workspace planner', () => {
       {
         source: {
           kind: 'generated',
-          pathRef: 'threads/th_demo/turns/other_turn/context-package',
+          pathRef:
+            'threads/th_00000000-0000-7000-8000-000000000001/turns/other_turn/context-package',
         },
       },
     ],
@@ -260,7 +291,8 @@ describe('session workspace planner', () => {
       {
         source: {
           kind: 'generated',
-          pathRef: 'threads/th_other/turns/turn_demo/context-package',
+          pathRef:
+            'threads/th_00000000-0000-78ce-b458-8347d12d1da2/turns/tu_00000000-0000-77e3-bfde-66477d556f64/context-package',
         },
       },
     ],
@@ -270,7 +302,8 @@ describe('session workspace planner', () => {
         source: {
           extra: true,
           kind: 'generated',
-          pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+          pathRef:
+            'threads/th_00000000-0000-7000-8000-000000000001/turns/tu_00000000-0000-77e3-bfde-66477d556f64/context-package',
         },
       },
     ],
@@ -279,7 +312,8 @@ describe('session workspace planner', () => {
       {
         source: {
           kind: 'generated',
-          pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+          pathRef:
+            'threads/th_00000000-0000-7000-8000-000000000001/turns/tu_00000000-0000-77e3-bfde-66477d556f64/context-package',
           sourceId: 'source_context',
         },
       },
@@ -309,7 +343,7 @@ describe('session workspace planner', () => {
   ])('keeps a generated Context Package near-miss in turn inputs: %s', (_label, change) => {
     const contextInput = {
       access: 'read-only' as const,
-      id: 'context_turn_demo',
+      id: 'context_tu_00000000-0000-77e3-bfde-66477d556f64',
       kind: 'generated',
       materialization: {
         strategy: 'filesystem',
@@ -318,9 +352,10 @@ describe('session workspace planner', () => {
       },
       source: {
         kind: 'generated',
-        pathRef: 'threads/th_demo/turns/turn_demo/context-package',
+        pathRef:
+          'threads/th_00000000-0000-7000-8000-000000000001/turns/tu_00000000-0000-77e3-bfde-66477d556f64/context-package',
       },
-      target: '/openkit/sessions/as_demo/context',
+      target: '/openkit/sessions/as_00000000-0000-7860-9e37-d1a60b30c856/context',
       ...change,
     };
     const planned = planSessionWorkspaceMaterialization({
@@ -397,7 +432,7 @@ describe('session workspace planner', () => {
     const reusable = planSessionWorkspaceMaterialization({
       environmentPackage: packageFixture(),
       existingSession: {
-        agentSessionId: 'as_existing',
+        agentSessionId: 'as_00000000-0000-754f-9277-4058a2a883d1',
         compatibilityKey: planned.compatibilityKey.digest,
         status: 'idle',
       },
@@ -405,13 +440,16 @@ describe('session workspace planner', () => {
     const replacement = planSessionWorkspaceMaterialization({
       environmentPackage: packageFixture({ policy: { snapshotId: 'policy_2' } }),
       existingSession: {
-        agentSessionId: 'as_existing',
+        agentSessionId: 'as_00000000-0000-754f-9277-4058a2a883d1',
         compatibilityKey: planned.compatibilityKey.digest,
         status: 'idle',
       },
     });
 
-    expect(reusable.decision).toEqual({ kind: 'reuse', agentSessionId: 'as_existing' });
+    expect(reusable.decision).toEqual({
+      kind: 'reuse',
+      agentSessionId: 'as_00000000-0000-754f-9277-4058a2a883d1',
+    });
     expect(replacement.decision).toEqual({
       kind: 'replace',
       reason: 'session-compatibility-key-mismatch',

@@ -83,12 +83,12 @@ describe('scheduler dispatch service', () => {
         .prepare(
           `INSERT INTO users
             (id, display_name, email, email_verified, created_at, updated_at, kind)
-           VALUES ('user_background', 'Background User', 'background@example.invalid', false, ?, ?, 'human')`
+           VALUES ('usr_00000000-0000-7908-92ea-57819d2fa45f', 'Background User', 'background@example.invalid', false, ?, ?, 'human')`
         )
         .run(Date.now(), Date.now());
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_background',
+        ownerUserId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
         workspaceId: workspace.id,
       });
       recordTestNativeRuntimeTarget(coreDb);
@@ -96,10 +96,10 @@ describe('scheduler dispatch service', () => {
         workspace.id,
         thread.id,
         'Prepare background work',
-        { kind: 'user', id: 'user_background' },
+        { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
         null,
         {
-          turnId: 'turn_transient_background',
+          turnId: 'tu_00000000-0000-706e-9292-377535f93b73',
           agentId: manifest.id,
           status: 'pending',
           executorKind: 'worker',
@@ -108,9 +108,13 @@ describe('scheduler dispatch service', () => {
       store.recordCommandRequest({
         command: 'turn.start',
         requestId: 'request_transient_background',
-        scope: { actorId: 'user_background', workspaceId: workspace.id, threadId: thread.id },
+        scope: {
+          actorId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
+          workspaceId: workspace.id,
+          threadId: thread.id,
+        },
         inputHash: 'transient-fixture',
-        response: { kind: 'turn', id: 'turn_transient_background' },
+        response: { kind: 'turn', id: 'tu_00000000-0000-706e-9292-377535f93b73' },
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
@@ -120,9 +124,9 @@ describe('scheduler dispatch service', () => {
         requestedAgentId: manifest.id,
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
-        turnId: 'turn_transient_background',
+        turnId: 'tu_00000000-0000-706e-9292-377535f93b73',
         turnInput: 'Prepare background work',
-        triggerActor: { kind: 'user', id: 'user_background' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
         workspaceId: workspace.id,
       });
       service = startSchedulerDispatchRetryService({
@@ -173,14 +177,14 @@ describe('scheduler dispatch service', () => {
           terminal_cause: 'turn-start-failed',
         },
       ]);
-      expect(store.getTurnById('turn_transient_background')).toMatchObject({
+      expect(store.getTurnById('tu_00000000-0000-706e-9292-377535f93b73')).toMatchObject({
         status: 'failed',
         error: { message: failure.message },
       });
       expect(store.listCommandRequests()).toEqual([
         expect.objectContaining({
           requestId: 'request_transient_background',
-          response: { kind: 'turn', id: 'turn_transient_background' },
+          response: { kind: 'turn', id: 'tu_00000000-0000-706e-9292-377535f93b73' },
         }),
       ]);
       expect(recordingExecutor.calls).toEqual([]);
@@ -249,12 +253,12 @@ describe('scheduler dispatch service', () => {
         .prepare(
           `INSERT INTO users
             (id, display_name, email, email_verified, created_at, updated_at, kind)
-           VALUES ('user_background', 'Background User', 'background@example.com', false, ?, ?, 'human')`
+           VALUES ('usr_00000000-0000-7908-92ea-57819d2fa45f', 'Background User', 'background@example.com', false, ?, ?, 'human')`
         )
         .run(Date.now(), Date.now());
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_background',
+        ownerUserId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
         workspaceId: workspace.id,
       });
       recordTestNativeRuntimeTarget(coreDb);
@@ -262,10 +266,10 @@ describe('scheduler dispatch service', () => {
         workspace.id,
         thread.id,
         'Run from the owner store',
-        { kind: 'user', id: 'user_background' },
+        { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
         null,
         {
-          turnId: 'turn_background',
+          turnId: 'tu_00000000-0000-7a20-9839-a54e7149be4d',
           agentId: manifest.id,
           status: 'pending',
           executorKind: 'worker',
@@ -280,9 +284,9 @@ describe('scheduler dispatch service', () => {
         requestedAgentId: 'agent_codex_host',
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
-        turnId: 'turn_background',
+        turnId: 'tu_00000000-0000-7a20-9839-a54e7149be4d',
         turnInput: 'Run from the owner store',
-        triggerActor: { kind: 'user', id: 'user_background' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
         workspaceId: workspace.id,
         workspaceCwd: '/workspace/background',
         workspaceRoots: [
@@ -301,8 +305,8 @@ describe('scheduler dispatch service', () => {
       const service = startSchedulerDispatchRetryService({
         clearInterval: () => {},
         coreDb,
-        createAgentSessionId: () => 'as_background',
-        createAttemptId: () => 'attempt_background',
+        createAgentSessionId: () => 'as_00000000-0000-7ac2-8803-3284138729d9',
+        createAttemptId: () => 'attempt_00000000-0000-7d86-bc8d-a0bd4247d37b',
         dependencies: { providerCredentialResolver },
         intervalMs: 60_000,
         maxDispatches: 1,
@@ -361,9 +365,13 @@ describe('scheduler dispatch service', () => {
       store.recordCommandRequest({
         command: 'turn.start',
         requestId: 'request_background',
-        scope: { actorId: 'user_background', workspaceId: workspace.id, threadId: thread.id },
+        scope: {
+          actorId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
+          workspaceId: workspace.id,
+          threadId: thread.id,
+        },
         inputHash: 'snapshot-fixture',
-        response: { kind: 'turn', id: 'turn_background' },
+        response: { kind: 'turn', id: 'tu_00000000-0000-7a20-9839-a54e7149be4d' },
       });
       const result = await service.runOnce();
       service.stop();
@@ -371,7 +379,7 @@ describe('scheduler dispatch service', () => {
       expect(result?.startedTurns).toHaveLength(1);
       expect(providerCredentialResolver).not.toHaveBeenCalled();
       expect(turnExecutor.calls).toMatchObject([
-        { input: 'Run from the owner store', turnId: 'turn_background' },
+        { input: 'Run from the owner store', turnId: 'tu_00000000-0000-7a20-9839-a54e7149be4d' },
       ]);
       expect(turnExecutor.calls[0]?.store).toBe(store);
       expect(turnExecutor.calls[0]?.context).toMatchObject({

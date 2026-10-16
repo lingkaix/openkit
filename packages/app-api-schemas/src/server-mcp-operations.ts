@@ -1,5 +1,10 @@
 import { McpHttpEndpointSchema } from '@openkit/config-schema/mcp-credentials';
-import { RequestIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  RequestIdSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -20,8 +25,8 @@ import { WorkspaceVaultGrantSchema } from './vault-injection.js';
 
 const mcpId = z.string().min(1);
 const request = z.object({ requestId: RequestIdSchema }).strict();
-const referenceRequest = request.safeExtend({ referenceId: z.string().min(1) });
-const grantRequest = request.safeExtend({ grantId: z.string().min(1) });
+const referenceRequest = request.safeExtend({ referenceId: VaultReferenceIdSchema });
+const grantRequest = request.safeExtend({ grantId: VaultGrantIdSchema });
 const material = z.string().min(1).max(65_536);
 const reference = z
   .object({
@@ -188,7 +193,7 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
     'Authorize Gateway-only Server MCP credential use.',
     CreateWorkspaceVaultGrantRequestSchema.omit({ injectionPath: true }).safeExtend({
       requestId: RequestIdSchema,
-      referenceId: z.string().min(1),
+      referenceId: VaultReferenceIdSchema,
     }),
     grant,
     true

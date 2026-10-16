@@ -79,30 +79,40 @@ describe('encrypted-file vault store format', () => {
       },
       metadata: {
         ownerScope: 'workspace',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       },
       nonce: TEST_NONCE,
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       storeDir,
       tag: TEST_TAG,
       version: 1,
     });
 
     expect(entry).toEqual(
-      readEncryptedFileVaultEntry({ referenceId: 'vault_github', storeDir, version: 1 })
+      readEncryptedFileVaultEntry({
+        referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+        storeDir,
+        version: 1,
+      })
     );
     expect(entry).toMatchObject({
       associatedData: {
-        referenceId: 'vault_github',
+        referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         version: 1,
       },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       version: 1,
     });
-    expect(lstatSync(join(storeDir, 'entries', 'vault_github', '1.enc')).mode & 0o777).toBe(0o600);
-    expect(readFileSync(join(storeDir, 'entries', 'vault_github', '1.enc'), 'utf8')).not.toContain(
-      'ghp_live_secret'
-    );
+    expect(
+      lstatSync(join(storeDir, 'entries', 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', '1.enc'))
+        .mode & 0o777
+    ).toBe(0o600);
+    expect(
+      readFileSync(
+        join(storeDir, 'entries', 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', '1.enc'),
+        'utf8'
+      )
+    ).not.toContain('ghp_live_secret');
   });
 
   it('rejects unsafe reference ids before writing entry files', () => {
@@ -122,7 +132,7 @@ describe('encrypted-file vault store format', () => {
           ownerScope: 'server',
         },
         nonce: TEST_NONCE,
-        referenceId: '../vault_github',
+        referenceId: '../vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         storeDir,
         tag: TEST_TAG,
         version: 1,
@@ -132,7 +142,12 @@ describe('encrypted-file vault store format', () => {
 
   it('rejects entry envelopes whose associated data does not match the path', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-store-format-'));
-    const entryPath = join(storeDir, 'entries', 'vault_github', '1.enc');
+    const entryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+      '1.enc'
+    );
 
     writeEncryptedFileVaultEntry({
       ciphertext: TEST_CIPHERTEXT,
@@ -147,7 +162,7 @@ describe('encrypted-file vault store format', () => {
         ownerScope: 'server',
       },
       nonce: TEST_NONCE,
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       storeDir,
       tag: TEST_TAG,
       version: 1,
@@ -160,7 +175,11 @@ describe('encrypted-file vault store format', () => {
     writeFileSync(entryPath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
 
     expect(() =>
-      readEncryptedFileVaultEntry({ referenceId: 'vault_github', storeDir, version: 1 })
+      readEncryptedFileVaultEntry({
+        referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+        storeDir,
+        version: 1,
+      })
     ).toThrow('Encrypted-file vault entry identity does not match its path.');
   });
 
@@ -174,16 +193,19 @@ describe('encrypted-file vault store format', () => {
       material: Buffer.from('ghp_live_secret'),
       metadata: {
         ownerScope: 'workspace',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       storeDir,
       version: 1,
     });
-    const entryFile = readFileSync(join(storeDir, 'entries', 'vault_github', '1.enc'), 'utf8');
+    const entryFile = readFileSync(
+      join(storeDir, 'entries', 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', '1.enc'),
+      'utf8'
+    );
     const opened = openEncryptedFileVaultEntry({
       masterKey,
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       storeDir,
       version: 1,
     });
@@ -204,7 +226,7 @@ describe('encrypted-file vault store format', () => {
       masterKey,
       material,
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_gcm_success',
+      referenceId: 'vault_00000000-0000-7f4d-8c03-bd56943c9b98',
       storeDir,
       version: 1,
     });
@@ -214,7 +236,7 @@ describe('encrypted-file vault store format', () => {
     try {
       const opened = openEncryptedFileVaultEntry({
         masterKey,
-        referenceId: 'vault_gcm_success',
+        referenceId: 'vault_00000000-0000-7f4d-8c03-bd56943c9b98',
         storeDir,
         version: 1,
       });
@@ -249,14 +271,19 @@ describe('encrypted-file vault store format', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-store-zeroize-'));
     const masterKey = Buffer.alloc(32, 7);
     const material = Buffer.from('tampered payload with a unique non-key-sized plaintext buffer');
-    const entryPath = join(storeDir, 'entries', 'vault_gcm_failure', '1.enc');
+    const entryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-752b-836f-f18a3fd6723e',
+      '1.enc'
+    );
 
     sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T00:10:00.000Z',
       masterKey,
       material,
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_gcm_failure',
+      referenceId: 'vault_00000000-0000-752b-836f-f18a3fd6723e',
       storeDir,
       version: 1,
     });
@@ -270,7 +297,7 @@ describe('encrypted-file vault store format', () => {
       expect(() =>
         openEncryptedFileVaultEntry({
           masterKey,
-          referenceId: 'vault_gcm_failure',
+          referenceId: 'vault_00000000-0000-752b-836f-f18a3fd6723e',
           storeDir,
           version: 1,
         })
@@ -309,7 +336,12 @@ describe('encrypted-file vault store format', () => {
   ] as const)('rejects entry %s %s tampering', (location, corruption) => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-store-format-'));
     const masterKey = Buffer.alloc(32, 7);
-    const entryPath = join(storeDir, 'entries', 'vault_subscription', '1.enc');
+    const entryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-74a6-9dc6-af55fa43eb8f',
+      '1.enc'
+    );
 
     sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T00:10:00.000Z',
@@ -322,7 +354,7 @@ describe('encrypted-file vault store format', () => {
           subscriptionProviderId: 'openai-codex',
         },
       },
-      referenceId: 'vault_subscription',
+      referenceId: 'vault_00000000-0000-74a6-9dc6-af55fa43eb8f',
       storeDir,
       version: 1,
       versionExpirations: {},
@@ -335,7 +367,10 @@ describe('encrypted-file vault store format', () => {
     if (corruption === 'createdAt') {
       target.createdAt = '2026-07-05T00:10:01.000Z';
     } else if (corruption === 'owner metadata') {
-      target.metadata = { ownerScope: 'workspace', workspaceId: 'ws_other' };
+      target.metadata = {
+        ownerScope: 'workspace',
+        workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+      };
     } else if (corruption === 'version expirations') {
       target.versionExpirations = { '1': '2026-07-05T00:20:00.000Z' };
     } else {
@@ -354,7 +389,7 @@ describe('encrypted-file vault store format', () => {
       expect
         .soft(() =>
           readEncryptedFileVaultEntry({
-            referenceId: 'vault_subscription',
+            referenceId: 'vault_00000000-0000-74a6-9dc6-af55fa43eb8f',
             storeDir,
             version: 1,
           })
@@ -364,7 +399,7 @@ describe('encrypted-file vault store format', () => {
     expect(() =>
       openEncryptedFileVaultEntry({
         masterKey,
-        referenceId: 'vault_subscription',
+        referenceId: 'vault_00000000-0000-74a6-9dc6-af55fa43eb8f',
         storeDir,
         version: 1,
       })
@@ -381,7 +416,7 @@ describe('encrypted-file vault store format', () => {
       metadata: {
         ownerScope: 'server',
       },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       storeDir,
       version: 1,
     });
@@ -389,7 +424,7 @@ describe('encrypted-file vault store format', () => {
     expect(() =>
       openEncryptedFileVaultEntry({
         masterKey: Buffer.alloc(32, 8),
-        referenceId: 'vault_github',
+        referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         storeDir,
         version: 1,
       })
@@ -412,7 +447,7 @@ describe('encrypted-file vault store format', () => {
           ? successfulDataKey
           : Buffer.alloc(size, successfulRandomCall);
       },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       storeDir,
       version: 1,
     });
@@ -437,7 +472,7 @@ describe('encrypted-file vault store format', () => {
 
           throw new Error('test random source failed');
         },
-        referenceId: 'vault_failed',
+        referenceId: 'vault_00000000-0000-700c-bea5-82e3edf5f857',
         storeDir,
         version: 1,
       })

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { afterEach, describe, expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   catalogDocumentPath,
   composeWorkspaceMcpCatalog,
@@ -21,7 +22,7 @@ afterEach(() => {
 function workspaceCatalog() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-scope-'));
   roots.push(dataRoot);
-  const workspaceId = 'retained-workspace';
+  const workspaceId = testEntityId('ws', 'retained-workspace');
   const created = createMcpConfig({
     dataRoot,
     owner: { kind: 'workspace', workspaceId },
@@ -45,7 +46,8 @@ function workspaceCatalog() {
       credentialBindings: [
         {
           slot: 'token',
-          vaultGrantId: 'grant_canary',
+          // This fixed canonical grant is part of the independently calculated digest below.
+          vaultGrantId: 'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba',
           sink: { kind: 'header', name: 'Authorization' },
         },
       ],
@@ -63,7 +65,7 @@ describe('one scoped resource catalog owner', () => {
   it('observes absent catalogs without creating a Workspace directory', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-read-only-'));
     roots.push(dataRoot);
-    const workspaceId = 'deleted-workspace';
+    const workspaceId = testEntityId('ws', 'deleted-workspace');
     loadWorkspaceResourceCatalog(dataRoot, workspaceId);
     composeWorkspaceMcpCatalog({
       dataRoot,
@@ -83,7 +85,7 @@ describe('one scoped resource catalog owner', () => {
         catalog: projectEffectiveWorkspaceMcpCatalog(loaded),
         serverId: 'echo',
       }).catalogDigest
-    ).toBe('sha256:ece03620450bfab5be716543f17a1e8f7846e24d9cd612a245f8bcd6a2cd5df5');
+    ).toBe('sha256:822279732d3a4eb33062c7ade755dbc87956c52d7eb587033f81f23c8ef1b188');
     updateMcpBinding({
       dataRoot: f.dataRoot,
       owner: { kind: 'workspace', workspaceId: f.workspaceId },
@@ -112,7 +114,7 @@ describe('one scoped resource catalog owner', () => {
         ),
         serverId: 'echo',
       }).catalogDigest
-    ).toBe('sha256:ece03620450bfab5be716543f17a1e8f7846e24d9cd612a245f8bcd6a2cd5df5');
+    ).toBe('sha256:822279732d3a4eb33062c7ade755dbc87956c52d7eb587033f81f23c8ef1b188');
   });
 
   it('rejects missing Workspace scope without converting the catalog', () => {

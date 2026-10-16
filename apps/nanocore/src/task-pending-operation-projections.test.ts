@@ -5,7 +5,6 @@ import * as schemas from '@openkit/app-api-schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { readPendingRequest, validateCanonicalLoad } from './runtime/pending-requests.js';
@@ -13,6 +12,8 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real authority and durable requests; every differing audience/admission fact is explicit. */
@@ -25,36 +26,45 @@ function fixture(
   ensureLocalUser(coreDb);
   coreDb.sqlite
     .prepare(
-      "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'user_foreign', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'user_local'"
+      "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', 'human', display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
     )
     .run();
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const thread = store.createThread(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     'Projection',
     undefined,
     'conversation',
     options.privateThread
-      ? { visibility: 'private', privateOwnerUserId: 'user_foreign' }
+      ? { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
       : { visibility: 'workspace' }
   );
-  const turn = store.createTurn('ws_demo', thread.id, 'Request input', {
-    kind: 'user',
-    id: options.responsibleUserId ?? 'user_local',
-  });
-  const db = openWorkspaceDb(dataRoot, 'ws_demo');
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    thread.id,
+    'Request input',
+    {
+      kind: 'user',
+      id: options.responsibleUserId ?? 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
+  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   const common = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: thread.id,
     raisingTurnId: turn.id,
-    responsibleUserId: options.responsibleUserId ?? 'user_local',
+    responsibleUserId: options.responsibleUserId ?? 'usr_00000000-0000-7000-8000-000000000001',
     now: turn.startedAt!,
   };
   store.createItem({
-    id: 'it_ap_projection',
-    workspaceId: 'ws_demo',
+    id: 'it_00000000-0000-7a40-898b-989ad9a320c9',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: thread.id,
     turnId: turn.id,
     type: 'approval-request',
@@ -70,7 +80,7 @@ function fixture(
   raiseRecordedPendingRequest(store, db.sqlite, {
     ...common,
     requestId: 'ap_projection',
-    requestItemId: 'it_ap_projection',
+    requestItemId: 'it_00000000-0000-7a40-898b-989ad9a320c9',
     kind: 'approval',
     requesterKind: 'person',
     governedIntent: { action: 'repo.push' },
@@ -96,7 +106,7 @@ function fixture(
       },
     ];
     store.createItem({
-      id: `it_${requestId}`,
+      id: testEntityId('it', `it_${requestId}`),
       ...common,
       turnId: turn.id,
       type: 'user-input-request',
@@ -110,7 +120,7 @@ function fixture(
     raiseRecordedPendingRequest(store, db.sqlite, {
       ...common,
       requestId,
-      requestItemId: `it_${requestId}`,
+      requestItemId: testEntityId('it', `it_${requestId}`),
       kind: 'user-input',
       requesterKind: 'person',
       questions,
@@ -121,7 +131,7 @@ function fixture(
     expect(
       validateCanonicalLoad(
         readPendingRequest(db.sqlite, requestId)!,
-        store.listThreadTurns('ws_demo', thread.id)
+        store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
       ),
       requestId
     ).toBeNull();
@@ -159,10 +169,10 @@ function fixture(
 async function projections(
   f: ReturnType<typeof fixture>,
   scope: 'workspace' | 'workspace-readonly' | 'server-admin' = 'workspace',
-  workspaceIds: string[] = ['ws_demo']
+  workspaceIds: string[] = ['ws_00000000-0000-7000-8000-000000000001']
 ) {
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope,
     workspaceIds: scope === 'server-admin' ? [] : workspaceIds,
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -206,10 +216,10 @@ async function projections(
 
 /** Complete logical inputs with one stable command identity per operation. */
 function inputs(f: ReturnType<typeof fixture>) {
-  const common = { workspaceId: 'ws_demo', threadId: f.thread.id };
+  const common = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: f.thread.id };
   return {
     'conversation.targets': common,
-    'conversation.navigation': { workspaceId: 'ws_demo' },
+    'conversation.navigation': { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     'conversation.submit': {
       ...common,
       targetRef: 'internal-role:assistant',
@@ -221,7 +231,7 @@ function inputs(f: ReturnType<typeof fixture>) {
       input: 'Review this request',
       requestId: '00000000-0000-4000-8000-000000000002',
     },
-    'attention.list': { workspaceId: 'ws_demo' },
+    'attention.list': { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     'approval.respond': {
       ...common,
       turnId: f.turn.id,
@@ -299,7 +309,9 @@ describe('Task conversation and Pending Request definition projections', () => {
     'server-admin',
   ] as const)('preserves authorized request decisions and read results across HTTP client and CLI for %s', async (scope) => {
     const f = fixture(
-      scope === 'server-admin' ? { privateThread: true, responsibleUserId: 'user_foreign' } : {}
+      scope === 'server-admin'
+        ? { privateThread: true, responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
+        : {}
     );
     try {
       const projectors = await projections(f, scope);
@@ -313,11 +325,13 @@ describe('Task conversation and Pending Request definition projections', () => {
         expect(values[1], id).toEqual(values[0]);
         expect(values[2], id).toEqual(values[0]);
       }
-      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         for (const id of ['ap_projection', 'ui_projection', 'ui_withdraw']) {
           const record = readPendingRequest(db.sqlite, id)!;
-          expect(record.decidingActor?.id ?? record.endingActor?.id).toBe('user_local');
+          expect(record.decidingActor?.id ?? record.endingActor?.id).toBe(
+            'usr_00000000-0000-7000-8000-000000000001'
+          );
         }
       } finally {
         db.sqlite.close();
@@ -333,7 +347,9 @@ describe('Task conversation and Pending Request definition projections', () => {
       const projectors = await projections(f);
       for (const [id, input] of Object.entries(inputs(f))) {
         for (const project of Object.values(projectors)) {
-          await expect(project(id, { ...input, workspaceId: 'ws_missing' })).rejects.toMatchObject({
+          await expect(
+            project(id, { ...input, workspaceId: 'ws_00000000-0000-7490-845b-dcfa3ee49925' })
+          ).rejects.toMatchObject({
             code: 'workspace_access_denied',
             status: 403,
           });
@@ -346,7 +362,9 @@ describe('Task conversation and Pending Request definition projections', () => {
       }
       for (const id of ['conversation.navigation', 'attention.list']) {
         for (const project of Object.values(projectors)) {
-          const result = (await project(id, { workspaceId: 'ws_demo' })) as { items: unknown[] };
+          const result = (await project(id, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })) as { items: unknown[] };
           expect(JSON.stringify(result.items)).not.toContain(f.thread.id);
         }
       }
@@ -361,14 +379,17 @@ describe('Task conversation and Pending Request definition projections', () => {
       const other = f.store.createWorkspace('Other authorized Workspace');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: other.id,
       });
       const otherThread = f.store.createThread(other.id, 'Other visible Thread');
       const db = openWorkspaceDb(f.dataRoot, other.id);
       applyScopedMigrations(db);
       db.sqlite.close();
-      const projectors = await projections(f, 'workspace', ['ws_demo', other.id]);
+      const projectors = await projections(f, 'workspace', [
+        'ws_00000000-0000-7000-8000-000000000001',
+        other.id,
+      ]);
       for (const id of [
         'approval.respond',
         'question.answer',
@@ -383,7 +404,7 @@ describe('Task conversation and Pending Request definition projections', () => {
               : { code: 'recovery_required', status: 409 }
           );
       }
-      const ownerDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const ownerDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         for (const id of ['ap_projection', 'ui_projection', 'ui_withdraw'])
           expect(readPendingRequest(ownerDb.sqlite, id)?.state).toBe('pending');
@@ -398,7 +419,7 @@ describe('Task conversation and Pending Request definition projections', () => {
   it('preserves missing canonical-owner recovery through Approval-map and body Workspace admission', async () => {
     const f = fixture();
     try {
-      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       db.sqlite
         .prepare('DELETE FROM pending_requests WHERE request_id IN (?, ?, ?)')
         .run('ap_projection', 'ui_projection', 'ui_withdraw');
@@ -464,7 +485,7 @@ describe('Task conversation and Pending Request definition projections', () => {
       }
       expect(f.store.listAllItems()).toEqual(before);
       expect(f.store.listCommandRequests()).toEqual(beforeCommands);
-      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         for (const id of ['ap_projection', 'ui_projection', 'ui_withdraw'])
           expect(readPendingRequest(db.sqlite, id)?.state).toBe('pending');
@@ -477,7 +498,7 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it('refuses decisions by another ordinary member through the responsible-user owner', async () => {
-    const f = fixture({ responsibleUserId: 'user_foreign' });
+    const f = fixture({ responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
     try {
       const projectors = await projections(f);
       for (const [id, input] of Object.entries(inputs(f)).filter(([id]) =>
@@ -505,7 +526,7 @@ describe('Task conversation and Pending Request definition projections', () => {
             userInputRequestId: 'ui_secret',
           })
         ).rejects.toMatchObject({ code: 'secret_input_not_supported', status: 400 });
-      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(readPendingRequest(db.sqlite, 'ui_secret')?.state).toBe('pending');
       } finally {
@@ -518,15 +539,31 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it.each([
-    ['GET', '/api/app/workspaces/ws_demo/conversation-targets', 'conversation.targets'],
-    ['GET', '/api/app/workspaces/ws_demo/conversations', 'conversation.navigation'],
+    [
+      'GET',
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/conversation-targets',
+      'conversation.targets',
+    ],
+    [
+      'GET',
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/conversations',
+      'conversation.navigation',
+    ],
     [
       'POST',
-      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/conversation-turns',
       'conversation.submit',
     ],
-    ['POST', '/api/app/workspaces/ws_demo/threads/th_demo/task', 'task.start'],
-    ['GET', '/api/app/workspaces/ws_demo/action-center', 'attention.list'],
+    [
+      'POST',
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/task',
+      'task.start',
+    ],
+    [
+      'GET',
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/action-center',
+      'attention.list',
+    ],
     ['POST', '/api/approvals/ap_projection/respond', 'approval.respond'],
     ['POST', '/api/user-input-requests/ui_projection/answer', 'question.answer'],
     ['POST', '/api/pending-requests/ui_withdraw/withdraw', 'pending-request.withdraw'],
@@ -534,9 +571,9 @@ describe('Task conversation and Pending Request definition projections', () => {
     const f = fixture();
     try {
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       }).secret;
       const app = createApp({ ...f.appOptions, mode: 'server' });

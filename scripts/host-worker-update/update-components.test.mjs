@@ -135,7 +135,10 @@ async function fixture(t) {
       retainedReads: [
         {
           operation: 'thread.read',
-          input: { workspaceId: 'selected-workspace', threadId: 'retained-thread' },
+          input: {
+            workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+            threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
+          },
         },
       ],
       pollAttempts: 1,
@@ -182,7 +185,7 @@ async function fixture(t) {
   };
   const runtimeTarget = () => ({
     identityId: 'configured-host',
-    deploymentId: 'configured-deployment',
+    deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000001',
     connectionGeneration: phase === 'old' ? 7 : 8,
     physicalEpoch: (phase === 'old' ? 'a' : 'b').repeat(64),
     predecessorFenced: true,
@@ -329,12 +332,12 @@ async function fixture(t) {
           replaceNow: request.replaceNow ?? null,
           affectedStorage: [],
           authoredCandidate: {
-            artifactId: 'authored-candidate',
+            artifactId: 'ar_0190f4c8-0000-7000-8000-000000000005',
             artifactVersion: 1,
             contentDigest: digest,
           },
           resolvedCandidate: {
-            artifactId: 'resolved-candidate',
+            artifactId: 'ar_0190f4c8-0000-7000-8000-000000000006',
             artifactVersion: 1,
             contentDigest: digest,
           },

@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { parseWorkObservationRecord } from './work-observations.js';
 
 const environment = {
   v: 1,
   seq: 1,
   id: 'env-one',
-  turnId: 'turn-one',
+  turnId: testEntityId('tu', 'turn-one'),
   ts: '2026-09-29T00:00:00.000Z',
   type: 'env.bound',
   obs: 'core',
   payload: {
     version: '0.0.0',
-    workspaceId: 'ws-one',
+    workspaceId: testEntityId('ws', 'ws-one'),
     systemPromptDigest: `sha256:${'a'.repeat(64)}`,
     tools: [{ name: 'read_status', inputSchemaDigest: 'b'.repeat(64) }],
   },

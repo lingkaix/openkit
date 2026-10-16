@@ -130,7 +130,11 @@ describe('provider config schema', () => {
         codexProfile,
         xaiProfile,
         { ...codexProfile, extensions: { openkit: { subscriptionAccount: {} } } },
-        { ...codexProfile, extensions: extension, secretRef: 'vault://codex' },
+        {
+          ...codexProfile,
+          extensions: extension,
+          secretRef: 'vault://vault_00000000-0000-7703-9f17-f2bd9647ac04',
+        },
         { ...xaiProfile, baseUrl: 'https://api.x.ai/v1', extensions: extension },
         {
           ...codexProfile,
@@ -178,7 +182,7 @@ describe('provider config schema', () => {
       id: 'xai',
       kind: 'direct' as const,
       models: ['xai/grok-4'],
-      secretRef: 'vault://xai',
+      secretRef: 'vault://vault_00000000-0000-7230-9979-3ef301686c38',
       vendor: 'xai',
     };
 
@@ -358,12 +362,12 @@ describe('provider config schema', () => {
       models: ['gpt-5'],
       category: 'inference',
       vendor: 'openai',
-      secretRef: 'vault://provider_openai',
+      secretRef: 'vault://vault_00000000-0000-73c8-9c32-792694898d5d',
     });
 
     expect(parsed.vendor).toBe('openai');
     expect(parsed.category).toBe('inference');
-    expect(parsed.secretRef).toBe('vault://provider_openai');
+    expect(parsed.secretRef).toBe('vault://vault_00000000-0000-73c8-9c32-792694898d5d');
   });
 
   it('rejects inline agent provider config', () => {

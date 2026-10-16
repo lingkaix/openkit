@@ -1,11 +1,18 @@
 import {
+  ActorRefSchema,
+  ArtifactIdSchema,
   ArtifactSchema,
+  ItemIdSchema,
   ItemSchema,
   ProductTurnSchema,
   StopReasonSchema,
+  ThreadIdSchema,
   ThreadSchema,
   TimestampSchema,
+  TurnIdSchema,
   TurnStatusSchema,
+  UserIdSchema,
+  WorkspaceIdSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -17,7 +24,7 @@ export const ActiveTurnStatusSchema = z.union([TurnStatusSchema, z.literal('idle
 
 /** Compact artifact summary shown in product work status surfaces. */
 export const DashboardArtifactSummarySchema = z.object({
-  id: z.string().min(1),
+  id: ArtifactIdSchema,
   title: z.string().min(1),
   status: ArtifactSchema.shape.status,
   summary: z.string().nullable(),
@@ -26,7 +33,7 @@ export const DashboardArtifactSummarySchema = z.object({
 
 /** Active work row shown on the workspace home dashboard. */
 export const WorkspaceActiveWorkSchema = z.object({
-  threadId: z.string().min(1),
+  threadId: ThreadIdSchema,
   title: z.string().min(1),
   status: TurnStatusSchema,
   agentId: z.string().min(1).nullable(),
@@ -36,9 +43,9 @@ export const WorkspaceActiveWorkSchema = z.object({
 
 /** Recent completed turn row shown on the workspace home dashboard. */
 export const WorkspaceCompletionSchema = z.object({
-  threadId: z.string().min(1),
+  threadId: ThreadIdSchema,
   title: z.string().min(1),
-  turnId: z.string().min(1),
+  turnId: TurnIdSchema,
   completedAt: z.string().min(1),
   artifactCount: z.number().int().nonnegative(),
   summary: z.string().nullable(),
@@ -46,11 +53,11 @@ export const WorkspaceCompletionSchema = z.object({
 
 /** Attention row shown on the workspace home dashboard. */
 export const WorkspaceAttentionSchema = z.object({
-  threadId: z.string().min(1),
+  threadId: ThreadIdSchema,
   title: z.string().min(1),
-  turnId: z.string().min(1),
+  turnId: TurnIdSchema,
   kind: z.enum(['approval', 'question', 'failed', 'interrupted', 'cancelled']),
-  itemId: z.string().min(1).nullable(),
+  itemId: ItemIdSchema.nullable(),
   summary: z.string().min(1),
   updatedAt: z.string().min(1),
 });
@@ -58,7 +65,7 @@ export const WorkspaceAttentionSchema = z.object({
 /** Derived initiating-request summary from one fully verified worker Context Package trace. */
 export const ThreadTaskInputSchema = z
   .object({
-    itemId: z.string().min(1),
+    itemId: ItemIdSchema,
     objective: z.string().min(1),
   })
   .strict();
@@ -109,9 +116,9 @@ export const InterruptedWorkerRecoveryChoiceSchema = z.discriminatedUnion('kind'
 export const InterruptedWorkerStateSchema = z.object({
   kind: z.literal('interrupted_worker_state'),
   checkpointId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  threadId: z.string().min(1),
-  turnId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
   goalId: z.string().min(1).nullable(),
   taskId: z.string().min(1).nullable(),
   stage: WorkerRecoveryStageSchema,
@@ -142,7 +149,7 @@ export const RetryInterruptedWorkerCheckpointRequestSchema = z
 /** Response payload returned after retrying one interrupted worker checkpoint. */
 export const RetryInterruptedWorkerCheckpointResponseSchema = z.object({
   outcome: z.literal('released_for_retry'),
-  turnId: z.string().min(1),
+  turnId: TurnIdSchema,
 });
 
 /** Response payload returned after retrying one denied scheduler admission. */
@@ -169,9 +176,9 @@ export const SchedulerAdmissionDenialReasonSchema = z.enum([
 export const SchedulerAdmissionReadModelSchema = z.object({
   queueEntryId: z.string().min(1),
   requestId: z.string().min(1).nullable(),
-  workspaceId: z.string().min(1),
-  threadId: z.string().min(1),
-  turnId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
   requestedAgentId: z.string().min(1),
   profileRef: z.string().min(1).nullable(),
   modelId: z.string().min(1).nullable(),
@@ -235,15 +242,15 @@ export const THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS = 1000;
 
 /** Thread dashboard response payload. */
 export const ThreadDashboardResponseSchema = z.object({
-  viewerUserId: z.string().min(1).nullable(),
+  viewerUserId: UserIdSchema.nullable(),
   participants: z.array(
-    z
-      .object({
-        kind: z.enum(['user', 'agent', 'automation', 'integration', 'system']),
-        id: z.string().min(1),
-        displayName: z.string().min(1),
-      })
-      .strict()
+    z.union(
+      ActorRefSchema.options.map((schema) =>
+        z
+          .object({ kind: schema.shape.kind, id: schema.shape.id, displayName: z.string().min(1) })
+          .strict()
+      )
+    )
   ),
   thread: ThreadSchema,
   turns: z.array(ProductTurnSchema),
@@ -278,7 +285,7 @@ export const ThreadDashboardResponseSchema = z.object({
     .array(
       z
         .object({
-          turnId: z.string().min(1),
+          turnId: TurnIdSchema,
           contentCapture: z.enum(['off', 'on', 'unknown']),
           coverage: z.enum(['collecting', 'partial', 'unavailable']),
           entries: z

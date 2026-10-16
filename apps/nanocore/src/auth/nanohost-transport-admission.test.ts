@@ -53,7 +53,7 @@ function issueTransportToken(
     expiresAt: new Date(clock.getTime() + 31 * 24 * 60 * 60 * 1000).toISOString(),
     now: clock,
     ownerNanoHostIdentityId: identityId,
-    responsibleServerAdminActorId: 'user_admin',
+    responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
   });
   return { deploymentId, identityId, secret: issued.secret };
 }

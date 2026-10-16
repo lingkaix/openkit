@@ -33,14 +33,20 @@ async function settleOrSentinel(
  */
 function createWorkerTurn(turnId: string): { store: FsStore; turnId: string } {
   const store = createDemoStore();
-  const thread = store.createThread('ws_demo', 'Worker turn wait', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
+  const thread = store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Worker turn wait',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
   const turn = store.createTurn(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     thread.id,
     'Run delegated work',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     { turnId }
   );
@@ -49,7 +55,7 @@ function createWorkerTurn(turnId: string): { store: FsStore; turnId: string } {
 
 describe('waitForWorkerTurnTerminalState', () => {
   it('settles on a Turn that is already cancelled', async () => {
-    const { store, turnId } = createWorkerTurn('turn_cancelled_before_wait');
+    const { store, turnId } = createWorkerTurn('tu_00000000-0000-7802-96a2-d58cd74af20e');
     store.updateTurn(turnId, { status: 'cancelled' });
 
     const settled = await settleOrSentinel(store, turnId);
@@ -59,7 +65,7 @@ describe('waitForWorkerTurnTerminalState', () => {
   });
 
   it('settles when a waited Turn becomes cancelled', async () => {
-    const { store, turnId } = createWorkerTurn('turn_cancelled_during_wait');
+    const { store, turnId } = createWorkerTurn('tu_00000000-0000-7016-930d-e39a543eda32');
     const threadId = store.getTurnById(turnId).threadId;
     const settled = settleOrSentinel(store, turnId);
     const cancelled = store.updateTurn(turnId, { status: 'cancelled' });
@@ -69,7 +75,7 @@ describe('waitForWorkerTurnTerminalState', () => {
       event: 'turn.updated',
       threadId,
       turnId,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     const result = await settled;
@@ -79,7 +85,7 @@ describe('waitForWorkerTurnTerminalState', () => {
   });
 
   it('keeps waiting on a Turn that is still running', async () => {
-    const { store, turnId } = createWorkerTurn('turn_running_during_wait');
+    const { store, turnId } = createWorkerTurn('tu_00000000-0000-7929-a551-13e159ad5fda');
 
     await expect(settleOrSentinel(store, turnId)).resolves.toBe(SENTINEL);
   });

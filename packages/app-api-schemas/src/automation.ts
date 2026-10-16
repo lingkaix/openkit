@@ -1,10 +1,11 @@
+import { AutomationIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** App automation record returned by NanoCore. */
 export const AutomationRecordSchema = z.object({
-  id: z.string().min(1),
+  id: AutomationIdSchema,
   name: z.string().min(1),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   cron: z.string().min(1),
   prompt: z.string().min(1),
   status: z.enum(['paused', 'enabled']),
@@ -20,7 +21,7 @@ export const ListAutomationsResponseSchema = z.object({
 /** App automation create request. */
 export const CreateAutomationRequestSchema = z.object({
   name: z.string().min(1),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   cron: z.string().min(1),
   prompt: z.string().min(1),
 });
