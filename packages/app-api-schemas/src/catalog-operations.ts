@@ -1,4 +1,4 @@
-import { WorkspaceIdSchema } from '@openkit/protocol';
+import { ResourceCandidateIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 import {
@@ -93,7 +93,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     description: 'Decide a Skill candidate with catalog revision admission.',
     inputSchema: DecideSkillCandidateRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      candidateId: z.string().min(1),
+      candidateId: ResourceCandidateIdSchema,
     }).strict(),
     outputSchema: CatalogMutationResponseSchema,
     credentials,

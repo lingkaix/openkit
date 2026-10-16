@@ -18,9 +18,9 @@ function manifest() {
   return {
     schemaVersion: 1,
     recordType: 'workspace-export',
-    id: 'wsexp_1',
+    id: 'wsexp_00000000-0000-7569-b23e-40ca1402f214',
     ownerScope: 'workspace',
-    lineage: { workspaceId: 'ws_demo' },
+    lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     createdAt: timestamp,
     updatedAt: timestamp,
     contentDigest: 'sha256:manifest',
@@ -28,10 +28,10 @@ function manifest() {
     sensitivity: 'internal',
     requiredFeatures: [],
     extensions: {},
-    sourceDeploymentId: 'dep_source',
-    workspaceId: 'ws_demo',
+    sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     exportCreatedAt: timestamp,
-    exportFormatVersion: 2,
+    exportFormatVersion: 3,
     contentInventory: [
       {
         path: 'records/workspace-record.json',
@@ -103,7 +103,7 @@ function backupManifest() {
   return {
     schemaVersion: 1,
     recordType: 'data-root-backup',
-    id: 'drbak_1',
+    id: 'drb_00000000-0000-72d0-89a7-67474a8170db',
     ownerScope: 'server',
     lineage: {},
     createdAt: timestamp,
@@ -113,7 +113,7 @@ function backupManifest() {
     sensitivity: 'internal',
     requiredFeatures: [],
     extensions: {},
-    sourceDeploymentId: 'dep_source',
+    sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
     backupStartedAt: timestamp,
     backupCompletedAt: timestamp,
     backupMode: 'cold',

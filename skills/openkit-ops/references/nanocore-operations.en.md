@@ -257,6 +257,14 @@ If the Vault is locked, inspect its non-secret status and exact external-key ava
 
 Retain the exact failure and partial outcome. A fresh task may continue after recovery; no script or Agent may relabel the interrupted attempt as successful.
 
+### Diagnose Shared Network Sockets
+
+The selected OpenShell 0.0.99 release checks every process that holds an outbound socket. It refuses the connection when those processes have different policy identities. An identity includes the executable, verified ancestor chain and script information; matching executable names alone do not prove equality. This follows the [Worker Sandbox network boundary](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260709-worker_sandbox_freedom_policy.md).
+
+Keep each connection with its intended client. Preserve close-on-exec on network descriptors. Before a child changes its executable identity, close inherited network descriptors that the child does not own. Let that client open its own connection under the existing endpoint and binary grants. Do not disable identity checks or broaden grants to bypass mixed ownership.
+
+A nearby identity refusal does not prove the cause of a failed package download. At this pin, an admitted TCP dial failure before CONNECT 200 can produce a generic event without a request join. Its proxy endpoint identifies shared Sandbox context; it does not identify the failed request. A separate destination DEBUG message does not establish that join. Report the cause as unproved unless the available evidence links the request and outcome. Do not retain full URLs, headers, bodies or raw exceptions as a workaround; the [telemetry owner](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260731-operational_telemetry_standardization.md) sets the diagnostic boundary.
+
 ### Recover A NanoHost At The Rebuild Bound
 
 `epoch rebuild hard bound exceeded` preserves the first unresolved recovery deadline. Restarting that state does not renew the deadline. The service remains non-ready until the cause and failed epoch state receive explicit operator recovery.

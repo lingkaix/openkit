@@ -19,7 +19,7 @@ import {
   workerEnvironmentPurgeConfirmation,
 } from './worker-environment.js';
 
-const STORAGE_REF = `wst_${'a'.repeat(32)}`;
+const STORAGE_REF = 'wst_01890f3e-0000-7000-8000-000000000001';
 const DIGEST = `sha256:${'b'.repeat(64)}`;
 const CONFIG_REVISION = `sha256:${'c'.repeat(64)}`;
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
@@ -41,9 +41,9 @@ const environment = {
       createdAt: TIMESTAMP,
       goalId: null,
       purpose: 'work' as const,
-      responsibleUserId: 'user_owner',
+      responsibleUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       taskId: 'task_related',
-      threadId: 'thread_related',
+      threadId: 'th_00000000-0000-7486-848c-72860b991473',
     },
   ],
   createdAt: TIMESTAMP,
@@ -53,7 +53,7 @@ const environment = {
   state: 'idle' as const,
   storageRef: STORAGE_REF,
   updatedAt: TIMESTAMP,
-  workspaceId: 'workspace_demo',
+  workspaceId: 'ws_00000000-0000-7833-8092-d4e24322c840',
 };
 
 describe('Worker environment App API schemas', () => {
@@ -63,7 +63,7 @@ describe('Worker environment App API schemas', () => {
     });
     expect(
       WorkerEnvironmentStorageChoiceSchema.parse({
-        adjudicatedThreadIds: ['thread_reviewed'],
+        adjudicatedThreadIds: ['th_00000000-0000-749b-97dc-91fff989a1b9'],
         expectedRevision: 4,
         kind: 'selected',
         purpose: 'independent-review',
@@ -72,7 +72,10 @@ describe('Worker environment App API schemas', () => {
     ).toMatchObject({ storageRef: STORAGE_REF, expectedRevision: 4 });
     expect(
       WorkerEnvironmentStorageChoiceSchema.safeParse({
-        adjudicatedThreadIds: ['thread_reviewed', 'thread_reviewed'],
+        adjudicatedThreadIds: [
+          'th_00000000-0000-749b-97dc-91fff989a1b9',
+          'th_00000000-0000-749b-97dc-91fff989a1b9',
+        ],
         expectedRevision: 4,
         kind: 'selected',
         purpose: 'independent-review',
@@ -119,7 +122,7 @@ describe('Worker environment App API schemas', () => {
       layoutDigest: DIGEST,
       purpose: 'work',
       storageRef: STORAGE_REF,
-      threadId: 'thread_successor',
+      threadId: 'th_00000000-0000-798a-a148-036f431aea12',
     });
 
     expect(selection).toMatchObject({
@@ -186,7 +189,7 @@ describe('Worker environment App API schemas', () => {
 
   it('uses an immutable Artifact version as the preparation owner', () => {
     const prepared = PrepareWorkerEnvironmentRequestSchema.parse({
-      administrationThreadId: 'thread_admin',
+      administrationThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
       configuration: {
         expectedRevision: CONFIG_REVISION,
         fileId: 'agents/codex.agent.jsonc',
@@ -207,23 +210,26 @@ describe('Worker environment App API schemas', () => {
     ).toBe(false);
     expect(
       PrepareWorkerEnvironmentRequestSchema.parse({
-        administrationThreadId: 'thread_admin_recovery',
+        administrationThreadId: 'th_00000000-0000-7517-9a5a-1c5686fe112c',
         mode: 'recover',
         recoverFrom: {
-          artifactId: 'artifact_authored',
+          artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
           artifactVersion: 1,
           contentDigest: DIGEST,
         },
         requestId: '22222222-2222-4222-8222-222222222222',
       })
-    ).toMatchObject({ mode: 'recover', recoverFrom: { artifactId: 'artifact_authored' } });
+    ).toMatchObject({
+      mode: 'recover',
+      recoverFrom: { artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6' },
+    });
     expect(
       PrepareWorkerEnvironmentRequestSchema.safeParse({
-        administrationThreadId: 'thread_admin_recovery',
+        administrationThreadId: 'th_00000000-0000-7517-9a5a-1c5686fe112c',
         declaration: prepared.declaration,
         mode: 'recover',
         recoverFrom: {
-          artifactId: 'artifact_authored',
+          artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
           artifactVersion: 1,
           contentDigest: DIGEST,
         },
@@ -232,10 +238,10 @@ describe('Worker environment App API schemas', () => {
     ).toBe(false);
     expect(
       PrepareWorkerEnvironmentRequestSchema.safeParse({
-        administrationThreadId: 'thread_admin_recovery',
+        administrationThreadId: 'th_00000000-0000-7517-9a5a-1c5686fe112c',
         mode: 'recover',
         recoverFrom: {
-          artifactId: 'artifact_authored',
+          artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
           artifactVersion: 2,
           contentDigest: DIGEST,
         },
@@ -281,11 +287,11 @@ describe('Worker environment App API schemas', () => {
       },
       replaceNow: {
         prompt: 'Continue the implementation with the prepared image.',
-        threadId: 'thread_target',
-        workspaceId: 'ws_demo',
+        threadId: 'th_00000000-0000-7f61-b900-3f424d23686a',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       resolvedCandidate: {
-        artifactId: 'artifact_resolved',
+        artifactId: 'ar_00000000-0000-7fd1-9bc1-cf5509dbe80c',
         artifactVersion: 1,
         contentDigest: DIGEST,
       },
@@ -380,7 +386,7 @@ describe('Worker environment App API schemas', () => {
         schemaVersion: 1,
         target: exact.target,
       }).authoredCandidate.artifactId
-    ).toBe('artifact_resolved');
+    ).toBe('ar_00000000-0000-7fd1-9bc1-cf5509dbe80c');
     expect(
       ActivateWorkerEnvironmentResponseSchema.parse({
         affected: [{ expectedRevision: 4, storageRef: STORAGE_REF, disposition: 'unknown' }],
@@ -399,7 +405,7 @@ describe('Worker environment App API schemas', () => {
         image: { digest: DIGEST },
       }),
       authoredCandidate: {
-        artifactId: 'artifact_authored',
+        artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
         artifactVersion: 1,
         contentDigest: DIGEST,
       },
@@ -431,7 +437,7 @@ describe('Worker environment App API schemas', () => {
 
   it('keeps config-only activation separate from immediate resident replacement', () => {
     const resolvedCandidate = {
-      artifactId: 'artifact_resolved_config_only',
+      artifactId: 'ar_00000000-0000-72df-9cf7-492d39c4097e',
       artifactVersion: 1,
       contentDigest: DIGEST,
     };

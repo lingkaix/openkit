@@ -1,4 +1,14 @@
-import { TimestampSchema } from '@openkit/protocol';
+import {
+  ArtifactIdSchema,
+  ArtifactReviewIdSchema,
+  ItemIdSchema,
+  MaterialIdSchema,
+  MaterialRevisionIdSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { ArtifactReviewDecisionSchema } from './action-center.js';
 
@@ -25,11 +35,11 @@ const materialMediaTypeSchema = z.enum(['text/markdown', 'text/plain']);
 /** Closed public projection of one Workspace Material. */
 export const WorkspaceMaterialViewSchema = z
   .object({
-    workspaceId: opaqueIdSchema,
-    materialId: opaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    materialId: MaterialIdSchema,
     title: z.string().min(1),
     kind: materialKindSchema,
-    currentRevisionId: opaqueIdSchema.nullable(),
+    currentRevisionId: MaterialRevisionIdSchema.nullable(),
     sensitivity: materialSensitivitySchema,
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
@@ -39,10 +49,10 @@ export const WorkspaceMaterialViewSchema = z
 /** Closed public summary of one immutable Workspace Material revision. */
 export const WorkspaceMaterialRevisionSummarySchema = z
   .object({
-    workspaceId: opaqueIdSchema,
-    materialId: opaqueIdSchema,
-    revisionId: opaqueIdSchema,
-    parentRevisionId: opaqueIdSchema.nullable(),
+    workspaceId: WorkspaceIdSchema,
+    materialId: MaterialIdSchema,
+    revisionId: MaterialRevisionIdSchema,
+    parentRevisionId: MaterialRevisionIdSchema.nullable(),
     mediaType: materialMediaTypeSchema,
     contentDigest: contentDigestSchema,
     authorId: opaqueIdSchema,
@@ -58,8 +68,8 @@ export const WorkspaceMaterialRevisionViewSchema = WorkspaceMaterialRevisionSumm
 /** Immutable Material target and base captured by one Artifact Review. */
 export const ArtifactMaterialProposalSchema = z
   .object({
-    materialId: opaqueIdSchema,
-    baseRevisionId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
+    baseRevisionId: MaterialRevisionIdSchema,
     baseContentDigest: contentDigestSchema,
   })
   .strict();
@@ -67,21 +77,21 @@ export const ArtifactMaterialProposalSchema = z
 /** Closed public projection of one version-keyed Artifact Review. */
 export const ArtifactReviewViewSchema = z
   .object({
-    workspaceId: opaqueIdSchema,
-    reviewId: opaqueIdSchema,
-    artifactId: opaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    reviewId: ArtifactReviewIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
     contentDigest: contentDigestSchema,
-    sourceThreadId: opaqueIdSchema.nullable(),
-    sourceTurnId: opaqueIdSchema.nullable(),
+    sourceThreadId: ThreadIdSchema.nullable(),
+    sourceTurnId: TurnIdSchema.nullable(),
     sourceAgentId: opaqueIdSchema.nullable(),
     materialProposal: ArtifactMaterialProposalSchema.nullable(),
     decision: ArtifactReviewDecisionSchema.nullable(),
     decisionActorId: opaqueIdSchema.nullable(),
     feedback: z.string().min(1).nullable(),
     decidedAt: TimestampSchema.nullable(),
-    followUpTurnId: opaqueIdSchema.nullable(),
-    appliedMaterialRevisionId: opaqueIdSchema.nullable(),
+    followUpTurnId: TurnIdSchema.nullable(),
+    appliedMaterialRevisionId: MaterialRevisionIdSchema.nullable(),
     createdAt: TimestampSchema,
   })
   .strict()
@@ -148,13 +158,13 @@ export const ArtifactReviewViewSchema = z
 export const ThreadMaterialActiveDeliverySchema = z
   .object({
     state: z.enum(['queued', 'applied']),
-    pendingTurnId: opaqueIdSchema,
+    pendingTurnId: TurnIdSchema,
     requestId: requestIdSchema,
-    contentItemId: opaqueIdSchema,
+    contentItemId: ItemIdSchema,
     goalId: opaqueIdSchema,
-    activeTurnId: opaqueIdSchema,
-    materialId: opaqueIdSchema,
-    revisionId: opaqueIdSchema,
+    activeTurnId: TurnIdSchema,
+    materialId: MaterialIdSchema,
+    revisionId: MaterialRevisionIdSchema,
     contentDigest: contentDigestSchema,
   })
   .strict();
@@ -162,14 +172,14 @@ export const ThreadMaterialActiveDeliverySchema = z
 /** Singular Material projection for one Thread. */
 export const ThreadMaterialViewSchema = z
   .object({
-    workspaceId: opaqueIdSchema,
-    threadId: opaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
     resource: WorkspaceMaterialViewSchema,
     currentRevision: WorkspaceMaterialRevisionSummarySchema.nullable(),
     inclusionState: z.enum(['included', 'excluded']),
-    latestQueuedRevisionId: opaqueIdSchema.nullable(),
-    lastWorkerSeenRevisionId: opaqueIdSchema.nullable(),
-    currentTurnRevisionId: opaqueIdSchema.nullable(),
+    latestQueuedRevisionId: MaterialRevisionIdSchema.nullable(),
+    lastWorkerSeenRevisionId: MaterialRevisionIdSchema.nullable(),
+    currentTurnRevisionId: MaterialRevisionIdSchema.nullable(),
     activeDelivery: ThreadMaterialActiveDeliverySchema.nullable(),
   })
   .strict();
@@ -232,7 +242,7 @@ export const ImportWorkspaceArtifactRequestSchema = z
 /** Response payload after importing one immutable Workspace Artifact version. */
 export const ImportWorkspaceArtifactResponseSchema = z
   .object({
-    artifactId: opaqueIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.literal(1),
   })
   .strict();
@@ -248,10 +258,10 @@ export const IntroduceWorkspaceArtifactRequestSchema = z
 /** Response payload after introducing one exact Artifact version into a Thread. */
 export const IntroduceWorkspaceArtifactResponseSchema = z
   .object({
-    artifactId: opaqueIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
-    turnId: opaqueIdSchema,
-    itemId: opaqueIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema,
   })
   .strict();
 
@@ -279,11 +289,11 @@ export const SubmitArtifactReviewDecisionRequestSchema = z
 /** Response payload after deciding one version-keyed Artifact Review. */
 export const SubmitArtifactReviewDecisionResponseSchema = z
   .object({
-    reviewId: opaqueIdSchema,
-    artifactId: opaqueIdSchema,
+    reviewId: ArtifactReviewIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
     decision: ArtifactReviewDecisionSchema,
-    followUpTurnId: opaqueIdSchema.nullable(),
+    followUpTurnId: TurnIdSchema.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -309,14 +319,14 @@ export const CreateWorkspaceMaterialRequestSchema = z
 
 /** Response payload after creating one Workspace Material. */
 export const CreateWorkspaceMaterialResponseSchema = z
-  .object({ materialId: opaqueIdSchema })
+  .object({ materialId: MaterialIdSchema })
   .strict();
 
 /** Request payload for saving one immutable Workspace Material revision. */
 export const SaveWorkspaceMaterialRevisionRequestSchema = z
   .object({
     requestId: requestIdSchema,
-    expectedRevisionId: opaqueIdSchema.nullable(),
+    expectedRevisionId: MaterialRevisionIdSchema.nullable(),
     contentDigest: contentDigestSchema,
     content: z.string(),
   })
@@ -325,8 +335,8 @@ export const SaveWorkspaceMaterialRevisionRequestSchema = z
 /** Response payload after saving one immutable Workspace Material revision. */
 export const SaveWorkspaceMaterialRevisionResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
-    revisionId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
+    revisionId: MaterialRevisionIdSchema,
   })
   .strict();
 
@@ -341,8 +351,8 @@ export const BindThreadMaterialRequestSchema = z
 /** Response payload after binding one Material to a Thread. */
 export const BindThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
-    threadId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('bound'),
   })
   .strict();
@@ -358,8 +368,8 @@ export const UnbindThreadMaterialRequestSchema = z
 /** Response payload after unbinding one Material from a Thread. */
 export const UnbindThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
-    threadId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('unbound'),
   })
   .strict();
@@ -370,15 +380,15 @@ export const ExcludeThreadMaterialRequestSchema = z
     requestId: requestIdSchema,
     expectedBindingState: z.literal('bound'),
     expectedInclusionState: z.literal('included'),
-    expectedQueuedRevisionId: opaqueIdSchema,
+    expectedQueuedRevisionId: MaterialRevisionIdSchema,
   })
   .strict();
 
 /** Response payload after excluding one bound Material from worker context. */
 export const ExcludeThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
-    threadId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('excluded'),
   })
   .strict();
@@ -395,8 +405,8 @@ export const RestoreThreadMaterialRequestSchema = z
 /** Response payload after restoring one bound Material to worker context. */
 export const RestoreThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
-    threadId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('included'),
   })
   .strict();

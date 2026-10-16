@@ -1,3 +1,4 @@
+import { isEntityId } from '@openkit/protocol';
 import { OpenAICompatibleProviderError } from '../llm/openai-compatible-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -111,7 +112,7 @@ export function readVaultReferenceId(secretRef: string): string | null {
 
   const referenceId = secretRef.slice(prefix.length);
 
-  return referenceId.length > 0 ? referenceId : null;
+  return isEntityId('vault', referenceId) ? referenceId : null;
 }
 
 /**

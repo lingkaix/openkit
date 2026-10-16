@@ -14,7 +14,7 @@ import { AdministrationScreen } from './AdministrationScreen';
 
 const TIMESTAMP = '2026-09-10T00:00:00.000Z';
 const PROJECT = {
-  id: 'ws_project',
+  id: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053',
   name: 'Project Atlas',
   kind: 'general',
   status: 'active',
@@ -24,12 +24,16 @@ const PROJECT = {
 };
 const QUICK_CHAT = {
   ...PROJECT,
-  id: 'ws_quick_chat',
+  id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
   name: 'Quick Chat',
   kind: 'quick-chat',
 };
-const SECOND_PROJECT = { ...PROJECT, id: 'ws_second', name: 'Project Borealis' };
-const STORAGE_REF = `wst_${'a'.repeat(32)}`;
+const SECOND_PROJECT = {
+  ...PROJECT,
+  id: 'ws_00000000-0000-768f-80f6-8bbf108cc9a9',
+  name: 'Project Borealis',
+};
+const STORAGE_REF = 'wst_00000000-0000-7000-8000-000000000001';
 const CONFIG_REVISION = `sha256:${'c'.repeat(64)}`;
 const ENVIRONMENT = {
   attachmentGeneration: 1,
@@ -52,7 +56,7 @@ const ENVIRONMENT = {
   workspaceId: PROJECT.id,
 };
 const ADMIN_THREAD = {
-  id: 'thread_admin',
+  id: 'th_00000000-0000-79b7-9009-e76cfeceddee',
   workspaceId: QUICK_CHAT.id,
   name: 'Administration',
   preview: 'Administration',
@@ -62,12 +66,12 @@ const ADMIN_THREAD = {
   updatedAt: TIMESTAMP,
 };
 const RESOLVED_CANDIDATE = {
-  artifactId: 'artifact_resolved',
+  artifactId: 'ar_00000000-0000-7fd1-9bc1-cf5509dbe80c',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'d'.repeat(64)}`,
 };
 const AUTHORED_CANDIDATE = {
-  artifactId: 'artifact_authored',
+  artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'e'.repeat(64)}`,
 };
@@ -98,17 +102,17 @@ const CANDIDATE_PAYLOAD = {
   kind: 'worker-environment-resolved-candidate',
   replaceNow: {
     prompt: 'Continue the implementation with the prepared environment.',
-    threadId: 'thread_project',
+    threadId: 'th_00000000-0000-7661-815f-0101e9c6c0d8',
     workspaceId: PROJECT.id,
   },
   schemaVersion: 1,
   target: { agentId: 'codex', kind: 'agent' },
 } as const;
 const CANDIDATE_ITEM = {
-  id: 'item_candidate',
+  id: 'it_00000000-0000-7689-b82f-01221681dc60',
   workspaceId: QUICK_CHAT.id,
   threadId: ADMIN_THREAD.id,
-  turnId: 'turn_prepare',
+  turnId: 'tu_00000000-0000-72c5-a55e-00fc996645c0',
   status: 'completed',
   type: 'artifact-reference',
   artifactId: RESOLVED_CANDIDATE.artifactId,
@@ -123,7 +127,7 @@ const CANDIDATE_ARTIFACT = {
   id: RESOLVED_CANDIDATE.artifactId,
   workspaceId: QUICK_CHAT.id,
   threadId: ADMIN_THREAD.id,
-  turnId: 'turn_prepare',
+  turnId: 'tu_00000000-0000-72c5-a55e-00fc996645c0',
   kind: 'report',
   title: CANDIDATE_ITEM.title,
   status: 'ready',
@@ -135,7 +139,7 @@ const CANDIDATE_ARTIFACT = {
   origin: {
     kind: 'turn-output',
     threadId: ADMIN_THREAD.id,
-    turnId: 'turn_prepare',
+    turnId: 'tu_00000000-0000-72c5-a55e-00fc996645c0',
     requestId: CANDIDATE_ITEM.lastMutationRequestId,
   },
   createdAt: TIMESTAMP,
@@ -156,7 +160,7 @@ const AUTHORED_PAYLOAD = {
 } as const;
 const AUTHORED_ITEM = {
   ...CANDIDATE_ITEM,
-  id: 'item_authored',
+  id: 'it_00000000-0000-78aa-951f-75d06afdf490',
   artifactId: AUTHORED_CANDIDATE.artifactId,
   artifactVersion: AUTHORED_CANDIDATE.artifactVersion,
   title: 'Authored Worker environment candidate',
@@ -170,7 +174,7 @@ const AUTHORED_ARTIFACT = {
   contentDigest: AUTHORED_CANDIDATE.contentDigest,
 } as const;
 const CONFIG_CANDIDATE = {
-  artifactId: 'artifact_configuration',
+  artifactId: 'ar_00000000-0000-7d2f-9722-dc8c6c8b7d8d',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'9'.repeat(64)}`,
 };
@@ -188,7 +192,7 @@ const CONFIG_PAYLOAD = {
 } as const;
 const CONFIG_ITEM = {
   ...CANDIDATE_ITEM,
-  id: 'item_configuration',
+  id: 'it_00000000-0000-7307-b89c-75e106cc2198',
   artifactId: CONFIG_CANDIDATE.artifactId,
   artifactVersion: CONFIG_CANDIDATE.artifactVersion,
   title: 'Administration configuration candidate',
@@ -202,13 +206,13 @@ const CONFIG_ARTIFACT = {
   contentDigest: CONFIG_CANDIDATE.contentDigest,
 } as const;
 const CONFIG_CANDIDATE_B = {
-  artifactId: 'artifact_configuration_b',
+  artifactId: 'ar_00000000-0000-7a84-81f2-ce90862c4c99',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'6'.repeat(64)}`,
 };
 const CONFIG_ITEM_B = {
   ...CONFIG_ITEM,
-  id: 'item_configuration_b',
+  id: 'it_00000000-0000-77d6-9a59-1bea0423d91c',
   artifactId: CONFIG_CANDIDATE_B.artifactId,
   artifactVersion: CONFIG_CANDIDATE_B.artifactVersion,
 } as const;
@@ -234,8 +238,8 @@ const CONFIG_OUTCOME = {
 };
 const CONFIG_OUTCOME_ITEM = {
   ...CONFIG_ITEM,
-  id: 'item_configuration_outcome',
-  artifactId: 'artifact_configuration_outcome',
+  id: 'it_00000000-0000-7d8d-a2f5-aebe8ce41dea',
+  artifactId: 'ar_00000000-0000-7ccf-84a5-55f6c4fa16ff',
   title: 'Administration configuration result',
 } as const;
 const CONFIG_OUTCOME_ARTIFACT = {
@@ -253,7 +257,13 @@ function makeClient(
 ): CoreClient {
   return {
     app: { ...app },
-    auth: { email: { getSession: vi.fn().mockResolvedValue({ user: { id: 'user_local' } }) } },
+    auth: {
+      email: {
+        getSession: vi
+          .fn()
+          .mockResolvedValue({ user: { id: 'usr_00000000-0000-7000-8000-000000000001' } }),
+      },
+    },
     core: {
       meta: vi.fn().mockResolvedValue({}),
       ...core,
@@ -298,7 +308,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -312,7 +322,7 @@ function makeClient(
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -354,7 +364,11 @@ beforeEach(() => {
 describe('Administration', () => {
   it('lists other owners separately and opens their Workspace into the selected state', async () => {
     const user = userEvent.setup();
-    const foreignQuickChat = { ...QUICK_CHAT, id: 'ws_foreign', name: 'Other Quick Chat' };
+    const foreignQuickChat = {
+      ...QUICK_CHAT,
+      id: 'ws_00000000-0000-7f9c-aa14-53566c621405',
+      name: 'Other Quick Chat',
+    };
     const client = makeClient();
     vi.mocked(client.operations['workspace.list'])
       .mockReset()
@@ -363,7 +377,10 @@ describe('Administration', () => {
           membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
           accessCause: 'administrator',
           workspace,
-          ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
+          ownerUserId:
+            workspace.id === foreignQuickChat.id
+              ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+              : 'usr_00000000-0000-7000-8000-000000000001',
           effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
           registryRevision: 1,
           membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
@@ -388,13 +405,20 @@ describe('Administration', () => {
 
   it('waits for ownership discovery before reading the private Quick Chat', async () => {
     const client = makeClient();
-    const foreignQuickChat = { ...QUICK_CHAT, id: 'ws_foreign', name: 'Other Quick Chat' };
+    const foreignQuickChat = {
+      ...QUICK_CHAT,
+      id: 'ws_00000000-0000-7f9c-aa14-53566c621405',
+      name: 'Other Quick Chat',
+    };
     const result = {
       items: [foreignQuickChat, QUICK_CHAT].map((workspace) => ({
         membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
         accessCause: 'administrator',
         workspace,
-        ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
+        ownerUserId:
+          workspace.id === foreignQuickChat.id
+            ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+            : 'usr_00000000-0000-7000-8000-000000000001',
         effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
         registryRevision: 1,
         membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
@@ -426,14 +450,14 @@ describe('Administration', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {
       const activity = {
-        turnId: 'turn_admin',
+        turnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         contentCapture: 'on',
         coverage: 'collecting',
         omittedEntryCount: 0,
         entries: [],
       };
       const dashboard = {
-        turns: [{ id: 'turn_admin', status: 'completed', items: [] }],
+        turns: [{ id: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c', status: 'completed', items: [] }],
         runtimeActivity: [activity],
       };
       const getThreadDashboard = vi.fn().mockResolvedValue(dashboard);
@@ -496,26 +520,26 @@ describe('Administration', () => {
       .mockResolvedValueOnce({
         outcome: 'answered',
         explanation: 'Prepared.',
-        turn: { id: 'turn_1' },
-        item: { id: 'item_1' },
+        turn: { id: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' },
+        item: { id: 'it_00000000-0000-729d-88c1-c54b390585b6' },
         handoff: null,
         originatingWorkspaceId: QUICK_CHAT.id,
-        originatingThreadId: 'thread_admin',
+        originatingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         receivingWorkspaceId: QUICK_CHAT.id,
-        receivingThreadId: 'thread_admin',
+        receivingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         targetRef: 'assistant',
         logicalModelId: null,
       })
       .mockResolvedValueOnce({
         outcome: 'answered',
         explanation: 'Inspected.',
-        turn: { id: 'turn_2' },
-        item: { id: 'item_2' },
+        turn: { id: 'tu_00000000-0000-70b8-9470-71bee14fa908' },
+        item: { id: 'it_00000000-0000-7a7b-bd48-f59a99f30f6f' },
         handoff: null,
         originatingWorkspaceId: QUICK_CHAT.id,
-        originatingThreadId: 'thread_admin',
+        originatingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         receivingWorkspaceId: QUICK_CHAT.id,
-        receivingThreadId: 'thread_admin',
+        receivingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         targetRef: 'assistant',
         logicalModelId: null,
       });
@@ -535,7 +559,7 @@ describe('Administration', () => {
     await waitFor(() => expect(submitAdministrationConversation).toHaveBeenCalledTimes(2));
     expect(submitAdministrationConversation.mock.calls[1]?.[0]).toMatchObject({
       input: 'Check its status.',
-      threadId: 'thread_admin',
+      threadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
     });
   });
 
@@ -931,7 +955,7 @@ describe('Administration', () => {
                     {
                       ...ADMIN_THREAD,
                       entryPath: 'conversation',
-                      id: 'thread_project',
+                      id: 'th_00000000-0000-7661-815f-0101e9c6c0d8',
                       name: 'Project implementation',
                       workspaceId: PROJECT.id,
                     },
@@ -1002,7 +1026,7 @@ describe('Administration', () => {
       },
       replaceNow: {
         prompt: 'Continue from the retained files with the prepared environment.',
-        threadId: 'thread_project',
+        threadId: 'th_00000000-0000-7661-815f-0101e9c6c0d8',
         workspaceId: PROJECT.id,
       },
       requestId: expect.any(String),
@@ -1779,8 +1803,8 @@ describe('Administration', () => {
     const applyAdministrationConfiguration = vi.fn();
     const getArtifact = vi.fn().mockResolvedValue({
       ...CONFIG_ARTIFACT,
-      threadId: 'thread_other',
-      origin: { ...CONFIG_ARTIFACT.origin, threadId: 'thread_other' },
+      threadId: 'th_00000000-0000-7429-b248-27885d480335',
+      origin: { ...CONFIG_ARTIFACT.origin, threadId: 'th_00000000-0000-7429-b248-27885d480335' },
     });
     const client = makeClient(
       { 'administration.configuration-apply': applyAdministrationConfiguration },

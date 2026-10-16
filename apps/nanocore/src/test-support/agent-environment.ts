@@ -10,6 +10,7 @@ import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { testEntityId } from './entity-ids.js';
 import { admitTestNativeEnvironment, createTestNativeEnvironmentDb } from './native-environment.js';
 
 /**
@@ -177,16 +178,16 @@ export function recordTestAgentEnvironmentPackage(
       coreDb,
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup(),
-      agentSessionId: `as_${input.suffix}`,
+      agentSessionId: testEntityId('as', `as_${input.suffix}`),
       triggerActor: input.triggerActor,
       backend: {
         kind: 'openshell',
       },
       requestId: `request_${input.suffix}`,
       turn: {
-        id: `turn_${input.suffix}`,
+        id: testEntityId('tu', `turn_${input.suffix}`),
         workspaceId: workspaceDb.workspaceId,
-        threadId: input.threadId ?? `thread_${input.suffix}`,
+        threadId: input.threadId ?? testEntityId('th', `thread_${input.suffix}`),
         triggerActor: input.triggerActor,
         items: [],
         status: 'running',

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ArtifactIdSchema } from '@openkit/protocol';
 import {
   canonicalNativeEnvironment,
   NativeEnvironmentRecordSchema,
@@ -10,7 +11,7 @@ const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 /** Private immutable candidate lineage carried in process, never on the Host wire. */
 export const WorkerImageSettlementIdentitySchema = z
   .object({
-    authoredArtifactId: z.string().min(1),
+    authoredArtifactId: ArtifactIdSchema,
     authoredArtifactVersion: z.literal(1),
     authoredContentDigest: digest,
     inputDigest: digest,
