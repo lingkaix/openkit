@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
-import { initializeRecurringScheduleStorage } from '../storage/recurring-schema.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { AutomationStore } from './automation-store.js';
 
@@ -14,7 +13,6 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'recurrence-store-'));
   const db = openCoreDb(root);
   applyMigrations(db);
-  initializeRecurringScheduleStorage(db.sqlite);
   fixtures.push({ root, db });
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;

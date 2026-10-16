@@ -550,7 +550,7 @@ function collectWorkspaceExportRows(
       const workspaceMaterialRows = listExportableWorkspaceMaterialRows(workspaceDb);
       return {
         artifactReviews: listExportableArtifactReviews(workspaceDb),
-        auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
+        auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
         agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
           workspaceId

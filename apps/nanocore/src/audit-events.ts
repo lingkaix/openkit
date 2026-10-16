@@ -167,54 +167,33 @@ export function recordServerAuditEvent(input: RecordServerAuditEventInput): Audi
  *
  * @param workspaceDb Workspace database that owns the events.
  * @param workspaceId Workspace id to export.
+ * @param coreDb Optional transactional home of Workspace-attributed lifecycle Audit.
  * @returns Protocol audit events in stable storage order.
  */
 export function listWorkspaceAuditEvents(
   workspaceDb: WorkspaceDb,
-  workspaceId: string
+  workspaceId: string,
+  coreDb?: CoreDb
 ): AuditEvent[] {
-  return workspaceDb.sqlite
-    .prepare(
-      `SELECT
-        audit_event_id,
-        workspace_id,
-        protocol_version,
-        thread_id,
-        turn_id,
-        item_id,
-        capability_call_id,
-        permission_decision_id,
-        vault_grant_id,
-        request_id,
-        actor_json,
-        subject_json,
-        agent_id,
-        agent_session_id,
-        category,
-        action,
-        resource,
-        resource_revision,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        created_at,
-        occurred_at
-      FROM audit_events
-      WHERE workspace_id = ?
-      ORDER BY created_at, audit_event_id`
-    )
-    .all(workspaceId)
-    .map(auditEventFromRow);
+  const events = listSqliteAuditEvents(workspaceDb.sqlite, workspaceId);
+  if (coreDb) events.push(...listSqliteAuditEvents(coreDb.sqlite, workspaceId));
+  return events.sort(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+  );
 }
 
 /**
  * Lists every audit event stored in one SQLite handle.
  *
  * @param sqlite Core, Workspace, or app database handle.
+ * @param workspaceId Selects one Workspace in SQL before decoding any event content.
  * @returns Protocol audit events in stable storage order.
  */
-export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
+export function listSqliteAuditEvents(
+  sqlite: CoreDb['sqlite'],
+  workspaceId?: string
+): AuditEvent[] {
   return sqlite
     .prepare(
       `SELECT
@@ -243,9 +222,10 @@ export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
         created_at,
         occurred_at
       FROM audit_events
+      ${workspaceId === undefined ? '' : 'WHERE workspace_id = ?'}
       ORDER BY created_at, audit_event_id`
     )
-    .all()
+    .all(...(workspaceId === undefined ? [] : [workspaceId]))
     .map(auditEventFromRow);
 }
 

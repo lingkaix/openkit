@@ -8,7 +8,6 @@ import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { initializeRecurringScheduleStorage } from './storage/recurring-schema.js';
 import { createApp } from './test-support/app.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -18,7 +17,6 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'automation-api-'));
   const db = openCoreDb(root);
   applyMigrations(db);
-  initializeRecurringScheduleStorage(db.sqlite);
   ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
   const workspace = store.createWorkspace('Recurring');

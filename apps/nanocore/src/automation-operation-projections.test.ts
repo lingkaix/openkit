@@ -8,7 +8,6 @@ import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { initializeRecurringScheduleStorage } from './storage/recurring-schema.js';
 import { createApp } from './test-support/app.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -17,7 +16,6 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   const root = mkdtempSync(join(tmpdir(), 'recurrence-projections-'));
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
-  initializeRecurringScheduleStorage(coreDb.sqlite);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
   const workspace = store.createWorkspace('Recurring');

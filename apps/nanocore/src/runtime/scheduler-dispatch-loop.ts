@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { ActivateWorkerEnvironmentResponseSchema } from '@openkit/app-api-schemas';
 import type {
   GatewayConfig,
@@ -33,6 +34,7 @@ import {
   openWorkspaceDb,
 } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
   bindSchedulerExecutionAttemptSession,
@@ -229,6 +231,51 @@ function schedulerEntryPublicationComplete(
   input: RunSchedulerDispatchLoopInput,
   entry: SchedulerAdmissionEntryRecord
 ): boolean {
+  const occurrence = findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId);
+  if (occurrence) {
+    // Acceptance lives wholly in Core SQLite. Publish its fixed pending Turn here before any
+    // runtime effect; a file-publication interruption never returns ownership to the scanner.
+    const turns = input.store.listThreadTurns(entry.workspaceId, entry.threadId);
+    if (
+      turns.some(
+        (turn) =>
+          turn.id !== entry.turnId && (turn.status === 'pending' || turn.status === 'running')
+      )
+    )
+      return false;
+    const turn = turns.find((candidate) => candidate.id === entry.turnId);
+    if (turn) {
+      if (
+        turn.status !== 'pending' ||
+        turn.agentId !== entry.requestedAgentId ||
+        turn.agentSessionId ||
+        !isDeepStrictEqual(turn.triggerActor, entry.triggerActor) ||
+        turn.reasoningEffort !== entry.reasoningEffort
+      )
+        return false;
+      // The Store may retain a pending in-memory value after failed file synchronization.
+      // Its existing update owner must finish publication before dispatch can use that value.
+      input.store.updateTurn(turn.id, {});
+    } else {
+      input.store.createTurn(
+        entry.workspaceId,
+        entry.threadId,
+        entry.turnInput,
+        entry.triggerActor,
+        input.configVersion ?? null,
+        {
+          turnId: entry.turnId,
+          status: 'pending',
+          agentId: entry.requestedAgentId,
+          executorKind: 'worker',
+          ...(entry.reasoningEffort !== undefined
+            ? { reasoningEffort: entry.reasoningEffort }
+            : {}),
+        }
+      );
+    }
+    return true;
+  }
   try {
     const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
     if (turn.status !== 'pending' || turn.agentId !== entry.requestedAgentId) return false;

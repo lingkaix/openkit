@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -22,6 +22,49 @@ function createDataRoot(): string {
 }
 
 describe('workspace audit events', () => {
+  it('joins Core-homed Workspace Audit only after exact Workspace selection', () => {
+    const dataRoot = createDataRoot();
+    const coreDb = openCoreDb(dataRoot);
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    try {
+      applyMigrations(coreDb);
+      applyScopedMigrations(workspaceDb);
+      const local = recordWorkspaceAuditEvent({
+        workspaceDb,
+        workspaceId: 'ws_demo',
+        action: 'workspace.inspect',
+        outcome: 'succeeded',
+        summary: 'Workspace inspected.',
+        now: new Date('2026-10-16T00:00:02.000Z'),
+      });
+      const recurring = recordServerAuditEvent({
+        coreDb,
+        workspaceId: 'ws_demo',
+        actor: { kind: 'automation', id: 'auto_test', responsibleUserId: 'user_local' },
+        action: 'automation.trigger',
+        outcome: 'succeeded',
+        summary: 'Recurring occurrence accepted.',
+        now: new Date('2026-10-16T00:00:01.000Z'),
+      });
+      const foreign = recordServerAuditEvent({
+        coreDb,
+        workspaceId: 'ws_foreign',
+        action: 'automation.trigger',
+        outcome: 'failed',
+        summary: 'Foreign history.',
+      });
+      coreDb.sqlite
+        .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
+        .run('{"kind":"unsupported"}', foreign.id);
+      expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo', coreDb)).toEqual([recurring, local]);
+      expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([local]);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('normalizes retained Audit actor and subject additions without changing attribution', () => {
     const workspaceDb = openWorkspaceDb(createDataRoot(), 'ws_demo');
     try {

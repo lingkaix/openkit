@@ -103,7 +103,7 @@ export function createGovernanceOperationImplementations(
         try {
           return {
             workspaceId,
-            auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
+            auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
           };
         } finally {
           workspaceDb.sqlite.close();

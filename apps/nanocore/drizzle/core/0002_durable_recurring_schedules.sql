@@ -1,7 +1,3 @@
-import type Database from 'better-sqlite3';
-
-/** Core-local recurrence tables; queue acceptance must use this same connection. */
-export const RECURRING_SCHEDULE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS recurring_schedules (
   id TEXT PRIMARY KEY NOT NULL,
   workspace_id TEXT NOT NULL,
@@ -11,8 +7,10 @@ CREATE TABLE IF NOT EXISTS recurring_schedules (
   next_scheduled_at INTEGER,
   record_json TEXT NOT NULL
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS recurring_schedules_due_idx
   ON recurring_schedules(status, next_scheduled_at);
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS recurring_occurrences (
   id TEXT PRIMARY KEY NOT NULL,
   schedule_id TEXT NOT NULL REFERENCES recurring_schedules(id),
@@ -24,10 +22,13 @@ CREATE TABLE IF NOT EXISTS recurring_occurrences (
   record_json TEXT NOT NULL,
   UNIQUE(schedule_id, scheduled_at)
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS recurring_occurrences_pending_idx
   ON recurring_occurrences(state, deadline);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS recurring_occurrences_history_idx
   ON recurring_occurrences(schedule_id, scheduled_at);
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS recurring_expired_ranges (
   id TEXT PRIMARY KEY NOT NULL,
   schedule_id TEXT NOT NULL REFERENCES recurring_schedules(id),
@@ -38,11 +39,6 @@ CREATE TABLE IF NOT EXISTS recurring_expired_ranges (
   record_json TEXT NOT NULL,
   UNIQUE(schedule_id, first_scheduled_at)
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS recurring_expired_ranges_history_idx
   ON recurring_expired_ranges(schedule_id, first_scheduled_at);
-`;
-
-/** Applies recurrence storage during Core migration, before any schedule owner starts. */
-export function initializeRecurringScheduleStorage(sqlite: Database.Database): void {
-  sqlite.exec(RECURRING_SCHEDULE_SCHEMA_SQL);
-}

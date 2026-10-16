@@ -9,6 +9,7 @@ import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { AutomationStore } from '../lib/automation-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
@@ -35,6 +36,7 @@ import {
 } from '../test-support/native-environment.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import * as attemptRecords from './execution-attempt-records.js';
 import {
@@ -45,6 +47,7 @@ import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn as executeProductTurn } from './product-turn-start.js';
 import { getSchedulerPreparationClaims, runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service.js';
+import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -486,6 +489,96 @@ describe('route B durable intent before effects', () => {
 });
 
 describe('scheduler dispatch loop', () => {
+  it.each([
+    'none',
+    'before-publication',
+    'after-publication',
+  ] as const)('publishes one recurring Turn from accepted queue authority after restart: %s', async (fault) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new RecordingTurnExecutor(coreDb);
+    const manifest = agentManifest();
+    const thread = store.createThread('ws_demo', 'Recurring worker');
+    const schedules = new AutomationStore(
+      coreDb,
+      new WorkspaceMutationAdmission(),
+      () => '2026-10-16T00:00:00.000Z'
+    );
+    const schedule = schedules.createAutomation('user_local', {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      name: 'Inspect',
+      prompt: 'Exact recurring input',
+      intervalSeconds: 5,
+    });
+    schedules.updateAutomation('user_local', schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    const occurrence = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z')[0]!;
+    const accepted = schedules.commitAttempt(occurrence.id, 2, {
+      kind: 'ready',
+      payload: {
+        backendId: executor.executionBackend.id,
+        requestedAgentId: manifest.id,
+        profileRef: 'default',
+        modelId: 'openai/gpt-5.2',
+        workspaceRoots: [],
+        workspaceCwd: null,
+      },
+    })!;
+    const dispatch = {
+      coreDb,
+      store,
+      turnExecutor: executor,
+      executionBackend: executor.executionBackend,
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: localProviderRegistry(),
+    };
+    try {
+      expect(store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
+      const projectRecoveredTurn = vi.fn();
+      await runSchedulerRestartRecovery(coreDb, {
+        store,
+        executionBackend: executor.executionBackend,
+        projectRecoveredTurn,
+      });
+      expect(projectRecoveredTurn).not.toHaveBeenCalled();
+      expect(
+        schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!).status
+      ).toBe('queued');
+      if (fault !== 'none') {
+        const create = store.createTurn.bind(store);
+        const interrupted = vi.spyOn(store, 'createTurn').mockImplementationOnce((...args) => {
+          if (fault === 'after-publication') create(...args);
+          throw new Error('Interrupted recurring Turn publication');
+        });
+        await expect(runSchedulerDispatchLoop(dispatch)).rejects.toThrow(
+          'Interrupted recurring Turn publication'
+        );
+        interrupted.mockRestore();
+        expect(executor.calls).toEqual([]);
+      }
+      const reopened = createDemoStore({ dataRoot: coreDb.dataRoot });
+      await runSchedulerDispatchLoop({ ...dispatch, store: reopened });
+      expect(executor.calls).toHaveLength(1);
+      expect(executor.calls[0]).toMatchObject({
+        input: 'Exact recurring input',
+        turnId: accepted.turnId,
+      });
+      expect(reopened.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+      expect(reopened.getTurnById(accepted.turnId!).triggerActor).toEqual(schedule.actor);
+      await runSchedulerDispatchLoop({ ...dispatch, store: reopened });
+      expect(executor.calls).toHaveLength(1);
+      expect(schedules.getOccurrence(occurrence.id).state).toBe('admission-accepted');
+      expect(schedules.getOccurrence(occurrence.id).attempts).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each(
     [true, false].flatMap((separateHandle) =>
       (
