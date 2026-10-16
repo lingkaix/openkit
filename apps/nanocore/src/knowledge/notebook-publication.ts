@@ -19,6 +19,12 @@ import { parseOkfDocument, updateOkfFrontmatter, validateOpenKitKnowledgeProfile
 
 const OPERATION = 'knowledge.notebook.update';
 
+/** Existing public commands share one content publisher and retain their own command identity. */
+export type NotebookPublicationOperation =
+  | typeof OPERATION
+  | 'knowledge.create'
+  | 'knowledge.update';
+
 /** Exact human edit submitted through native admission; paths are bundle-relative, never host paths. */
 export interface NotebookUpdate {
   readonly workspaceId: string;
@@ -36,7 +42,7 @@ export interface NotebookPublication {
   readonly notebookRevision: string;
   readonly changedPageIds: readonly string[];
   readonly receiptRef: {
-    readonly operation: typeof OPERATION;
+    readonly operation: NotebookPublicationOperation;
     readonly requestId: string;
     readonly ownerScope: NotebookPublication['ownerScope'];
   };
@@ -44,13 +50,16 @@ export interface NotebookPublication {
 
 /** Current admission facts supplied only by the native scope/source/policy owners. */
 export interface NotebookPublicationAdmission {
+  readonly reviewRequiredPageIds: readonly string[];
   readonly scopeSchemaText: string;
   readonly registeredSources: ReadonlyMap<string, string | null>;
   readonly resolvedReferences: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** Native dependencies; revalidation must throw on revoked scope, source disclosure or required human authority. */
-interface PublicationDependencies {
+export interface NotebookPublicationDependencies {
+  /** Server-bound original command input; native convenience projections must not create a nested receipt. */
+  readonly command?: { readonly name: NotebookPublicationOperation; readonly input: unknown };
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly notebook: KnowledgeNotebook;
@@ -75,9 +84,9 @@ function humanPageBytes(path: string, content: string, workspaceId: string): str
 }
 
 /** Reads only this command's existing Audit evidence; page content is never stored in Audit. */
-function admissions(
-  dependencies: PublicationDependencies,
-  request: NotebookUpdate,
+export function readWorkspaceNotebookAdmissions(
+  dependencies: Pick<NotebookPublicationDependencies, 'workspaceDb' | 'producer' | 'command'>,
+  request: Pick<NotebookUpdate, 'workspaceId' | 'requestId'>,
   action: string
 ): KnowledgeNotebookAdmission[] {
   const rows = dependencies.workspaceDb.sqlite
@@ -90,23 +99,38 @@ function admissions(
   return rows
     .map(({ admission }) => {
       try {
-        return KnowledgeNotebookAdmissionSchema.parse(JSON.parse(admission ?? 'null'));
+        const parsed = KnowledgeNotebookAdmissionSchema.parse(JSON.parse(admission ?? 'null'));
+        if (
+          parsed.ownerScope.kind !== 'workspace' ||
+          parsed.ownerScope.workspaceId !== request.workspaceId ||
+          parsed.requestId !== request.requestId
+        )
+          throw new NotebookError('recovery_required');
+        return parsed;
       } catch {
         throw new NotebookError('recovery_required');
       }
     })
-    .filter((admission) => isDeepStrictEqual(admission.producer, dependencies.producer));
+    .filter(
+      (admission) =>
+        isDeepStrictEqual(admission.producer, dependencies.producer) &&
+        admission.authority.kind === 'direct' &&
+        admission.authority.instructionReference ===
+          `${dependencies.command?.name ?? OPERATION}:${request.requestId}`
+    );
 }
 
 /** Publishes a human Workspace edit through one Git CAS, with existing Audit and receipt owners. */
 export async function publishWorkspaceNotebook(
-  dependencies: PublicationDependencies,
+  dependencies: NotebookPublicationDependencies,
   request: NotebookUpdate
 ): Promise<NotebookPublication> {
   if (dependencies.workspaceDb.workspaceId !== request.workspaceId)
     throw new NotebookError('recovery_required');
   const ownerScope = { kind: 'workspace', workspaceId: request.workspaceId } as const;
-  const inputDigest = commandInputHash(request);
+  const operation = dependencies.command?.name ?? OPERATION;
+  const commandInput = dependencies.command?.input ?? request;
+  const inputDigest = commandInputHash(commandInput);
   const scope = { workspaceId: request.workspaceId, actorId: dependencies.producer.id };
   dependencies.revalidate();
 
@@ -152,7 +176,7 @@ export async function publishWorkspaceNotebook(
       baseRevision: request.baseRevision,
       notebookRevision: revision,
       changedPageIds,
-      receiptRef: { operation: OPERATION, requestId: request.requestId, ownerScope },
+      receiptRef: { operation, requestId: request.requestId, ownerScope },
     };
   };
 
@@ -160,18 +184,20 @@ export async function publishWorkspaceNotebook(
     store: dependencies.store,
     workspaceDb: dependencies.workspaceDb,
     inflightCommands: dependencies.inflightCommands,
-    command: OPERATION,
+    command: operation,
     requestId: request.requestId,
     scope,
-    input: request,
+    input: commandInput,
     responseKind: 'knowledge_notebook_revision',
     responseId: (result) => result.notebookRevision,
     replay: (receipt) => {
       dependencies.revalidate();
-      const admitted = admissions(dependencies, request, 'knowledge.notebook.admit').find(
-        (event) => event.candidateRevision === receipt.response.id
-      );
-      const completed = admissions(dependencies, request, OPERATION).find(
+      const admitted = readWorkspaceNotebookAdmissions(
+        dependencies,
+        request,
+        'knowledge.notebook.admit'
+      ).find((event) => event.candidateRevision === receipt.response.id);
+      const completed = readWorkspaceNotebookAdmissions(dependencies, request, operation).find(
         (event) => event.candidateRevision === receipt.response.id
       );
       if (
@@ -184,7 +210,11 @@ export async function publishWorkspaceNotebook(
       return project(receipt.response.id, admitted);
     },
     execute: () => {
-      for (const prior of admissions(dependencies, request, 'knowledge.notebook.admit')) {
+      for (const prior of readWorkspaceNotebookAdmissions(
+        dependencies,
+        request,
+        'knowledge.notebook.admit'
+      )) {
         if (prior.inputDigest !== inputDigest) throw new IdempotencyKeyConflictError();
         let published = false;
         try {
@@ -214,13 +244,20 @@ export async function publishWorkspaceNotebook(
       }
       const check = (facts: NotebookPublicationAdmission) =>
         validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
-      const validated = check(dependencies.revalidate());
+      const admission = dependencies.revalidate();
+      const validated = check(admission);
       if (validated.errors.length) throw new NotebookError('invalid_request');
+      if (
+        validated.changedPaths.some((path) =>
+          admission.reviewRequiredPageIds.includes(path.slice(0, -3))
+        )
+      )
+        throw new NotebookError('review_required');
       // This direct component admits non-destructive edits only; required Reviews are joined by the native caller.
       if (validated.removedPaths.length) throw new NotebookError('invalid_request');
       const authority = {
         kind: 'direct',
-        instructionReference: `${OPERATION}:${request.requestId}`,
+        instructionReference: `${operation}:${request.requestId}`,
       } as const;
       const candidateRevision = dependencies.notebook.prepare({
         baseRevision: request.baseRevision,
@@ -236,7 +273,14 @@ export async function publishWorkspaceNotebook(
         },
       });
       // All work from this final current-authority check through CAS is synchronous, with no model run or await.
-      const finalValidation = check(dependencies.revalidate());
+      const finalAdmission = dependencies.revalidate();
+      const finalValidation = check(finalAdmission);
+      if (
+        validated.changedPaths.some((path) =>
+          finalAdmission.reviewRequiredPageIds.includes(path.slice(0, -3))
+        )
+      )
+        throw new NotebookError('review_required');
       if (
         finalValidation.errors.length ||
         !isDeepStrictEqual(finalValidation.sourceReferences, validated.sourceReferences)
@@ -267,7 +311,7 @@ export async function publishWorkspaceNotebook(
         });
       audit('knowledge.notebook.admit');
       dependencies.notebook.publish({ baseRevision: request.baseRevision, candidateRevision });
-      audit(OPERATION);
+      audit(operation);
       return project(candidateRevision, evidence);
     },
   });

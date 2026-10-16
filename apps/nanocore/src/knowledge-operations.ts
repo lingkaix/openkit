@@ -331,7 +331,7 @@ export function createKnowledgeOperationImplementations(
             'notebook.git'
           ),
         });
-        return await publishWorkspaceNotebook(
+        const publication = await publishWorkspaceNotebook(
           {
             store,
             workspaceDb,
@@ -353,6 +353,11 @@ export function createKnowledgeOperationImplementations(
           },
           input
         );
+        return {
+          ...publication,
+          changedPageIds: [...publication.changedPageIds],
+          receiptRef: { ...publication.receiptRef, operation: 'knowledge.notebook.update' as const },
+        };
       } catch (error) {
         if (error instanceof OperationError) throw error;
         if (

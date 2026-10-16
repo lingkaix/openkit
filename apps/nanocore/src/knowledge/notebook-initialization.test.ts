@@ -27,6 +27,7 @@ function fixture() {
   };
   const revalidate = vi.fn(() => ({
     scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+    reviewRequiredPageIds: [] as string[],
     registeredSources: new Map<string, string | null>(),
     resolvedReferences: new Map<string, ReadonlySet<string>>(),
   }));
@@ -120,6 +121,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     f.revalidate
       .mockImplementationOnce(() => ({
         scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+        reviewRequiredPageIds: [] as string[],
         registeredSources: new Map(),
         resolvedReferences: new Map(),
       }))

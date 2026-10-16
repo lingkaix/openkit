@@ -49,16 +49,9 @@ export function readWorkspaceNotebookAdmission(
   )
     throw new OperationError('workspace_access_denied', 'Notebook publication access denied.', 403);
   const workspace = input.store.getWorkspace(workspaceId);
-  const protectedPages = new Set(
+  const reviewRequiredPageIds =
     findWorkspaceConfig(input.runtimeConfigManager.current(), workspaceId)?.config.workspace
-      .knowledgeMaintenance?.reviewRequiredPageIds ?? []
-  );
-  if (input.request.changes.some(({ path }) => protectedPages.has(path.slice(0, -3))))
-    throw new OperationError(
-      'review_required',
-      'This notebook change requires an exact human Review.',
-      409
-    );
+      .knowledgeMaintenance?.reviewRequiredPageIds ?? [];
 
   const workspaceRoot = join(input.coreDb.dataRoot, 'workspaces', workspaceId);
   for (const path of [
@@ -165,5 +158,5 @@ export function readWorkspaceNotebookAdmission(
   };
   for (const { path, content } of input.request.changes)
     if (content !== null) checkPage(path, content);
-  return { scopeSchemaText, registeredSources, resolvedReferences };
+  return { scopeSchemaText, registeredSources, resolvedReferences, reviewRequiredPageIds };
 }

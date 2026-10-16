@@ -284,6 +284,7 @@ describe('protocol schemas', () => {
 
   it('accepts knowledge list responses from the protocol package', () => {
     const parsed = ListKnowledgeEntriesResponseSchema.parse({
+      notebookRevision: 'opaque-retained-notebook-revision',
       items: [
         {
           id: 'kn_demo',

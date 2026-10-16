@@ -184,6 +184,29 @@ afterEach(() => {
 });
 
 describe('native Workspace notebook publication with real Git and SQLite', () => {
+  it('retains generic valid pages without managed entry fields or body text across reopen', async () => {
+    const f = fixture();
+    const initial = await listing(f);
+    const raw = page('rough', '')
+      .replace(/^openkit_entry_id:.*\n/m, '')
+      .replace(/^openkit_entry_kind:.*\n/m, '');
+    const published = await publish(f, {
+      requestId: randomUUID(),
+      baseRevision: initial.notebookRevision,
+      changes: [{ path: 'rough.md', content: raw }],
+      summary: 'Keep an unfinished note',
+    });
+    expect(git(f, ['show', `${published.notebookRevision}:pages/rough.md`])).toBe(raw);
+    expect((await listing(f)).items).toContainEqual(
+      expect.objectContaining({ id: 'rough', content: '' })
+    );
+    reopen(f);
+    expect((await listing(f)).items).toContainEqual(
+      expect.objectContaining({ id: 'rough', content: '' })
+    );
+    expect(git(f, ['show', `${published.notebookRevision}:pages/rough.md`])).toBe(raw);
+  });
+
   it('publishes the initial notebook inside fresh Workspace creation before any notebook read', () => {
     const f = fixture();
     expect(existsSync(f.repositoryPath)).toBe(true);
@@ -307,7 +330,10 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     );
     const stale = await submit(f, edit(first.notebookRevision, 'This stale edit must lose.'));
     expect(stale.status).toBe(409);
-    expect(stale.body).toMatchObject({ code: 'conflict', currentRevision: third.notebookRevision });
+    expect(stale.body).toMatchObject({
+      code: 'conflict',
+      details: { currentRevision: third.notebookRevision },
+    });
     expect((await listing(f)).notebookRevision).toBe(third.notebookRevision);
     expect(publishedCount(f)).toBe(count);
     expect(git(f, ['rev-list', '--parents', '-1', third.notebookRevision]).trim()).toBe(

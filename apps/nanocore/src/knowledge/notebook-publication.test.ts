@@ -37,6 +37,7 @@ function fixture() {
   });
   const revalidate = vi.fn(() => ({
     scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+    reviewRequiredPageIds: [] as string[],
     registeredSources: new Map<string, string | null>(),
     resolvedReferences: new Map<string, ReadonlySet<string>>(),
   }));
@@ -66,6 +67,40 @@ function fixture() {
 }
 
 describe('Notebook publication through existing Audit and command receipts', () => {
+  it('replays completed bytes after a page becomes protected and refuses a fresh unreviewed change', async () => {
+    const f = fixture();
+    const published = await f.publish();
+    const facts = f.revalidate();
+    f.revalidate.mockImplementation(() => ({ ...facts, reviewRequiredPageIds: ['index'] }));
+    expect(await f.publish()).toEqual(published);
+    await expect(
+      f.publish({
+        ...f.request,
+        requestId: randomUUID(),
+        baseRevision: published.notebookRevision,
+        changes: [
+          { path: 'index.md', content: '---\nokf_version: "0.2"\n---\n# Protected edit\n' },
+        ],
+      })
+    ).rejects.toMatchObject({ code: 'review_required' });
+    expect(f.notebook.publishedRevision()).toBe(published.notebookRevision);
+  });
+
+  it('rechecks protected-page requirements immediately before ref publication', async () => {
+    const f = fixture();
+    const facts = f.revalidate();
+    f.revalidate.mockClear();
+    f.revalidate.mockImplementation(() => ({
+      ...facts,
+      reviewRequiredPageIds: f.revalidate.mock.calls.length >= 3 ? ['index'] : [],
+    }));
+    await expect(f.publish()).rejects.toMatchObject({ code: 'review_required' });
+    expect(f.notebook.publishedRevision()).toBe(f.initial);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
+    ).toEqual({ count: 0 });
+  });
+
   it('marks an explicit human edit user-authored instead of accepting a supplied human-review label', async () => {
     const f = fixture();
     const content = `---
@@ -214,11 +249,13 @@ Exact human body.\r\n\t  `;
     f.revalidate
       .mockImplementationOnce(() => ({
         scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+        reviewRequiredPageIds: [] as string[],
         registeredSources: new Map(),
         resolvedReferences: new Map(),
       }))
       .mockImplementationOnce(() => ({
         scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+        reviewRequiredPageIds: [] as string[],
         registeredSources: new Map(),
         resolvedReferences: new Map(),
       }))

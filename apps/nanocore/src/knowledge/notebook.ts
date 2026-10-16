@@ -34,7 +34,7 @@ export interface NotebookRevision {
 /** Closed content-owner failure; no host paths or Git diagnostics enter product errors. */
 export class NotebookError extends Error {
   constructor(
-    readonly code: 'invalid_request' | 'conflict' | 'recovery_required',
+    readonly code: 'invalid_request' | 'conflict' | 'recovery_required' | 'review_required',
     readonly currentRevision?: string
   ) {
     super(`Notebook ${code.replaceAll('_', ' ')}.`);

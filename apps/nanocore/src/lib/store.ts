@@ -1481,6 +1481,7 @@ export class FsStore {
           files: initialNotebookFiles ?? {},
           revalidate: () => ({
             scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+            reviewRequiredPageIds: [],
             registeredSources: new Map(
               records.knowledgeSources.map((source) => [source.id, source.contentDigest])
             ),
