@@ -182,7 +182,7 @@ function prepareConcurrentContributor(fixture: Fixture): () => void {
     expectedRevision: fixture.binding.revision,
     layout: LAYOUT,
     purpose: 'work',
-    responsibleUserId: 'user_local',
+    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     runtimeTargetId: 'target_1',
     storageRef: fixture.binding.storageRef,
     threadId: fixture.threadId,
@@ -672,7 +672,7 @@ describe('Worker environment operations', () => {
             kind: 'token',
             tokenId: 'token_admin_local',
             tokenScope: 'server-admin',
-            userId: 'user_local',
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
           };
 
     const result = await fixture.operations
@@ -708,7 +708,7 @@ describe('Worker environment operations', () => {
       inspectStorage: async ({ authorize, binding }) => {
         fixture.coreDb.sqlite
           .prepare(
-            `UPDATE workspace_members SET status = ?, removed_at = ? WHERE workspace_id = ? AND user_id = 'user_local'`
+            `UPDATE workspace_members SET status = ?, removed_at = ? WHERE workspace_id = ? AND user_id = 'usr_00000000-0000-7000-8000-000000000001'`
           )
           .run('removed', NOW, fixture.workspaceId);
         await Promise.resolve();

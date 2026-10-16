@@ -1450,7 +1450,10 @@ describe('runtime provenance publication durability', () => {
       for (const [streamRef, bytes] of capture.streams)
         expect(readFileSync(join(rawRoot, 'raw', streamRef))).toEqual(bytes);
       expect(
-        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo').map((entry) => entry.id)
+        listWorkspaceEvidenceBundles(
+          fixture.workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        ).map((entry) => entry.id)
       ).toEqual(expect.arrayContaining([result.rawBundleId, result.indexBundleId]));
     } finally {
       fixture.workspaceDb.sqlite.close();
@@ -1477,7 +1480,9 @@ describe('runtime provenance publication durability', () => {
         })
       ).rejects.toThrow('Injected async publication sync failure');
       expect(publication.events.some((event) => event.op === 'rename')).toBe(false);
-      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
     } finally {
       publication.fail = undefined;
       fixture.workspaceDb.sqlite.close();
@@ -1512,7 +1517,9 @@ describe('runtime provenance publication durability', () => {
       );
       const firstPublication = publication.events.find((event) => event.op === 'rename');
       expect(firstPublication).toBeDefined();
-      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
       publication.events.length = 0;
       publication.fail = (path, directory) => directory && path === failedParent;
       await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
@@ -1526,7 +1533,9 @@ describe('runtime provenance publication durability', () => {
             event.path.startsWith(`${firstPublication?.path}/`)
         )
       ).toBe(true);
-      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
       publication.events.length = 0;
       publication.fail = undefined;
       expect((await importWorkerRuntimeProvenance(input)).complete).toBe(true);
@@ -1540,7 +1549,9 @@ describe('runtime provenance publication durability', () => {
           (event) => event.op === 'rename' && event.path === firstPublication?.path
         )
       ).toBe(false);
-      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toHaveLength(2);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toHaveLength(2);
     } finally {
       publication.fail = undefined;
       fixture.workspaceDb.sqlite.close();
@@ -1571,7 +1582,9 @@ describe('uncommitted ancestor evidence recovery', () => {
         'Injected async publication sync failure'
       );
       expect(existsSync(evidenceRoot)).toBe(true);
-      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
       publication.events.length = 0;
       await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
         'Injected async publication sync failure'
@@ -1581,12 +1594,16 @@ describe('uncommitted ancestor evidence recovery', () => {
           (event) => event.op === 'sync' && event.directory && event.path === fixture.workspaceRoot
         )
       ).toBe(true);
-      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
       publication.events.length = 0;
       publication.fail = undefined;
       const result = await importWorkerRuntimeProvenance(input);
       expect(result.complete).toBe(true);
-      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toHaveLength(2);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toHaveLength(2);
       expect(
         readFileSync(join(evidenceRoot, 'backend', result.rawBundleId, 'raw-streams.json'))
       ).toEqual(capture.manifestBytes);

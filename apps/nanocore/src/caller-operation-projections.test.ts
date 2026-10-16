@@ -10,7 +10,6 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
@@ -18,6 +17,7 @@ import { OperationError } from './operation-error.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -68,7 +68,11 @@ async function fixture() {
   const owned = store.createWorkspace('Owned content must not enter caller output.');
   const foreign = store.createWorkspace('Other owner private content.');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: owned.id, ownerUserId: userId });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: foreign.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: foreign.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const post = (
     id: string,
     input: unknown = {},
@@ -116,7 +120,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
     }),
     f.store.createThread(f.owned.id, 'Other private text', 'th_other', 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     }),
   ];
   const turns = threads.map((thread, index) => {
@@ -238,7 +242,14 @@ describe('caller operation projections', () => {
     const provision = vi.spyOn(f.store, 'ensureQuickChatWorkspace');
     const create = vi.spyOn(f.store, 'createWorkspace');
     for (const [headers, target, expected] of [
-      [{}, localApp, { userId: 'user_local', credential: { kind: 'local', scope: null } }],
+      [
+        {},
+        localApp,
+        {
+          userId: 'usr_00000000-0000-7000-8000-000000000001',
+          credential: { kind: 'local', scope: null },
+        },
+      ],
       [
         { cookie: f.cookie },
         f.app,
@@ -500,7 +511,7 @@ describe('caller operation projections', () => {
       expect(read.status).toBe(200);
       expect(await read.json()).toMatchObject({
         id: f.foreign.id,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         membershipStatus,
         accessCause: 'administrator',
       });
@@ -510,7 +521,7 @@ describe('caller operation projections', () => {
         (item: { workspace: { id: string } }) => item.workspace.id === f.foreign.id
       );
       expect(entry).toMatchObject({
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         membershipStatus,
         accessCause: 'administrator',
         effectiveRole: membershipStatus === 'active' ? 'editor' : null,
@@ -522,7 +533,7 @@ describe('caller operation projections', () => {
     expect(foreign.status).toBe(200);
     expect(await foreign.json()).toMatchObject({
       id: f.foreign.id,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       membershipStatus: null,
       accessCause: 'administrator',
     });

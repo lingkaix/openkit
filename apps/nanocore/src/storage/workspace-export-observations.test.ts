@@ -398,7 +398,7 @@ describe('work observation portable closure', () => {
         importedDb.sqlite.close();
       }
       const reexported = createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         exportId: 'export_environment_again',
@@ -414,7 +414,7 @@ describe('work observation portable closure', () => {
           .payload.assistantSkillAdmission
       ).toEqual(environment.assistantSkillAdmission);
       const secondImport = importVerifiedWorkspace({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         requestId: null,

@@ -199,6 +199,7 @@ describe('loadProviderProfiles', () => {
           kind: template.kind,
         })
       );
+      expect(profile?.secretRef?.startsWith('vault://')).toBe(true);
       expect(isEntityId('vault', profile?.secretRef?.slice('vault://'.length))).toBe(true);
       expect(parsed.secretRef).toBe(profile?.secretRef);
     }

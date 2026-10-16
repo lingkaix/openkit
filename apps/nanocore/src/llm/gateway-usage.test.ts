@@ -54,7 +54,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
     },
   ])('$name after a usage write failure', ({ requestId, auditLineage, expectedRequestId }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-failure-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -68,7 +68,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         threadId: 'th_usage',
         turnId: 'turn_usage',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER reject_internal_usage_write
@@ -98,7 +98,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         status: 'failed',
         thread_id: 'th_usage',
         turn_id: 'turn_usage',
-        workspace_id: 'ws_demo',
+        workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(
         workspaceDb.sqlite
@@ -119,7 +119,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           severity: 'error',
           thread_id: 'th_usage',
           turn_id: 'turn_usage',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
     } finally {
@@ -130,7 +130,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
 
   it('keeps command lineage out of normal usage and the call request', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-success-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -144,7 +144,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         threadId: 'th_usage',
         turnId: 'turn_usage',
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const before = workspaceDb.sqlite
         .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
@@ -179,7 +179,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           turn_id: 'turn_usage',
           unit: 'tokens',
           usage_id: usageIds[0],
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
       expect(

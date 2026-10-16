@@ -124,7 +124,7 @@ describe('capability usage ledger', () => {
 
   it('keeps fresh null-request inference calls and usage separate under one command audit lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-rounds-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -143,7 +143,7 @@ describe('capability usage ledger', () => {
           threadId: 'th_command',
           turnId: 'turn_command',
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
         calls.push(call);
         const usageInput = {
@@ -168,14 +168,16 @@ describe('capability usage ledger', () => {
       expect(usageIds[0]).toHaveLength(1);
       expect(usageIds[1]).toHaveLength(1);
       expect(usageIds[0][0]).not.toBe(usageIds[1][0]);
-      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toHaveLength(2);
+      expect(
+        listWorkspaceCapabilityCalls(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toHaveLength(2);
       for (const [index, call] of calls.entries()) {
         expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
           request_id: null,
           status: 'succeeded',
           thread_id: 'th_command',
           turn_id: 'turn_command',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         });
         expect(usageRows(workspaceDb, call.id)).toEqual([
           expect.objectContaining({
@@ -188,7 +190,7 @@ describe('capability usage ledger', () => {
             turn_id: 'turn_command',
             unit: 'tokens',
             usage_id: usageIds[index][0],
-            workspace_id: 'ws_demo',
+            workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           }),
         ]);
       }
@@ -201,7 +203,7 @@ describe('capability usage ledger', () => {
             request_id: auditLineage.commandRequestId,
             thread_id: 'th_command',
             turn_id: 'turn_command',
-            workspace_id: 'ws_demo',
+            workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           }),
         ]);
       }
@@ -235,7 +237,7 @@ describe('capability usage ledger', () => {
     },
   ])('$name', ({ requestId, auditLineage, status, expectedRequestId }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-finish-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -247,7 +249,7 @@ describe('capability usage ledger', () => {
         redactionClass: 'metadata-only',
         requestId,
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const errorCode = status === 'failed' ? 'provider_failed' : null;
       const finishInput = { auditLineage, callId: call.id, errorCode, status, workspaceDb };
@@ -275,7 +277,7 @@ describe('capability usage ledger', () => {
 
   it('keeps command audit lineage when usage recording fails for a null-request call', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-usage-failure-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -287,7 +289,7 @@ describe('capability usage ledger', () => {
         redactionClass: 'metadata-only',
         requestId: null,
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const auditLineage = { commandRequestId: '00000000-0000-4000-8000-000000000405' };
       const usageInput = {
@@ -323,7 +325,7 @@ describe('capability usage ledger', () => {
 
   it('rejects malformed command audit lineage without terminal or audit mutation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-invalid-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -335,7 +337,7 @@ describe('capability usage ledger', () => {
         redactionClass: 'metadata-only',
         requestId: null,
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const before = capabilityCallRow(workspaceDb, call.id);
       const finishInput = {

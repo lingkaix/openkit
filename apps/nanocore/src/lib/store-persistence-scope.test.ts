@@ -486,7 +486,7 @@ function freshWorkspaceDatabaseFixture(kind: 'general' | 'quick-chat') {
   const create = () =>
     kind === 'general'
       ? store.createWorkspace('Ready for maintenance')
-      : store.ensureQuickChatWorkspace('user_local');
+      : store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
   return { dataRoot, store, create };
 }
 

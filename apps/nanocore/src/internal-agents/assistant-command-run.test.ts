@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
 import {
   listWorkspaceCapabilityCalls,
@@ -24,6 +24,7 @@ import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { assembleAssistantCommandRun, runAssistantCommand } from './assistant-command-run.js';
 import {
@@ -93,7 +94,11 @@ async function fixture(selected = true, description?: string) {
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Assistant command run');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(`INSERT INTO users
@@ -136,7 +141,7 @@ async function fixture(selected = true, description?: string) {
         expectedRevision: 0,
         activate: true,
         createdAt: '2026-10-15T00:00:00.000Z',
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         tree: [
           {
             kind: 'file',
@@ -246,7 +251,7 @@ function changeDefault(f: Fixture) {
     expectedRevision: loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId).revision,
     activate: true,
     createdAt: '2026-10-16T00:00:00.000Z',
-    producer: { kind: 'user', id: 'user_local' },
+    producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     tree: [
       {
         kind: 'file',
@@ -761,7 +766,10 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const f = await fixture();
     let input = f.input;
     if (condition === 'actor')
-      input = { ...input, actor: { kind: 'session', userId: 'user_local' } };
+      input = {
+        ...input,
+        actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      };
     if (condition === 'turn')
       input = {
         ...input,

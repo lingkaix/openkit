@@ -2486,7 +2486,7 @@ async function applyDurabilityFixture(
     stagingRootIdentity: await rootIdentity(f.stagingRoot),
     targetRoot: f.targetRoot,
     targetRootIdentity: await rootIdentity(f.targetRoot),
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
 }
 
@@ -2557,7 +2557,7 @@ describe('filesystem publication durability', () => {
             createdAt: f.timestamp,
             resourceId: 'fs_default',
             rootPath: f.targetRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).entries.find((entry) => entry.path === 'notes.txt')?.permissions
       ).toBe('0644');

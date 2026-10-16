@@ -7,7 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import {
   type CatalogTreeFile,
   catalogDocumentPath,
@@ -21,6 +21,7 @@ import { FsStore } from '../lib/store.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { AssistantSkillAdmissionSchema } from '../storage/work-observations.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   AssistantSkillReadInputSchema,
@@ -49,7 +50,11 @@ function fixture() {
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Skill resource tests');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(`INSERT INTO users
@@ -126,7 +131,7 @@ function importSkill(
     expectedRevision: catalog.revision,
     activate: true,
     createdAt: '2026-10-15T00:00:00.000Z',
-    producer: { kind: 'user', id: 'user_local' },
+    producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     tree: [
       { kind: 'file', path: 'SKILL.md', contentBase64: Buffer.from(text).toString('base64') },
       ...extra,
@@ -466,7 +471,7 @@ describe('Assistant progressive Skill reads', () => {
     };
     const admitted = contexts.get(assembled)!;
     const mismatches: Record<typeof field, unknown> = {
-      actor: { kind: 'session', userId: 'user_local' },
+      actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
       workspaceId: 'another-workspace',
       threadId: 'another-thread',
       turnId: 'another-turn',

@@ -48,7 +48,7 @@ function fixture(configured = true) {
   const thread = store.createThread(workspace.id, 'Diagnostics');
   const turn = store.createTurn(workspace.id, thread.id, 'Request', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup({
@@ -61,7 +61,7 @@ function fixture(configured = true) {
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     createdAt: new Date().toISOString(),
     requestId: 'req_diagnostics',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     turn,
     workspaceCwd: '/workspace',
     workspaceRoots: [],

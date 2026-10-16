@@ -624,7 +624,7 @@ function recordRecoverySiblingBinding(
     (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id,
      agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state,
      current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
-    VALUES ('binding_cost', 'harness_cost', ?, 'ws_demo', 'th_binding_cost', ?, 1, ?, ?, ?, ?, 1, 'unknown', ?, ?, ?)`)
+    VALUES ('binding_cost', 'harness_cost', ?, 'ws_00000000-0000-7000-8000-000000000001', 'th_binding_cost', ?, 1, ?, ?, ?, ?, 1, 'unknown', ?, ?, ?)`)
     .run(
       match === 'session' ? `as_${siblingId}` : 'as_unrelated_binding',
       'a'.repeat(64),

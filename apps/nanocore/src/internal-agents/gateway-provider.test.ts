@@ -2184,7 +2184,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
       expect.objectContaining({
         requestId: storedRequestId,
         capabilityCallId: calls[0]!.id,
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         threadId: f.capture.threadId,
         turnId: f.capture.turnId,
         quantity: 12,

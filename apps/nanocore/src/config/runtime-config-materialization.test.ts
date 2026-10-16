@@ -705,8 +705,8 @@ function assistantSelectionContent(skillIds?: readonly unknown[]): string {
 function assistantSelectionFixture(mode: 'create' | 'update') {
   const f = fixture(true);
   for (const [workspaceId, id] of [
-    ['ws_00000000-0000-7000-8000-000000000001', 'ks_00000000-0000-7000-8000-000000000001'],
-    [f.otherWorkspaceId as string, 'ks_00000000-0000-7000-8000-000000000002'],
+    ['ws_00000000-0000-7000-8000-000000000001', 'local-guidance'],
+    [f.otherWorkspaceId as string, 'foreign-guidance'],
   ]) {
     importWorkspaceSkill({
       activate: false,
@@ -748,14 +748,11 @@ function assistantSelectionFixture(mode: 'create' | 'update') {
 describe('Workspace Assistant Skill selection configuration', () => {
   const invalidSelections = [
     ['missing', ['missing-guidance']],
-    ['foreign-only', ['ks_00000000-0000-7000-8000-000000000002']],
-    ['different exact ID', ['ks_00000000-0000-7000-8000-000000000001 ']],
-    ['path', ['../ks_00000000-0000-7000-8000-000000000001']],
+    ['foreign-only', ['foreign-guidance']],
+    ['different exact ID', ['local-guidance ']],
+    ['path', ['../local-guidance']],
     ['empty ID', ['']],
-    [
-      'duplicate ID',
-      ['ks_00000000-0000-7000-8000-000000000001', 'ks_00000000-0000-7000-8000-000000000001'],
-    ],
+    ['duplicate ID', ['local-guidance', 'local-guidance']],
   ] as const;
   it.each(
     invalidSelections.flatMap(([label, ids]) =>
@@ -807,11 +804,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
         .entries[0].currentDigest
     ).toBeNull();
     const ids =
-      selection === 'absent'
-        ? undefined
-        : selection === 'empty'
-          ? []
-          : ['ks_00000000-0000-7000-8000-000000000001'];
+      selection === 'absent' ? undefined : selection === 'empty' ? [] : ['local-guidance'];
     const content = assistantSelectionContent(ids);
     f.write(content);
     expect(f.files.readFile(f.id).content).toBe(content);
@@ -827,7 +820,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
 
   it('rejects a reference deleted from current catalog after a prior valid selection without discarding authored selection', () => {
     const f = assistantSelectionFixture('update');
-    const selected = assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']);
+    const selected = assistantSelectionContent(['local-guidance']);
     f.write(selected);
     const current = loadWorkspaceResourceCatalog(
       f.dataRoot,
@@ -865,7 +858,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
     else rmSync(catalogPath);
     let failure: unknown;
     try {
-      f.write(assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']));
+      f.write(assistantSelectionContent(['local-guidance']));
     } catch (error) {
       failure = error;
     }
@@ -883,9 +876,9 @@ describe('Workspace Assistant Skill selection configuration', () => {
     const f = assistantSelectionFixture('update');
     const newer = `${f.previous}\n// Concurrent authored edit\n`;
     writeFileSync(f.path, newer);
-    expect(() =>
-      f.write(assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']))
-    ).toThrowError(expect.objectContaining({ code: 'config_revision_conflict', status: 409 }));
+    expect(() => f.write(assistantSelectionContent(['local-guidance']))).toThrowError(
+      expect.objectContaining({ code: 'config_revision_conflict', status: 409 })
+    );
     expect(readFileSync(f.path, 'utf8')).toBe(newer);
   });
 });
@@ -912,7 +905,7 @@ describe('Workspace Assistant Skill read-only validation', () => {
       files: [
         {
           id: f.id,
-          content: assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']),
+          content: assistantSelectionContent(['local-guidance']),
         },
       ],
       mode: 'safe',
@@ -967,7 +960,7 @@ describe('Workspace Assistant Skill read-only validation', () => {
         files: [
           {
             id: f.id,
-            content: assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']),
+            content: assistantSelectionContent(['local-guidance']),
           },
         ],
         mode: 'safe',
@@ -1010,9 +1003,9 @@ describe('Workspace Assistant Skill catalog confinement', () => {
     const linkTarget = redirect === 'directory' ? foreignDirectory : foreignCatalog;
     rmSync(linkPath, { recursive: redirect === 'directory' });
     symlinkSync(linkTarget, linkPath, redirect === 'directory' ? 'dir' : 'file');
-    expect(() =>
-      f.write(assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000002']))
-    ).toThrowError(expect.objectContaining({ code: 'config_file_invalid', status: 400 }));
+    expect(() => f.write(assistantSelectionContent(['foreign-guidance']))).toThrowError(
+      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+    );
     if (mode === 'create') expect(existsSync(f.path)).toBe(false);
     else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
     expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
@@ -1022,7 +1015,7 @@ describe('Workspace Assistant Skill catalog confinement', () => {
       files: [
         {
           id: f.id,
-          content: assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000002']),
+          content: assistantSelectionContent(['foreign-guidance']),
         },
       ],
       mode: 'safe',

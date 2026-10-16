@@ -6,7 +6,6 @@ import type { WorkerCanonicalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -15,6 +14,7 @@ import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -72,11 +72,20 @@ function createFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Cancel one exact worker Turn', {
-    kind: 'user',
-    id: 'user_local',
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Cancel one exact worker Turn',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
@@ -85,7 +94,7 @@ function createFixture() {
       backend: { kind: 'openshell' },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_cancellation',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turn,
       workspaceCwd: '/workspace/openkit',
       workspaceRoots: [],

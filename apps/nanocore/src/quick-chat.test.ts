@@ -133,7 +133,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const admitted = Promise.withResolvers<AbortSignal>();
     const provider = Promise.withResolvers<unknown>();
     const executor = new ThrowingTurnExecutor();
@@ -370,7 +374,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const transport = new AbortController();
     const admitted = Promise.withResolvers<AbortSignal>();
     const provider = Promise.withResolvers<unknown>();
@@ -450,7 +458,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const admitted = Promise.withResolvers<void>();
     const provider = Promise.withResolvers<unknown>();
     const createResponses = vi.fn(async () => {
@@ -1529,7 +1541,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     let providerCalls = 0;
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
