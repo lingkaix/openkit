@@ -150,12 +150,12 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     candidateInput?.workspaceId === workspaceId &&
     candidateInput?.threadId === threadId &&
     typeof candidateInput?.artifactId === 'string';
-  const candidate = useArtifact(
-    workspaceId,
-    candidateContextMatches ? candidateInput.artifactId : ''
-  );
   const unfinishedSubmission =
     submission?.status === 'pending' || submission?.status === 'error';
+  const candidate = useArtifact(
+    workspaceId,
+    candidateContextMatches && !unfinishedSubmission ? candidateInput.artifactId : ''
+  );
   const candidateLoading =
     hasCandidateInput &&
     !unfinishedSubmission &&
