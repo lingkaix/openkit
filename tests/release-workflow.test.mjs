@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
-import { publicationInputsAt } from '../scripts/release-publication-check.mjs';
 import { candidateMatrix } from '../scripts/release-candidate.mjs';
+import { publicationInputsAt } from '../scripts/release-publication-check.mjs';
 
 const workflowBytes = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
 const workflow = parse(workflowBytes);
