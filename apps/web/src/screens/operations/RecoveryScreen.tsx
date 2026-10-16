@@ -188,7 +188,7 @@ export function RecoveryScreen() {
     const query = queryClient.getQueryCache().find({ queryKey, exact: true });
     if (!query) return false;
     const updatesBeforeRead = query.state.dataUpdateCount;
-    // This existing command still owns its settlement read when the selected Workspace changes.
+    // Keep the command-owned read observed across Workspace changes; enabled:false starts no automatic read.
     const observer = new QueryObserver(queryClient, { ...query.options, enabled: false });
     const release = observer.subscribe(() => {});
     try {
