@@ -337,6 +337,16 @@ export const SURFACES: Surface[] = [
     wp: 'WP-2',
   },
   {
+    id: 'server-operations',
+    title: 'Server operations',
+    path: '/settings/server-operations',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'settings',
+    board: '10/11/22',
+    wp: 'P28',
+  },
+  {
     id: 'administration',
     title: 'Administration',
     path: '/settings/administration',
