@@ -31,7 +31,10 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
+import {
+  composeWorkspaceMcpCatalog,
+  loadWorkspaceResourceCatalog,
+} from '../catalog/resource-catalog.js';
 import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
@@ -456,10 +459,17 @@ function resolveOpenShellAgentEnvironmentPackage(
     manifest.runtime.adapter,
     input.turn.id
   );
+  const mcpCatalog = input.coreDb
+    ? composeWorkspaceMcpCatalog({
+        dataRoot: input.coreDb.dataRoot,
+        workspaceId: input.turn.workspaceId,
+        workspaceCatalog: input.workspaceMcpServerCatalog ?? { schemaVersion: 1, servers: [] },
+      })
+    : input.workspaceMcpServerCatalog;
   const workerMcpServers = [
     ...resolveWorkerMcpServerSupply(
       (manifest.mcp ?? []).map((server) => server.id),
-      input.workspaceMcpServerCatalog
+      input.workspaceMcpServerCatalog || mcpCatalog?.servers.length ? mcpCatalog : undefined
     ),
     createOpenkitGenerativeMcpSupply(),
     createOpenkitWorkMcpSupply(),

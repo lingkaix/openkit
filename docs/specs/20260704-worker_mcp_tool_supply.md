@@ -88,7 +88,7 @@ The decision and its reason are recorded in [a decision record](../decisions/202
 
 ### MCP server catalog
 
-An `McpServerCatalogEntry` is the resolved Workspace-scoped projection of one exact current `McpConfigVersion` and its authorized Workspace binding. Source versions and bindings have one canonical catalog owner; this effective entry is not a separately editable copy. Its deterministic `catalogDigest` binds the effective configuration, binding, and selected package-root digest, while configuration digest, tool-schema snapshot digest, and server-reported software version remain distinct. It MUST carry:
+An `McpServerCatalogEntry` is the resolved Workspace-scoped projection of one exact current `McpConfigVersion` and its authorized scope-owned binding projected into the consuming Workspace. Source versions and bindings have one canonical catalog owner; this effective entry is not a separately editable copy. Its deterministic `catalogDigest` binds the effective configuration, binding, and selected package-root digest, while configuration digest, tool-schema snapshot digest, and server-reported software version remain distinct. It MUST carry:
 
 - entry name: a workspace-unique, lowercase kebab-case identifier; the only handle manifests may use
 - transport: `stdio` | `http`
@@ -106,6 +106,14 @@ Rules:
 - Catalog entries carry no secret material; credential slots are Vault references per `docs/core/vault.md`. Vault injection wins over colliding ordinary package headers or environment, and reserved Integration variables cannot be overridden.
 - Imported stdio always uses its exact PluginVersion-owned verified source root, with default working directory, reserved subprocess variables, and restricted placeholder expansion defined by the MCP catalog owner. Mutable package data uses the current MCP binding key. Neither is worker supply or a caller-selected host directory.
 - Every call rechecks current effective selection, binding, authorization, and digest. A changed or removed entry rejects stale AEP supply before upstream contact; an exact historic setup constraint does not create a parallel server version or restore old grants.
+
+### Shared Server Origin And Vault Use
+
+The current scoped catalog owner composes Server supply into each Workspace under [MCP Catalog Management](20260907-mcp_catalog_management.md#server-scope-and-workspace-projection). The Gateway derives a shared entry's Server origin from that canonical owner, never from caller-authored endpoint, grant id, AEP annotation or model prose. Every Server-origin admission rechecks the current Server version/binding and Workspace local-entry suppression and disabled-id facts, and compares the exact Server-domain effective digest to admitted supply. Repeat this check immediately before credential resolution and effect dispatch, including after asynchronous discovery. Missing, stale, disabled, removed, colliding, corrupt or unevaluable authority refuses before new contact. Failed runtime reload cannot keep a disabled canonical shared entry executable. Compose shared supply with the admitted local Workspace view; a saved local declaration alone cannot replace missing admitted supply. Reading the catalog cannot revive a deleted Workspace.
+
+A Server grant and reference may cross into a consuming Workspace only for the exact current Server-origin credential binding, active Server-owned shared-MCP reference and target-issued Server-lifetime grant with Gateway-only visibility. Current actor, Workspace, Policy, Agent, AgentSession, operation, expiry and other grant constraints still apply. Workspace-origin entries require their existing exact Workspace scope and cannot borrow a Server grant, even by copying its id, endpoint or full declaration. Provider, subscription and bootstrap reference families are not admitted by the shared-MCP management path. Secret material remains inside the Gateway.
+
+Gateway sessions and mutable MCP process data stay partitioned by the actual consuming Workspace. Reuse the Server binding's distinct stable data key within that Workspace; do not share a connection/process across Workspaces or allocate process data under the Server catalog. Server changes close the affected shared-entry sessions through the existing supervisor, preserving local same-id sessions and honest incomplete cleanup. Server-owned VaultUse belongs in Core with null Workspace ownership; its linked Audit retains the actual consuming Workspace, responsible actor, call and grant lineage. Workspace capability/usage evidence remains with its existing Workspace owner, without a cross-database atomicity claim.
 
 ### Routes On `capability.local`
 

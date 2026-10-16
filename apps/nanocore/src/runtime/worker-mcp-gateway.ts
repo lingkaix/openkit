@@ -15,7 +15,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { ResolvedWorkspaceMcpServer } from '@openkit/config-schema';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
-import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
+import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -104,6 +104,8 @@ export interface WorkerMcpGateway {
   closeServerIfIdle(input: Omit<WorkerMcpGatewayServerInput, 'credentials'>): Promise<void>;
   /** Stops every cached client owned by one Workspace. */
   closeWorkspace(workspaceId: string): Promise<void>;
+  /** Stops Server-origin sessions while preserving local bindings with the same id. */
+  closeServerScope?(workspaceId?: string, mcpId?: string): Promise<void>;
   /** Returns the current product-safe server health. */
   getServerHealth(input: WorkerMcpGatewayServerInput): WorkerMcpServerHealth;
 }
@@ -371,7 +373,11 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   public async closeServer(input: WorkerMcpGatewayServerInput): Promise<void> {
     const keys = [...this.sessions.keys()].filter((key) => {
       const cached = this.sessionInputs.get(key);
-      return cached?.workspaceId === input.workspaceId && cached.server.id === input.server.id;
+      return (
+        cached?.workspaceId === input.workspaceId &&
+        cached.server.id === input.server.id &&
+        cached.server.scope === input.server.scope
+      );
     });
     await Promise.all(keys.map((key) => this.discard(key, 'inactive')));
     if (keys.length === 0) this.transition(input, 'inactive');
@@ -386,6 +392,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       return (
         cached?.workspaceId === input.workspaceId &&
         cached.server.id === input.server.id &&
+        cached.server.scope === input.server.scope &&
         (this.activeUses.get(key) ?? 0) === 0
       );
     });
@@ -397,6 +404,19 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     const keys = [...this.sessions.keys()].filter(
       (key) => this.sessionInputs.get(key)?.workspaceId === workspaceId
     );
+    await Promise.all(keys.map((key) => this.discard(key, 'inactive')));
+  }
+
+  /** Fences shared sessions across consumers without closing Workspace-origin collisions. */
+  public async closeServerScope(workspaceId?: string, mcpId?: string): Promise<void> {
+    const keys = [...this.sessions.keys()].filter((key) => {
+      const cached = this.sessionInputs.get(key);
+      return (
+        cached?.server.scope === 'server' &&
+        (workspaceId === undefined || cached.workspaceId === workspaceId) &&
+        (mcpId === undefined || cached.server.id === mcpId)
+      );
+    });
     await Promise.all(keys.map((key) => this.discard(key, 'inactive')));
   }
 
@@ -991,14 +1011,20 @@ function pluginOwnedEnvironment(
   input: WorkerMcpGatewayServerInput
 ): Record<string, string> {
   if (!coreDb) return {};
-  const catalog = loadWorkspaceResourceCatalog(coreDb.dataRoot, input.workspaceId);
+  const catalog = loadResourceCatalog(
+    coreDb.dataRoot,
+    input.server.scope === 'server'
+      ? { kind: 'server' }
+      : { kind: 'workspace', workspaceId: input.workspaceId }
+  );
   const binding = catalog.mcp.bindings.find((item) => item.entryId === input.server.id);
   if (!binding) return {};
   const layout = ensureWorkspaceLayout(coreDb.dataRoot, input.workspaceId);
+  mkdirSync(join(layout.catalogMcpData, binding.packageDataKey), { recursive: true });
   const environment: Record<string, string> = {
     PLUGIN_DATA: join(layout.catalogMcpData, binding.packageDataKey),
   };
-  if (input.server.packageRootDigest) {
+  if (input.server.packageRootDigest && input.server.scope !== 'server') {
     const plugin = catalog.plugins.versions.find(
       (item) => item.digest === input.server.packageRootDigest
     );

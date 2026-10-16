@@ -77,6 +77,7 @@ export const WorkspaceMcpHttpTransportSchema = z
 export const WorkspaceMcpServerSchema = z
   .object({
     id: WorkspaceMcpServerIdSchema,
+    scope: z.literal('server').optional(),
     enabled: z.boolean(),
     transport: z.discriminatedUnion('kind', [
       WorkspaceMcpStdioTransportSchema,

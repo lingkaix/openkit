@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ActorRef } from '@openkit/protocol';
 
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -29,6 +30,10 @@ export interface CreateVaultUseAuditedBackendInput {
   readonly ownerScope: VaultUseOwnerScope;
   /** Workspace id when ownerScope is workspace. */
   readonly workspaceId?: string;
+  /** Consuming audience for the linked Audit; the Server VaultUse itself remains Server-owned. */
+  readonly consumerWorkspaceId?: string;
+  /** Initiating human retained by the admitted consuming package. */
+  readonly actor?: ActorRef;
   /** Path that triggered secret resolution. */
   readonly resolvingPath: VaultUseResolvingPath;
   /** Vault grant id when grant-based. */
@@ -211,6 +216,7 @@ class VaultUseAuditedBackend implements VaultBackend {
     if (!this.input.auditEventId && auditEventId) {
       const event = {
         action: 'vault.resolve',
+        ...(this.input.actor ? { actor: this.input.actor } : {}),
         agentSessionId: this.input.agentSessionId ?? null,
         auditEventId,
         capabilityCallId: this.input.capabilityCallId ?? null,
@@ -236,6 +242,7 @@ class VaultUseAuditedBackend implements VaultBackend {
         recordServerAuditEvent({
           ...event,
           coreDb: this.input.db,
+          workspaceId: this.input.consumerWorkspaceId ?? null,
         });
       }
     }

@@ -2,6 +2,7 @@ import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { createAdministrationOperationImplementations } from './administration/administration-operations.js';
+import { createServerMcpOperationImplementations } from './administration/server-mcp-operations.js';
 import { createAdministratorCleanupOperationImplementations } from './administrator-cleanup-operations.js';
 import { createAgentOperationImplementations } from './agents/agent-operations.js';
 import { createWorkerOperationImplementations } from './agents/workspace-workers.js';
@@ -91,6 +92,8 @@ export interface OperationInvocationDependencies {
   /** Existing process-local automation owner, shared across public projections. */
   readonly automationStore?: AutomationStore;
   /** Closes existing Worker MCP sessions when deletion fences a Workspace. */
+  /** Closes only Server-origin MCP connections across consuming Workspaces. */
+  readonly closeServerMcpSessions?: (workspaceId?: string, mcpId?: string) => Promise<void>;
   readonly closeWorkspaceMcpSessions?: (workspaceId: string) => Promise<void>;
   /** Reconciles existing deletion fences after canonical user disable commits. */
   readonly afterUserDisabled?: (userId: string) => Promise<void> | void;
@@ -160,6 +163,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createAgentOperationImplementations(dependencies),
     createWorkerOperationImplementations(dependencies),
     createCatalogOperationImplementations(dependencies),
+    createServerMcpOperationImplementations(dependencies),
     createVaultOperationImplementations(dependencies),
     createAppSearchOperationImplementations(dependencies),
     createEnvironmentOperationImplementations(dependencies),

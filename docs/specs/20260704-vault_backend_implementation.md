@@ -197,6 +197,14 @@ The configured key path is `vault.encryptedFile.keyFilePath` in `config/server.j
 - One NanoCore deployment is one Vault trust domain. Server-, user-, and Workspace-scoped references may share the encrypted store, but every entry authenticates its owner scope and applicable owner id.
 - A resolution whose caller scope differs from the reference owner scope is explicit cross-scope use and must carry the required grant and audit context.
 
+### Server Shared-MCP Secret Administration
+
+Current deployment-administrator authority may manage the existing Server reference/grant shapes only for the shared-MCP reference classification `mcp-credential`. This bounded path lists redacted metadata, accepts material only in create/rotate requests, and supports issue, strict revoke-and-replace narrowing, grant revocation and reference revocation. Server grants use Server lifetime and exactly Gateway-only visibility; exact optional Agent, AgentSession, operation and expiry bounds retain their existing meanings. It admits no User lifecycle, Worker-visible sink, Provider key, subscription account, bootstrap reference, source credential or automatic binding. Scope alone cannot authorize mutation of another Server reference family.
+
+Reference creation, rotation and revocation retain the existing ordered backend/Core effects and truthful partial/unknown results. Grant narrowing reuses the existing Core transaction and linked initiating-human Audit; it preserves reference, Server scope, lifetime and lineage, and changes no binding automatically. Current inventory and Audit are the inspection path after a lost response. Expired or revoked grants, unavailable or locked material, contradictory metadata, imported history and missing current target facts fail closed. No new secret store, grant registry or cross-domain transaction is introduced.
+
+The Server catalog's exact current shared-MCP binding supplies the explicit cross-scope use authority described by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use). A Workspace-owned declaration cannot consume that grant. The audited backend records Server-owned use in Core and its linked general Audit retains consuming Workspace, actor and capability-call lineage; the wrapper's scope check or mere presence of a grant id cannot substitute for the Gateway's current canonical binding/grant check.
+
 ## Accepted Design
 
 The backend layer is a NanoCore-internal module with one fixed `encrypted-file` implementation. Its directory-per-reference layout maps entry and state changes to independently atomic file replacements while keeping the entire namespace enumerable for integrity and orphan checks.

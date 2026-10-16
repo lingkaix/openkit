@@ -339,6 +339,10 @@ If revocation cannot affect an already-running process, NanoCore must mark the s
 - Extend audited vault-use wiring to remaining MCP routing and any future runtime-file credential classes.
 - Add remaining grant approval and stale-session projections; runtime revocation follows affected-sandbox termination and unproved-deletion epoch invalidation without adding a Vault-owned cleanup lifecycle.
 
+## Server Shared-MCP Projection
+
+The existing Server reference/grant scope supports only the bounded shared-MCP administration and Gateway crossing defined by [Vault Backend Implementation](20260704-vault_backend_implementation.md#server-shared-mcp-secret-administration) and [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use). Those owners define the exact current canonical binding, target-issued Server-lifetime Gateway-only grant and responsible consuming actor checks. A Workspace binding, copied identifier or plan/receipt cannot supply Server authority. Plans, successful receipts, visibility-aware revocation and immutable completion keep their existing owner and meanings. Server VaultUse belongs to Core; its linked Audit keeps the consuming Workspace and call lineage. No new visibility, lifetime, grant class or credential storage is added by this projection.
+
 ## Testing Strategy
 
 - Schema tests for references, grants, plans, and receipts.

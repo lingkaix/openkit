@@ -1797,6 +1797,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
     },
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
+    closeServerMcpSessions: async (workspaceId, mcpId) => {
+      if (!workerMcpGateway.closeServerScope)
+        throw new Error('Shared MCP session cleanup is unavailable.');
+      await workerMcpGateway.closeServerScope(workspaceId, mcpId);
+    },
     ...(dataRoot
       ? {
           afterUserDisabled: (userId: string) =>
@@ -1851,6 +1856,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
     },
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
+    closeServerMcpSessions: async (workspaceId, mcpId) => {
+      if (!workerMcpGateway.closeServerScope)
+        throw new Error('Shared MCP session cleanup is unavailable.');
+      await workerMcpGateway.closeServerScope(workspaceId, mcpId);
+    },
     ...(dataRoot
       ? {
           afterUserDisabled: (userId: string) =>

@@ -21,17 +21,17 @@ import {
   CatalogForbiddenError,
   CatalogIntegrityError,
   catalogDocumentPath,
-  createWorkspaceMcpConfig,
+  createMcpConfig,
   importWorkspacePlugin,
   importWorkspaceSkill,
   loadWorkspaceResourceCatalog,
   materializeCatalogTree,
   projectEffectiveWorkspaceMcpCatalog,
   replaceWorkspaceEffectiveMcpCatalog,
-  selectWorkspaceMcpVersion,
+  selectMcpVersion,
   setWorkspaceSkillPin,
   submitWorkspaceSkillCandidate,
-  updateWorkspaceMcpBinding,
+  updateMcpBinding,
 } from './resource-catalog.js';
 
 function skillTree(body = '# Hello\n'): Array<{
@@ -121,17 +121,17 @@ describe('workspace resource catalog', () => {
       const mcp = candidate.catalog.mcp.versions[0]!;
       expect(mcp.packageRootDigest).toBe(imported.version.digest);
       expect(mcp.digest).not.toBe(imported.version.digest);
-      const selected = selectWorkspaceMcpVersion({
+      const selected = selectMcpVersion({
         dataRoot,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
         entryId: mcp.entryId,
         digest: mcp.digest,
         expectedRevision: candidate.catalog.revision,
         stdioHostAuthorized: true,
       });
-      const bound = updateWorkspaceMcpBinding({
+      const bound = updateMcpBinding({
         dataRoot,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
         entryId: mcp.entryId,
         expectedRevision: selected.revision,
         binding: {
@@ -175,9 +175,9 @@ describe('workspace resource catalog', () => {
         ...(extended as object),
         revision: next.revision,
       });
-      const updated = updateWorkspaceMcpBinding({
+      const updated = updateMcpBinding({
         dataRoot,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
         entryId: mcp.entryId,
         expectedRevision: next.revision,
         binding: { ...bound.mcp.bindings[0]!, timeoutMs: 2000 },
@@ -293,14 +293,14 @@ describe('workspace resource catalog', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-reserved-'));
     try {
       expect(() =>
-        createWorkspaceMcpConfig({
+        createMcpConfig({
           createdAt: '2026-09-08T00:00:00.000Z',
           dataRoot,
           declaration: { args: ['fixtures/echo.mjs'], command: 'node', kind: 'stdio' },
           displayName: 'Generative',
           expectedRevision: 0,
           id,
-          workspaceId: 'ws_demo',
+          owner: { kind: 'workspace', workspaceId: 'ws_demo' },
         })
       ).toThrow(CatalogForbiddenError);
       expect(() =>
@@ -345,14 +345,14 @@ describe('workspace resource catalog', () => {
   ] as const)('round-trips %s presentation through management, storage and the effective digest', (presentation) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-presentation-'));
     try {
-      const created = createWorkspaceMcpConfig({
+      const created = createMcpConfig({
         createdAt: '2026-10-03T00:00:00.000Z',
         dataRoot,
         declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
         displayName: 'Echo',
         expectedRevision: 0,
         selectCurrent: true,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       const credential = {
         presentation,
@@ -360,7 +360,7 @@ describe('workspace resource catalog', () => {
         vaultGrantId: 'grant_canary',
         sink: { kind: 'header' as const, name: 'Authorization' },
       };
-      const raw = updateWorkspaceMcpBinding({
+      const raw = updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
           approvalRequiredTools: [],
@@ -376,18 +376,18 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       const before = resolveWorkspaceMcpServer({
         catalog: projectEffectiveWorkspaceMcpCatalog(raw),
         serverId: 'echo',
       });
-      const bound = updateWorkspaceMcpBinding({
+      const bound = updateMcpBinding({
         binding: { ...raw.mcp.bindings[0]!, credentialBindings: [credential] },
         dataRoot,
         entryId: 'echo',
         expectedRevision: raw.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       const retained = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
       expect(retained.mcp.bindings[0]!.credentialBindings).toEqual([credential]);
@@ -477,14 +477,14 @@ describe('workspace resource catalog', () => {
         headers: {},
         kind: 'http',
       });
-      const selected = selectWorkspaceMcpVersion({
+      const selected = selectMcpVersion({
         dataRoot,
         digest: retained.mcp.versions[0]!.digest,
         entryId: 'echo',
         expectedRevision: retained.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
-      updateWorkspaceMcpBinding({
+      updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
           approvalRequiredTools: [],
@@ -498,7 +498,7 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: selected.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       const effective = projectEffectiveWorkspaceMcpCatalog(
         loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')
@@ -514,23 +514,23 @@ describe('workspace resource catalog', () => {
   it('creates an inactive MCP config and projects an effective Gateway entry only after enablement', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-'));
     try {
-      const created = createWorkspaceMcpConfig({
+      const created = createMcpConfig({
         createdAt: '2026-09-08T00:00:00.000Z',
         dataRoot,
         declaration: { args: ['fixtures/echo.mjs'], command: 'node', kind: 'stdio' },
         displayName: 'Echo',
         expectedRevision: 0,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       expect(projectEffectiveWorkspaceMcpCatalog(created.catalog).servers).toEqual([]);
-      const selected = selectWorkspaceMcpVersion({
+      const selected = selectMcpVersion({
         dataRoot,
         digest: created.version.digest,
         entryId: 'echo',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
-      const bound = updateWorkspaceMcpBinding({
+      const bound = updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
           approvalRequiredTools: [],
@@ -544,7 +544,7 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: selected.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       const projected = projectEffectiveWorkspaceMcpCatalog(bound);
       expect(projected.servers).toHaveLength(1);
@@ -695,21 +695,21 @@ describe('workspace resource catalog', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-mcp-scope-'));
     try {
       const declaration = { args: ['fixtures/echo.mjs'], command: 'node', kind: 'stdio' as const };
-      const first = createWorkspaceMcpConfig({
+      const first = createMcpConfig({
         createdAt: '2026-09-08T00:00:00.000Z',
         dataRoot,
         declaration,
         displayName: 'Echo',
         expectedRevision: 0,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
-      const second = createWorkspaceMcpConfig({
+      const second = createMcpConfig({
         createdAt: '2026-09-08T00:00:00.000Z',
         dataRoot,
         declaration,
         displayName: 'Echo Two',
         expectedRevision: first.catalog.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       expect(second.catalog.mcp.versions).toHaveLength(2);
       expect(second.catalog.mcp.versions.map((item) => item.entryId).sort()).toEqual([
@@ -724,7 +724,7 @@ describe('workspace resource catalog', () => {
   it('requires deployment-admin authority to select a new stdio version while enabled', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-stdio-admin-'));
     try {
-      const created = createWorkspaceMcpConfig({
+      const created = createMcpConfig({
         allowedTools: ['echo'],
         createdAt: '2026-09-08T00:00:00.000Z',
         dataRoot,
@@ -732,9 +732,9 @@ describe('workspace resource catalog', () => {
         displayName: 'Echo',
         expectedRevision: 0,
         selectCurrent: true,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
-      updateWorkspaceMcpBinding({
+      updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
           approvalRequiredTools: [],
@@ -749,9 +749,9 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
-      const next = createWorkspaceMcpConfig({
+      const next = createMcpConfig({
         createdAt: '2026-09-08T00:01:00.000Z',
         dataRoot,
         declaration: { args: ['fixtures/other.mjs'], command: 'node', kind: 'stdio' },
@@ -760,15 +760,15 @@ describe('workspace resource catalog', () => {
         id: 'echo',
         persist: true,
         selectCurrent: false,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       expect(() =>
-        selectWorkspaceMcpVersion({
+        selectMcpVersion({
           dataRoot,
           digest: next.version.digest,
           entryId: 'echo',
           expectedRevision: next.catalog.revision,
-          workspaceId: 'ws_demo',
+          owner: { kind: 'workspace', workspaceId: 'ws_demo' },
         })
       ).toThrow(CatalogForbiddenError);
     } finally {
@@ -802,7 +802,7 @@ describe('workspace resource catalog', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-secret-'));
     try {
       expect(() =>
-        createWorkspaceMcpConfig({
+        createMcpConfig({
           createdAt: '2026-09-08T00:00:00.000Z',
           dataRoot,
           declaration: {
@@ -812,7 +812,7 @@ describe('workspace resource catalog', () => {
           },
           displayName: 'Remote',
           expectedRevision: 0,
-          workspaceId: 'ws_demo',
+          owner: { kind: 'workspace', workspaceId: 'ws_demo' },
         })
       ).toThrow(/raw-secret/);
     } finally {
@@ -840,14 +840,14 @@ describe('workspace resource catalog', () => {
       if (!firstVersion) {
         throw new Error('expected first plugin MCP version');
       }
-      const selected = selectWorkspaceMcpVersion({
+      const selected = selectMcpVersion({
         dataRoot,
         digest: firstVersion.digest,
         entryId: 'echo',
         expectedRevision: first.catalog.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
-      const bound = updateWorkspaceMcpBinding({
+      const bound = updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
           approvalRequiredTools: [],
@@ -861,7 +861,7 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: selected.revision,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       const firstDigest = resolveWorkspaceMcpServer({
         catalog: projectEffectiveWorkspaceMcpCatalog(bound),
@@ -884,13 +884,13 @@ describe('workspace resource catalog', () => {
         throw new Error('expected second plugin MCP version');
       }
       expect(secondVersion.digest).not.toBe(firstVersion.digest);
-      const reselected = selectWorkspaceMcpVersion({
+      const reselected = selectMcpVersion({
         dataRoot,
         digest: secondVersion.digest,
         entryId: 'echo',
         expectedRevision: second.catalog.revision,
         stdioHostAuthorized: true,
-        workspaceId: 'ws_demo',
+        owner: { kind: 'workspace', workspaceId: 'ws_demo' },
       });
       const projected = projectEffectiveWorkspaceMcpCatalog(reselected);
       expect(projected.servers[0]?.packageRootDigest).toBe(second.version.digest);

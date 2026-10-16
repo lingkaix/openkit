@@ -258,6 +258,7 @@ export const ResourceCatalogDocumentSchema = z
     mcp: z
       .object({
         bindings: z.array(McpBindingRecordSchema).default([]),
+        disabledServerIds: z.array(ResourceCatalogIdSchema).default([]),
         entries: z.array(McpEntryRecordSchema).default([]),
         versions: z.array(McpConfigVersionRecordSchema).default([]),
       })
@@ -270,6 +271,7 @@ export const ResourceCatalogDocumentSchema = z
       })
       .strict(),
     revision: z.number().int().nonnegative(),
+    scope: z.enum(['workspace', 'server']).default('workspace'),
     schemaVersion: z.literal(1),
     skills: z
       .object({

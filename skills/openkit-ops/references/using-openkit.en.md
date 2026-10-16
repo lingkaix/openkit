@@ -86,6 +86,10 @@ A bounded Task may begin with an explicit implementation instruction and include
 
 For selected-Worker `conversation.submit`, that limit applies to the assembled prompt, including attached Artifact text. Oversized input returns HTTP 400 `invalid_request` with the schema issue text before a receiving Thread, Turn, Worker admission, or executor start is created. NanoCore does not truncate the objective; shorten it without losing required constraints before submitting a corrected request under a new request identity.
 
+## Select shared MCP supply
+
+For a declared MCP id, discover `catalog.shared-mcp-list` for the selected Workspace. Its entries report Server tool rules, local disablement and same-id local collisions without exposing endpoints, grants or secrets. A local inactive entry or removed tombstone still suppresses the shared entry. An authorized Workspace configuration caller can use `catalog.shared-mcp-set-disabled` with the current catalog revision to disable or restore that Workspace's projection. Select a registered Agent that declares the intended id; this does not grant permission for a tool effect. Keep the existing exact tool approval and current authority checks. Server configuration and credential changes belong to the [administrator procedure](nanocore-operations.en.md#administer-server-shared-mcp-supply).
+
 ## Knowledge Guidance
 
 Load this reference for knowledge sources, observations, claims, conflicts, retrieval, bounded context preparation, proposals, repair, or knowledge health.
