@@ -41,7 +41,7 @@ describe('storage layout report', () => {
             userId: 'user_1',
             userDb: expect.objectContaining({
               exists: true,
-              appliedMigrations: ['user_0000_setup'],
+              appliedMigrations: ['user_0000_setup', 'user_0001_thread_read_receipts'],
             }),
           },
         ])
