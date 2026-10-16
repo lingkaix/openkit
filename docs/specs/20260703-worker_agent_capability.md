@@ -158,6 +158,8 @@ The future thin worker client supplies through the separately authenticated capa
 
 NanoCore derives authoritative workspace, thread, turn, AgentSession, package-snapshot, capability-id, and family context from the authenticated package session, selected route, and resolved catalog. Worker-supplied lineage is never authority.
 
+The mediated MCP CapabilityCall producers derive `cap` UUIDv5 from exact JSON name `["mcp", packageSnapshotId, serverId, operation, protocolRequestId]`. `packageSnapshotId` is the authenticated frozen AEP snapshot. `serverId` is the exact admitted catalog binding. `operation` is the complete admitted operation discriminator; the captured approval-call producer uses `mcp.call_tool`. `protocolRequestId` is the exact admitted native JSON-RPC string or number. Preserve these input types and the literal `mcp` purpose ([accepted allocation decision](../decisions/20261016-identifier_derivation_and_import_allocations.md)). Fix identity at existing call admission and retain it through update, termination and reopen. Identity never substitutes for current AEP, policy, claim, recorder-key or immutable-attribution checks. Missing, stale, contradictory or unknown proof follows existing refusal/unknown rules without another contact. Retention and import stay with the call owner. Acceptance requires distinct native types and package/server/operation scopes, unchanged attribution conflict, retained-call reuse on permitted replay and zero replacement contact after uncertain work.
+
 ## CapabilityCall Record
 
 `CapabilityCall` is the durable record for one call through an agent capability route or gateway projection.

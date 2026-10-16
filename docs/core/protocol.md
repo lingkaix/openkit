@@ -227,10 +227,13 @@ These kinds retain their owning derivations and use the same text form as any in
 | Artifact Review | `arev` | `59bffd58-b464-5c91-917f-a066bc9ce605` |
 | Knowledge Review | `kr` | `5e78300b-9458-5519-b104-d47e32923804` |
 | CapabilityCall | `cap` | `b447467a-3e9c-5e36-b988-7b4961a0d817` |
+| AuditEvent | `aud` | `c3d8713d-557b-5bf8-aa9c-a28bf50775d4` |
+| PermissionDecision | `pd` | `bcf1702a-4e6a-59c6-86ac-75352a8fc41d` |
+| Knowledge retrieval trace | `krt` | `32a06e66-912c-53a4-b9d2-85b0a9edfe0b` |
 
 Core MUST assign the IDs of Core-owned durable records according to their owning schema and accepted specification.
 
-The `cap` derived-kind admission covers the accepted Pending Request execution-call derivation only. Its allocating owner declares the complete immutable name. Independent CapabilityCall allocation remains UUIDv7. The [accepted declaration boundary](../decisions/20261015-identifier_owner_declarations.md) requires owner-backed derivation authority for every producer; kind registration never authorizes another deterministic-looking call ID. A UUID validates shape, not current attribution, claim, permission or effect status. Existing record failure, retry, retention and recovery rules remain binding. Acceptance requires stable complete-name encoding across reopen, correct kind admission, unchanged contact counts and refusal before effects on malformed or wrong-kind input.
+The `aud` admission covers only the three accepted boot-start, boot-outcome and shutdown producers. The `pd` admission covers only the admitted captured Pending Request execution decision. The `krt` admission covers only the direct Task-preparation and Coordinator direct-Task trace producers. The `cap` admission covers only Pending Request execution, mediated MCP, terminal-checkpoint runtime accounting and Workspace export accounting. Each allocating owner declares its complete immutable name under the [accepted producer decisions](../decisions/20261016-identifier_derivation_and_import_allocations.md). Other independent allocation of these kinds remains UUIDv7. The [accepted declaration boundary](../decisions/20261015-identifier_owner_declarations.md) requires owner-backed derivation authority for every producer; kind registration never authorizes another deterministic-looking call ID. A UUID validates shape, not current attribution, claim, permission or effect status. Existing record failure, retry, retention and recovery rules remain binding. Acceptance requires stable complete-name encoding across reopen, correct kind admission, unchanged contact counts and refusal before effects on malformed or wrong-kind input.
 
 Clients and channel adapters MUST assign `requestId` values for mutating commands.
 
