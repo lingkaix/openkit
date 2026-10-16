@@ -25,6 +25,8 @@ import * as schema from './schema/index.js';
 export interface CoreDb {
   /** Database ownership scope. */
   scope: 'core';
+  /** One-use process-local proof captured before fresh deployment initialization; never inferred from an empty User lookup. */
+  canInitializeLocalUser: boolean;
   /** Raw better-sqlite3 connection for low-level migration checks. */
   sqlite: Database.Database;
   /** Drizzle ORM database client bound to the NanoCore schema. */
@@ -69,15 +71,23 @@ let singleton: CoreDb | undefined;
  * Opens one server-scope Core database under the provided data root.
  *
  * @param dataRoot Data root that will contain server/db/core.sqlite.
+ * @param options Fresh-scope admission captured before boot writes layout metadata.
  * @returns Raw SQLite and Drizzle handles for the database.
  */
-export function openCoreDb(dataRoot: string): CoreDb {
+export function openCoreDb(
+  dataRoot: string,
+  options: { readonly freshInitialization?: boolean } = {}
+): CoreDb {
+  const canInitializeLocalUser =
+    !existsSync(coreDbPath(dataRoot)) &&
+    (options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot));
   ensureLayoutDirectories(dataRoot);
 
   const sqlite = new Database(coreDbPath(dataRoot));
 
   return {
     scope: 'core',
+    canInitializeLocalUser,
     sqlite,
     db: drizzle(sqlite, { schema }),
     dataRoot,
@@ -88,13 +98,19 @@ export function openCoreDb(dataRoot: string): CoreDb {
  * Opens the boot Core database after validating any existing authoritative file.
  *
  * @param dataRoot Data root that will contain server/db/core.sqlite.
+ * @param options Fresh-scope admission captured before boot writes layout metadata.
  * @returns Open Core database.
  * @throws When the existing authoritative database fails SQLite integrity validation.
  */
-export function openCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
+export function openCoreDbWithIntegrityCheck(
+  dataRoot: string,
+  options: { readonly freshInitialization?: boolean } = {}
+): CoreDb {
+  const freshInitialization =
+    options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot);
   ensureLayout(dataRoot);
   assertSqliteIntegrity(coreDbPath(dataRoot));
-  return openCoreDb(dataRoot);
+  return openCoreDb(dataRoot, { freshInitialization });
 }
 
 /**
@@ -112,6 +128,7 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
 
   return {
     scope: 'core',
+    canInitializeLocalUser: false,
     sqlite,
     db: drizzle(sqlite, { schema }),
     dataRoot,
@@ -340,4 +357,17 @@ function checkSqliteIntegrity(path: string): { ok: true } | { ok: false; detail:
   } finally {
     sqlite?.close();
   }
+}
+
+/**
+ * Proves a fresh owned deployment before layout creation. Existing markers, databases or owned data
+ * exclude first User allocation even if an initialized User table is later empty.
+ */
+export function isFreshCoreInitializationScope(dataRoot: string): boolean {
+  if (existsSync(coreDbPath(dataRoot)) || existsSync(join(dataRoot, 'server', 'layout.json')))
+    return false;
+  return ['server', 'users', 'workspaces', 'local', 'logs'].every((name) => {
+    const path = join(dataRoot, name);
+    return !existsSync(path) || readdirSync(path).length === 0;
+  });
 }

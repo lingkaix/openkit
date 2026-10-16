@@ -1,3 +1,4 @@
+import { DeploymentIdSchema, NanoHostTransportTokenIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -23,7 +24,7 @@ export const NanoHostCredentialSlotSchema = z.enum(['A', 'B']);
 export const NanoHostRuntimeTargetStatusResponseSchema = z
   .object({
     identityId: z.string().min(1),
-    deploymentId: z.string().min(1),
+    deploymentId: DeploymentIdSchema,
     connectionGeneration: z.number().int().positive(),
     physicalEpoch: z
       .string()
@@ -52,16 +53,16 @@ export const NanoHostCredentialSlotResultSchema = z
 /** Redacted NanoHost transport Token read model. */
 export const NanoHostTransportTokenRecordSchema = z
   .object({
-    tokenId: z.string().min(1),
+    tokenId: NanoHostTransportTokenIdSchema,
     ownerNanoHostIdentityId: z.string().min(1),
     tokenType: NanoHostTransportTokenTypeSchema,
     scope: NanoHostTransportTokenScopeSchema,
-    deploymentId: z.string().min(1),
+    deploymentId: DeploymentIdSchema,
     status: NanoHostTransportTokenStatusSchema,
     issuedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),
     revokedAt: z.string().datetime().nullable(),
-    predecessorTokenId: z.string().min(1).nullable(),
+    predecessorTokenId: NanoHostTransportTokenIdSchema.nullable(),
     rotationOverlapExpiresAt: z.string().datetime().nullable(),
     responsibleServerAdminActorId: z.string().min(1),
     lastUsedAt: z.string().datetime().nullable(),
@@ -96,7 +97,7 @@ export const EnrollNanoHostRequestSchema = z
 export const EnrollNanoHostResponseSchema = z
   .object({
     identityId: z.string().min(1),
-    deploymentId: z.string().min(1),
+    deploymentId: DeploymentIdSchema,
     credentialRef: z.string().min(1),
     targetSlot: NanoHostCredentialSlotSchema,
     slotResult: NanoHostCredentialSlotResultSchema,

@@ -8,9 +8,9 @@ import { LLM_PROJECTION_POLICY_VERSION, type LlmProjectionPolicy } from './proje
 type Item = z.infer<typeof ItemSchema>;
 
 const BASE_ITEM = {
-  workspaceId: 'ws_projection',
-  threadId: 'th_projection',
-  turnId: 'turn_projection',
+  workspaceId: 'ws_00000000-0000-78ba-aed2-f4bc2180b9da',
+  threadId: 'th_00000000-0000-7843-829e-c105592a209b',
+  turnId: 'tu_00000000-0000-796c-bd63-4cc52ac638c7',
   status: 'completed',
   createdAt: '2026-05-31T00:00:00.000Z',
   completedAt: '2026-05-31T00:00:01.000Z',
@@ -37,7 +37,7 @@ describe('convertToLlm', () => {
         ...BASE_ITEM,
         id: 'item_user',
         type: 'user-message',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         text: 'Please fix the failing test.',
       },
       {
@@ -138,7 +138,7 @@ describe('convertToLlm', () => {
         ...BASE_ITEM,
         id: 'item_user',
         type: 'user-message',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         text: 'Please fix the failing test.',
       },
     ];
@@ -147,7 +147,7 @@ describe('convertToLlm', () => {
         ...BASE_ITEM,
         id: 'item_user',
         type: 'user-message',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         text: 'Please fix the failing test and update docs.',
       },
     ];
@@ -168,7 +168,7 @@ describe('convertToLlm', () => {
           ...BASE_ITEM,
           id: 'item_user',
           type: 'user-message',
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           text: 'Please fix the failing test.',
         },
         {
@@ -199,12 +199,12 @@ describe('convertToLlm', () => {
     expect(
       createContextPackageRecord(result, {
         targetKind: 'worker-turn',
-        targetId: 'turn_1',
+        targetId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
       })
     ).toMatchObject({
       digest: result.contextPackageDigest,
       targetKind: 'worker-turn',
-      targetId: 'turn_1',
+      targetId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
     });
   });
 });

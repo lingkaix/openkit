@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -60,22 +61,26 @@ function workerAuthority(dataRoot: string, turnId: string) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'queue_test',
     requestId: 'request_test',
-    triggerActor: { kind: 'user', id: 'user_local' },
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId,
     turnInput: 'Proof',
     requestedAgentId: 'agent_codex_host',
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_test',
-    agentSessionId: 'session_demo',
+    attemptId: testEntityId('attempt', 'lease_test'),
+    agentSessionId: testEntityId('as', 'session_demo'),
     inputRef: 'package_test',
     bindingRef: 'binding_test',
     sessionCompatibilityKey: 'generative-test',
@@ -94,12 +99,17 @@ describe('openkit-generative MCP', () => {
   it('lists and creates a Light App in process without a catalog entry', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-mcp-'));
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Proof', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Proof',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const coreDb = workerAuthority(dataRoot, turn.id);
     const supply = createOpenkitGenerativeMcpSupply();
     expect(supply.id).toBe(OPENKIT_GENERATIVE_MCP_ID);
@@ -112,15 +122,15 @@ describe('openkit-generative MCP', () => {
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user' as const, id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       workspaceDb,
       scope: {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        agentSessionId: 'session_demo',
-        triggerActor: { kind: 'user' as const, id: 'user_local' },
+        agentSessionId: testEntityId('as', 'session_demo'),
+        triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
     };
     try {
@@ -140,17 +150,22 @@ describe('openkit-generative MCP', () => {
   it('binds publication Thread and Turn from immutable Worker lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-mcp-publish-'));
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Publish a generated view', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Publish a generated view',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const coreDb = workerAuthority(dataRoot, turn.id);
     const sourceItem = store.createItem({
-      id: `it_${turn.id}_source`,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      id: testEntityId('it', `it_${turn.id}_source`),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       type: 'assistant-message',
       status: 'completed',
@@ -166,15 +181,15 @@ describe('openkit-generative MCP', () => {
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user' as const, id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       workspaceDb,
       scope: {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        agentSessionId: 'session_demo',
-        triggerActor: { kind: 'user' as const, id: 'user_local' },
+        agentSessionId: testEntityId('as', 'session_demo'),
+        triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
     };
     try {
@@ -214,7 +229,10 @@ describe('openkit-generative MCP', () => {
       );
       expect(JSON.stringify(publishTool?.inputSchema)).not.toContain('threadId');
       expect(JSON.stringify(publishTool?.inputSchema)).not.toContain('turnId');
-      expect(published.structuredContent).toMatchObject({ threadId: 'th_demo', turnId: turn.id });
+      expect(published.structuredContent).toMatchObject({
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+      });
       const count = () =>
         (
           workspaceDb.sqlite

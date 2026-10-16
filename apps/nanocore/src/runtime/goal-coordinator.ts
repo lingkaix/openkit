@@ -6,7 +6,7 @@ import {
   operationModelInput,
   operationToolName,
 } from '@openkit/app-api-schemas';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -66,7 +66,7 @@ export function considerGoal(
     'Consider current Goal records',
     { kind: 'user', id: actor.userId },
     undefined,
-    { turnId: `tu_goal_${randomUUID()}`, executorKind: 'coordinator', agentId: 'goal-coordinator' }
+    { turnId: allocateEntityId('tu'), executorKind: 'coordinator', agentId: 'goal-coordinator' }
   );
   db.sqlite
     .prepare(
@@ -522,7 +522,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             .join('\n\n');
           if (text)
             store.createItem({
-              id: `it_${randomUUID()}`,
+              id: allocateEntityId('it'),
               workspaceId: goal.workspaceId,
               threadId: goal.threadId,
               turnId,

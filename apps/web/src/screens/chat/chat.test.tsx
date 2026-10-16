@@ -19,8 +19,8 @@ import { useWorkspaceStore } from '../workspace-store';
 import { chatKeys } from './data';
 
 const THREAD = {
-  id: 'th1',
-  workspaceId: 'ws1',
+  id: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   name: 'Competitive teardown',
   preview: 'Competitive teardown',
   status: 'active',
@@ -31,7 +31,7 @@ const THREAD = {
 /** Safe dashboard activity is informational even when its outward text requests a decision. */
 const RUNTIME_ACTIVITY = [
   {
-    turnId: 't1',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     contentCapture: 'on' as const,
     coverage: 'partial' as const,
     entries: [
@@ -49,7 +49,7 @@ const RUNTIME_ACTIVITY = [
 ];
 
 const CONVERSATION_TARGET = {
-  workspaceId: 'ws1',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   threadId: null,
   defaultTargetRef: 'internal-role:assistant',
   targets: [
@@ -94,22 +94,22 @@ const CONVERSATION_TARGET = {
 
 const ITEMS = ItemSchema.array().parse([
   {
-    id: 'i1',
-    workspaceId: 'ws1',
-    threadId: 'th1',
-    turnId: 't1',
+    id: 'it_00000000-0000-7596-a3e2-be317d999ead',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     type: 'user-message',
     status: 'completed',
-    actor: { kind: 'user', id: 'user_editor' },
+    actor: { kind: 'user', id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
     text: 'Draft a competitive teardown.',
     createdAt: '2026-07-21T00:00:00.000Z',
     completedAt: '2026-07-21T00:00:00.000Z',
   },
   {
-    id: 'i2',
-    workspaceId: 'ws1',
-    threadId: 'th1',
-    turnId: 't1',
+    id: 'it_00000000-0000-785f-a82d-59daa7b54760',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     type: 'assistant-message',
     status: 'completed',
     text: 'On it — gathering the details.',
@@ -117,11 +117,11 @@ const ITEMS = ItemSchema.array().parse([
     completedAt: '2026-07-21T00:00:01.000Z',
   },
   {
-    id: 'i3',
-    workspaceId: 'ws1',
-    threadId: 'th1',
+    id: 'it_00000000-0000-7570-9913-dd37f2bda2fe',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
     type: 'approval-request',
-    turnId: 't1',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     status: 'completed',
     approvalRequestId: 'ap1',
     title: 'Approve $5 spend',
@@ -134,13 +134,13 @@ const ITEMS = ItemSchema.array().parse([
 
 const USER_INPUT_ITEMS = ItemSchema.array().parse([
   {
-    id: 'i-user-input',
-    workspaceId: 'ws1',
-    threadId: 'th1',
-    turnId: 't1',
+    id: 'it_00000000-0000-722b-8b9c-ef21b6ead700',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     type: 'user-input-request',
     status: 'completed',
-    responsibleUserId: 'user_editor',
+    responsibleUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
     userInputRequestId: 'uir1',
     prompt: 'Confirm the release shape.',
     questions: [
@@ -212,7 +212,9 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
 
       'thread.read': vi.fn().mockResolvedValue(THREAD),
       'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
-      'thread.create': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
+      'thread.create': vi
+        .fn()
+        .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' }),
       'thread.dashboard': vi.fn().mockResolvedValue({ turns: [] }),
       ...core,
       ...app,
@@ -220,15 +222,15 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
         .fn()
         .mockResolvedValueOnce({
           items: [
-            { id: 'ws1', name: 'Market research' },
-            { id: 'ws2', name: 'Second workspace' },
+            { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+            { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace' },
           ].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -238,15 +240,15 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
             | undefined) ??
             vi.fn().mockResolvedValue({
               items: [
-                { id: 'ws1', name: 'Market research' },
-                { id: 'ws2', name: 'Second workspace' },
+                { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+                { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace' },
               ].map((workspace) => ({
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -287,18 +289,18 @@ function turnStreamEvent(sequence: number, event: string, data: unknown) {
     sequence,
     requestId: null,
     timestamp: '2026-07-21T00:00:00.000Z',
-    workspaceId: 'ws1',
-    threadId: 'th1',
-    turnId: 't1',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     data,
   };
 }
 
 const ACTIVE_TURN = TurnSchema.parse({
-  id: 't1',
-  workspaceId: 'ws1',
-  threadId: 'th1',
-  triggerActor: { kind: 'user', id: 'user_operator' },
+  id: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  triggerActor: { kind: 'user', id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
   items: [],
   error: null,
   configVersion: null,
@@ -329,28 +331,28 @@ const CHAT_MODE_RESPONSE = {
   turn: COMPLETED_TURN,
   item: ITEMS[1],
   handoff: null,
-  originatingWorkspaceId: 'ws1',
-  originatingThreadId: 'th1',
-  receivingWorkspaceId: 'ws1',
-  receivingThreadId: 'th1',
+  originatingWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  originatingThreadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  receivingWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  receivingThreadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
   targetRef: 'internal-role:assistant',
   logicalModelId: 'default',
 };
 
 const STARTER_CHAT_MODE_RESPONSE = {
   ...CHAT_MODE_RESPONSE,
-  originatingThreadId: 'th-new',
-  receivingThreadId: 'th-new',
+  originatingThreadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
+  receivingThreadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
   turn: TurnSchema.parse({
     ...COMPLETED_TURN,
-    id: 't-new',
-    threadId: 'th-new',
+    id: 'tu_00000000-0000-7c3d-9396-86f77325ff24',
+    threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
   }),
   item: ItemSchema.parse({
     ...ITEMS[1],
-    id: 'i-new',
-    threadId: 'th-new',
-    turnId: 't-new',
+    id: 'it_00000000-0000-7618-b870-ed916b3802da',
+    threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
+    turnId: 'tu_00000000-0000-7c3d-9396-86f77325ff24',
   }),
 };
 
@@ -363,7 +365,7 @@ const TASK_MODE_RESPONSE = {
 };
 
 const QUICK_CHAT_WORKSPACE = WorkspaceRecordSchema.parse({
-  id: 'ws_quick_chat',
+  id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
   name: 'Quick Chat',
   kind: 'quick-chat',
   status: 'active',
@@ -392,17 +394,17 @@ const QUICK_CHAT_MODE_RESPONSE = {
 
 const SECOND_ASSISTANT_ITEM = ItemSchema.parse({
   ...ITEMS[1],
-  id: 'i4',
+  id: 'it_00000000-0000-7a2a-8d80-ada19c95b5ee',
   text: 'Here is the completed pricing comparison.',
   createdAt: '2026-07-21T00:00:02.000Z',
   completedAt: '2026-07-21T00:00:02.000Z',
 });
 
 const STREAMING_ITEM = {
-  id: 'i-stream',
-  workspaceId: 'ws1',
-  threadId: 'th1',
-  turnId: 't1',
+  id: 'it_00000000-0000-7ba1-a7e3-58d592e2e90b',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
   type: 'assistant-message',
   status: 'in_progress',
   text: '',
@@ -464,7 +466,10 @@ beforeEach(() => {
 
 describe.each([
   ['starter', '/chat'],
-  ['Thread', '/chat/ws1/th1'],
+  [
+    'Thread',
+    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+  ],
 ])('Composer file import on %s', (_surface, path) => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -515,7 +520,7 @@ describe.each([
     await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
     expect(randomUUID).toHaveBeenCalledTimes(1);
     expect(importWorkspaceArtifact).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       ...{
         title: name,
         mediaType,
@@ -527,21 +532,37 @@ describe.each([
     expect(listArtifacts).toHaveBeenCalledTimes(1);
     expect(send).toBeDisabled();
 
-    await act(async () => imported.resolve({ artifactId: 'uploaded-notes', artifactVersion: 3 }));
+    await act(async () =>
+      imported.resolve({
+        artifactId: 'ar_00000000-0000-7c8d-af4c-2980db144abf',
+        artifactVersion: 3,
+      })
+    );
     expect(await screen.findByRole('button', { name: `Remove ${name}` })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Attachments' })).not.toBeInTheDocument();
-    expect(listArtifacts.mock.calls).toEqual([[{ workspaceId: 'ws1' }], [{ workspaceId: 'ws1' }]]);
-    expect(queryClient.getQueryState(['artifacts', 'ws1'])?.fetchStatus).toBe('fetching');
+    expect(listArtifacts.mock.calls).toEqual([
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+    ]);
+    expect(
+      queryClient.getQueryState(['artifacts', 'ws_00000000-0000-7b10-9af8-12fd37a880e0'])
+        ?.fetchStatus
+    ).toBe('fetching');
     expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: path === '/chat' ? 'th-new' : 'th1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId:
+            path === '/chat'
+              ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+              : 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{
             input: 'Review this file',
-            artifactRefs: [{ artifactId: 'uploaded-notes', artifactVersion: 3 }],
+            artifactRefs: [
+              { artifactId: 'ar_00000000-0000-7c8d-af4c-2980db144abf', artifactVersion: 3 },
+            ],
           },
         })
       )
@@ -555,7 +576,9 @@ describe.each([
   ])('preserves the draft and existing attachment after a failed %s', async (stage) => {
     const user = userEvent.setup();
     const listArtifacts = vi.fn().mockResolvedValue({
-      items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+      items: [
+        { id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', version: 2, title: 'Existing brief' },
+      ],
     });
     const importWorkspaceArtifact = vi.fn().mockRejectedValue(new Error('Import unavailable'));
     const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
@@ -583,7 +606,9 @@ describe.each([
     await waitFor(() => expect(trigger).toBeEnabled());
     expect(text).toHaveBeenCalledTimes(1);
     expect(importWorkspaceArtifact).toHaveBeenCalledTimes(stage === 'file read' ? 0 : 1);
-    expect(listArtifacts.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
+    expect(listArtifacts.mock.calls).toEqual([
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+    ]);
     expect(message).toHaveValue('Keep this draft');
     expect(input).toHaveValue('');
     expect(screen.getByRole('dialog', { name: 'Attachments' })).toBeInTheDocument();
@@ -600,11 +625,16 @@ describe.each([
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: path === '/chat' ? 'th-new' : 'th1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId:
+            path === '/chat'
+              ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+              : 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{
             input: 'Keep this draft',
-            artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+            artifactRefs: [
+              { artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 },
+            ],
           },
         })
       )
@@ -655,7 +685,13 @@ describe.each([
       makeClient(
         {
           'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+            items: [
+              {
+                id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+                version: 2,
+                title: 'Existing brief',
+              },
+            ],
           }),
         },
         { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
@@ -704,7 +740,7 @@ describe.each([
           requestId: draftRequestId,
           input: 'Keep this draft',
           artifactRefs: [
-            { artifactId: 'existing-brief', artifactVersion: 2 },
+            { artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 },
             { artifactId: 'uploaded-notes', artifactVersion: 3 },
           ],
         })
@@ -714,9 +750,13 @@ describe.each([
 });
 
 describe.each([
-  ['starter', '/chat', 'th-new'],
-  ['starter with immediate acceptance', '/chat', 'th-new'],
-  ['Thread', '/chat/ws1/th1', 'th1'],
+  ['starter', '/chat', 'th_00000000-0000-75c2-bada-0a01c17d153e'],
+  ['starter with immediate acceptance', '/chat', 'th_00000000-0000-75c2-bada-0a01c17d153e'],
+  [
+    'Thread',
+    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+    'th_00000000-0000-70a0-9cde-4561f64881c6',
+  ],
 ])('successful %s submission selection', (_surface, path, threadId) => {
   it('retains the chosen agent and model for a fresh second request', async () => {
     const user = userEvent.setup();
@@ -751,7 +791,13 @@ describe.each([
         {
           'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
           'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+            items: [
+              {
+                id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+                version: 2,
+                title: 'Existing brief',
+              },
+            ],
           }),
         },
         {
@@ -777,7 +823,7 @@ describe.each([
     expect(firstDraft).toMatchObject({
       targetRef: selectedTarget.targetRef,
       logicalModelId: 'orcarouter',
-      artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+      artifactRefs: [{ artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 }],
     });
     await act(async () => {
       first.resolve({
@@ -798,7 +844,7 @@ describe.each([
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
     expect(submitConversation.mock.calls[1]).toEqual([
       {
-        workspaceId: 'ws1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         threadId: threadId,
         ...{
           input: 'Second message',
@@ -835,7 +881,10 @@ describe('conversation failure identity', () => {
   ])('keeps exact retry for %s', async (_name, error, targetRef) => {
     const user = userEvent.setup();
     const submitConversation = vi.fn().mockRejectedValue(error);
-    renderApp('/chat/ws1/th1', makeClient({}, { 'conversation.submit': submitConversation }));
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient({}, { 'conversation.submit': submitConversation })
+    );
     if (targetRef === 'new-task-worker') await chooseNewTaskWorker(user);
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Retained request');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -858,15 +907,23 @@ describe('chat starter (board 01)', () => {
       {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [
-            { id: 'ws_project', name: 'Project Workspace', kind: 'general' },
-            { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' },
+            {
+              id: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053',
+              name: 'Project Workspace',
+              kind: 'general',
+            },
+            {
+              id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+              name: 'Quick Chat',
+              kind: 'quick-chat',
+            },
           ].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -877,13 +934,17 @@ describe('chat starter (board 01)', () => {
     renderApp('/chat', client);
 
     await waitFor(() =>
-      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' })
+      expect(listConversationNavigation).toHaveBeenCalledWith({
+        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      })
     );
-    expect(listConversationNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_project' });
+    expect(listConversationNavigation).not.toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053',
+    });
   });
 
   it('falls back from an unavailable selected Workspace before loading threads', async () => {
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_unavailable' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7afd-8124-c249cdaf069a' });
     const workspaces = createDeferred<{
       items: AuthorizedWorkspaceSummary[];
     }>();
@@ -904,7 +965,7 @@ describe('chat starter (board 01)', () => {
           {
             workspace: {
               ...QUICK_CHAT_WORKSPACE,
-              id: 'ws_authorized',
+              id: 'ws_00000000-0000-703e-a6be-9a9f8ac8f52c',
               name: 'Authorized Workspace',
               kind: 'general',
             },
@@ -912,7 +973,7 @@ describe('chat starter (board 01)', () => {
             membershipStatus: 'active',
             accessCause: 'membership',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           },
           {
@@ -921,7 +982,7 @@ describe('chat starter (board 01)', () => {
             membershipStatus: 'active',
             accessCause: 'membership',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           },
         ],
@@ -929,15 +990,21 @@ describe('chat starter (board 01)', () => {
       await workspaces.promise;
     });
     await waitFor(() =>
-      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' })
+      expect(listConversationNavigation).toHaveBeenCalledWith({
+        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      })
     );
     expect(
       listConversationNavigation.mock.calls.every(
-        ([{ workspaceId }]) => workspaceId === 'ws_quick_chat'
+        ([{ workspaceId }]) => workspaceId === 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28'
       )
     ).toBe(true);
-    expect(listConversationNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_unavailable' });
-    expect(listConversationNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_authorized' });
+    expect(listConversationNavigation).not.toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7afd-8124-c249cdaf069a',
+    });
+    expect(listConversationNavigation).not.toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-703e-a6be-9a9f8ac8f52c',
+    });
   });
 
   it('shows Recent empty only after Workspace discovery and navigation succeed', async () => {
@@ -979,7 +1046,9 @@ describe('chat starter (board 01)', () => {
       await workspaces.promise;
     });
     await waitFor(() =>
-      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' })
+      expect(listConversationNavigation).toHaveBeenCalledWith({
+        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      })
     );
     expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
     expect(recent.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
@@ -1032,7 +1101,9 @@ describe('chat starter (board 01)', () => {
     await user.click(recent.getByRole('button', { name: 'Try again' }));
     expect(await recent.findByText('Start a chat')).toBeInTheDocument();
     expect(failedRead).toHaveBeenCalledTimes(callsBeforeRetry + 1);
-    expect(listNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' });
+    expect(listNavigation).toHaveBeenCalledWith({
+      workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+    });
   });
 
   it('loads Recent from actual caller membership without a separate session read', async () => {
@@ -1041,10 +1112,19 @@ describe('chat starter (board 01)', () => {
     const client = makeClient(
       {
         'workspace.list': vi.fn().mockResolvedValue({
-          items: ['user_other', 'user_local'].map((ownerUserId, index) => ({
+          items: [
+            'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+            'usr_00000000-0000-7000-8000-000000000001',
+          ].map((ownerUserId, index) => ({
             membershipStatus: index === 0 ? null : 'active',
             accessCause: 'administrator',
-            workspace: { ...QUICK_CHAT_WORKSPACE, id: index === 0 ? 'ws_other' : 'ws_quick_chat' },
+            workspace: {
+              ...QUICK_CHAT_WORKSPACE,
+              id:
+                index === 0
+                  ? 'ws_00000000-0000-71f5-922f-6fd42f52f580'
+                  : 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+            },
             effectiveRole: index === 0 ? null : 'owner',
             ownerUserId,
             membershipRevision: index === 0 ? null : 1,
@@ -1061,8 +1141,12 @@ describe('chat starter (board 01)', () => {
     const recent = within(screen.getByText('Recent').closest('section')!);
     expect(await recent.findByText('Start a chat')).toBeInTheDocument();
     expect(getSession).not.toHaveBeenCalled();
-    expect(listNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' });
-    expect(listNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_other' });
+    expect(listNavigation).toHaveBeenCalledWith({
+      workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+    });
+    expect(listNavigation).not.toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+    });
   });
 
   it('does not present an unavailable Workspace as Recent empty', async () => {
@@ -1101,22 +1185,26 @@ describe('chat starter (board 01)', () => {
     await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
 
     await waitFor(() =>
-      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws2' })
+      expect(listConversationNavigation).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      })
     );
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2');
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(
+      'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+    );
   });
 
   it('lists recent chats in conversation navigation order, not thread creation order', async () => {
     const createdFirst = {
       ...THREAD,
-      id: 'th_created_first',
+      id: 'th_00000000-0000-74d9-ae98-00c3a0823aba',
       name: 'Created first',
       createdAt: '2026-07-20T00:00:00.000Z',
       updatedAt: '2026-07-20T00:00:00.000Z',
     };
     const activeLater = {
       ...THREAD,
-      id: 'th_active_later',
+      id: 'th_00000000-0000-732f-81d2-d42066fd8c2b',
       name: 'Active later',
       createdAt: '2026-07-21T00:00:00.000Z',
       updatedAt: '2026-07-22T00:00:00.000Z',
@@ -1125,8 +1213,13 @@ describe('chat starter (board 01)', () => {
       items: [
         createdFirst,
         activeLater,
-        { ...THREAD, id: 'th_private', name: 'Private chat' },
-        { ...THREAD, id: 'th_archived', name: 'Old chat', status: 'archived' },
+        { ...THREAD, id: 'th_00000000-0000-7915-b626-0b698e2552dc', name: 'Private chat' },
+        {
+          ...THREAD,
+          id: 'th_00000000-0000-75ac-8cd2-693b43c568a2',
+          name: 'Old chat',
+          status: 'archived',
+        },
       ],
     });
     const listConversationNavigation = vi.fn().mockResolvedValue({
@@ -1165,7 +1258,9 @@ describe('chat starter (board 01)', () => {
     ).toEqual(['Active later', 'Created first']);
     expect(within(recent!).queryByText('Private chat')).not.toBeInTheDocument();
     expect(within(recent!).queryByText('Old chat')).not.toBeInTheDocument();
-    expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws1' });
+    expect(listConversationNavigation).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    });
   });
 
   it.each([
@@ -1175,7 +1270,12 @@ describe('chat starter (board 01)', () => {
   ] as const)('opens a Recent %s on its registered route with encoded owner identifiers', async (activity) => {
     const user = userEvent.setup();
     const workspaceId = 'ws/space ?#%';
-    const thread = { ...THREAD, workspaceId, id: 'th/space ?#%', name: 'Encoded conversation' };
+    const thread = {
+      ...THREAD,
+      workspaceId,
+      id: 'th_00000000-0000-77d5-84f0-993908e56e3f',
+      name: 'Encoded conversation',
+    };
     const getThread = vi.fn().mockResolvedValue(thread);
     const readGoal = vi.fn().mockResolvedValue({ goal: null, cards: [], versions: [], tasks: [] });
     renderApp(
@@ -1190,7 +1290,7 @@ describe('chat starter (board 01)', () => {
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })
             ),
@@ -1224,20 +1324,22 @@ describe('chat starter (board 01)', () => {
     const user = userEvent.setup();
     const taskThread = {
       ...THREAD,
-      id: 'th_task',
+      id: 'th_00000000-0000-7f4d-8b32-425735d1e383',
       name: 'Worker task',
       preview: 'Worker task',
     };
     const chatThread = {
       ...THREAD,
-      id: 'th_chat',
+      id: 'th_00000000-0000-7ac9-b5d3-7c03840e3fbd',
       name: 'Assistant chat',
       preview: 'Assistant chat',
     };
     const getThread = vi
       .fn()
       .mockImplementation(({ threadId }: { workspaceId: string; threadId: string }) =>
-        Promise.resolve(threadId === 'th_task' ? taskThread : chatThread)
+        Promise.resolve(
+          threadId === 'th_00000000-0000-7f4d-8b32-425735d1e383' ? taskThread : chatThread
+        )
       );
     const listConversationNavigation = vi.fn().mockResolvedValue({
       items: [
@@ -1275,13 +1377,20 @@ describe('chat starter (board 01)', () => {
     await user.click(within(recent!).getByRole('button', { name: 'Worker task' }));
     expect(await screen.findByRole('heading', { name: 'Worker task' })).toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'Task' })).toBeInTheDocument();
-    expect(getThread).toHaveBeenCalledWith({ workspaceId: 'ws1', threadId: 'th_task' });
+    expect(getThread).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-7f4d-8b32-425735d1e383',
+    });
   });
 
   it('creates a thread and opens it from the composer', async () => {
     const user = userEvent.setup();
-    const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
-    const getThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
+    const createThread = vi
+      .fn()
+      .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
+    const getThread = vi
+      .fn()
+      .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
     const startTurn = vi.fn();
     const submitConversation = vi.fn().mockResolvedValue(STARTER_CHAT_MODE_RESPONSE);
     const quickChat = vi.fn();
@@ -1295,7 +1404,7 @@ describe('chat starter (board 01)', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(createThread).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         name: 'Plan a launch',
         requestId: expect.any(String),
       })
@@ -1303,8 +1412,8 @@ describe('chat starter (board 01)', () => {
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th-new',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
           ...{
             artifactRefs: [],
             input: 'Plan a launch',
@@ -1322,9 +1431,14 @@ describe('chat starter (board 01)', () => {
     expect(quickChat).not.toHaveBeenCalled();
     // Navigated into the thread screen (its index toggle is present).
     expect(await screen.findByRole('button', { name: /Side panel/i })).toBeInTheDocument();
-    expect(getThread).toHaveBeenCalledWith({ workspaceId: 'ws1', threadId: 'th-new' });
+    expect(getThread).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
+    });
     getThread.mockClear();
-    await act(async () => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await act(async () =>
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' })
+    );
     expect(getThread).not.toHaveBeenCalled();
   });
 
@@ -1332,7 +1446,7 @@ describe('chat starter (board 01)', () => {
     const user = userEvent.setup();
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({}, { 'conversation.navigation': listConversationNavigation })
     );
 
@@ -1344,13 +1458,18 @@ describe('chat starter (board 01)', () => {
       await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
     await waitFor(() =>
-      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws2' })
+      expect(listConversationNavigation).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      })
     );
   });
 
   it('fails closed when a canonical Thread route names an unavailable Workspace', async () => {
     const getThread = vi.fn();
-    renderApp('/chat/ws_unavailable/th1', makeClient({ 'thread.read': getThread }));
+    renderApp(
+      '/chat/ws_00000000-0000-7afd-8124-c249cdaf069a/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient({ 'thread.read': getThread })
+    );
 
     expect(await screen.findByText('Workspace unavailable')).toBeInTheDocument();
     expect(getThread).not.toHaveBeenCalled();
@@ -1359,24 +1478,30 @@ describe('chat starter (board 01)', () => {
   it('syncs the primary switcher to the canonical Thread route Workspace', async () => {
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws2',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       name: 'Workspace B thread',
       preview: 'Workspace B thread',
     };
     renderApp(
-      '/chat/ws2/th1',
+      '/chat/ws_00000000-0000-7ec6-8e33-a3b1d758efc6/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.read': vi.fn().mockResolvedValue(workspaceBThread),
-        'thread.list': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
-          ),
+        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve({
+            items: [
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
+            ],
+          })
+        ),
       })
     );
 
     expect(await screen.findByRole('heading', { name: 'Workspace B thread' })).toBeInTheDocument();
-    await waitFor(() => expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2'));
+    await waitFor(() =>
+      expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(
+        'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+      )
+    );
     expect(screen.getByRole('button', { name: 'Second workspace' })).toBeInTheDocument();
   });
 
@@ -1387,7 +1512,10 @@ describe('chat starter (board 01)', () => {
   });
 
   it('keeps Thread on the persistent sidebar switcher', async () => {
-    renderApp('/chat/ws1/th1', makeClient());
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient()
+    );
     expect(
       await screen.findByRole('heading', { name: 'Competitive teardown' })
     ).toBeInTheDocument();
@@ -1395,19 +1523,29 @@ describe('chat starter (board 01)', () => {
   });
 
   it('does not preserve a compatibility Chat Thread route without a Workspace segment', async () => {
-    renderApp('/chat/th1', makeClient());
+    renderApp('/chat/th_00000000-0000-70a0-9cde-4561f64881c6', makeClient());
     expect(await screen.findByText(/doesn't exist/i)).toBeInTheDocument();
   });
 
   it('opens the created Chat and exposes its running Turn before first submission settles', async () => {
     const user = userEvent.setup();
     const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
-    const createdThread = { ...THREAD, id: 'th-new', name: 'Pending first Chat' };
+    const createdThread = {
+      ...THREAD,
+      id: 'th_00000000-0000-75c2-bada-0a01c17d153e',
+      name: 'Pending first Chat',
+    };
     const createThread = vi.fn().mockResolvedValue(createdThread);
     const getThread = vi.fn().mockResolvedValue(createdThread);
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     const getThreadDashboard = vi.fn().mockResolvedValue({
-      turns: [TurnSchema.parse({ ...ACTIVE_TURN, id: 't-new', threadId: createdThread.id })],
+      turns: [
+        TurnSchema.parse({
+          ...ACTIVE_TURN,
+          id: 'tu_00000000-0000-7c3d-9396-86f77325ff24',
+          threadId: createdThread.id,
+        }),
+      ],
     });
     renderApp(
       '/chat',
@@ -1424,9 +1562,12 @@ describe('chat starter (board 01)', () => {
 
       expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
       expect(screen.getByRole('heading', { name: createdThread.name })).toBeInTheDocument();
-      expect(getThread).toHaveBeenCalledWith({ workspaceId: 'ws1', threadId: createdThread.id });
+      expect(getThread).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: createdThread.id,
+      });
       expect(getThreadDashboard).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         threadId: createdThread.id,
       });
       expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Story thread');
@@ -1434,7 +1575,7 @@ describe('chat starter (board 01)', () => {
       expect(createThread).toHaveBeenCalledTimes(1);
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
           threadId: createdThread.id,
           ...{ input: 'Story thread', targetRef: 'internal-role:assistant' },
         })
@@ -1448,22 +1589,28 @@ describe('chat starter (board 01)', () => {
   });
 
   it.each([
-    'th-worker',
-    'th-new',
+    'th_00000000-0000-7507-bcfa-25c593615d8d',
+    'th_00000000-0000-75c2-bada-0a01c17d153e',
   ])('follows the accepted receiving Workspace and Thread %s after a deferred first submit', async (receivingThreadId) => {
     const user = userEvent.setup();
     const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
-    const origin = { ...THREAD, id: 'th-new', name: 'Origin Chat' };
+    const origin = {
+      ...THREAD,
+      id: 'th_00000000-0000-75c2-bada-0a01c17d153e',
+      name: 'Origin Chat',
+    };
     const destination = {
       ...THREAD,
-      workspaceId: 'ws2',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       id: receivingThreadId,
       name: 'Receiving Task',
     };
     const getThread = vi
       .fn()
       .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-        Promise.resolve(workspaceId === 'ws2' ? destination : origin)
+        Promise.resolve(
+          workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? destination : origin
+        )
       );
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     renderApp(
@@ -1472,11 +1619,13 @@ describe('chat starter (board 01)', () => {
         {
           'thread.create': vi.fn().mockResolvedValue(origin),
           'thread.read': getThread,
-          'thread.list': vi
-            .fn()
-            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-              Promise.resolve({ items: [workspaceId === 'ws2' ? destination : origin] })
-            ),
+          'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+            Promise.resolve({
+              items: [
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? destination : origin,
+              ],
+            })
+          ),
         },
         { 'conversation.submit': submitConversation }
       )
@@ -1487,13 +1636,16 @@ describe('chat starter (board 01)', () => {
     await act(async () => {
       started.resolve({
         ...STARTER_CHAT_MODE_RESPONSE,
-        receivingWorkspaceId: 'ws2',
+        receivingWorkspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
         receivingThreadId,
       });
       await started.promise;
     });
     expect(await screen.findByRole('heading', { name: 'Receiving Task' })).toBeInTheDocument();
-    expect(getThread).toHaveBeenCalledWith({ workspaceId: 'ws2', threadId: receivingThreadId });
+    expect(getThread).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      threadId: receivingThreadId,
+    });
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
     expect(submitConversation).toHaveBeenCalledTimes(1);
     // Revisiting the origin is a history read, not another handoff request.
@@ -1505,12 +1657,20 @@ describe('chat starter (board 01)', () => {
   it('keeps a late first-submit handoff and draft out of another Workspace with a colliding Thread id', async () => {
     const user = userEvent.setup();
     const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
-    const origin = { ...THREAD, id: 'th-new', name: 'Origin Chat' };
-    const other = { ...origin, workspaceId: 'ws2', name: 'Other Chat' };
+    const origin = {
+      ...THREAD,
+      id: 'th_00000000-0000-75c2-bada-0a01c17d153e',
+      name: 'Origin Chat',
+    };
+    const other = {
+      ...origin,
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      name: 'Other Chat',
+    };
     const getThread = vi
       .fn()
       .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-        Promise.resolve(workspaceId === 'ws2' ? other : origin)
+        Promise.resolve(workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? other : origin)
       );
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     renderApp(
@@ -1519,11 +1679,11 @@ describe('chat starter (board 01)', () => {
         {
           'thread.create': vi.fn().mockResolvedValue(origin),
           'thread.read': getThread,
-          'thread.list': vi
-            .fn()
-            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-              Promise.resolve({ items: [workspaceId === 'ws2' ? other : origin] })
-            ),
+          'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+            Promise.resolve({
+              items: [workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? other : origin],
+            })
+          ),
         },
         { 'conversation.submit': submitConversation }
       )
@@ -1535,18 +1695,26 @@ describe('chat starter (board 01)', () => {
     expect(await screen.findByRole('heading', { name: 'Other Chat' })).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Unsent other draft');
     await act(async () => {
-      started.resolve({ ...STARTER_CHAT_MODE_RESPONSE, receivingThreadId: 'th-worker' });
+      started.resolve({
+        ...STARTER_CHAT_MODE_RESPONSE,
+        receivingThreadId: 'th_00000000-0000-7507-bcfa-25c593615d8d',
+      });
       await started.promise;
     });
     expect(screen.getByRole('heading', { name: 'Other Chat' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Unsent other draft');
-    expect(getThread).not.toHaveBeenCalledWith('ws1', 'th-worker');
+    expect(getThread).not.toHaveBeenCalledWith(
+      'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      'th_00000000-0000-7507-bcfa-25c593615d8d'
+    );
     expect(submitConversation).toHaveBeenCalledTimes(1);
   });
 
   it('retains the first draft and exact request in the created Thread after submission fails', async () => {
     const user = userEvent.setup();
-    const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
+    const createThread = vi
+      .fn()
+      .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
     const startTurn = vi.fn();
     const submitConversation = vi.fn().mockRejectedValue(new Error('chat_mode_unavailable'));
     const quickChat = vi.fn();
@@ -1554,7 +1722,9 @@ describe('chat starter (board 01)', () => {
       {
         'thread.create': createThread,
         'turn.start': startTurn,
-        'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
+        'thread.read': vi
+          .fn()
+          .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' }),
       },
       { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
     );
@@ -1566,8 +1736,8 @@ describe('chat starter (board 01)', () => {
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th-new',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
           ...{
             input: 'Story thread',
             targetRef: 'internal-role:assistant',
@@ -1602,16 +1772,18 @@ describe('chat starter (board 01)', () => {
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Plan for A');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(createThread).toHaveBeenCalledTimes(1));
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    act(() =>
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' })
+    );
     await act(async () => {
-      created.resolve({ ...THREAD, id: 'th-new' });
+      created.resolve({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
       await created.promise;
     });
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th-new',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
           ...{ input: 'Plan for A' },
         })
       )
@@ -1622,12 +1794,23 @@ describe('chat starter (board 01)', () => {
     });
 
     await waitFor(() =>
-      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: chatKeys.threads('ws1') })
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: chatKeys.threads('ws_00000000-0000-7b10-9af8-12fd37a880e0'),
+      })
     );
-    expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: chatKeys.threads('ws2') });
+    expect(invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: chatKeys.threads('ws_00000000-0000-7ec6-8e33-a3b1d758efc6'),
+    });
     expect(screen.getByRole('heading', { name: 'What can we get done?' })).toBeInTheDocument();
     expect(getThread).not.toHaveBeenCalled();
-    expect(queryClient.getQueryData(chatKeys.thread('ws2', 'th-new'))).toBeUndefined();
+    expect(
+      queryClient.getQueryData(
+        chatKeys.thread(
+          'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+          'th_00000000-0000-75c2-bada-0a01c17d153e'
+        )
+      )
+    ).toBeUndefined();
   });
 
   it('disables the composer with a reason when the runtime is unreachable', async () => {
@@ -1667,7 +1850,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     expect(
       await screen.findByRole('heading', { name: 'Competitive teardown' })
     ).toBeInTheDocument();
@@ -1700,7 +1886,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     expect(
       await screen.findByText(/Exact effect unavailable; approval disabled/)
     ).toBeInTheDocument();
@@ -1710,7 +1899,10 @@ describe('chat thread (boards 02/03)', () => {
     expect(client.operations['pending-request.withdraw']).toHaveBeenCalledWith(
       expect.objectContaining({
         pendingRequestId: 'ap1',
-        ...{ workspaceId: 'ws1', threadId: 'th1' },
+        ...{
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        },
       })
     );
   });
@@ -1745,7 +1937,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1);
     expect(
@@ -1755,9 +1950,9 @@ describe('chat thread (boards 02/03)', () => {
     expect(respondApproval).toHaveBeenCalledWith({
       approvalRequestId: 'ap1',
       ...{
-        workspaceId: 'ws1',
-        threadId: 'th1',
-        turnId: 't1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
         decision: 'granted',
         requestId: expect.any(String),
       },
@@ -1766,14 +1961,14 @@ describe('chat thread (boards 02/03)', () => {
 
   it('explains a closed approval and never offers another decision', async () => {
     const decision = ItemSchema.parse({
-      id: 'denial',
-      workspaceId: 'ws1',
-      threadId: 'th1',
-      turnId: 't1',
+      id: 'it_00000000-0000-7858-8a3b-5f4791bf9c4a',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       type: 'approval-decision',
       status: 'completed',
-      actor: { kind: 'user', id: 'user_local' },
-      causationId: 'i3',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      causationId: 'it_00000000-0000-7570-9913-dd37f2bda2fe',
       approvalRequestId: 'ap1',
       decision: 'denied',
       decidedAt: '2026-07-21T00:00:03.000Z',
@@ -1781,7 +1976,7 @@ describe('chat thread (boards 02/03)', () => {
       completedAt: '2026-07-21T00:00:03.000Z',
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi
           .fn()
@@ -1794,7 +1989,7 @@ describe('chat thread (boards 02/03)', () => {
 
   it('keeps an unanswered approval actionable after its raising Turn ends', async () => {
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
         {
@@ -1826,7 +2021,7 @@ describe('chat thread (boards 02/03)', () => {
     const pending = createDeferred<unknown>();
     const respondApproval = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({});
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -1868,7 +2063,7 @@ describe('chat thread (boards 02/03)', () => {
   it('waits for authoritative task status before exposing approval actions', async () => {
     const dashboard = createDeferred<Pick<ThreadDashboardResponse, 'turns' | 'pendingRequests'>>();
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
         { 'thread.dashboard': vi.fn().mockReturnValue(dashboard.promise) }
@@ -1901,7 +2096,7 @@ describe('chat thread (boards 02/03)', () => {
 
   it('keeps an undecided approval decidable while its raising Turn is still running', async () => {
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -1942,13 +2137,13 @@ describe('chat thread (boards 02/03)', () => {
       items: ItemSchema.array().parse([
         ...ITEMS,
         {
-          id: 'i-other-decision',
-          workspaceId: 'ws1',
-          threadId: 'th1',
-          turnId: 't1',
+          id: 'it_00000000-0000-78b1-834e-a8dc49f35819',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+          turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
           type: 'approval-decision',
           status: 'completed',
-          actor: { kind: 'user', id: 'user_approver' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7a12-a95f-975ecdd21953' },
           causationId: 'req_other',
           approvalRequestId: 'another-approval',
           decision: 'denied',
@@ -1959,7 +2154,7 @@ describe('chat thread (boards 02/03)', () => {
       ]),
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
         {
@@ -1991,13 +2186,13 @@ describe('chat thread (boards 02/03)', () => {
     const resolvedItems = ItemSchema.array().parse([
       ...ITEMS,
       {
-        id: 'i-approval-decision',
-        workspaceId: 'ws1',
-        threadId: 'th1',
-        turnId: 't1',
+        id: 'it_00000000-0000-7db6-8b5a-6d048ddcb778',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
         type: 'approval-decision',
         status: 'completed',
-        actor: { kind: 'user', id: 'user_approver' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7a12-a95f-975ecdd21953' },
         causationId: 'req_approval',
         approvalRequestId: 'ap1',
         decision: 'granted',
@@ -2010,11 +2205,14 @@ describe('chat thread (boards 02/03)', () => {
       'thread.items': vi.fn().mockResolvedValue({ items: resolvedItems, nextCursor: null }),
     });
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText('Approve $5 spend')).toBeInTheDocument();
     expect(screen.getByText('Approved')).toBeInTheDocument();
-    expect(screen.getByText('by user_approver')).toBeInTheDocument();
+    expect(screen.getByText('by usr_00000000-0000-7a12-a95f-975ecdd21953')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
   });
@@ -2023,8 +2221,8 @@ describe('chat thread (boards 02/03)', () => {
     const user = userEvent.setup();
     const answerUserInput = vi.fn().mockResolvedValue({
       requestId: 'uir1',
-      workspaceId: 'ws1',
-      threadId: 'th1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
       state: 'resolved',
       resolution: 'answered',
       ending: null,
@@ -2045,7 +2243,7 @@ describe('chat thread (boards 02/03)', () => {
               disposition: null,
             },
           ],
-          viewerUserId: 'user_editor',
+          viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
           turns: [
             {
               ...APPROVAL_TURN,
@@ -2056,7 +2254,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
     expect(
@@ -2071,8 +2272,8 @@ describe('chat thread (boards 02/03)', () => {
         expect.objectContaining({
           userInputRequestId: 'uir1',
           ...{
-            workspaceId: 'ws1',
-            threadId: 'th1',
+            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             answers: { audience: ['Operators'], tone: ['Concise'] },
             requestId: expect.any(String),
           },
@@ -2100,8 +2301,8 @@ describe('chat thread (boards 02/03)', () => {
     const user = userEvent.setup();
     const answerUserInput = vi.fn().mockResolvedValue({
       requestId: 'uir1',
-      workspaceId: 'ws1',
-      threadId: 'th1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
       state: 'resolved',
       resolution: 'answered',
       ending: null,
@@ -2126,7 +2327,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByRole('radio', { name: 'Concise' })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'Detailed' })).toBeInTheDocument();
@@ -2138,8 +2342,8 @@ describe('chat thread (boards 02/03)', () => {
         expect.objectContaining({
           userInputRequestId: 'uir1',
           ...{
-            workspaceId: 'ws1',
-            threadId: 'th1',
+            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             answers: { tone: ['Warm and direct'] },
             requestId: expect.any(String),
           },
@@ -2153,8 +2357,8 @@ describe('chat thread (boards 02/03)', () => {
     const pending = createDeferred<unknown>();
     const answerUserInput = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
       requestId: 'uir1',
-      workspaceId: 'ws1',
-      threadId: 'th1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
       state: 'resolved',
       resolution: 'answered',
       ending: null,
@@ -2179,7 +2383,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     await user.type(await screen.findByRole('textbox', { name: 'Audience' }), 'Operators');
     await user.click(screen.getByRole('radio', { name: 'Concise' }));
@@ -2202,13 +2409,13 @@ describe('chat thread (boards 02/03)', () => {
         items: ItemSchema.array().parse([
           userInputItem,
           {
-            id: 'i-user-input-response',
+            id: 'it_00000000-0000-72f2-914f-1f9755fa60c1',
             workspaceId: userInputItem.workspaceId,
             threadId: userInputItem.threadId,
-            turnId: 't-later-answer',
+            turnId: 'tu_00000000-0000-7553-9195-34d7d80353d5',
             type: 'user-input-response',
             status: 'completed',
-            actor: { kind: 'user', id: 'user_responder' },
+            actor: { kind: 'user', id: 'usr_00000000-0000-7580-8c3b-db9da7a361ae' },
             causationId: 'req_user_input_response',
             userInputRequestId: userInputItem.userInputRequestId,
             answers: { audience: ['Operators'], tone: ['Concise'] },
@@ -2220,11 +2427,14 @@ describe('chat thread (boards 02/03)', () => {
         nextCursor: null,
       }),
     });
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText('Answered')).toBeInTheDocument();
     expect(screen.queryByText('You answered')).not.toBeInTheDocument();
-    expect(screen.getByText(/user_responder/)).toBeInTheDocument();
+    expect(screen.getByText(/usr_00000000-0000-7580-8c3b-db9da7a361ae/)).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Audience' })).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'Concise' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Submit answers' })).not.toBeInTheDocument();
@@ -2253,7 +2463,10 @@ describe('chat thread (boards 02/03)', () => {
       'thread.items': vi.fn().mockResolvedValue({ items: secretItems, nextCursor: null }),
       'turn.start': startTurn,
     });
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText('Who should receive the release?')).toBeInTheDocument();
     expect(screen.getByText('Which tone should the release use?')).toBeInTheDocument();
@@ -2273,15 +2486,18 @@ describe('chat thread (boards 02/03)', () => {
       },
       { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Add a pricing table');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{
             input: 'Add a pricing table',
             targetRef: 'internal-role:assistant',
@@ -2295,13 +2511,19 @@ describe('chat thread (boards 02/03)', () => {
 
   it('shows a skeleton while the stream loads', async () => {
     const client = makeClient({ 'thread.items': vi.fn().mockReturnValue(new Promise(() => {})) });
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
   });
 
   it('shows an inline error when the stream fails', async () => {
     const client = makeClient({ 'thread.items': vi.fn().mockRejectedValue(new Error('boom')) });
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     expect(await screen.findByText(/Couldn't load this thread\./i)).toBeInTheDocument();
   });
 
@@ -2325,7 +2547,7 @@ describe('chat thread (boards 02/03)', () => {
       },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
-          turns: [APPROVAL_TURN, { ...ACTIVE_TURN, id: 't-unrelated' }],
+          turns: [APPROVAL_TURN, { ...ACTIVE_TURN, id: 'tu_00000000-0000-7e19-a9ee-94030e5f5d04' }],
           pendingRequests: [
             {
               requestId: 'ap1',
@@ -2345,7 +2567,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await screen.findByText('Approve $5 spend');
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
@@ -2386,7 +2611,10 @@ describe('chat thread (boards 02/03)', () => {
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     expect(await screen.findByRole('textbox', { name: 'Audience' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Submit answers' })).not.toBeInTheDocument();
   });
@@ -2396,7 +2624,10 @@ describe('chat thread (boards 02/03)', () => {
       meta: vi.fn().mockRejectedValue(new Error('down')),
       'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     });
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await screen.findByText('Approve $5 spend');
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled(), {
       timeout: 3000,
@@ -2407,31 +2638,40 @@ describe('chat thread (boards 02/03)', () => {
 
 describe('thread lifecycle and attribution (S7)', () => {
   it.each([
-    'user_editor',
-    'user_other',
+    'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+    'usr_00000000-0000-73d4-904a-d4c4b905df7c',
   ])('attributes people and agents for viewer %s', async (viewerUserId) => {
     const messages = ItemSchema.array().parse([
       ITEMS[0],
       {
         ...ITEMS[0],
-        id: 'other',
-        actor: { kind: 'user', id: 'user_other' },
+        id: 'it_00000000-0000-7670-93ab-28e0c439d4f7',
+        actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
         text: 'Other person.',
       },
       {
         ...ITEMS[0],
-        id: 'unknown',
-        actor: { kind: 'user', id: 'user_unknown' },
+        id: 'it_00000000-0000-7a85-8cdd-896abe379ad8',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7838-b1bf-3222f1a8d6a7' },
         text: 'Unknown person.',
       },
       {
         ...ITEMS[0],
-        id: 'automation',
-        actor: { kind: 'automation', id: 'automation_daily', responsibleUserId: 'user_editor' },
+        id: 'it_00000000-0000-78cd-bf21-01c4693d8efa',
+        actor: {
+          kind: 'automation',
+          id: 'auto_00000000-0000-7db2-8081-9e80c1ee615a',
+          responsibleUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+        },
         text: 'Scheduled input.',
       },
       ITEMS[1],
-      { ...ITEMS[1], id: 'internal', turnId: 't2', text: 'Internal reply.' },
+      {
+        ...ITEMS[1],
+        id: 'it_00000000-0000-72dd-9e78-ec589912dbf1',
+        turnId: 'tu_00000000-0000-7229-8099-120c4bdc703e',
+        text: 'Internal reply.',
+      },
     ]);
     const client = makeClient(
       { 'thread.items': vi.fn().mockResolvedValue({ items: messages, nextCursor: null }) },
@@ -2439,28 +2679,35 @@ describe('thread lifecycle and attribution (S7)', () => {
         'thread.dashboard': vi.fn().mockResolvedValue({
           viewerUserId,
           participants: [
-            { kind: 'user', id: 'user_editor', displayName: 'Simon' },
-            { kind: 'user', id: 'user_other', displayName: 'Alex' },
+            { kind: 'user', id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c', displayName: 'Simon' },
+            { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', displayName: 'Alex' },
             { kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' },
           ],
           turns: [{ ...COMPLETED_TURN, agentId: 'agent_codex_host' }],
         }),
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     const own = await screen.findByRole('article', {
-      name: `Message from Simon${viewerUserId === 'user_editor' ? ' (You)' : ''}`,
+      name: `Message from Simon${viewerUserId === 'usr_00000000-0000-7609-aed5-db4b5c95e76c' ? ' (You)' : ''}`,
     });
-    expect(own).toHaveClass(viewerUserId === 'user_editor' ? 'items-end' : 'items-start');
+    expect(own).toHaveClass(
+      viewerUserId === 'usr_00000000-0000-7609-aed5-db4b5c95e76c' ? 'items-end' : 'items-start'
+    );
     expect(within(own).getByRole('img', { name: 'Simon' })).toHaveClass('rounded-full');
     const other = screen.getByRole('article', {
-      name: `Message from Alex${viewerUserId === 'user_other' ? ' (You)' : ''}`,
+      name: `Message from Alex${viewerUserId === 'usr_00000000-0000-73d4-904a-d4c4b905df7c' ? ' (You)' : ''}`,
     });
-    expect(other).toHaveClass(viewerUserId === 'user_other' ? 'items-end' : 'items-start');
-    expect(within(other).getByRole('img', { name: 'Alex' })).toHaveClass('rounded-full');
-    expect(screen.getByRole('article', { name: 'Message from user_unknown' })).toHaveClass(
-      'items-start'
+    expect(other).toHaveClass(
+      viewerUserId === 'usr_00000000-0000-73d4-904a-d4c4b905df7c' ? 'items-end' : 'items-start'
     );
+    expect(within(other).getByRole('img', { name: 'Alex' })).toHaveClass('rounded-full');
+    expect(
+      screen.getByRole('article', { name: 'Message from usr_00000000-0000-7838-b1bf-3222f1a8d6a7' })
+    ).toHaveClass('items-start');
     const worker = screen.getByRole('article', { name: 'Message from Codex Agent' });
     expect(within(worker).getByRole('img', { name: 'Codex Agent' })).toHaveClass('rounded-ok');
     expect(
@@ -2469,9 +2716,11 @@ describe('thread lifecycle and attribution (S7)', () => {
       )
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole('article', { name: 'Message from automation_daily' })).getByText(
-        'Scheduled input.'
-      )
+      within(
+        screen.getByRole('article', {
+          name: 'Message from auto_00000000-0000-7db2-8081-9e80c1ee615a',
+        })
+      ).getByText('Scheduled input.')
     ).toBeInTheDocument();
   });
 
@@ -2484,7 +2733,10 @@ describe('thread lifecycle and attribution (S7)', () => {
       .mockResolvedValueOnce({ ...THREAD, name: 'Market map' });
     const client = makeClient({ 'thread.update': updateThread });
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
     const name = screen.getByRole('textbox', { name: 'Thread name' });
@@ -2494,8 +2746,8 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     await waitFor(() =>
       expect(updateThread).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
-        threadId: 'th1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
         name: 'Market map',
       })
     );
@@ -2516,10 +2768,16 @@ describe('thread lifecycle and attribution (S7)', () => {
     const archiveThread = vi.fn().mockReturnValue(archiveResult.promise);
     const client = makeClient({ 'thread.archive': archiveThread });
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     await user.click(await screen.findByRole('button', { name: 'Archive thread' }));
-    expect(archiveThread).toHaveBeenCalledWith({ workspaceId: 'ws1', threadId: 'th1' });
+    expect(archiveThread).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    });
     expect(screen.queryByText('Archived')).not.toBeInTheDocument();
 
     await act(async () => archiveResult.resolve({ ...THREAD, status: 'archived' }));
@@ -2559,13 +2817,16 @@ describe('thread lifecycle and attribution (S7)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
     expect(interruptTurn).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
-      threadId: 'th1',
-      turnId: 't1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     });
     expect(screen.queryByText('Interrupted')).not.toBeInTheDocument();
 
@@ -2592,14 +2853,14 @@ describe('thread lifecycle and attribution (S7)', () => {
     const mutation = vi.fn().mockReturnValue(pending.promise);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws2',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBTurn = TurnSchema.parse({
       ...ACTIVE_TURN,
-      workspaceId: 'ws2',
-      triggerActor: { kind: 'user', id: 'user_workspace_b' },
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
     });
     const subscribeTurnEvents = vi.fn().mockReturnValue({
       [Symbol.asyncIterator]() {
@@ -2618,18 +2879,22 @@ describe('thread lifecycle and attribution (S7)', () => {
         'thread.read': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
+            Promise.resolve(
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
+            )
           ),
-        'thread.list': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
-          ),
+        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve({
+            items: [
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
+            ],
+          })
+        ),
         'thread.items': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve({
-              items: workspaceId === 'ws2' ? [] : ITEMS,
+              items: workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? [] : ITEMS,
               nextCursor: null,
             })
           ),
@@ -2640,12 +2905,19 @@ describe('thread lifecycle and attribution (S7)', () => {
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve({
-              turns: [workspaceId === 'ws2' ? workspaceBTurn : ACTIVE_TURN],
+              turns: [
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? workspaceBTurn
+                  : ACTIVE_TURN,
+              ],
             })
           ),
       }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client);
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     if (command === 'rename') {
       await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
@@ -2663,10 +2935,21 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     const expectedArgs =
       command === 'rename'
-        ? { workspaceId: 'ws1', threadId: 'th1', name: 'Workspace A renamed' }
+        ? {
+            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            name: 'Workspace A renamed',
+          }
         : command === 'archive'
-          ? { workspaceId: 'ws1', threadId: 'th1' }
-          : { workspaceId: 'ws1', threadId: 'th1', turnId: 't1' };
+          ? {
+              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            }
+          : {
+              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+            };
     await waitFor(() => expect(mutation).toHaveBeenCalledWith(expectedArgs));
 
     await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
@@ -2693,12 +2976,22 @@ describe('thread lifecycle and attribution (S7)', () => {
     if (command === 'interrupt') {
       expect(
         queryClient.getQueryData<{ turns: (typeof workspaceBTurn)[] }>(
-          chatKeys.dashboard('ws2', 'th1')
+          chatKeys.dashboard(
+            'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          )
         )?.turns[0]
       ).toEqual(workspaceBTurn);
       expect(screen.queryByText('Interrupted')).not.toBeInTheDocument();
     } else {
-      expect(queryClient.getQueryData(chatKeys.thread('ws2', 'th1'))).toEqual(workspaceBThread);
+      expect(
+        queryClient.getQueryData(
+          chatKeys.thread(
+            'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          )
+        )
+      ).toEqual(workspaceBThread);
       expect(screen.queryByText('Archived')).not.toBeInTheDocument();
     }
     expect(screen.getByRole('heading', { name: 'Workspace B teardown' })).toBeInTheDocument();
@@ -2719,14 +3012,14 @@ describe('thread lifecycle and attribution (S7)', () => {
     const workspaceBRequest = createDeferred<unknown>();
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws2',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBTurn = TurnSchema.parse({
       ...ACTIVE_TURN,
-      workspaceId: 'ws2',
-      triggerActor: { kind: 'user', id: 'user_workspace_b' },
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
     });
     const workspaceAResult =
       command === 'rename'
@@ -2752,7 +3045,8 @@ describe('thread lifecycle and attribution (S7)', () => {
             });
     let workspaceACallCount = 0;
     const mutation = vi.fn((input: { workspaceId: string }) => {
-      if (input.workspaceId === 'ws2') return workspaceBRequest.promise;
+      if (input.workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6')
+        return workspaceBRequest.promise;
       workspaceACallCount += 1;
       return workspaceACallCount === 1
         ? workspaceARequest.promise
@@ -2775,13 +3069,17 @@ describe('thread lifecycle and attribution (S7)', () => {
         'thread.read': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
+            Promise.resolve(
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
+            )
           ),
-        'thread.list': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
-          ),
+        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve({
+            items: [
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
+            ],
+          })
+        ),
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         subscribeTurnEvents,
       },
@@ -2789,12 +3087,21 @@ describe('thread lifecycle and attribution (S7)', () => {
         'thread.dashboard': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve({ turns: [workspaceId === 'ws2' ? workspaceBTurn : ACTIVE_TURN] })
+            Promise.resolve({
+              turns: [
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? workspaceBTurn
+                  : ACTIVE_TURN,
+              ],
+            })
           ),
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     if (command === 'rename') {
       await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
@@ -2812,10 +3119,21 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     const workspaceAArgs =
       command === 'rename'
-        ? { workspaceId: 'ws1', threadId: 'th1', name: 'Workspace A renamed' }
+        ? {
+            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            name: 'Workspace A renamed',
+          }
         : command === 'archive'
-          ? { workspaceId: 'ws1', threadId: 'th1' }
-          : { workspaceId: 'ws1', threadId: 'th1', turnId: 't1' };
+          ? {
+              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            }
+          : {
+              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+            };
     await waitFor(() => expect(mutation).toHaveBeenCalledWith(workspaceAArgs));
 
     await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
@@ -2839,10 +3157,21 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     const workspaceBArgs =
       command === 'rename'
-        ? { workspaceId: 'ws2', threadId: 'th1', name: 'Workspace B renamed' }
+        ? {
+            workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            name: 'Workspace B renamed',
+          }
         : command === 'archive'
-          ? { workspaceId: 'ws2', threadId: 'th1' }
-          : { workspaceId: 'ws2', threadId: 'th1', turnId: 't1' };
+          ? {
+              workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            }
+          : {
+              workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+            };
     await waitFor(() => expect(mutation).toHaveBeenCalledWith(workspaceBArgs));
 
     await act(async () => {
@@ -2924,7 +3253,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       .mockReturnValueOnce(secondInterrupt.promise);
     const secondActiveTurn = TurnSchema.parse({
       ...ACTIVE_TURN,
-      id: 't2',
+      id: 'tu_00000000-0000-7229-8099-120c4bdc703e',
       startedAt: '2026-07-21T00:00:04.000Z',
     });
     const subscribeTurnEvents = vi.fn().mockReturnValue({
@@ -2955,29 +3284,38 @@ describe('thread lifecycle and attribution (S7)', () => {
         }),
       }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client);
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't stop this turn.");
     expect(interruptTurn).toHaveBeenNthCalledWith(1, {
-      workspaceId: 'ws1',
-      threadId: 'th1',
-      turnId: 't1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     });
 
     act(() =>
-      queryClient.setQueryData(chatKeys.dashboard('ws1', 'th1'), {
-        turns: [COMPLETED_TURN, secondActiveTurn],
-      })
+      queryClient.setQueryData(
+        chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        ),
+        {
+          turns: [COMPLETED_TURN, secondActiveTurn],
+        }
+      )
     );
 
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Stop turn' }));
     expect(interruptTurn).toHaveBeenNthCalledWith(2, {
-      workspaceId: 'ws1',
-      threadId: 'th1',
-      turnId: 't2',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+      turnId: 'tu_00000000-0000-7229-8099-120c4bdc703e',
     });
   });
 
@@ -2986,7 +3324,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     const updateThread = vi.fn().mockResolvedValue(THREAD);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws2',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
@@ -2995,11 +3333,16 @@ describe('thread lifecycle and attribution (S7)', () => {
       'thread.read': vi
         .fn()
         .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-          Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
+          Promise.resolve(
+            workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
+          )
         ),
     });
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
     const name = screen.getByRole('textbox', { name: 'Thread name' });
     await user.clear(name);
@@ -3014,8 +3357,8 @@ describe('thread lifecycle and attribution (S7)', () => {
     const save = screen.queryByRole('button', { name: 'Save' });
     if (save) await user.click(save);
     expect(updateThread).not.toHaveBeenCalledWith({
-      workspaceId: 'ws2',
-      threadId: 'th1',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
       name: 'Workspace A draft',
     });
     expect(updateThread).not.toHaveBeenCalled();
@@ -3029,7 +3372,10 @@ describe('thread lifecycle and attribution (S7)', () => {
       .mockResolvedValueOnce({ ...THREAD, status: 'archived' });
     const client = makeClient({ 'thread.archive': archiveThread });
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await user.click(await screen.findByRole('button', { name: 'Archive thread' }));
 
     const alert = await screen.findByRole('alert');
@@ -3039,8 +3385,14 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(archiveThread).toHaveBeenCalledTimes(2));
-    expect(archiveThread).toHaveBeenNthCalledWith(1, { workspaceId: 'ws1', threadId: 'th1' });
-    expect(archiveThread).toHaveBeenNthCalledWith(2, { workspaceId: 'ws1', threadId: 'th1' });
+    expect(archiveThread).toHaveBeenNthCalledWith(1, {
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    });
+    expect(archiveThread).toHaveBeenNthCalledWith(2, {
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    });
     expect(await screen.findByText('Archived')).toBeInTheDocument();
   });
 
@@ -3085,7 +3437,10 @@ describe('thread lifecycle and attribution (S7)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
 
     const alert = await screen.findByRole('alert');
@@ -3095,15 +3450,19 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(interruptTurn).toHaveBeenCalledTimes(2));
-    const args = { workspaceId: 'ws1', threadId: 'th1', turnId: 't1' };
+    const args = {
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+    };
     expect(interruptTurn).toHaveBeenNthCalledWith(1, args);
     expect(interruptTurn).toHaveBeenNthCalledWith(2, args);
     expect(await screen.findByText('Interrupted')).toBeInTheDocument();
   });
 
   it.each([
-    ['local', 'user_local'],
-    ['server', 'user_server'],
+    ['local', 'usr_00000000-0000-7000-8000-000000000001'],
+    ['server', 'usr_00000000-0000-7c6a-be9d-0973844c8526'],
   ])('renders the exact %s user-message actor without deployment-mode probing', async (_, actorId) => {
     const setupDiagnosticsOperation = vi.fn().mockRejectedValue(new Error('must not be called'));
     const client = makeClient(
@@ -3116,7 +3475,10 @@ describe('thread lifecycle and attribution (S7)', () => {
       { 'diagnostics.setup': setupDiagnosticsOperation }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText(new RegExp(actorId))).toBeInTheDocument();
     expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
@@ -3127,13 +3489,13 @@ describe('thread lifecycle and attribution (S7)', () => {
       'thread.items': vi.fn().mockResolvedValue({
         items: ItemSchema.array().parse([
           {
-            id: 'i-decision',
-            workspaceId: 'ws1',
-            threadId: 'th1',
+            id: 'it_00000000-0000-799d-8511-6b79b6446a1d',
+            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             type: 'approval-decision',
-            turnId: 't1',
+            turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
             status: 'completed',
-            actor: { kind: 'user', id: 'user_approver' },
+            actor: { kind: 'user', id: 'usr_00000000-0000-7a12-a95f-975ecdd21953' },
             causationId: 'req_approval',
             approvalRequestId: 'ap1',
             decision: 'granted',
@@ -3142,13 +3504,13 @@ describe('thread lifecycle and attribution (S7)', () => {
             completedAt: '2026-07-21T00:00:03.000Z',
           },
           {
-            id: 'i-response',
-            workspaceId: 'ws1',
-            threadId: 'th1',
+            id: 'it_00000000-0000-7ac7-8058-2f2d482b7437',
+            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             type: 'user-input-response',
-            turnId: 't1',
+            turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
             status: 'completed',
-            actor: { kind: 'user', id: 'user_responder' },
+            actor: { kind: 'user', id: 'usr_00000000-0000-7580-8c3b-db9da7a361ae' },
             causationId: 'req_response',
             userInputRequestId: 'input1',
             answers: { question1: ['Yes'] },
@@ -3161,10 +3523,15 @@ describe('thread lifecycle and attribution (S7)', () => {
       }),
     });
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
-    expect(await screen.findByText('by user_approver')).toBeInTheDocument();
-    expect(screen.getByText(/user_responder/)).toBeInTheDocument();
+    expect(
+      await screen.findByText('by usr_00000000-0000-7a12-a95f-975ecdd21953')
+    ).toBeInTheDocument();
+    expect(screen.getByText(/usr_00000000-0000-7580-8c3b-db9da7a361ae/)).toBeInTheDocument();
   });
 
   it('renders the exact active-turn trigger actor from the typed dashboard projection', async () => {
@@ -3186,8 +3553,8 @@ describe('thread lifecycle and attribution (S7)', () => {
               ...ACTIVE_TURN,
               triggerActor: {
                 kind: 'automation',
-                id: 'automation_release',
-                responsibleUserId: 'user_operator',
+                id: 'auto_00000000-0000-77df-8c37-4f4fdb2227b8',
+                responsibleUserId: 'usr_00000000-0000-7968-a053-ad9e71464afe',
               },
             }),
           ],
@@ -3196,27 +3563,32 @@ describe('thread lifecycle and attribution (S7)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
-    expect(await screen.findByText(/automation_release/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/auto_00000000-0000-77df-8c37-4f4fdb2227b8/)
+    ).toBeInTheDocument();
     expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
   });
 
   it.each([
     {
       label: 'matching viewer',
-      triggerActor: { kind: 'user' as const, id: 'user_admin' },
+      triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
       expected: 'Triggered by Administrator (You)',
-      unexpected: ['user_admin'],
+      unexpected: ['usr_00000000-0000-768a-8658-44c33d82c1f5'],
     },
     {
-      label: 'automation sharing a user id',
+      label: 'automation sharing a User UUID body',
       triggerActor: {
         kind: 'automation' as const,
-        id: 'user_admin',
-        responsibleUserId: 'user_admin',
+        id: 'auto_00000000-0000-768a-8658-44c33d82c1f5',
+        responsibleUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       },
-      expected: 'Triggered by user_admin',
+      expected: 'Triggered by auto_00000000-0000-768a-8658-44c33d82c1f5',
       unexpected: ['Administrator', '(You)'],
     },
   ])('resolves the running Task trigger for a $label without borrowing another kind', async ({
@@ -3245,14 +3617,23 @@ describe('thread lifecycle and attribution (S7)', () => {
               disposition: null,
             },
           ],
-          viewerUserId: 'user_admin',
-          participants: [{ kind: 'user', id: 'user_admin', displayName: 'Administrator' }],
+          viewerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+          participants: [
+            {
+              kind: 'user',
+              id: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+              displayName: 'Administrator',
+            },
+          ],
           turns: [TurnSchema.parse({ ...ACTIVE_TURN, triggerActor })],
         }),
       }
     );
 
-    renderApp('/tasks/ws1/th1', client);
+    renderApp(
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText(expected)).toBeInTheDocument();
     for (const value of unexpected) {
@@ -3265,7 +3646,10 @@ describe('thread lifecycle and attribution (S7)', () => {
       'thread.items': vi.fn().mockResolvedValue({ items: [ITEMS[1]], nextCursor: null }),
     });
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
     expect(screen.queryByText(/^by\s/)).not.toBeInTheDocument();
@@ -3275,7 +3659,7 @@ describe('thread lifecycle and attribution (S7)', () => {
 describe('live turn subscription (S6)', () => {
   it('refreshes a newly arriving author even with a cached dashboard', async () => {
     const dashboard = {
-      viewerUserId: 'user_editor',
+      viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
       participants: [],
       pendingRequests: [
         {
@@ -3299,15 +3683,17 @@ describe('live turn subscription (S6)', () => {
       .mockResolvedValueOnce(dashboard)
       .mockResolvedValue({
         ...dashboard,
-        participants: [{ kind: 'user', id: 'user_other', displayName: 'Alex' }],
+        participants: [
+          { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', displayName: 'Alex' },
+        ],
       });
     async function* stream() {
       yield turnStreamEvent(1, 'item.created', {
         type: 'item-created',
         item: {
           ...ITEMS[0],
-          id: 'live-human',
-          actor: { kind: 'user', id: 'user_other' },
+          id: 'it_00000000-0000-71e7-aa1f-57ab2b827ff6',
+          actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
           text: 'New participant.',
         },
       });
@@ -3319,7 +3705,10 @@ describe('live turn subscription (S6)', () => {
       },
       { 'thread.dashboard': getThreadDashboard }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     const message = await screen.findByRole('article', { name: 'Message from Alex' });
     expect(message).toHaveClass('items-start');
     expect(within(message).getByText('New participant.')).toBeInTheDocument();
@@ -3388,7 +3777,10 @@ describe('live turn subscription (S6)', () => {
       { 'thread.dashboard': getThreadDashboard, 'conversation.submit': submitConversation }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(1));
 
     if (command === 'send') {
@@ -3403,9 +3795,9 @@ describe('live turn subscription (S6)', () => {
     await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(subscribeTurnEvents).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
-        threadId: 'th1',
-        turnId: 't1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       })
     );
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
@@ -3480,14 +3872,17 @@ describe('live turn subscription (S6)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     await waitFor(() =>
       expect(subscribeTurnEvents).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
-          turnId: 't1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+          turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
         })
       )
     );
@@ -3539,7 +3934,10 @@ describe('live turn subscription (S6)', () => {
         }),
       }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client);
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
@@ -3550,7 +3948,10 @@ describe('live turn subscription (S6)', () => {
     await waitFor(() =>
       expect(
         queryClient.getQueryData<Pick<ThreadDashboardResponse, 'turns' | 'pendingRequests'>>(
-          chatKeys.dashboard('ws1', 'th1')
+          chatKeys.dashboard(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          )
         )?.turns
       ).toEqual([COMPLETED_TURN])
     );
@@ -3605,12 +4006,22 @@ describe('live turn subscription (S6)', () => {
         }),
       }
     );
-    const itemsKey = chatKeys.items('ws1', 'th1');
-    const dashboardKey = chatKeys.dashboard('ws1', 'th1');
-    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
-      cache.setQueryDefaults(itemsKey, { staleTime: Number.POSITIVE_INFINITY });
-      cache.setQueryData(itemsKey, ITEMS, { updatedAt: 1 });
-    });
+    const itemsKey = chatKeys.items(
+      'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      'th_00000000-0000-70a0-9cde-4561f64881c6'
+    );
+    const dashboardKey = chatKeys.dashboard(
+      'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      'th_00000000-0000-70a0-9cde-4561f64881c6'
+    );
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client,
+      (cache) => {
+        cache.setQueryDefaults(itemsKey, { staleTime: Number.POSITIVE_INFINITY });
+        cache.setQueryData(itemsKey, ITEMS, { updatedAt: 1 });
+      }
+    );
 
     expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
@@ -3704,10 +4115,26 @@ describe('live turn subscription (S6)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client, (queryClient) => {
-      queryClient.setQueryDefaults(chatKeys.items('ws1', 'th1'), { staleTime: 5_000 });
-      queryClient.setQueryData(chatKeys.items('ws1', 'th1'), [ITEMS[0]]);
-    });
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client,
+      (queryClient) => {
+        queryClient.setQueryDefaults(
+          chatKeys.items(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          ),
+          { staleTime: 5_000 }
+        );
+        queryClient.setQueryData(
+          chatKeys.items(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          ),
+          [ITEMS[0]]
+        );
+      }
+    );
 
     expect(await screen.findByText('Draft a competitive teardown.')).toBeInTheDocument();
     expect(listThreadItems).not.toHaveBeenCalled();
@@ -3789,10 +4216,26 @@ describe('live turn subscription (S6)', () => {
         'conversation.submit': submitConversation,
       }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
-      cache.setQueryDefaults(chatKeys.items('ws1', 'th1'), { staleTime: 5_000 });
-      cache.setQueryData(chatKeys.items('ws1', 'th1'), ITEMS);
-    });
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client,
+      (cache) => {
+        cache.setQueryDefaults(
+          chatKeys.items(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          ),
+          { staleTime: 5_000 }
+        );
+        cache.setQueryData(
+          chatKeys.items(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          ),
+          ITEMS
+        );
+      }
+    );
 
     expect(await screen.findByText('Draft a competitive teardown.')).toBeInTheDocument();
     expect(listThreadItems).not.toHaveBeenCalled();
@@ -3802,7 +4245,14 @@ describe('live turn subscription (S6)', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(listThreadItems).toHaveBeenCalledTimes(1));
-    expect(queryClient.getQueryState(chatKeys.items('ws1', 'th1'))?.fetchStatus).toBe('fetching');
+    expect(
+      queryClient.getQueryState(
+        chatKeys.items(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        )
+      )?.fetchStatus
+    ).toBe('fetching');
     expect(returnStream).not.toHaveBeenCalled();
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
 
@@ -3819,7 +4269,12 @@ describe('live turn subscription (S6)', () => {
     expect(screen.getAllByText('Authoritative command-refetch result')).toHaveLength(1);
     expect(
       queryClient
-        .getQueryData<{ id: string }[]>(chatKeys.items('ws1', 'th1'))
+        .getQueryData<{ id: string }[]>(
+          chatKeys.items(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          )
+        )
         ?.filter((item) => item.id === STREAMING_ITEM.id)
     ).toHaveLength(1);
     expect(returnStream).not.toHaveBeenCalled();
@@ -3893,7 +4348,10 @@ describe('live turn subscription (S6)', () => {
       }
     );
 
-    const queryClient = renderApp('/chat/ws1/th1', client);
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await screen.findByText('Draft a competitive teardown.');
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start interleaved work');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -3920,7 +4378,7 @@ describe('live turn subscription (S6)', () => {
   it('settles the first authoritative remount baseline before starting the stream', async () => {
     const serverOnlyItem = {
       ...STREAMING_ITEM,
-      id: 'i-server-only',
+      id: 'it_00000000-0000-7e64-9e62-31f9c01e3e1b',
       status: 'completed',
       text: 'Authoritative server-only item',
       completedAt: '2026-07-21T00:00:01.500Z',
@@ -3979,9 +4437,19 @@ describe('live turn subscription (S6)', () => {
       { 'thread.items': listThreadItems, subscribeTurnEvents },
       { 'thread.dashboard': vi.fn().mockReturnValue(dashboard) }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
-      cache.setQueryData(chatKeys.items('ws1', 'th1'), [ITEMS[0]]);
-    });
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client,
+      (cache) => {
+        cache.setQueryData(
+          chatKeys.items(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          ),
+          [ITEMS[0]]
+        );
+      }
+    );
 
     await waitFor(() => expect(listThreadItems).toHaveBeenCalledTimes(1));
     await act(async () => {
@@ -4006,7 +4474,14 @@ describe('live turn subscription (S6)', () => {
       await dashboard;
     });
     await waitFor(() =>
-      expect(queryClient.getQueryState(chatKeys.dashboard('ws1', 'th1'))?.status).toBe('success')
+      expect(
+        queryClient.getQueryState(
+          chatKeys.dashboard(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          )
+        )?.status
+      ).toBe('success')
     );
     expect(subscribeTurnEvents).not.toHaveBeenCalled();
 
@@ -4021,7 +4496,12 @@ describe('live turn subscription (S6)', () => {
     releaseStream();
     expect(await screen.findByText('Authoritative remount stream item')).toBeInTheDocument();
     expect(screen.getAllByText('Authoritative remount stream item')).toHaveLength(1);
-    const finalItems = queryClient.getQueryData<{ id: string }[]>(chatKeys.items('ws1', 'th1'));
+    const finalItems = queryClient.getQueryData<{ id: string }[]>(
+      chatKeys.items(
+        'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        'th_00000000-0000-70a0-9cde-4561f64881c6'
+      )
+    );
     expect(finalItems?.filter((item) => item.id === serverOnlyItem.id)).toHaveLength(1);
     expect(finalItems?.filter((item) => item.id === STREAMING_ITEM.id)).toHaveLength(1);
   });
@@ -4082,7 +4562,10 @@ describe('live turn subscription (S6)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
@@ -4145,7 +4628,10 @@ describe('live turn subscription (S6)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
@@ -4208,7 +4694,10 @@ describe('live turn subscription (S6)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText('Already authoritative')).toBeInTheDocument();
     releaseReplay();
@@ -4220,10 +4709,10 @@ describe('live turn subscription (S6)', () => {
 describe('open thread external activity', () => {
   const idleTurn = COMPLETED_TURN;
   const laterItem = ItemSchema.parse({
-    id: 'i48',
-    workspaceId: 'ws1',
-    threadId: 'th1',
-    turnId: 't48',
+    id: 'it_00000000-0000-7025-9336-d2c7c3d76ac2',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7e0f-94c8-e1078c4837c1',
     type: 'assistant-message',
     status: 'completed',
     text: 'CATALOG_OK_GROK',
@@ -4258,7 +4747,7 @@ describe('open thread external activity', () => {
         idleTurn,
         TurnSchema.parse({
           ...idleTurn,
-          id: 't48',
+          id: 'tu_00000000-0000-7e0f-94c8-e1078c4837c1',
           startedAt: '2026-07-21T00:01:00.000Z',
           completedAt: '2026-07-21T00:01:00.000Z',
         }),
@@ -4286,10 +4775,10 @@ describe('open thread external activity', () => {
           ...CONVERSATION_TARGET.targets,
           {
             ...CONVERSATION_TARGET.targets[1]!,
-            targetRef: 'running-worker:th1',
+            targetRef: 'running-worker:th_00000000-0000-70a0-9cde-4561f64881c6',
             kind: 'running-worker' as const,
             label: 'Current Worker',
-            threadId: 'th1',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             availability: completed ? ('available' as const) : ('unavailable' as const),
             unavailableReason: completed ? null : 'Worker is busy.',
           },
@@ -4334,7 +4823,7 @@ describe('open thread external activity', () => {
       vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     }
     renderApp(
-      '/tasks/ws1/th1',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn(async () => ({ items: ITEMS, nextCursor: null })),
@@ -4372,7 +4861,9 @@ describe('open thread external activity', () => {
     ).toBeInTheDocument();
     expect(
       getConversationTargets.mock.calls.every(
-        ([{ workspaceId, threadId }]) => workspaceId === 'ws1' && threadId === 'th1'
+        ([{ workspaceId, threadId }]) =>
+          workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
+          threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
       )
     ).toBe(true);
   });
@@ -4384,7 +4875,7 @@ describe('open thread external activity', () => {
     const getThreadDashboard = vi.fn(async () => ({ turns: [idleTurn] }));
     const listThreads = vi.fn(async () => ({ items: [THREAD] }));
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': listThreadItems, 'thread.list': listThreads },
         { 'thread.dashboard': getThreadDashboard }
@@ -4437,7 +4928,7 @@ describe('open thread external activity', () => {
     };
     const getThreadDashboard = vi.fn().mockResolvedValue(initialDashboard);
     const queryClient = renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi
@@ -4453,10 +4944,30 @@ describe('open thread external activity', () => {
 
     getThreadDashboard.mockRejectedValue(new ApiCallError(status, 'Private refresh diagnostic'));
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: chatKeys.dashboard('ws1', 'th1'), exact: true });
+      await queryClient.refetchQueries({
+        queryKey: chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        ),
+        exact: true,
+      });
     });
-    expect(queryClient.getQueryState(chatKeys.dashboard('ws1', 'th1'))?.status).toBe('error');
-    expect(queryClient.getQueryData(chatKeys.dashboard('ws1', 'th1'))).toEqual(initialDashboard);
+    expect(
+      queryClient.getQueryState(
+        chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        )
+      )?.status
+    ).toBe('error');
+    expect(
+      queryClient.getQueryData(
+        chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        )
+      )
+    ).toEqual(initialDashboard);
     await waitFor(() =>
       expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument()
     );
@@ -4478,9 +4989,14 @@ describe('open thread external activity', () => {
     getThreadDashboard.mockImplementation(() => recovery.promise);
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
-      expect(queryClient.getQueryState(chatKeys.dashboard('ws1', 'th1'))?.fetchStatus).toBe(
-        'fetching'
-      )
+      expect(
+        queryClient.getQueryState(
+          chatKeys.dashboard(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          )
+        )?.fetchStatus
+      ).toBe('fetching')
     );
     expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
     expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
@@ -4516,7 +5032,7 @@ describe('open thread external activity', () => {
     }));
     const listThreadItems = vi.fn(async () => ({ items: ITEMS, nextCursor: null }));
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
@@ -4536,7 +5052,7 @@ describe('open thread external activity', () => {
     const listThreadItems = vi.fn(async () => ({ items, nextCursor: null }));
     const getThreadDashboard = vi.fn(async () => laterDashboard());
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
@@ -4589,7 +5105,7 @@ describe('open thread external activity', () => {
     }
     const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
     const queryClient = renderApp(
-      '/tasks/ws1/th1',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': listThreadItems, subscribeTurnEvents },
         { 'thread.dashboard': getThreadDashboard }
@@ -4613,7 +5129,9 @@ describe('open thread external activity', () => {
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
     expect(
       getThreadDashboard.mock.calls.every(
-        ([{ workspaceId, threadId }]) => workspaceId === 'ws1' && threadId === 'th1'
+        ([{ workspaceId, threadId }]) =>
+          workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
+          threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
       )
     ).toBe(true);
     expect(screen.getByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
@@ -4623,9 +5141,14 @@ describe('open thread external activity', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
-    expect(queryClient.getQueryState(chatKeys.dashboard('ws1', 'th1'))?.fetchStatus).toBe(
-      'fetching'
-    );
+    expect(
+      queryClient.getQueryState(
+        chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        )
+      )?.fetchStatus
+    ).toBe('fetching');
     await act(async () => {
       completed.resolve();
     });
@@ -4655,7 +5178,10 @@ describe('open thread external activity', () => {
     });
     expect(
       queryClient.getQueryData<{ turns: Array<{ status: string }> }>(
-        chatKeys.dashboard('ws1', 'th1')
+        chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        )
       )?.turns[0]?.status
     ).toBe('completed');
   });
@@ -4668,7 +5194,7 @@ describe('open thread external activity', () => {
       await new Promise(() => undefined);
     }
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
         {
@@ -4705,20 +5231,24 @@ describe('open thread external activity', () => {
     const user = userEvent.setup();
     const otherThread = {
       ...THREAD,
-      id: 'th2',
+      id: 'th_00000000-0000-7c00-b9fc-382312fdf476',
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const listConversationNavigation = vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
       items:
-        workspaceId === 'ws1'
+        workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0'
           ? [
               navigationItem(THREAD, '2026-07-21T00:00:02.000Z'),
               navigationItem(otherThread, '2026-07-21T00:00:00.000Z'),
             ]
           : [
               navigationItem(
-                { ...otherThread, workspaceId: 'ws2', name: 'Second workspace thread' },
+                {
+                  ...otherThread,
+                  workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+                  name: 'Second workspace thread',
+                },
                 '2026-07-21T00:00:00.000Z'
               ),
             ],
@@ -4726,13 +5256,13 @@ describe('open thread external activity', () => {
     const listThreadItems = vi.fn(
       async ({ workspaceId, threadId }: { workspaceId: string; threadId: string }) => ({
         items:
-          threadId === 'th2'
+          threadId === 'th_00000000-0000-7c00-b9fc-382312fdf476'
             ? [
                 ItemSchema.parse({
                   ...ITEMS[0],
-                  id: 'i-th2',
+                  id: 'it_00000000-0000-7b75-87ae-cd4800676a62',
                   workspaceId,
-                  threadId: 'th2',
+                  threadId: 'th_00000000-0000-7c00-b9fc-382312fdf476',
                   text: 'Other thread baseline.',
                 }),
               ]
@@ -4742,22 +5272,28 @@ describe('open thread external activity', () => {
     );
     const getThread = vi.fn(
       async ({ workspaceId, threadId }: { workspaceId: string; threadId: string }) =>
-        threadId === 'th2'
+        threadId === 'th_00000000-0000-7c00-b9fc-382312fdf476'
           ? {
               ...otherThread,
               workspaceId,
-              name: workspaceId === 'ws2' ? 'Second workspace thread' : otherThread.name,
+              name:
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? 'Second workspace thread'
+                  : otherThread.name,
             }
           : THREAD
     );
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.read': getThread,
           'thread.items': listThreadItems,
           'thread.list': vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
-            items: workspaceId === 'ws1' ? [THREAD, otherThread] : [otherThread],
+            items:
+              workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0'
+                ? [THREAD, otherThread]
+                : [otherThread],
           })),
         },
         {
@@ -4769,16 +5305,20 @@ describe('open thread external activity', () => {
 
     expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
     const th1ItemCalls = listThreadItems.mock.calls.filter(
-      ([{ threadId }]) => threadId === 'th1'
+      ([{ threadId }]) => threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
     ).length;
     await user.click(await screen.findByRole('button', { name: 'Workspace B teardown' }));
     expect(await screen.findByText('Other thread baseline.')).toBeInTheDocument();
-    expect(listThreadItems.mock.calls.filter(([{ threadId }]) => threadId === 'th2')).toHaveLength(
-      1
-    );
-    expect(listThreadItems.mock.calls.filter(([{ threadId }]) => threadId === 'th1').length).toBe(
-      th1ItemCalls
-    );
+    expect(
+      listThreadItems.mock.calls.filter(
+        ([{ threadId }]) => threadId === 'th_00000000-0000-7c00-b9fc-382312fdf476'
+      )
+    ).toHaveLength(1);
+    expect(
+      listThreadItems.mock.calls.filter(
+        ([{ threadId }]) => threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
+      ).length
+    ).toBe(th1ItemCalls);
 
     await user.click(await workspaceSelectTrigger());
     await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
@@ -4786,7 +5326,9 @@ describe('open thread external activity', () => {
       await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
     expect(
-      listThreadItems.mock.calls.filter(([{ workspaceId }]) => workspaceId === 'ws2')
+      listThreadItems.mock.calls.filter(
+        ([{ workspaceId }]) => workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+      )
     ).toHaveLength(0);
   });
 });
@@ -4796,7 +5338,10 @@ describe('task thread (board 04)', () => {
     const client = makeClient({
       'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     });
-    renderApp('/tasks/ws1/th1', client);
+    renderApp(
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     expect(await screen.findByRole('img', { name: 'Task' })).toBeInTheDocument();
     expect(await screen.findByText('Approve $5 spend')).toBeInTheDocument();
   });
@@ -4822,15 +5367,18 @@ describe('task thread (board 04)', () => {
       }
     );
 
-    renderApp('/tasks/ws1/th1', client);
+    renderApp(
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Ship the fix');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{
             input: 'Ship the fix',
             targetRef: 'warm-worker:agent_codex_host:default',
@@ -4851,11 +5399,11 @@ describe('task thread (board 04)', () => {
     const user = userEvent.setup();
     const item = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'it_user_t1',
+      id: 'it_00000000-0000-7fab-86e7-3930c0df3025',
       text: INITIATING_REQUEST_TEXT,
     });
     renderApp(
-      '/tasks/ws1/th1',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: [item], nextCursor: null }) },
         {
@@ -4869,7 +5417,7 @@ describe('task thread (board 04)', () => {
                 disposition: null,
               },
             ],
-            viewerUserId: 'user_editor',
+            viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
             turns: [],
             taskInputs: [{ itemId: item.id, objective: INITIATING_OBJECTIVE }],
           }),
@@ -4877,7 +5425,9 @@ describe('task thread (board 04)', () => {
       )
     );
 
-    const article = await screen.findByRole('article', { name: 'Message from user_editor (You)' });
+    const article = await screen.findByRole('article', {
+      name: 'Message from usr_00000000-0000-7609-aed5-db4b5c95e76c (You)',
+    });
     expect(within(article).getByText(INITIATING_OBJECTIVE)).toBeVisible();
     const details = within(article).getByText('View request details').closest('details');
     expect(details).toBeInstanceOf(HTMLDetailsElement);
@@ -4895,17 +5445,17 @@ describe('task thread (board 04)', () => {
   it('leaves ordinary human JSON verbatim when the initiating-request summary is absent or mismatched', async () => {
     const matched = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'it_user_matched',
+      id: 'it_00000000-0000-7763-afd7-6bec90791ac5',
       text: INITIATING_REQUEST_TEXT,
     });
     const unmatched = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'it_user_unmatched',
-      actor: { kind: 'user', id: 'user_other' },
+      id: 'it_00000000-0000-7d02-bceb-2e3812d855a2',
+      actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
       text: '{"schemaVersion":1,"objective":"leave-verbatim"}',
     });
     renderApp(
-      '/tasks/ws1/th1',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi
@@ -4923,16 +5473,25 @@ describe('task thread (board 04)', () => {
                 disposition: null,
               },
             ],
-            viewerUserId: 'user_editor',
+            viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
             turns: [],
-            taskInputs: [{ itemId: 'it_user_other', objective: INITIATING_OBJECTIVE }],
+            taskInputs: [
+              {
+                itemId: 'it_00000000-0000-792a-b057-1c9184591714',
+                objective: INITIATING_OBJECTIVE,
+              },
+            ],
           }),
         }
       )
     );
 
-    const self = await screen.findByRole('article', { name: 'Message from user_editor (You)' });
-    const other = screen.getByRole('article', { name: 'Message from user_other' });
+    const self = await screen.findByRole('article', {
+      name: 'Message from usr_00000000-0000-7609-aed5-db4b5c95e76c (You)',
+    });
+    const other = screen.getByRole('article', {
+      name: 'Message from usr_00000000-0000-73d4-904a-d4c4b905df7c',
+    });
     expect(within(self).getByText(INITIATING_REQUEST_TEXT)).toBeVisible();
     expect(
       within(other).getByText('{"schemaVersion":1,"objective":"leave-verbatim"}')
@@ -4948,27 +5507,30 @@ describe('task thread (board 04)', () => {
     });
     const input = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'it_user_outcome',
+      id: 'it_00000000-0000-7b3e-a44b-d9b7370dfd90',
       actor: {
         kind: 'system',
         id: 'nanocore-pending-request',
-        responsibleUserId: 'user_editor',
+        responsibleUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
       },
       text: envelope,
     });
     const answer = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'it_answer',
+      id: 'it_00000000-0000-7e9b-99cc-a5622f956ef0',
       type: 'user-input-response',
-      causationId: 'it_question',
+      causationId: 'it_00000000-0000-7552-bffa-5f2e0a67b337',
       userInputRequestId: 'uir1',
       answers: { tone: ['Concise'] },
       answeredAt: ITEMS[0]!.createdAt,
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
-        'thread.dashboard': vi.fn().mockResolvedValue({ viewerUserId: 'user_editor', turns: [] }),
+        'thread.dashboard': vi.fn().mockResolvedValue({
+          viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+          turns: [],
+        }),
         'thread.items': vi
           .fn()
           .mockResolvedValue({ items: [ITEMS[0], input, answer], nextCursor: null }),
@@ -4985,17 +5547,21 @@ describe('task thread (board 04)', () => {
   it('applies the same initiating-request projection to self and agent user-message wrappers', async () => {
     const selfItem = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'it_user_self',
+      id: 'it_00000000-0000-70b0-bdba-a70f39b377d6',
       text: INITIATING_REQUEST_TEXT,
     });
     const agentItem = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'it_user_agent',
-      actor: { kind: 'agent', id: 'agent_codex_host', responsibleUserId: 'user_editor' },
+      id: 'it_00000000-0000-7cbd-897f-c447aa35c4cb',
+      actor: {
+        kind: 'agent',
+        id: 'agent_codex_host',
+        responsibleUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+      },
       text: `${INITIATING_REQUEST_TEXT}\n`,
     });
     renderApp(
-      '/tasks/ws1/th1',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi
@@ -5013,7 +5579,7 @@ describe('task thread (board 04)', () => {
                 disposition: null,
               },
             ],
-            viewerUserId: 'user_editor',
+            viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
             participants: [{ kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' }],
             turns: [],
             taskInputs: [
@@ -5025,7 +5591,9 @@ describe('task thread (board 04)', () => {
       )
     );
 
-    const self = await screen.findByRole('article', { name: 'Message from user_editor (You)' });
+    const self = await screen.findByRole('article', {
+      name: 'Message from usr_00000000-0000-7609-aed5-db4b5c95e76c (You)',
+    });
     const agent = screen.getByRole('article', { name: 'Message from Codex Agent' });
     expect(self).toHaveClass('items-end');
     expect(agent).toHaveClass('items-start');
@@ -5062,7 +5630,7 @@ describe('mode entry and feedback (S8)', () => {
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -5075,15 +5643,18 @@ describe('mode entry and feedback (S8)', () => {
       }
     );
 
-    renderApp('/chat/ws_quick_chat/th1', client);
+    renderApp(
+      '/chat/ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Answer directly');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws_quick_chat',
-          threadId: 'th1',
+          workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{
             input: 'Answer directly',
             targetRef: 'internal-role:assistant',
@@ -5102,15 +5673,15 @@ describe('mode entry and feedback (S8)', () => {
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws2',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBItem = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'i-ws2',
-      workspaceId: 'ws2',
-      turnId: 't-ws2',
+      id: 'it_00000000-0000-7dc6-b838-1e3fce692665',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      turnId: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
       text: 'Workspace B stays authoritative.',
     });
     const client = makeClient(
@@ -5118,25 +5689,35 @@ describe('mode entry and feedback (S8)', () => {
         'thread.read': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
+            Promise.resolve(
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
+            )
           ),
-        'thread.list': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
-          ),
+        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve({
+            items: [
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
+            ],
+          })
+        ),
         'thread.items': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve({
-              items: workspaceId === 'ws2' ? [workspaceBItem] : ITEMS,
+              items:
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? [workspaceBItem]
+                  : ITEMS,
               nextCursor: null,
             })
           ),
       },
       { 'conversation.submit': submitConversation }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client);
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
 
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Continue A');
@@ -5144,8 +5725,8 @@ describe('mode entry and feedback (S8)', () => {
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{ input: 'Continue A', targetRef: 'internal-role:assistant' },
         })
       )
@@ -5159,18 +5740,39 @@ describe('mode entry and feedback (S8)', () => {
     });
 
     await waitFor(() => {
-      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: chatKeys.items('ws1', 'th1') });
       expect(invalidateQueries).toHaveBeenCalledWith({
-        queryKey: chatKeys.dashboard('ws1', 'th1'),
+        queryKey: chatKeys.items(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        ),
+      });
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        ),
       });
     });
     expect(invalidateQueries).not.toHaveBeenCalledWith({
-      queryKey: chatKeys.items('ws2', 'th1'),
+      queryKey: chatKeys.items(
+        'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+        'th_00000000-0000-70a0-9cde-4561f64881c6'
+      ),
     });
     expect(invalidateQueries).not.toHaveBeenCalledWith({
-      queryKey: chatKeys.dashboard('ws2', 'th1'),
+      queryKey: chatKeys.dashboard(
+        'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+        'th_00000000-0000-70a0-9cde-4561f64881c6'
+      ),
     });
-    expect(queryClient.getQueryData(chatKeys.items('ws2', 'th1'))).toEqual([workspaceBItem]);
+    expect(
+      queryClient.getQueryData(
+        chatKeys.items(
+          'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+          'th_00000000-0000-70a0-9cde-4561f64881c6'
+        )
+      )
+    ).toEqual([workspaceBItem]);
     expect(screen.queryByText("Couldn't send that message. Try again.")).not.toBeInTheDocument();
   });
 
@@ -5201,7 +5803,10 @@ describe('mode entry and feedback (S8)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
 
     expect(await screen.findByText('Draft a competitive teardown.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /good/i })).not.toBeInTheDocument();
@@ -5214,7 +5819,7 @@ describe('mode entry and feedback (S8)', () => {
   ] as const)('keeps a late workspace A feedback %s out of workspace B', async (settlement) => {
     const user = userEvent.setup();
     const priorFeedback = {
-      turnId: 't1',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       agentId: 'agent_assistant',
       rating: 'good' as const,
       note: null,
@@ -5229,20 +5834,20 @@ describe('mode entry and feedback (S8)', () => {
     const submitTurnFeedback = vi.fn().mockReturnValue(submitted.promise);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws2',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBTurn = TurnSchema.parse({
       ...COMPLETED_TURN,
-      id: 't-ws2',
-      workspaceId: 'ws2',
-      triggerActor: { kind: 'user', id: 'user_workspace_b' },
+      id: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
     });
     const workspaceBAssistant = ItemSchema.parse({
       ...ITEMS[1],
-      id: 'i-ws2-assistant',
-      workspaceId: 'ws2',
+      id: 'it_00000000-0000-7a72-a3c3-089dca8798b5',
+      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       turnId: workspaceBTurn.id,
       text: 'Workspace B answer.',
     });
@@ -5251,18 +5856,25 @@ describe('mode entry and feedback (S8)', () => {
         'thread.read': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
+            Promise.resolve(
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
+            )
           ),
-        'thread.list': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
-          ),
+        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve({
+            items: [
+              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
+            ],
+          })
+        ),
         'thread.items': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve({
-              items: workspaceId === 'ws2' ? [workspaceBAssistant] : [ITEMS[1]],
+              items:
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? [workspaceBAssistant]
+                  : [ITEMS[1]],
               nextCursor: null,
             })
           ),
@@ -5271,18 +5883,39 @@ describe('mode entry and feedback (S8)', () => {
         'thread.dashboard': vi
           .fn()
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve({ turns: [workspaceId === 'ws2' ? workspaceBTurn : COMPLETED_TURN] })
+            Promise.resolve({
+              turns: [
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? workspaceBTurn
+                  : COMPLETED_TURN,
+              ],
+            })
           ),
         'turn.feedback': submitTurnFeedback,
       }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
-      cache.setQueryData(chatKeys.feedback('ws1', 'th1', 't1'), priorFeedback);
-    });
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client,
+      (cache) => {
+        cache.setQueryData(
+          chatKeys.feedback(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6',
+            'tu_00000000-0000-7da3-a7fc-80982f9b215e'
+          ),
+          priorFeedback
+        );
+      }
+    );
 
     await user.click(await screen.findByRole('button', { name: /bad/i }));
     await waitFor(() =>
-      expect(submitTurnFeedback).toHaveBeenCalledWith({ turnId: 't1', rating: 'bad', note: null })
+      expect(submitTurnFeedback).toHaveBeenCalledWith({
+        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+        rating: 'bad',
+        note: null,
+      })
     );
 
     await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
@@ -5295,11 +5928,23 @@ describe('mode entry and feedback (S8)', () => {
 
     await waitFor(() => expect(submitTurnFeedback).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(queryClient.getQueryData(chatKeys.feedback('ws1', 'th1', 't1'))).toEqual(
-      settlement === 'success' ? settledFeedback : priorFeedback
-    );
     expect(
-      queryClient.getQueryData(chatKeys.feedback('ws2', 'th1', workspaceBTurn.id))
+      queryClient.getQueryData(
+        chatKeys.feedback(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6',
+          'tu_00000000-0000-7da3-a7fc-80982f9b215e'
+        )
+      )
+    ).toEqual(settlement === 'success' ? settledFeedback : priorFeedback);
+    expect(
+      queryClient.getQueryData(
+        chatKeys.feedback(
+          'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+          'th_00000000-0000-70a0-9cde-4561f64881c6',
+          workspaceBTurn.id
+        )
+      )
     ).toBeUndefined();
     expect(screen.getByRole('button', { name: /good/i })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: /bad/i })).toHaveAttribute('aria-pressed', 'false');
@@ -5308,7 +5953,7 @@ describe('mode entry and feedback (S8)', () => {
   it('keeps one feedback selection per completed Turn and applies only authoritative responses', async () => {
     const user = userEvent.setup();
     const goodResponse = {
-      turnId: 't1',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       agentId: 'agent_assistant',
       rating: 'good' as const,
       note: null,
@@ -5355,7 +6000,10 @@ describe('mode entry and feedback (S8)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await screen.findByText('Here is the completed pricing comparison.');
     const goodButtons = screen.getAllByRole('button', { name: /good/i });
     const badButtons = screen.getAllByRole('button', { name: /bad/i });
@@ -5366,7 +6014,7 @@ describe('mode entry and feedback (S8)', () => {
 
     await user.click(goodButton);
     expect(submitTurnFeedback).toHaveBeenNthCalledWith(1, {
-      turnId: 't1',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       rating: 'good',
       note: null,
     });
@@ -5379,7 +6027,7 @@ describe('mode entry and feedback (S8)', () => {
 
     await user.click(badButton);
     expect(submitTurnFeedback).toHaveBeenNthCalledWith(2, {
-      turnId: 't1',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       rating: 'bad',
       note: null,
     });
@@ -5396,7 +6044,7 @@ describe('mode entry and feedback (S8)', () => {
   it('retains the prior feedback after rejection and retries the exact failed command', async () => {
     const user = userEvent.setup();
     const goodResponse = {
-      turnId: 't1',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       agentId: 'agent_assistant',
       rating: 'good' as const,
       note: null,
@@ -5439,7 +6087,10 @@ describe('mode entry and feedback (S8)', () => {
       }
     );
 
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     const goodButton = await screen.findByRole('button', { name: /good/i });
     const badButton = screen.getByRole('button', { name: /bad/i });
     await user.click(goodButton);
@@ -5453,7 +6104,7 @@ describe('mode entry and feedback (S8)', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
       expect(submitTurnFeedback).toHaveBeenNthCalledWith(3, {
-        turnId: 't1',
+        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
         rating: 'bad',
         note: null,
       })
@@ -5465,7 +6116,7 @@ describe('mode entry and feedback (S8)', () => {
   it('rejects feedback responses owned by a different Turn without replacing prior state', async () => {
     const user = userEvent.setup();
     const priorFeedback = {
-      turnId: 't1',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       agentId: 'agent_assistant',
       rating: 'good' as const,
       note: null,
@@ -5473,7 +6124,7 @@ describe('mode entry and feedback (S8)', () => {
     };
     const mismatchedResponse = {
       ...priorFeedback,
-      turnId: 't-other',
+      turnId: 'tu_00000000-0000-7229-bfed-21858f0c8836',
       rating: 'bad' as const,
       createdAt: '2026-07-21T00:00:04.000Z',
     };
@@ -5512,30 +6163,65 @@ describe('mode entry and feedback (S8)', () => {
         'turn.feedback': submitTurnFeedback,
       }
     );
-    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
-      cache.setQueryData(chatKeys.feedback('ws1', 'th1', 't1'), priorFeedback);
-    });
+    const queryClient = renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client,
+      (cache) => {
+        cache.setQueryData(
+          chatKeys.feedback(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6',
+            'tu_00000000-0000-7da3-a7fc-80982f9b215e'
+          ),
+          priorFeedback
+        );
+      }
+    );
 
     const goodButton = await screen.findByRole('button', { name: /good/i });
     const badButton = screen.getByRole('button', { name: /bad/i });
     await user.click(badButton);
 
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save feedback.");
-    expect(queryClient.getQueryData(chatKeys.feedback('ws1', 'th1', 't1'))).toEqual(priorFeedback);
-    expect(queryClient.getQueryData(chatKeys.feedback('ws1', 'th1', 't-other'))).toBeUndefined();
+    expect(
+      queryClient.getQueryData(
+        chatKeys.feedback(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6',
+          'tu_00000000-0000-7da3-a7fc-80982f9b215e'
+        )
+      )
+    ).toEqual(priorFeedback);
+    expect(
+      queryClient.getQueryData(
+        chatKeys.feedback(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6',
+          'tu_00000000-0000-7229-bfed-21858f0c8836'
+        )
+      )
+    ).toBeUndefined();
     expect(goodButton).toHaveAttribute('aria-pressed', 'true');
     expect(badButton).toHaveAttribute('aria-pressed', 'false');
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
       expect(submitTurnFeedback).toHaveBeenNthCalledWith(2, {
-        turnId: 't1',
+        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
         rating: 'bad',
         note: null,
       })
     );
     await waitFor(() => expect(badButton).toHaveAttribute('aria-pressed', 'true'));
-    expect(queryClient.getQueryData(chatKeys.feedback('ws1', 'th1', 't-other'))).toBeUndefined();
+    expect(
+      queryClient.getQueryData(
+        chatKeys.feedback(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          'th_00000000-0000-70a0-9cde-4561f64881c6',
+          'tu_00000000-0000-7229-bfed-21858f0c8836'
+        )
+      )
+    ).toBeUndefined();
   });
 });
 
@@ -5543,18 +6229,18 @@ describe('conversation artifact inspection', () => {
   const reference = ArtifactReferenceItemSchema.parse({
     ...ITEMS[0],
     type: 'artifact-reference',
-    id: 'artifact-ref',
-    artifactId: 'artifact_diff',
+    id: 'it_00000000-0000-757c-bc4f-599212addef5',
+    artifactId: 'ar_00000000-0000-7494-9abc-bc7b8306139b',
     artifactVersion: 1,
     lastMutationRequestId: 'req-artifact',
     title: 'Workspace changes ready for review',
     summary: '1 changed path staged for human review.',
   });
   const artifact = ArtifactSchema.parse({
-    id: 'artifact_diff',
-    workspaceId: 'ws1',
-    threadId: 'th1',
-    turnId: 't1',
+    id: 'ar_00000000-0000-7494-9abc-bc7b8306139b',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     kind: 'diff',
     title: reference.title,
     status: 'ready',
@@ -5563,7 +6249,12 @@ describe('conversation artifact inspection', () => {
     content: { format: 'text', body: 'diff --git a/example.txt b/example.txt\n+Reviewed content' },
     contentDigest: `sha256:${'a'.repeat(64)}`,
     lastMutationRequestId: 'req-artifact',
-    origin: { kind: 'turn-output', threadId: 'th1', turnId: 't1', requestId: 'req-artifact' },
+    origin: {
+      kind: 'turn-output',
+      threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+      requestId: 'req-artifact',
+    },
     createdAt: reference.createdAt,
     updatedAt: reference.createdAt,
   });
@@ -5572,25 +6263,25 @@ describe('conversation artifact inspection', () => {
     const path = `src/${'long_file_name_'.repeat(12)}.ts`;
     const file = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'file-change',
+      id: 'it_00000000-0000-7f8f-9ccf-39fc6fcf8be8',
       type: 'file-change',
       path,
       changeKind: 'modified',
     });
     const duplicate = ArtifactReferenceItemSchema.parse({
       ...reference,
-      id: 'artifact-ref-again',
+      id: 'it_00000000-0000-7ebc-9433-5c60d4670618',
       lastMutationRequestId: 'req-artifact-again',
     });
     const laterVersion = ArtifactReferenceItemSchema.parse({
       ...reference,
-      id: 'artifact-ref-v2',
+      id: 'it_00000000-0000-7696-a90c-ad8b3e75d0d1',
       artifactVersion: 2,
       title: 'Workspace changes after revision',
       lastMutationRequestId: 'req-artifact-v2',
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({
           items: [reference, duplicate, laterVersion, file],
@@ -5615,7 +6306,7 @@ describe('conversation artifact inspection', () => {
     const user = userEvent.setup();
     const getArtifact = vi.fn().mockResolvedValue(artifact);
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
         'artifact.read': getArtifact,
@@ -5626,7 +6317,10 @@ describe('conversation artifact inspection', () => {
     await user.click(screen.getAllByRole('button', { name: 'View content' })[0]);
     const dialog = await screen.findByRole('dialog', { name: reference.title });
     expect(await within(dialog).findByText(/Reviewed content/)).toBeInTheDocument();
-    expect(getArtifact).toHaveBeenCalledWith({ workspaceId: 'ws1', artifactId: 'artifact_diff' });
+    expect(getArtifact).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      artifactId: 'ar_00000000-0000-7494-9abc-bc7b8306139b',
+    });
     expect(within(dialog).getByText('Version 1')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));
     await user.click(
@@ -5644,7 +6338,7 @@ describe('conversation artifact inspection', () => {
       .mockRejectedValueOnce(new Error('unavailable'))
       .mockResolvedValue({ ...artifact, version: 2 });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
         'artifact.read': getArtifact,
@@ -5666,7 +6360,7 @@ describe('conversation artifact inspection', () => {
     const body = JSON.stringify({
       changeSet: {
         id: 'cs1',
-        workspaceId: 'ws1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         resourceId: 'default',
         materializationRecordId: 'mat1',
         inputSnapshotId: 'snap1',
@@ -5676,7 +6370,7 @@ describe('conversation artifact inspection', () => {
         changedPaths: [{ path: 'example.txt', status: 'added', binary: false }],
         patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 8 },
         bundle: null,
-        artifactIds: ['artifact_diff'],
+        artifactIds: ['ar_00000000-0000-7494-9abc-bc7b8306139b'],
         evidenceRefs: [],
         redaction: { status: 'redacted', notes: [] },
         createdAt: reference.createdAt,
@@ -5690,19 +6384,19 @@ describe('conversation artifact inspection', () => {
       review: {
         id: 'review1',
         changeSetId: 'cs1',
-        workspaceId: 'ws1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         status: 'pending',
         staging: { strategy: 'git_worktree', ref: 'staging://review1', branch: null },
         diffSummary: { filesChanged: 1, additions: 1, deletions: 0 },
         riskSummary: 'One changed path.',
         validation: [],
-        actionCenterRowId: 'workspace-review:review1',
+        actionCenterRowId: 'ws_00000000-0000-760b-95ac-b784a71280a8:review1',
         createdAt: reference.createdAt,
         updatedAt: reference.createdAt,
       },
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
         'artifact.read': vi
@@ -5725,11 +6419,11 @@ describe('conversation artifact inspection', () => {
 describe('approval decision evidence', () => {
   const decision = ItemSchema.parse({
     ...ITEMS[0],
-    id: 'decision-evidence',
+    id: 'it_00000000-0000-7e60-a164-5c61d0b124bc',
     type: 'approval-decision',
-    actor: { kind: 'user', id: 'user_reviewer' },
+    actor: { kind: 'user', id: 'usr_00000000-0000-7706-800d-9f6504ae7325' },
     approvalRequestId: 'ap1',
-    causationId: 'i3',
+    causationId: 'it_00000000-0000-7570-9913-dd37f2bda2fe',
     decision: 'denied',
     decidedAt: '2026-07-21T00:00:03.000Z',
   });
@@ -5737,11 +6431,11 @@ describe('approval decision evidence', () => {
   it('uses the recorded human identity and time without guessing a reason or client', async () => {
     const human = ItemSchema.parse({
       ...decision,
-      actor: { kind: 'user', id: 'user_reviewer' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7706-800d-9f6504ae7325' },
       causationId: 'req-denial',
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: [...ITEMS, human], nextCursor: null }),
@@ -5758,8 +6452,14 @@ describe('approval decision evidence', () => {
                 disposition: null,
               },
             ],
-            viewerUserId: 'user_someone_else',
-            participants: [{ kind: 'user', id: 'user_reviewer', displayName: 'Alex Chen' }],
+            viewerUserId: 'usr_00000000-0000-7ae3-81c6-235923895900',
+            participants: [
+              {
+                kind: 'user',
+                id: 'usr_00000000-0000-7706-800d-9f6504ae7325',
+                displayName: 'Alex Chen',
+              },
+            ],
           }),
         }
       )
@@ -5778,7 +6478,7 @@ describe('approval decision evidence', () => {
       decision: 'granted',
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [...ITEMS, grant], nextCursor: null }),
       })
@@ -5793,7 +6493,10 @@ describe('approval decision evidence', () => {
 
 it('closes the outputs panel from inside and returns focus to its toggle', async () => {
   const user = userEvent.setup();
-  renderApp('/chat/ws1/th1', makeClient());
+  renderApp(
+    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+    makeClient()
+  );
   const panel = await screen.findByRole('complementary', { name: 'Side panel' });
   await user.click(within(panel).getByRole('button', { name: 'Close outputs' }));
   expect(screen.queryByRole('complementary', { name: 'Side panel' })).not.toBeInTheDocument();
@@ -5808,7 +6511,7 @@ it('closes the outputs panel from inside and returns focus to its toggle', async
   );
 });
 
-const WORKER_STORAGE_REF = 'wst_7115b4a86a474d0db40bcf65482ecd58';
+const WORKER_STORAGE_REF = 'wst_00000000-0000-70fd-914d-b51e699cd632';
 const WORKER_LAYOUT_DIGEST = `sha256:${'e'.repeat(64)}`;
 const WORKER_ENVIRONMENT = {
   attachmentGeneration: 1,
@@ -5818,7 +6521,7 @@ const WORKER_ENVIRONMENT = {
       createdAt: '2026-09-16T14:24:10.747Z',
       goalId: null,
       purpose: 'work' as const,
-      responsibleUserId: 'user_owner',
+      responsibleUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       taskId: null,
       threadId: THREAD.id,
     },
@@ -5838,7 +6541,7 @@ const WORKER_ENVIRONMENT = {
   state: 'idle' as const,
   storageRef: WORKER_STORAGE_REF,
   updatedAt: '2026-09-16T15:05:28.713Z',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
 };
 
 async function chooseNewTaskWorker(user: ReturnType<typeof userEvent.setup>) {
@@ -5908,15 +6611,18 @@ describe('Worker environment Advanced choice', () => {
         'conversation.submit': submitConversation,
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await chooseNewTaskWorker(user);
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Fresh worker');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{
             input: 'Fresh worker',
             targetRef: 'new-task-worker',
@@ -5932,10 +6638,10 @@ describe('Worker environment Advanced choice', () => {
 
   it('labels occupancy from Thread names and shows independent-review as lineage, not Task purpose', async () => {
     const user = userEvent.setup();
-    const attachedRef = 'wst_164a606d43e246a1a1c9a952dffcb39f';
+    const attachedRef = 'wst_00000000-0000-77bf-8428-f147a9737e89';
     const attachedThread = {
       ...THREAD,
-      id: 'th_12',
+      id: 'th_00000000-0000-7f90-a51d-ce0a575ee74f',
       name: 'Goal closeout',
       preview: 'Goal closeout',
     };
@@ -5957,7 +6663,7 @@ describe('Worker environment Advanced choice', () => {
       nextCursor: null,
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -5993,15 +6699,15 @@ describe('Worker environment Advanced choice', () => {
     expect(screen.getByText('Independent review from Goal closeout')).toBeInTheDocument();
     await waitFor(() =>
       expect(selectWorkerEnvironment).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
-        ...workerSelectRequest('th1', attached),
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        ...workerSelectRequest('th_00000000-0000-70a0-9cde-4561f64881c6', attached),
       })
     );
     expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(WORKER_LAYOUT_DIGEST);
     expect(document.body).not.toHaveTextContent(WORKER_STORAGE_REF);
     expect(document.body).not.toHaveTextContent(attachedRef);
-    expect(document.body).not.toHaveTextContent('th_12');
+    expect(document.body).not.toHaveTextContent('th_00000000-0000-7f90-a51d-ce0a575ee74f');
   });
 
   it('previews select on an existing Thread then forwards the exact choice without a send-time select', async () => {
@@ -6025,14 +6731,17 @@ describe('Worker environment Advanced choice', () => {
         'conversation.submit': submitConversation,
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await chooseNewTaskWorker(user);
     await chooseRetainedEnvironment(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await waitFor(() =>
       expect(selectWorkerEnvironment).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
-        ...workerSelectRequest('th1'),
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        ...workerSelectRequest('th_00000000-0000-70a0-9cde-4561f64881c6'),
       })
     );
     expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
@@ -6051,8 +6760,8 @@ describe('Worker environment Advanced choice', () => {
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
           ...{
             input: 'Reuse worker',
             targetRef: 'new-task-worker',
@@ -6077,7 +6786,9 @@ describe('Worker environment Advanced choice', () => {
 
   it('tells a starter that send checks permission and retries the exact submit after transport failure', async () => {
     const user = userEvent.setup();
-    const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
+    const createThread = vi
+      .fn()
+      .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
     const listWorkerEnvironments = vi
       .fn()
       .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null });
@@ -6087,9 +6798,13 @@ describe('Worker environment Advanced choice', () => {
       {
         'thread.create': createThread,
         'artifact.list': vi.fn().mockResolvedValue({
-          items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+          items: [
+            { id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', version: 2, title: 'Existing brief' },
+          ],
         }),
-        'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
+        'thread.read': vi
+          .fn()
+          .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' }),
         'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
       {
@@ -6136,7 +6851,7 @@ describe('Worker environment Advanced choice', () => {
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
     expect(submitConversation.mock.calls[1]?.[0]).toMatchObject({
       input: 'Starter reuse',
-      artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+      artifactRefs: [{ artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 }],
       requestId: submitted.requestId,
       targetRef: 'new-task-worker',
       workerStorageChoice: {
@@ -6153,10 +6868,13 @@ describe('Worker environment Advanced choice', () => {
 
   it.each([
     '/chat',
-    '/chat/ws1/th1',
+    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
   ])('starts a fresh request only on explicit Send from %s after definitive Chat cancellation and retries that identity after transport uncertainty', async (path) => {
     const user = userEvent.setup();
-    const threadId = path === '/chat' ? 'th-new' : 'th1';
+    const threadId =
+      path === '/chat'
+        ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+        : 'th_00000000-0000-70a0-9cde-4561f64881c6';
     const originalId = '00000000-0000-4000-8000-000000000911';
     const freshId = '00000000-0000-4000-8000-000000000912';
     const randomUUID = vi
@@ -6178,7 +6896,13 @@ describe('Worker environment Advanced choice', () => {
           'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
           'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
           'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+            items: [
+              {
+                id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+                version: 2,
+                title: 'Existing brief',
+              },
+            ],
           }),
         },
         {
@@ -6237,7 +6961,7 @@ describe('Worker environment Advanced choice', () => {
       input: 'Replacement work',
       targetRef: 'new-task-worker',
       logicalModelId: 'alternate',
-      artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+      artifactRefs: [{ artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 }],
       requestId: freshId,
       workerStorageChoice: {
         expectedRevision: 4,
@@ -6247,7 +6971,7 @@ describe('Worker environment Advanced choice', () => {
       },
     };
     expect(submitConversation.mock.calls[1]).toEqual([
-      { workspaceId: 'ws1', threadId: threadId, ...freshDraft },
+      { workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', threadId: threadId, ...freshDraft },
     ]);
     expect(cancellationExplanation).toBe('This turn was stopped. Send starts a new turn.');
     expect(randomUUID).toHaveBeenCalledTimes(2);
@@ -6256,7 +6980,7 @@ describe('Worker environment Advanced choice', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(3));
     expect(submitConversation.mock.calls[2]).toEqual([
-      { workspaceId: 'ws1', threadId: threadId, ...freshDraft },
+      { workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', threadId: threadId, ...freshDraft },
     ]);
     expect(randomUUID).toHaveBeenCalledTimes(2);
   });
@@ -6283,7 +7007,10 @@ describe('Worker environment Advanced choice', () => {
         'conversation.submit': submitConversation,
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await chooseNewTaskWorker(user);
     await chooseRetainedEnvironment(user);
     const input = screen.getByRole('textbox', { name: 'Message' });
@@ -6329,7 +7056,10 @@ describe('Worker environment Advanced choice', () => {
         'worker-environment.select': selectWorkerEnvironment,
       }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await chooseNewTaskWorker(user);
     await chooseRetainedEnvironment(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
@@ -6341,17 +7071,17 @@ describe('Worker environment Advanced choice', () => {
     expect(document.body).not.toHaveTextContent('deployment_admin_required');
     expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
     expect(selectWorkerEnvironment).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
-      ...workerSelectRequest('th1'),
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      ...workerSelectRequest('th_00000000-0000-70a0-9cde-4561f64881c6'),
     });
   });
 
   it('preserves the selected retained environment when inventory order changes', async () => {
     const user = userEvent.setup();
-    const otherRef = 'wst_164a606d43e246a1a1c9a952dffcb39f';
+    const otherRef = 'wst_00000000-0000-77bf-8428-f147a9737e89';
     const otherThread = {
       ...THREAD,
-      id: 'th_12',
+      id: 'th_00000000-0000-7f90-a51d-ce0a575ee74f',
       name: 'Goal closeout',
       preview: 'Goal closeout',
     };
@@ -6371,7 +7101,7 @@ describe('Worker environment Advanced choice', () => {
       .mockResolvedValue({ items: [other], nextCursor: null });
     const selectWorkerEnvironment = vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -6417,7 +7147,7 @@ describe('Worker environment Advanced choice', () => {
   it('distinguishes same-source retained environments by recorded creation time', async () => {
     const user = userEvent.setup();
     const laterAt = '2026-09-16T16:40:22.100Z';
-    const laterRef = 'wst_164a606d43e246a1a1c9a952dffcb39f';
+    const laterRef = 'wst_00000000-0000-77bf-8428-f147a9737e89';
     const later = {
       ...WORKER_ENVIRONMENT,
       createdAt: laterAt,
@@ -6429,7 +7159,7 @@ describe('Worker environment Advanced choice', () => {
       nextCursor: null,
     });
     renderApp(
-      '/chat/ws1/th1',
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -6475,12 +7205,18 @@ describe('Worker environment Advanced choice', () => {
       { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
       { 'worker-environment.list': listWorkerEnvironments }
     );
-    renderApp('/chat/ws1/th1', client);
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      client
+    );
     await chooseNewTaskWorker(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(listWorkerEnvironments).toHaveBeenCalledWith({ workspaceId: 'ws1', ...{ limit: 100 } });
+    expect(listWorkerEnvironments).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      ...{ limit: 100 },
+    });
     expect(screen.queryByLabelText(/token/i)).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('deployment_admin_required');
   });

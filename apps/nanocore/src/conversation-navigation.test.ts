@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -25,35 +25,54 @@ describe('conversation navigation', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore();
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     }).secret;
-    store.archiveThread('ws_demo', 'th_demo');
-    const older = store.createThread('ws_demo', 'Older conversation');
-    const newer = store.createThread('ws_demo', 'Newer conversation');
-    const working = store.createThread('ws_demo', 'Working');
-    store.createThread('ws_demo', 'Private outsider', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'user_outsider',
-    });
-    const archived = store.createThread('ws_demo', 'Archived');
-    store.archiveThread('ws_demo', archived.id);
+    store.archiveThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    );
+    const older = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Older conversation'
+    );
+    const newer = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Newer conversation'
+    );
+    const working = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Working');
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Private outsider',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80',
+      }
+    );
+    const archived = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Archived');
+    store.archiveThread('ws_00000000-0000-7000-8000-000000000001', archived.id);
     const olderTurn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       older.id,
       'Earlier input',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { startedAt: '2026-09-15T00:00:00.000Z' }
     );
     store.updateTurn(olderTurn.id, { agentId: 'quick-chat' });
     store.createItem({
-      id: 'it_late_reply',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-76ec-a4bd-a0ffd301133c',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: older.id,
       turnId: olderTurn.id,
       type: 'assistant-message',
@@ -68,10 +87,10 @@ describe('conversation navigation', () => {
       completedAt: '2026-09-15T01:00:00.000Z',
     });
     const newerTurn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       newer.id,
       'Newer input',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { startedAt: '2026-09-15T02:00:00.000Z' }
     );
@@ -80,7 +99,10 @@ describe('conversation navigation', () => {
       status: 'completed',
       completedAt: '2026-09-15T03:00:00.000Z',
     });
-    store.createTurn('ws_demo', working.id, 'Unassigned work', { kind: 'user', id: 'user_local' });
+    store.createTurn('ws_00000000-0000-7000-8000-000000000001', working.id, 'Unassigned work', {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const app = createAppWithWorkspaceAuthority({
       mode: 'server',
       coreDb,
@@ -91,7 +113,7 @@ describe('conversation navigation', () => {
     const response = await app.request(
       ...operationRequest(
         'conversation.navigation',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         { headers: { authorization: `Bearer ${token}` } }
       )
     );
@@ -121,11 +143,21 @@ describe('conversation navigation', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore();
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const outsider = store.createThread('ws_demo', 'Private outsider', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'user_outsider',
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const outsider = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Private outsider',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80',
+      }
+    );
     const app = createAppWithWorkspaceAuthority({
       mode: 'server',
       coreDb,
@@ -134,7 +166,7 @@ describe('conversation navigation', () => {
       turnExecutor: new SimulatedTurnExecutor(),
     });
     const admin = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -142,7 +174,7 @@ describe('conversation navigation', () => {
     const adminResponse = await app.request(
       ...operationRequest(
         'conversation.navigation',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         { headers: { authorization: `Bearer ${admin}` } }
       )
     );

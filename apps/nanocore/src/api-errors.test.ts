@@ -46,7 +46,9 @@ it('keeps each caller fallback for non-Error values', () => {
 });
 
 it('preserves authored errors and route-specific code and status', async () => {
-  const error = new StoreRecordNotFoundError('Workspace not found: ws_demo');
+  const error = new StoreRecordNotFoundError(
+    'Workspace not found: ws_00000000-0000-7000-8000-000000000001'
+  );
   const command = asCommandError(error, 'command_missing', 409);
   expect(command.status).toBe(409);
   expect(await command.json()).toMatchObject({ code: 'command_missing', message: error.message });
@@ -56,7 +58,7 @@ it('preserves authored errors and route-specific code and status', async () => {
     throw error;
   });
   const response = await app.request(
-    ...operationRequest('thread.list', { workspaceId: 'ws_demo' })
+    ...operationRequest('thread.list', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
   );
   expect(response.status).toBe(404);
   expect(await response.json()).toMatchObject({ code: 'not_found', message: error.message });
@@ -116,7 +118,7 @@ it('preserves safe declared-field validation detail before entering the real ope
         ...(typeof input.requestId === 'string' ? { 'x-openkit-request-id': input.requestId } : {}),
       },
       body: JSON.stringify(input),
-    }))({ ...{ name: 42 }, workspaceId: 'ws_demo' });
+    }))({ ...{ name: 42 }, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
   expect(response.status).toBe(400);
   const body = await response.json();
   expect(body.code).toBe('invalid_request');

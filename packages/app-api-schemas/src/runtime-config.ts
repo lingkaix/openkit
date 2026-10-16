@@ -3,7 +3,7 @@ import {
   NativeEnvironmentRecordSchema,
   NativeEnvironmentValuesSchema,
 } from '@openkit/config-schema/native-environment';
-import { TimestampSchema } from '@openkit/protocol';
+import { ThreadIdSchema, TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
@@ -306,8 +306,8 @@ export const AgentNativeEnvironmentResponseSchema = z
     applied: z.array(
       z
         .object({
-          workspaceId: z.string(),
-          threadId: z.string(),
+          workspaceId: WorkspaceIdSchema,
+          threadId: ThreadIdSchema,
           state: z.enum(['acknowledged', 'pending', 'unknown']),
           environment: AgentNativeEnvironmentIdentitySchema.nullable(),
           matchesDesired: z.boolean(),

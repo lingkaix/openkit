@@ -19,7 +19,13 @@ function params() {
       expectedCurrentImageId: `sha256:${'a'.repeat(64)}`,
       helperSha256: 'b'.repeat(64),
       retainedReads: [
-        { operation: 'thread.read', input: { workspaceId: 'workspace', threadId: 'thread' } },
+        {
+          operation: 'thread.read',
+          input: {
+            workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+            threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
+          },
+        },
       ],
       pollAttempts: 1,
       pollMs: 1,

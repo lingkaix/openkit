@@ -6,12 +6,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 
 const lineage: WorkerLineage = {
-  agentSessionId: 'as_control_1',
+  agentSessionId: 'as_00000000-0000-750f-a81e-1cbfbea96819',
   packageSnapshotId: 'pkg_snapshot_1',
   requestId: 'req_control_1',
-  threadId: 'th_demo',
-  turnId: 'turn_demo',
-  workspaceId: 'ws_demo',
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
+  turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
 };
 
 /**

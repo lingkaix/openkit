@@ -22,7 +22,7 @@ const archiveAttribution = {
 function fixture() {
   const stored = {
     identityId: 'configured-nanohost',
-    deploymentId: 'configured-deployment',
+    deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000001',
     connectionGeneration: 8,
     physicalEpoch,
     ready: true,
@@ -155,7 +155,7 @@ test('issues a different nonce for each independent attempt and refuses a replay
 for (const stage of ['before', 'after']) {
   for (const [field, invalid] of [
     ['identityId', 'another-nanohost'],
-    ['deploymentId', 'another-deployment'],
+    ['deploymentId', 'dep_0190f4c8-0000-7000-8000-000000000002'],
     ['connectionGeneration', 9],
     ['physicalEpoch', '8'.repeat(64)],
     ['ready', false],
@@ -190,7 +190,7 @@ for (const [name, change] of [
   [
     'foreign deployment',
     (body) => {
-      body.deploymentId = 'another-deployment';
+      body.deploymentId = 'dep_0190f4c8-0000-7000-8000-000000000002';
     },
   ],
   [
