@@ -6,16 +6,19 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
+import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, readDataRootLayoutMarker } from '../storage/fs-layout.js';
-import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
-import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 import { readWorkspacePortableFileState } from '../storage/workspace-portable-file-state.js';
-import { createVerifiedWorkspaceExport, importVerifiedWorkspace } from '../storage/workspace-transfer-routes.js';
+import {
+  createVerifiedWorkspaceExport,
+  importVerifiedWorkspace,
+} from '../storage/workspace-transfer-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
@@ -44,17 +47,29 @@ function source() {
     producer: { kind: 'user', id: LOCAL_USER_ID },
     instructionReference: 'test:workspace-create',
   });
-  recordWorkspaceOwnerMembership({ coreDb: f.coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
+  recordWorkspaceOwnerMembership({
+    coreDb: f.coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: LOCAL_USER_ID,
+  });
   const root = join(f.dataRoot, 'workspaces', workspace.id);
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'knowledge', 'notebook.git') });
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(root, 'knowledge', 'notebook.git'),
+  });
   const content = updateOkfFrontmatter({
     path: 'notes/portable.md',
-    content: serializeUserAuthoredKnowledgePage({
-      id: 'notes/portable', kind: 'project-context', title: 'Exact portable note',
-      content: 'Exact Unicode body: 漢字.\r\n\t  ',
-      createdAt: '2026-10-16T00:00:00Z', updatedAt: '2026-10-16T00:00:00Z',
-      sourceReferences: [],
-    }, { kind: 'workspace', workspaceId: workspace.id }),
+    content: serializeUserAuthoredKnowledgePage(
+      {
+        id: 'notes/portable',
+        kind: 'project-context',
+        title: 'Exact portable note',
+        content: 'Exact Unicode body: 漢字.\r\n\t  ',
+        createdAt: '2026-10-16T00:00:00Z',
+        updatedAt: '2026-10-16T00:00:00Z',
+        sourceReferences: [],
+      },
+      { kind: 'workspace', workspaceId: workspace.id }
+    ),
     updates: { custom: { preserve: ['one', 'two'] } },
   });
   const baseRevision = notebook.publishedRevision();
@@ -65,7 +80,10 @@ function source() {
       summary: 'Test-owned portable page',
       producer: { kind: 'user', id: LOCAL_USER_ID },
       authority: { kind: 'direct', instructionReference: 'test:portable-page' },
-      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${createHash('sha256').update(content).digest('hex')}` },
+      changeRequest: {
+        requestId: randomUUID(),
+        inputDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      },
       sourceReferences: [],
     },
   });
@@ -77,18 +95,31 @@ describe('canonical Notebook Workspace portability', () => {
   it('exports one published Git tree and the actual scope schema, ignoring stale page files', () => {
     const f = source();
     mkdirSync(join(f.root, 'knowledge', 'pages'), { recursive: true });
-    writeFileSync(join(f.root, 'knowledge', 'pages', 'stale.md'), 'Unpublished stale materialization.');
-    const state = readWorkspacePortableFileState(f.root, { workspaceId: f.workspace.id, threads: [], turns: [] });
-    expect([...state.nativeKnowledgePages.keys()].sort()).toEqual(['knowledge/pages/index.md', 'knowledge/pages/notes/portable.md']);
+    writeFileSync(
+      join(f.root, 'knowledge', 'pages', 'stale.md'),
+      'Unpublished stale materialization.'
+    );
+    const state = readWorkspacePortableFileState(f.root, {
+      workspaceId: f.workspace.id,
+      threads: [],
+      turns: [],
+    });
+    expect([...state.nativeKnowledgePages.keys()].sort()).toEqual([
+      'knowledge/pages/index.md',
+      'knowledge/pages/notes/portable.md',
+    ]);
     expect(state.nativeKnowledgePages.get('knowledge/pages/notes/portable.md')).toBe(f.content);
-    expect(state.workspaceSchema).toBe(readFileSync(join(f.root, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8'));
+    expect(state.workspaceSchema).toBe(
+      readFileSync(join(f.root, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')
+    );
   });
 
   it('rebuilds a new target Notebook through the existing verified Workspace archive import', () => {
     const f = source();
     const target = deployment();
     target.store.createWorkspace('Existing target forces remint', {
-      requestId: randomUUID(), producer: { kind: 'user', id: LOCAL_USER_ID },
+      requestId: randomUUID(),
+      producer: { kind: 'user', id: LOCAL_USER_ID },
       instructionReference: 'test:existing-target',
     });
     const exported = createVerifiedWorkspaceExport({
@@ -111,20 +142,35 @@ describe('canonical Notebook Workspace portability', () => {
     });
     expect(exported.verified.manifest.knowledgeNotebookRevision).toBe(f.revision);
     const targetRoot = join(target.dataRoot, 'workspaces', imported.workspace.id);
-    const notebook = new KnowledgeNotebook({ repositoryPath: join(targetRoot, 'knowledge', 'notebook.git') });
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
+    });
     const current = notebook.readRevision(notebook.publishedRevision());
-    const page = parseOkfDocument({ path: 'notes/portable.md', content: current.files['notes/portable.md']! });
+    const page = parseOkfDocument({
+      path: 'notes/portable.md',
+      content: current.files['notes/portable.md']!,
+    });
     const original = parseOkfDocument({ path: 'notes/portable.md', content: f.content });
     expect(page.ok && original.ok).toBe(true);
     expect(page.document?.body).toBe(original.document?.body);
-    expect(page.document?.frontmatter).toMatchObject({ scope: { kind: 'workspace', workspaceId: imported.workspace.id }, custom: { preserve: ['one', 'two'] } });
+    expect(page.document?.frontmatter).toMatchObject({
+      scope: { kind: 'workspace', workspaceId: imported.workspace.id },
+      custom: { preserve: ['one', 'two'] },
+    });
     expect(imported.workspace.id).not.toBe(f.workspace.id);
     expect(current.parentRevision).toBeNull();
     expect(current.metadata.producer).toEqual({ kind: 'user', id: LOCAL_USER_ID });
-    expect(current.metadata.authority).toEqual({ kind: 'direct', instructionReference: `workspace.import:${exported.verified.manifest.id}:notebook:${f.revision}` });
+    expect(current.metadata.authority).toEqual({
+      kind: 'direct',
+      instructionReference: `workspace.import:${exported.verified.manifest.id}:notebook:${f.revision}`,
+    });
     expect(current.revision).not.toBe(f.revision);
     expect(existsSync(join(targetRoot, 'knowledge', 'pages'))).toBe(false);
-    expect(new KnowledgeNotebook({ repositoryPath: join(f.root, 'knowledge', 'notebook.git') }).publishedRevision()).toBe(f.revision);
+    expect(
+      new KnowledgeNotebook({
+        repositoryPath: join(f.root, 'knowledge', 'notebook.git'),
+      }).publishedRevision()
+    ).toBe(f.revision);
   });
 
   it('retains published and unpublished Git content and existing Audit in the ordinary same-deployment backup', async () => {
@@ -136,7 +182,10 @@ describe('canonical Notebook Workspace portability', () => {
         summary: 'Unpublished test candidate',
         producer: { kind: 'user', id: LOCAL_USER_ID },
         authority: { kind: 'direct', instructionReference: 'test:unpublished-backup' },
-        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${createHash('sha256').update('candidate').digest('hex')}` },
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256').update('candidate').digest('hex')}`,
+        },
         sourceReferences: [],
       },
     });
@@ -145,27 +194,40 @@ describe('canonical Notebook Workspace portability', () => {
     const backupRoot = join(destination, 'backup');
     const restoredRoot = join(destination, 'restored');
     const originalDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
-    const originalAudit = originalDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all();
+    const originalAudit = originalDb.sqlite
+      .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+      .all();
     originalDb.sqlite.close();
     expect(originalAudit).toHaveLength(2);
     const timestamp = '2026-10-16T00:00:00.000Z';
     await writeHotDataRootBackup({
-      dataRoot: f.dataRoot, backupRoot, backupId: randomUUID(),
+      dataRoot: f.dataRoot,
+      backupRoot,
+      backupId: randomUUID(),
       sourceDeploymentId: readDataRootLayoutMarker(f.dataRoot).deploymentId,
-      startedAt: timestamp, completedAt: timestamp,
+      startedAt: timestamp,
+      completedAt: timestamp,
     });
     restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
-    const restored = new KnowledgeNotebook({ repositoryPath: join(restoredRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git') });
+    const restored = new KnowledgeNotebook({
+      repositoryPath: join(restoredRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git'),
+    });
     expect(restored.validateRetainedGraph().publishedRevision).toBe(f.revision);
     expect(restored.readRevision(f.revision).files['notes/portable.md']).toBe(f.content);
-    expect(restored.readRevision(unpublished).files['notes/portable.md']).toBe(`${f.content}Unpublished candidate bytes.\n`);
+    expect(restored.readRevision(unpublished).files['notes/portable.md']).toBe(
+      `${f.content}Unpublished candidate bytes.\n`
+    );
     const restoredDb = openWorkspaceDb(restoredRoot, f.workspace.id);
     try {
-      expect(restoredDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()).toEqual(originalAudit);
+      expect(
+        restoredDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
+      ).toEqual(originalAudit);
     } finally {
       restoredDb.sqlite.close();
     }
-    expect(new FsStore({ dataRoot: restoredRoot }).getWorkspace(f.workspace.id).id).toBe(f.workspace.id);
+    expect(new FsStore({ dataRoot: restoredRoot }).getWorkspace(f.workspace.id).id).toBe(
+      f.workspace.id
+    );
     expect(f.notebook.publishedRevision()).toBe(f.revision);
   });
 });

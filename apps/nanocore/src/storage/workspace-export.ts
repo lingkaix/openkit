@@ -739,7 +739,9 @@ export function writeWorkspaceExportTree(
       requiredFeatures,
       extensions: {},
       sourceDeploymentId: input.sourceDeploymentId,
-      ...(portableFileState?.notebookRevision === undefined ? {} : { knowledgeNotebookRevision: portableFileState.notebookRevision }),
+      ...(portableFileState?.notebookRevision === undefined
+        ? {}
+        : { knowledgeNotebookRevision: portableFileState.notebookRevision }),
       workspaceId: history.workspace.id,
       exportCreatedAt: input.createdAt,
       exportFormatVersion: WORKSPACE_EXPORT_FORMAT_VERSION,

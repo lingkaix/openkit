@@ -104,13 +104,13 @@ import {
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
+import { remintPortableWorkspaceNotebookPage } from '../knowledge/notebook-workspace-portability.js';
 import {
   parseOkfDocument,
   stringFrontmatterField,
   stringListFrontmatterField,
   updateOkfFrontmatter,
 } from '../knowledge/okf.js';
-import { remintPortableWorkspaceNotebookPage } from '../knowledge/notebook-workspace-portability.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';

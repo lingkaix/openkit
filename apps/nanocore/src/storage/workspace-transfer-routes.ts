@@ -54,7 +54,10 @@ import {
 } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
 import { assertConversationRetrievalTraceReadable } from '../internal-agents/assistant-history.js';
-import { assertPortableWorkspaceNotebookDisclosure, importedWorkspaceNotebookFiles } from '../knowledge/notebook-workspace-portability.js';
+import {
+  assertPortableWorkspaceNotebookDisclosure,
+  importedWorkspaceNotebookFiles,
+} from '../knowledge/notebook-workspace-portability.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -801,15 +804,21 @@ function publishImportedWorkspace(
   ownerUserId: string,
   snapshot: WorkspaceImportSnapshot,
   stageWorkspace: (stage: ImportWorkspaceStage) => void,
-  initialization: NonNullable<Parameters<FsStore['importWorkspaceSnapshot']>[0]['notebookInitialization']>
+  initialization: NonNullable<
+    Parameters<FsStore['importWorkspaceSnapshot']>[0]['notebookInitialization']
+  >
 ): ReturnType<FsStore['importWorkspaceSnapshot']> {
   const importWorkspaceState = () =>
     store.importWorkspaceSnapshot({
       ...snapshot,
       stageWorkspace,
       notebookInitialization: initialization,
-      initialNotebookFiles: importedWorkspaceNotebookFiles(snapshot.portableFileState.nativeKnowledgePages),
-      ...(snapshot.portableFileState.workspaceSchema === null ? {} : { initialNotebookSchemaText: snapshot.portableFileState.workspaceSchema }),
+      initialNotebookFiles: importedWorkspaceNotebookFiles(
+        snapshot.portableFileState.nativeKnowledgePages
+      ),
+      ...(snapshot.portableFileState.workspaceSchema === null
+        ? {}
+        : { initialNotebookSchemaText: snapshot.portableFileState.workspaceSchema }),
     });
   if (!coreDb) {
     return importWorkspaceState();
@@ -1169,7 +1178,12 @@ export function createVerifiedWorkspaceExport({
       workspaceId,
       notebookRevision: portableFileState.notebookRevision,
       pages: portableFileState.nativeKnowledgePages,
-      access: { store, coreDb, actor: authorityActor ?? { kind: 'user', id: authorityUserId }, requestActor },
+      access: {
+        store,
+        coreDb,
+        actor: authorityActor ?? { kind: 'user', id: authorityUserId },
+        requestActor,
+      },
     });
   }
   if (

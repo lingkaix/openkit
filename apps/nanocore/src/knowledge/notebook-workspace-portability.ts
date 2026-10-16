@@ -1,6 +1,9 @@
 import { join } from 'node:path';
 import { KnowledgeOwnerScopeSchema } from '@openkit/protocol';
-import { type KnowledgeRetrievalAccess, readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
+import {
+  type KnowledgeRetrievalAccess,
+  readAuthorizedWorkspaceNotebookPages,
+} from '../retrieval-knowledge-adapter.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { parseOkfDocument, stringListFrontmatterField, updateOkfFrontmatter } from './okf.js';
 
@@ -9,10 +12,17 @@ export function readPortableWorkspaceNotebookPages(workspaceRoot: string): {
   readonly notebookRevision: string;
   readonly nativeKnowledgePages: ReadonlyMap<string, string>;
 } {
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git') });
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
   const revision = notebook.publishedRevision();
   const snapshot = notebook.readRevision(revision);
-  return { notebookRevision: revision, nativeKnowledgePages: new Map(Object.entries(snapshot.files).map(([path, content]) => [`knowledge/pages/${path}`, content])) };
+  return {
+    notebookRevision: revision,
+    nativeKnowledgePages: new Map(
+      Object.entries(snapshot.files).map(([path, content]) => [`knowledge/pages/${path}`, content])
+    ),
+  };
 }
 
 /** Remints only owned scope and source fields; authored Markdown and other metadata remain intact. */
@@ -29,24 +39,34 @@ export function remintPortableWorkspaceNotebookPage(input: {
   const sourceReferences = stringListFrontmatterField(parsed.document, 'source_refs');
   if (sourceReferences === null) throw new NotebookError('invalid_request');
   const scope = KnowledgeOwnerScopeSchema.safeParse(parsed.document.frontmatter.scope);
-  if (!scope.success || scope.data.kind !== 'workspace' || scope.data.workspaceId !== input.sourceWorkspaceId)
+  if (
+    !scope.success ||
+    scope.data.kind !== 'workspace' ||
+    scope.data.workspaceId !== input.sourceWorkspaceId
+  )
     throw new NotebookError('invalid_request');
   const rewritten = input.rewriteReferences(sourceReferences);
   const scopeChanged = input.sourceWorkspaceId !== input.targetWorkspaceId;
-  const sourcesChanged = rewritten.some((reference, index) => reference !== sourceReferences[index]);
+  const sourcesChanged = rewritten.some(
+    (reference, index) => reference !== sourceReferences[index]
+  );
   if (!scopeChanged && !sourcesChanged) return input.content;
   return updateOkfFrontmatter({
     path: input.path,
     content: input.content,
     updates: {
-      ...(scopeChanged ? { scope: { kind: 'workspace', workspaceId: input.targetWorkspaceId } } : {}),
+      ...(scopeChanged
+        ? { scope: { kind: 'workspace', workspaceId: input.targetWorkspaceId } }
+        : {}),
       ...(sourcesChanged ? { source_refs: [...rewritten] } : {}),
     },
   });
 }
 
 /** Converts the existing archive page map into the new target Notebook's initial tree. */
-export function importedWorkspaceNotebookFiles(pages: ReadonlyMap<string, string>): Readonly<Record<string, string>> {
+export function importedWorkspaceNotebookFiles(
+  pages: ReadonlyMap<string, string>
+): Readonly<Record<string, string>> {
   const files: Record<string, string> = Object.create(null);
   for (const [path, content] of pages) {
     if (!path.startsWith('knowledge/pages/')) throw new NotebookError('invalid_request');
