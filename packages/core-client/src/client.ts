@@ -5,6 +5,7 @@ import type { EmailAuthClient } from './auth.js';
 import { createEmailAuthClient } from './auth.js';
 import type { CapabilitiesClient } from './capabilities.js';
 import { createCapabilitiesClient } from './capabilities.js';
+import { type ConversationFileClient, createConversationFileClient } from './conversation-files.js';
 import type { CoreProjectionClient } from './core.js';
 import { createCoreProjectionClient } from './core.js';
 import { createOperationClient, type OperationClient } from './operations.js';
@@ -26,6 +27,8 @@ export interface CoreClient {
   readonly operations: OperationClient;
   /** Exact original file upload and download streams. */
   readonly artifactFiles: ArtifactFileClient;
+  /** Exact Turn-input submission on the canonical conversation operation. */
+  readonly conversationFiles: ConversationFileClient;
   /** Stable Core protocol projection routes and turn event streams. */
   readonly core: CoreProjectionClient;
   /** NanoCore App API read models and app-local commands. */
@@ -50,6 +53,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   return {
     operations: createOperationClient(transport),
     artifactFiles: createArtifactFileClient(transport),
+    conversationFiles: createConversationFileClient(transport),
     app,
     auth: { email },
     capabilities,

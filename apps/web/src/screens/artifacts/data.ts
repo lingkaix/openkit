@@ -326,45 +326,6 @@ export function useImportWorkspaceArtifact() {
 }
 
 /**
- * Imports a Composer text file through the caller's existing Artifact mutation.
- *
- * @param workspaceId Selected Workspace, required before reading the file.
- * @param file File whose case-sensitive suffix selects Markdown, JSON, or plain text.
- * @param importArtifact Existing mutation retaining failed input for an exact explicit retry; list refresh stays with the caller.
- * @returns The exact imported attachment; read and mutation failures propagate unchanged.
- */
-export async function importComposerFile(
-  workspaceId: string | null,
-  file: File,
-  importArtifact: ReturnType<typeof useImportWorkspaceArtifact>
-): Promise<{ id: string; version: number; label: string }> {
-  if (!workspaceId) throw new Error('Workspace is required.');
-  const mediaType = file.name.endsWith('.md')
-    ? 'text/markdown'
-    : file.name.endsWith('.json')
-      ? 'application/json'
-      : 'text/plain';
-  const content = await file.text();
-  const previous = importArtifact.isError ? importArtifact.variables : undefined;
-  // Response loss can follow a committed import; retry only identical input with its retained identity.
-  const requestId =
-    previous?.workspaceId === workspaceId &&
-    previous.title === file.name &&
-    previous.mediaType === mediaType &&
-    previous.content === content
-      ? previous.requestId
-      : createRequestId();
-  const imported = await importArtifact.mutateAsync({
-    workspaceId,
-    title: file.name,
-    mediaType,
-    content,
-    requestId,
-  });
-  return { id: imported.artifactId, version: imported.artifactVersion, label: file.name };
-}
-
-/**
  * Introduces one exact Artifact version, then reads the authoritative completed Turn.
  *
  * @returns Mutation over `client.operations['artifact.introduce']` plus `client.operations['turn.read']`.

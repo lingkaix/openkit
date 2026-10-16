@@ -8403,6 +8403,13 @@
               "schema": {
                 "$ref": "#/components/schemas/conversation.submit.input"
               }
+            },
+            "application/vnd.openkit.conversation-files": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "Four-byte unsigned big-endian UTF-8 JSON length (1 through 1,048,576), that many strict conversation.submit input bytes, then one exact payload per ordered fileInputs entry. No extra bytes. Combined payload limit: 1,000,000,000 bytes. JSON-only nonempty inventory reconciles an existing receipt; a new command returns file_input_bytes_required before effects."
+              }
             }
           }
         },
@@ -37479,6 +37486,41 @@
                     ]
                   }
                 },
+                "fileInputs": {
+                  "maxItems": 10000,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
+                      },
+                      "mediaType": {
+                        "type": "string",
+                        "maxLength": 255,
+                        "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                      },
+                      "sizeBytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000000
+                      },
+                      "contentDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "mediaType",
+                      "sizeBytes",
+                      "contentDigest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "error": {
                   "anyOf": [
                     {
@@ -40178,6 +40220,41 @@
               ]
             }
           },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
+            }
+          },
           "error": {
             "anyOf": [
               {
@@ -42430,6 +42507,41 @@
                   "additionalProperties": false
                 }
               ]
+            }
+          },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
             }
           },
           "error": {
@@ -44773,6 +44885,41 @@
                   "additionalProperties": false
                 }
               ]
+            }
+          },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
             }
           },
           "error": {
@@ -61230,6 +61377,9 @@
                       "type": "null"
                     }
                   ]
+                },
+                "requiresFileHandoffConfirmation": {
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -61442,6 +61592,45 @@
               ],
               "additionalProperties": false
             }
+          },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fileHandoffConfirmed": {
+            "type": "boolean",
+            "const": true
           },
           "workerStorageChoice": {
             "oneOf": [
@@ -63488,6 +63677,41 @@
                       "additionalProperties": false
                     }
                   ]
+                }
+              },
+              "fileInputs": {
+                "maxItems": 10000,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "mediaType",
+                    "sizeBytes",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "error": {
@@ -67768,6 +67992,41 @@
                       "additionalProperties": false
                     }
                   ]
+                }
+              },
+              "fileInputs": {
+                "maxItems": 10000,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "mediaType",
+                    "sizeBytes",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "error": {
@@ -79952,6 +80211,41 @@
                       "additionalProperties": false
                     }
                   ]
+                }
+              },
+              "fileInputs": {
+                "maxItems": 10000,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "mediaType",
+                    "sizeBytes",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "error": {
@@ -94971,5 +95265,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d3809cf2b387b0632053527c8759cadf375dd51b261eaa893fccb76189da24e3"
+  "x-openkit-source-digest": "sha256:ea6f7cbbd3ad1d0350e4bc74ad53e3166e8be9076467b2f3430501d5fec1336d"
 }
