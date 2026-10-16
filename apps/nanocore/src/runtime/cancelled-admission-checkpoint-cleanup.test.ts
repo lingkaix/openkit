@@ -654,7 +654,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       completedAt: null,
       createdAt: timestamp,
       description: 'Independent history',
-      id: `it_req_${unrelated.id}`,
+      id: testEntityId('it', `it_req_${unrelated.id}`),
       kind: 'permission',
       status: 'in_progress',
       threadId: fixture.threadId,

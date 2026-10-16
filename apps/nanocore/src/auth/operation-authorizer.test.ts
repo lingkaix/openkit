@@ -1603,7 +1603,7 @@ describe('canonical administration Workspace admission', () => {
     const originals = patches.map(([table]) => Object.getOwnPropertyDescriptor(table, id)!);
     const expected = {
       identityId: 'fixture-host',
-      deploymentId: 'fixture-deployment',
+      deploymentId: testEntityId('dep', 'fixture-deployment'),
       connectionGeneration: 1,
       predecessorFenced: true,
       ready: true,
