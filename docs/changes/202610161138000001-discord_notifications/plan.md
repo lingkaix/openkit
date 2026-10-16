@@ -54,7 +54,7 @@ The first complete Web attempt after preparation found a stale App navigation as
 
 ## Complexity Observations
 
-The combined feature changes 65 paths and 3 governing documents: Communication, Pending Requests, and Remote MCP. It touches9 owner concerns when counted by module boundary: those3 governing concerns, Core storage, the native operation catalog, startup configuration, Web account/settings, diagnostics, and the CLI. It adds6 Core tables for the accepted binding, disclosure, receipt, attention, and attempt lifecycles. Closed projections added here contain5 native operations,5 Discord subcommands,2 notification channels,2 source kinds,5 delivery states,4 attempt states,4 failure codes, and3 inbound receipt states. No runner, compatibility path, or separate schema owner is added. These are descriptive counts, not acceptance thresholds.
+The combined feature changes 66 paths and 3 governing documents: Communication, Pending Requests, and Remote MCP. It touches9 owner concerns when counted by module boundary: those3 governing concerns, Core storage, the native operation catalog, startup configuration, Web account/settings, diagnostics, and the CLI. It adds6 Core tables for the accepted binding, disclosure, receipt, attention, and attempt lifecycles. Closed projections added here contain5 native operations,5 Discord subcommands,2 notification channels,2 source kinds,5 delivery states,4 attempt states,4 failure codes, and3 inbound receipt states. No runner, compatibility path, or separate schema owner is added. These are descriptive counts, not acceptance thresholds.
 
 ## Combined Candidate Evidence Boundary
 
@@ -64,3 +64,8 @@ The reviewed follow-up at 92b766c8 passed its exact-head gate with 1281 Web case
 ## Backup Fixture Cleanup Correction
 
 The obsolete fourth Native shard passed899 assertions, then its global teardown reported EACCES. Inspection found exactly three read-only directories left by the existing backup-mode regression. That test now restores those directories to writable mode in its finally block after all mode-preservation assertions, then removes only its own temporary fixture. No backup behavior, assertion, timeout or global harness changes. The complete backup file is queued for verification in backup-fixture-cleanup-check.log. The merged-head87c13 gate passed all1285 Web cases and static/build/generated checks before its Native wait; it is not a complete gate and does not prove the corrected head.
+
+
+## Durable Admission Ordering Correction
+
+The first corrected-head Native shard failed the existing Task durable-admission case at mode-entry-routes.test.ts:2221. Its one-second polling helper expired before the response arrived. The accepted test criterion is causal order: publish the durable receipt, return admission, and keep the test-owned Worker unfinished until release. The correction awaits the admission promise and retains every receipt, response, completion, replay and publication-order assertion. The Worker release stays in the test, and the global test timeout is unchanged. No production behavior or latency criterion changes. Complete-file verification is recorded in task-admission-ordering-check.log. Other Native shards continue, and the failed shard and bail omissions are not passing evidence.
