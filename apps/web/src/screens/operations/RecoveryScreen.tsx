@@ -185,8 +185,17 @@ export function RecoveryScreen() {
   }
 
   async function refetchExact(queryKey: readonly unknown[]) {
+    const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+    if (!query) return false;
+    const updatesBeforeRead = query.state.dataUpdateCount;
     await queryClient.refetchQueries({ queryKey, exact: true, type: 'all' });
-    return queryClient.getQueryState(queryKey)?.status === 'success';
+    // Cancellation can restore cached success; only this retained query's completed new read settles.
+    return (
+      queryClient.getQueryCache().find({ queryKey, exact: true }) === query &&
+      query.state.status === 'success' &&
+      query.state.fetchStatus === 'idle' &&
+      query.state.dataUpdateCount > updatesBeforeRead
+    );
   }
 
   async function settleWorkerRead(originWorkspaceId: string, checkpointId: string) {

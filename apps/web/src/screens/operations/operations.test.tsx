@@ -816,6 +816,68 @@ describe('Recovery and search', () => {
     expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
   });
 
+  it('keeps the original worker recovery lock after a canceled settlement read while another Workspace is selected', async () => {
+    const user = userEvent.setup();
+    const departedRead = createDeferred<{ items: unknown[] }>();
+    const currentRead = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValueOnce(departedRead.promise)
+      .mockReturnValueOnce(currentRead.promise);
+    const release = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiCallError(409, 'private recovery failure', { code: 'recovery_required' })
+      );
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'recovery.checkpoint-retry': release,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await user.click(workerActionButton(workers));
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(2));
+    const originalCommand = release.mock.calls[0]?.[0];
+    expect(originalCommand).toEqual({
+      workspaceId: WORKSPACE.id,
+      threadId: INTERRUPTED_WORKER.threadId,
+      turnId: INTERRUPTED_WORKER.turnId,
+      requestId: expect.any(String),
+    });
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
+    await screen.findByText(WORKSPACE_B_WORKER.diagnosticsSummary);
+    await act(async () => {
+      await queryClient.cancelQueries({ queryKey: operationsKeys.workers, exact: true });
+    });
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id }));
+    await screen.findByText(INTERRUPTED_WORKER.diagnosticsSummary);
+    const recovery = await within(workers).findByRole('alert');
+    expect(recovery).toHaveTextContent('Recovery required');
+    expectWorkerActionUnavailable(workers);
+    await act(async () => {
+      departedRead.resolve({ items: ALL_WORKERS });
+      await departedRead.promise;
+    });
+    expectWorkerActionUnavailable(workers);
+    expect(release.mock.calls).toEqual([[originalCommand]]);
+    await user.click(within(recovery).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(3));
+    expectWorkerActionUnavailable(workers);
+    expect(release.mock.calls).toEqual([[originalCommand]]);
+    await act(async () => {
+      currentRead.resolve({ items: ALL_WORKERS });
+      await currentRead.promise;
+    });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    expect(within(workers).queryByRole('alert')).toBeNull();
+    expect(release.mock.calls).toEqual([[originalCommand]]);
+  });
+
   it('starts current recovery reads on a fresh-cache remount before enabling actions', async () => {
     const user = userEvent.setup();
     const workersRead = vi
