@@ -571,7 +571,6 @@ describe('workspace portable file state', () => {
         content: portablePage,
         updates: {
           scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
-          source_refs: [`knowledge:${importedKnowledge.id}`],
         },
       })
     );

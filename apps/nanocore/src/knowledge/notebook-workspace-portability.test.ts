@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
@@ -97,10 +98,10 @@ function source() {
 
 describe('canonical Notebook Workspace portability', () => {
   it('remints exact dependent page pins after scope and captured Source identity change', () => {
-    const sourceWorkspaceId = `ws_${randomUUID()}`;
-    const targetWorkspaceId = `ws_${randomUUID()}`;
-    const sourceId = `ks_${randomUUID()}`;
-    const targetSourceId = `ks_${randomUUID()}`;
+    const sourceWorkspaceId = allocateEntityId('ws');
+    const targetWorkspaceId = allocateEntityId('ws');
+    const sourceId = allocateEntityId('ks');
+    const targetSourceId = allocateEntityId('ks');
     const capturedDigest = `sha256:${createHash('sha256').update('Captured evidence.').digest('hex')}`;
     const hash = (content: string) =>
       `sha256:${createHash('sha256').update(content).digest('hex')}`;
