@@ -383,6 +383,49 @@ describe('pi-ai real-provider L3 test policy', () => {
     }
   });
 
+  it('refuses an unavailable primary when automatic failover is disabled', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-pi-ai-primary-unavailable-'));
+    const diagnostics = diagnosticsAppFixture();
+    const model = diagnostics.gateway.models[0];
+    model.autoFailover = false;
+    model.routes.unshift({
+      ...model.routes[0],
+      id: 'unavailable-primary',
+      available: false,
+      unavailableReason: 'provider_not_dispatchable',
+    });
+    const requestedPaths = [];
+
+    try {
+      await assert.rejects(
+        runPiAiRealProviderTest({
+          env: {
+            OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
+            OPENKIT_L6_EVIDENCE_DIR: join(tempRoot, 'evidence'),
+            OPENKIT_L6_GATEWAY_BASE_URL: 'http://127.0.0.1:54001',
+            OPENKIT_L6_GATEWAY_MODEL: 'gemini-2.5-pro',
+            OPENKIT_L6_GATEWAY_PROVIDER_ID: 'google',
+            OPENKIT_L6_GATEWAY_WORKSPACE_ID: 'ws_0190f4c8-0000-7000-8000-000000000001',
+            OPENKIT_L6_REAL_PROVIDER: '1',
+          },
+          fetchImpl: async (url) => {
+            const path = new URL(url).pathname;
+            requestedPaths.push(path);
+            assert.ok(path === '/health' || path === '/api/app/operations/diagnostics.app');
+            return new Response(JSON.stringify(path === '/health' ? { status: 'ok' } : diagnostics), {
+              status: 200,
+            });
+          },
+          stdout: () => {},
+        }),
+        /gateway diagnostics preflight failed: google provider_not_dispatchable/
+      );
+      assert.deepEqual(requestedPaths, ['/health', '/api/app/operations/diagnostics.app']);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it('stays default-off without touching the gateway', async () => {
     const result = await runPiAiRealProviderTest({
       env: {},
