@@ -1,5 +1,5 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -54,6 +54,28 @@ function searchHarness(search = vi.fn().mockResolvedValue(RESPONSE)) {
 }
 
 describe('current search observations', () => {
+  it('hides prior hits while a current search read is paused', async () => {
+    const { mount, queryClient, search, submit } = searchHarness();
+    mount();
+    await submit();
+    await screen.findByRole('button', { name: 'Private plan' });
+    try {
+      onlineManager.setOnline(false);
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: operationsKeys.search(QUERY), exact: true });
+      });
+      expect(queryClient.getQueryState(operationsKeys.search(QUERY))?.fetchStatus).toBe('paused');
+      expect(search).toHaveBeenCalledTimes(1);
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument()
+      );
+    } finally {
+      onlineManager.setOnline(true);
+    }
+    expect(await screen.findByRole('button', { name: 'Private plan' })).toBeEnabled();
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+  });
+
   it.each([
     401, 403, 500,
   ])('hides prior private hits after a current %s and during retry', async (status) => {
