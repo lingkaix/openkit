@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -42,6 +42,122 @@ function sourceFixture() {
 
 /** Keeps explicit registered-source selection distinct from coincidentally equal entry bytes. */
 describe('direct Knowledge saved-source lineage', () => {
+  it('filters private Source identities and refuses private metadata for a current ordinary readonly member', async () => {
+    const f = sourceFixture();
+    try {
+      const privateThread = f.store.createThread(
+        'ws_demo',
+        'Private source title',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
+        }
+      );
+      const { source: privateSource } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Private source identity',
+        content: 'Private source material.',
+        originatingThreadId: privateThread.id,
+      });
+      const { source: sharedSource } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Shared source',
+        content: 'Shared material.',
+      });
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: `Bearer ${issued.secret}` },
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      const listed = await client.operations['knowledge.source.list']({ workspaceId: 'ws_demo' });
+      expect(listed.items.map((source) => source.id)).toContain(sharedSource.id);
+      expect.soft(listed.items.map((source) => source.id)).not.toContain(privateSource.id);
+      const derivedReads = vi.spyOn(f.store, 'listKnowledgeSourceDerivedRepresentations');
+      try {
+        await expect(
+          client.operations['knowledge.source.read']({
+            workspaceId: 'ws_demo',
+            sourceId: privateSource.id,
+          })
+        ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+        expect(derivedReads).not.toHaveBeenCalled();
+      } finally {
+        derivedReads.mockRestore();
+      }
+    } finally {
+      f.close();
+    }
+  });
+
+  it('withholds Source data when its derived metadata read revokes the presented credential', async () => {
+    const f = sourceFixture();
+    try {
+      const { source } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Readable source',
+        content: 'Must be withheld after revocation.',
+      });
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: `Bearer ${issued.secret}` },
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      const read = f.store.listKnowledgeSourceDerivedRepresentations.bind(f.store);
+      const derivedReads = vi
+        .spyOn(f.store, 'listKnowledgeSourceDerivedRepresentations')
+        .mockImplementation((workspaceId, sourceId) => {
+          const representations = read(workspaceId, sourceId);
+          revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+          return representations;
+        });
+      try {
+        await expect(
+          client.operations['knowledge.source.read']({
+            workspaceId: 'ws_demo',
+            sourceId: source.id,
+          })
+        ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+        expect(derivedReads).toHaveBeenCalledTimes(1);
+      } finally {
+        derivedReads.mockRestore();
+      }
+    } finally {
+      f.close();
+    }
+  });
+
   it('retains the selected exact Source relationship through public indexes and restart', async () => {
     const f = sourceFixture();
     const { client, coreDb, dataRoot } = f;
@@ -58,6 +174,9 @@ describe('direct Knowledge saved-source lineage', () => {
       const command = {
         workspaceId: 'ws_demo',
         requestId: crypto.randomUUID(),
+        baseRevision: (await client.operations['knowledge.list']({ workspaceId: 'ws_demo' }))
+          .notebookRevision,
+        knowledgePageId: 'reading-room-hours',
         kind: 'project-context' as const,
         title: 'Reading room hours',
         content: 'The reading room opens at eight.',
@@ -142,6 +261,8 @@ describe('direct Knowledge saved-source lineage', () => {
         f.client.operations['knowledge.create']({
           workspaceId: 'ws_demo',
           requestId: crypto.randomUUID(),
+          baseRevision: before.notebookRevision,
+          knowledgePageId: 'must-not-publish',
           kind: 'project-context',
           title: 'Must not publish',
           content: 'The reading room opens at eight.',
@@ -190,6 +311,9 @@ describe('direct Knowledge saved-source lineage', () => {
       const command = {
         workspaceId: 'ws_demo',
         requestId: crypto.randomUUID(),
+        baseRevision: (await client.operations['knowledge.list']({ workspaceId: 'ws_demo' }))
+          .notebookRevision,
+        knowledgePageId: 'authorized-source-link',
         kind: 'project-context' as const,
         title: 'Authorized source link',
         content: 'The room opens at eight.',
