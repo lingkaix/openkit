@@ -7,6 +7,7 @@ import {
   GENERATIVE_UI_NATIVE_CATALOG_ID,
   GENERATIVE_UI_PROTOCOL_VERSION,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId, PresentationIdSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
@@ -171,7 +172,7 @@ describe('Generative UI Thread audience', () => {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const ownPrivateSource = store.createItem({
-      id: `it_${ownPrivateTurn.id}_source`,
+      id: allocateEntityId('it'),
       workspaceId: workspace.id,
       threadId: ownPrivateThread.id,
       turnId: ownPrivateTurn.id,
@@ -182,7 +183,7 @@ describe('Generative UI Thread audience', () => {
       completedAt: ownPrivateTurn.startedAt ?? stamp,
     });
     const otherPrivateSource = store.createItem({
-      id: `it_${otherPrivateTurn.id}_source`,
+      id: allocateEntityId('it'),
       workspaceId: workspace.id,
       threadId: otherPrivateThread.id,
       turnId: otherPrivateTurn.id,
@@ -193,7 +194,7 @@ describe('Generative UI Thread audience', () => {
       completedAt: otherPrivateTurn.startedAt ?? stamp,
     });
     const sharedSource = store.createItem({
-      id: `it_${sharedTurn.id}_source`,
+      id: allocateEntityId('it'),
       workspaceId: workspace.id,
       threadId: sharedThread.id,
       turnId: sharedTurn.id,
@@ -284,9 +285,7 @@ describe('Generative UI Thread audience', () => {
       );
       expect(ownPublished.status, await ownPublished.clone().text()).toBe(201);
       const ownPresentation = (await ownPublished.json()) as { id: string; itemId: string };
-      expect(ownPresentation.id).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-      );
+      expect(PresentationIdSchema.safeParse(ownPresentation.id).success).toBe(true);
 
       const otherPublished = await app.request(
         ...operationRequest(
@@ -796,7 +795,7 @@ describe('Generative UI Thread audience', () => {
         noInsertDb.sqlite.close();
       }
 
-      const forgedId = randomUUID();
+      const forgedId = allocateEntityId('pres');
       const forgedMessages = [
         ...nativeMessages('surface-audience', [
           { id: 'root', component: 'Text', text: { path: '/text' } },
@@ -826,7 +825,7 @@ describe('Generative UI Thread audience', () => {
             workspace.id,
             sharedThread.id,
             sharedTurn.id,
-            `it_${forgedId}`,
+            allocateEntityId('it'),
             stamp,
             JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }),
             randomUUID(),

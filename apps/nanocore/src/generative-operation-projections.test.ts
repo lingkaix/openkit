@@ -42,11 +42,15 @@ const event = {
 };
 const publish = {
   threadId: 'th_00000000-0000-7000-8000-000000000001',
-  turnId: 'missing-turn',
+  turnId: 'tu_00000000-0000-7000-8000-000000000099',
   title: 'Proof',
   fallbackText: 'Proof',
   messages: [{}, {}],
-  source: { kind: 'item', itemId: 'missing-item', contentDigest: `sha256:${'0'.repeat(64)}` },
+  source: {
+    kind: 'item',
+    itemId: 'it_00000000-0000-7000-8000-000000000099',
+    contentDigest: `sha256:${'0'.repeat(64)}`,
+  },
   actions: [],
 };
 const base = '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001';

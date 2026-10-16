@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type {
+  CreateLightAppResponse,
+  LightAppRecord,
+  LightAppSchemaInput,
+} from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
 import { seedDemoWorkspaceDataRoot } from './_lib/demo-data.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -25,14 +32,12 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     { FsStore },
     { openCoreDb, openWorkspaceDb },
     { applyScopedMigrations },
-    kernel,
     ui,
     { createHash },
   ] = await Promise.all([
     import('../../nanocore/dist/lib/store.js'),
     import('../../nanocore/dist/storage/db.js'),
     import('../../nanocore/dist/storage/migrate.js'),
-    import('../../nanocore/dist/generative-kernel/commands.js'),
     import('../../nanocore/dist/generative-ui/commands.js'),
     import('node:crypto'),
   ]);
@@ -43,8 +48,13 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   const users = coreDb.sqlite.prepare("SELECT id FROM users WHERE kind = 'local'").all() as Array<{
     id: string;
   }>;
-  coreDb.sqlite.close();
   expect(users).toHaveLength(1);
+  const imageEvidence = coreDb.sqlite.prepare('SELECT * FROM worker_image_settlements').all();
+  expect(imageEvidence).toHaveLength(1);
+  await seedDemoWorkspaceDataRoot(fixtureRoot);
+  expect(coreDb.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual(
+    imageEvidence
+  );
   const workspaceDb = openWorkspaceDb(fixtureRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   const actor = { kind: 'user' as const, id: users[0]!.id };
@@ -72,7 +82,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   let appId: string;
   let recordId: string;
   try {
-    const app = await kernel.createLightApp(context, {
+    const schema: LightAppSchemaInput = {
       format: 'openkit.light-app',
       schemaVersion: 1,
       title: 'Native browser notes',
@@ -93,16 +103,197 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
           ],
         },
       ],
+    };
+    let app: CreateLightAppResponse;
+    let record: LightAppRecord;
+    // The local capability transport uses production token and attempt admission. Only image and backend acceptance evidence are synthetic; no provider or host runs.
+    const requireCore = createRequire(new URL('../../nanocore/package.json', import.meta.url));
+    const [
+      { Hono },
+      { Client, StreamableHTTPClientTransport },
+      { loadRuntimeConfig },
+      { resolveAgentSetup },
+      { resolveAgentEnvironmentPackage },
+      { recordAgentEnvironmentPackageSnapshot },
+      { createSchedulerAdmissionEntry },
+      attempts,
+      nativeAttempts,
+      { createDefaultWorkerControlGateway },
+      { createDefaultWorkerMcpGateway },
+      { registerWorkerMcpRoutes },
+      { WorkspaceMutationAdmission },
+    ] = await Promise.all([
+      import(requireCore.resolve('hono')),
+      import(requireCore.resolve('@modelcontextprotocol/client')),
+      import('../../nanocore/dist/config/runtime-config.js'),
+      import('../../nanocore/dist/agents/setup-resolver.js'),
+      import('../../nanocore/dist/runtime/agent-environment.js'),
+      import('../../nanocore/dist/runtime/aep-snapshot-ledger.js'),
+      import('../../nanocore/dist/scheduler-records.js'),
+      import('../../nanocore/dist/runtime/execution-attempt-records.js'),
+      import('../../nanocore/dist/runtime/nanohost-attempt-records.js'),
+      import('../../nanocore/dist/app.js'),
+      import('../../nanocore/dist/runtime/worker-mcp-gateway.js'),
+      import('../../nanocore/dist/worker-mcp-routes.js'),
+      import('../../nanocore/dist/workspace-mutation-admission.js'),
+    ]);
+    const runtime = loadRuntimeConfig(fixtureRoot);
+    const resolved = resolveAgentSetup(runtime.agentManifests[0]!, runtime);
+    expect(resolved.diagnostics).toEqual([]);
+    expect(resolved.setup).not.toBeNull();
+    const agentSessionId = allocateEntityId('as');
+    const createdAt = new Date().toISOString();
+    store.createAgentSession({
+      id: agentSessionId,
+      agentId: resolved.setup!.manifest.id,
+      workspaceId,
+      threadId,
+      status: 'busy',
+      message: null,
+      createdAt,
+      updatedAt: createdAt,
     });
-    appId = app.appId;
-    const record = await kernel.createRecord(
-      { ...context, requestId: randomUUID() },
-      appId,
-      'notes',
-      app.schemaRevision,
-      { note: 'Original local note' }
-    );
-    recordId = record.id;
+    const workerTurn = store.updateTurn(turn.id, { agentSessionId });
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      coreDb,
+      agentSetup: resolved.setup!,
+      agentSessionId,
+      backend: { kind: 'openshell' },
+      captureCoverage: { scope: 'server', value: 'off' },
+      createdAt,
+      requestId: randomUUID(),
+      triggerActor: actor,
+      turn: workerTurn,
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
+    });
+    recordAgentEnvironmentPackageSnapshot(workspaceDb, { environmentPackage, createdAt });
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `generative-browser-${randomUUID()}`,
+      requestId: environmentPackage.scope.requestId!,
+      triggerActor: actor,
+      workspaceId,
+      threadId,
+      turnId: turn.id,
+      turnInput: 'Update the retained local note.',
+      requestedAgentId: resolved.setup!.manifest.id,
+    });
+    const attempt = attempts.createSchedulerExecutionAttempt(coreDb, {
+      entry,
+      preparationInput: { admission: entry },
+    });
+    attempts.bindSchedulerExecutionAttemptSession(coreDb, {
+      attemptId: attempt.attemptId,
+      agentSessionId,
+    });
+    const sandboxBindingRef = `generative-browser-${randomUUID()}`;
+    nativeAttempts.bindNanoHostAttemptPreparation(coreDb, {
+      attemptId: attempt.attemptId,
+      agentSessionId,
+      inputRef: environmentPackage.snapshotId,
+      bindingRef: sandboxBindingRef,
+      sessionCompatibilityKey: 'generative-browser-local',
+    });
+    const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
+      attemptId: attempt.attemptId,
+      operationId: `generative-browser-${randomUUID()}`,
+      submission: true,
+    });
+    expect(
+      attempts.acceptSchedulerExecutionObservation(coreDb, {
+        ...attempts.schedulerExecutionCorrelation(submitted),
+        disposition: 'accepted',
+        execution: 'running',
+        fenceRef: null,
+        outcomeRef: null,
+      })?.disposition
+    ).toBe('accepted');
+    const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+    const registration = workerControlGateway.registerSession(environmentPackage, {
+      sandboxBindingRef,
+    });
+    nativeAttempts.bindNanoHostAttemptRouteTokenHashes(coreDb, {
+      attemptId: attempt.attemptId,
+      sandboxBindingRef,
+      workerControlTokenHash: registration.workerControlTokenHash,
+      workerInferenceTokenHash: registration.workerInferenceTokenHash,
+      workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
+    });
+    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+    const route = new Hono();
+    registerWorkerMcpRoutes({
+      app: route,
+      coreDb,
+      store,
+      runtimeConfig: () => runtime,
+      workerControlGateway,
+      workerMcpGateway,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    });
+    const deniedWorker = await route.request('/api/worker-capabilities/mcp/openkit-generative', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer invalid-local-fixture-token',
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(deniedWorker.status).toBe(401);
+    const worker = new Client({ name: 'generative-browser-local-worker', version: '1.0.0' });
+    try {
+      await worker.connect(
+        new StreamableHTTPClientTransport(
+          new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-generative'),
+          {
+            fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+              route.fetch(new Request(input, init)),
+            requestInit: {
+              headers: { authorization: `Bearer ${registration.workerCapabilityToken}` },
+            },
+          }
+        )
+      );
+      expect((await worker.listTools()).tools.map((tool: { name: string }) => tool.name)).toContain(
+        'kernel_records_update'
+      );
+      const createdApp = await worker.callTool({ name: 'kernel_apps_create', arguments: schema });
+      app = createdApp.structuredContent as CreateLightAppResponse;
+      appId = app.appId;
+      const createdRecord = await worker.callTool({
+        name: 'kernel_records_create',
+        arguments: {
+          appId,
+          collection: 'notes',
+          schemaRevision: app.schemaRevision,
+          data: { note: 'Before Worker update' },
+        },
+      });
+      record = createdRecord.structuredContent as LightAppRecord;
+      recordId = record.id;
+      expect(record).toMatchObject({ revision: 1, schemaRevision: app.schemaRevision });
+      const updated = await worker.callTool({
+        name: 'kernel_records_update',
+        arguments: {
+          appId,
+          collection: 'notes',
+          recordId,
+          schemaRevision: app.schemaRevision,
+          expectedRecordRevision: record.revision,
+          data: { note: 'Original local note' },
+        },
+      });
+      expect(updated.structuredContent).toMatchObject({
+        id: recordId,
+        schemaRevision: app.schemaRevision,
+        revision: 2,
+        data: { note: 'Original local note' },
+      });
+    } finally {
+      await worker.close().catch(() => undefined);
+      workerControlGateway.unregisterSession(environmentPackage.snapshotId);
+      await workerMcpGateway.close();
+    }
     const collection = app.schema!.collections[0]!;
     await ui.publishGenerativePresentation(
       { ...context, requestId: randomUUID() },
@@ -147,7 +338,12 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
           appId,
           collectionId: collection.id,
           schemaRevision: app.schemaRevision,
-          query: { page: 1, perPage: 1, filter: `id = '${recordId}'`, fields: 'note' },
+          query: {
+            page: 1,
+            perPage: 1,
+            filter: `id = ${JSON.stringify(recordId)}`,
+            fields: 'note',
+          },
         },
         actions: [
           {
@@ -198,6 +394,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     );
   } finally {
     workspaceDb.sqlite.close();
+    coreDb.sqlite.close();
   }
 
   stack = await startIsolatedWebStack({ mode: 'local', dataRoot: fixtureRoot, useSimulator: true });
@@ -248,7 +445,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     collection: 'notes',
     recordId,
     schemaRevision: 1,
-    expectedRecordRevision: 2,
+    expectedRecordRevision: 3,
     data: { note: 'Concurrent owner note' },
   });
   await page.getByRole('button', { name: 'Save local note', exact: true }).click();
@@ -289,5 +486,5 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
         schemaRevision: 1,
       })
     ).revision
-  ).toBe(3);
+  ).toBe(4);
 });

@@ -5,8 +5,8 @@ import {
 } from './generative-ui.js';
 
 const input = {
-  threadId: 'thread',
-  turnId: 'turn',
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
+  turnId: 'tu_00000000-0000-7000-8000-000000000001',
   title: 'Answer',
   fallbackText: 'Answer',
   messages: [{}, {}],

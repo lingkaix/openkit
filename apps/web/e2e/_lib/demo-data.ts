@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
@@ -196,7 +197,7 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
     const requestId = createHash('sha256').update(`web-e2e:${inputDigest}`).digest('hex');
     const imageDigest = `sha256:${'a'.repeat(64)}`;
     const candidate = {
-      authoredArtifactId: `ar_web_e2e_${requestId}`,
+      authoredArtifactId: deriveEntityId('ar', ['web-e2e-image', requestId]),
       authoredArtifactVersion: 1 as const,
       authoredContentDigest: inputDigest,
       inputDigest,

@@ -79,8 +79,8 @@ function workerAuthority(dataRoot: string, turnId: string) {
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_test',
-    agentSessionId: 'session_demo',
+    attemptId: allocateEntityId('attempt'),
+    agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
     inputRef: 'package_test',
     bindingRef: 'binding_test',
     sessionCompatibilityKey: 'generative-test',
@@ -129,7 +129,7 @@ describe('openkit-generative MCP', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        agentSessionId: 'session_demo',
+        agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
         triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
     };
@@ -241,7 +241,7 @@ describe('openkit-generative MCP', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        agentSessionId: 'session_demo',
+        agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
         triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
     };

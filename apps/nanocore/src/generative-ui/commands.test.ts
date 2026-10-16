@@ -166,6 +166,16 @@ describe('Generative UI commands', () => {
       expect(listLightApps(context.dataRoot, context.workspaceId).totalItems).toBe(0);
       expect(published.source).toMatchObject({ kind: 'item', itemId: sourceItem.id });
       expect(published.messages[2]).toMatchObject({ updateDataModel: { value: { text } } });
+      for (const changedSource of [
+        { status: 'failed' as const },
+        { result: null },
+        { result: 'Changed retained observation' },
+      ]) {
+        context.store.updateItem(sourceItem.id, changedSource);
+        expect(() => getGenerativePresentation(context, published.id)).toThrow(KernelCommandError);
+        context.store.updateItem(sourceItem.id, sourceItem);
+      }
+      expect(getGenerativePresentation(context, published.id).id).toBe(published.id);
       expect(
         context.workspaceDb.sqlite
           .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
