@@ -3375,14 +3375,14 @@ describe('Knowledge (board 14)', () => {
       items: [{ ...KNOWLEDGE_ENTRY, content: 'Another writer changed this page.' }],
     });
     await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ['knowledge', 'ws_1'] });
+      await queryClient.invalidateQueries({ queryKey: ['knowledge', WORKSPACE_A.id] });
     });
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('My pending exact edit');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: WORKSPACE_A.id,
           knowledgeEntryId: KNOWLEDGE_ENTRY.id,
           baseRevision: 'opaque-base-one',
           title: 'My pending exact edit',
