@@ -80,7 +80,9 @@ export function DataRootBackupScreen() {
         title="Create and verify backups"
         subtitle="Create a deployment data-root backup or verify a known backup ID."
       />
-      {!adminAccess.isFetchedAfterMount || adminAccess.isPending || adminAccess.fetchStatus !== 'idle' ? (
+      {!adminAccess.isFetchedAfterMount ||
+      adminAccess.isPending ||
+      adminAccess.fetchStatus !== 'idle' ? (
         <Skeleton lines={6} />
       ) : denied ? (
         <EmptyState

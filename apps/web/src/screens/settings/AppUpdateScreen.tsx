@@ -158,7 +158,9 @@ export function AppUpdateScreen() {
         title="App update"
         subtitle="Prepare one App update, then start replacement after explicit maintenance consent. The host applies the update and reports whether restoration was possible."
       />
-      {!adminAccess.isFetchedAfterMount || adminAccess.isPending || adminAccess.fetchStatus !== 'idle' ? (
+      {!adminAccess.isFetchedAfterMount ||
+      adminAccess.isPending ||
+      adminAccess.fetchStatus !== 'idle' ? (
         <Skeleton lines={6} />
       ) : blocked ? (
         <EmptyState

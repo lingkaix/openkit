@@ -87,13 +87,19 @@ describe('Deployment data-root backup', () => {
     expect(await screen.findByRole('button', { name: 'Create backup' })).toBeInTheDocument();
   });
 
-  it.each([401, 403])('keeps prior summary hidden through an unresolved retry after %s', async (status) => {
+  it.each([
+    401, 403,
+  ])('keeps prior summary hidden through an unresolved retry after %s', async (status) => {
     const client = makeClient();
     const { queryClient, container } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
     await screen.findByText('Backup created');
-    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(status, POISON));
-    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'data-root-backup', 'admin-access'] }));
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+      new ApiCallError(status, POISON)
+    );
+    await act(() =>
+      queryClient.invalidateQueries({ queryKey: ['settings', 'data-root-backup', 'admin-access'] })
+    );
     await screen.findByText('Access denied');
     const pending = deferred<{ items: [] }>();
     vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
@@ -112,7 +118,9 @@ describe('Deployment data-root backup', () => {
     const { queryClient } = renderScreen(client);
     await screen.findByRole('button', { name: 'Create backup' });
     vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(500, POISON));
-    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'data-root-backup', 'admin-access'] }));
+    await act(() =>
+      queryClient.invalidateQueries({ queryKey: ['settings', 'data-root-backup', 'admin-access'] })
+    );
     await screen.findByText("Couldn't verify deployment-admin authority.");
     expect(screen.queryByRole('button', { name: 'Create backup' })).not.toBeInTheDocument();
     expect(client.operations['backup.create']).not.toHaveBeenCalled();
@@ -268,17 +276,49 @@ describe('Deployment data-root backup', () => {
     const client = makeClient();
     const { queryClient } = renderScreen(client);
     await screen.findByRole('button', { name: 'Create backup' });
-    vi.mocked(client.operations['backup.create']).mockRejectedValueOnce(new ApiCallError(403, POISON, { details: POISON }));
+    vi.mocked(client.operations['backup.create']).mockRejectedValueOnce(
+      new ApiCallError(403, POISON, { details: POISON })
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Create backup' }));
     await screen.findByText('Access denied');
-    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(403, POISON, { details: POISON }));
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+      new ApiCallError(403, POISON, { details: POISON })
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText('Access denied');
-    await waitFor(() => expect(queryClient.getQueryState(['settings', 'data-root-backup', 'admin-access'])?.status).toBe('error'));
-    expect(queryClient.getQueryCache().getAll().some((query) => query.state.error?.message.includes(POISON))).toBe(false);
-    expect(queryClient.getMutationCache().getAll().some((mutation) => mutation.state.error?.message.includes(POISON))).toBe(false);
-    expect(JSON.stringify(queryClient.getQueryCache().getAll().map((query) => query.state.error))).not.toContain(POISON);
-    expect(JSON.stringify(queryClient.getMutationCache().getAll().map((mutation) => mutation.state.error))).not.toContain(POISON);
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryState(['settings', 'data-root-backup', 'admin-access'])?.status
+      ).toBe('error')
+    );
+    expect(
+      queryClient
+        .getQueryCache()
+        .getAll()
+        .some((query) => query.state.error?.message.includes(POISON))
+    ).toBe(false);
+    expect(
+      queryClient
+        .getMutationCache()
+        .getAll()
+        .some((mutation) => mutation.state.error?.message.includes(POISON))
+    ).toBe(false);
+    expect(
+      JSON.stringify(
+        queryClient
+          .getQueryCache()
+          .getAll()
+          .map((query) => query.state.error)
+      )
+    ).not.toContain(POISON);
+    expect(
+      JSON.stringify(
+        queryClient
+          .getMutationCache()
+          .getAll()
+          .map((mutation) => mutation.state.error)
+      )
+    ).not.toContain(POISON);
   });
 
   it('retries an authority-check failure without leaking its raw message', async () => {
@@ -308,6 +348,8 @@ describe('Deployment data-root backup', () => {
 /** Hold a transport response independently of query cancellation. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }

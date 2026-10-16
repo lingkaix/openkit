@@ -11,7 +11,6 @@ const DIGEST = `sha256:${'b'.repeat(64)}`;
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const TIMESTAMP = '2026-09-10T00:00:00.000Z';
 
-
 const DIAGNOSTICS = {
   readiness: {
     serviceAvailability: 'available',
@@ -122,13 +121,16 @@ function renderScreen(
   client: CoreClient,
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 5_000 } } })
 ) {
-  return { queryClient, ...render(
-    <QueryClientProvider client={queryClient}>
-      <CoreClientProvider client={client}>
-        <AppUpdateScreen />
-      </CoreClientProvider>
-    </QueryClientProvider>
-  ) };
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <AppUpdateScreen />
+        </CoreClientProvider>
+      </QueryClientProvider>
+    ),
+  };
 }
 
 async function fillPublishedSource(user: ReturnType<typeof userEvent.setup>) {
@@ -187,15 +189,21 @@ describe('App update administration', () => {
     expect(await screen.findByRole('button', { name: 'Prepare' })).toBeInTheDocument();
   });
 
-  it.each([401, 403])('hides a prepared receipt after admission %s through unresolved retry', async (status) => {
+  it.each([
+    401, 403,
+  ])('hides a prepared receipt after admission %s through unresolved retry', async (status) => {
     const user = userEvent.setup();
     const client = makeClient();
     const { queryClient } = renderScreen(client);
     await fillPublishedSource(user);
     await user.click(screen.getByRole('button', { name: 'Prepare' }));
     await screen.findByText(REQUEST_ID);
-    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(status, 'private detail'));
-    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] }));
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+      new ApiCallError(status, 'private detail')
+    );
+    await act(() =>
+      queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] })
+    );
     await screen.findByText('Access denied');
     expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
     const pending = deferred<{ items: [] }>();
@@ -220,10 +228,19 @@ describe('App update administration', () => {
     const pending = deferred<{ items: [] }>();
     vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
     let refetch!: Promise<void>;
-    act(() => { refetch = queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] }); });
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument());
+    act(() => {
+      refetch = queryClient.invalidateQueries({
+        queryKey: ['settings', 'app-update', 'admin-access'],
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument()
+    );
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
-    await act(async () => { pending.resolve({ items: [] }); await refetch; });
+    await act(async () => {
+      pending.resolve({ items: [] });
+      await refetch;
+    });
     await screen.findByRole('button', { name: 'Start update' });
     expect(client.operations['app-update.start']).not.toHaveBeenCalled();
   });
@@ -232,22 +249,32 @@ describe('App update administration', () => {
     const client = makeClient();
     const { queryClient } = renderScreen(client);
     await screen.findByRole('button', { name: 'Prepare' });
-    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(500, 'private detail'));
-    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] }));
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+      new ApiCallError(500, 'private detail')
+    );
+    await act(() =>
+      queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] })
+    );
     await screen.findByText("Couldn't verify deployment-admin authority.");
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
     expect(client.operations['app-update.prepare']).not.toHaveBeenCalled();
   });
 
-  it.each([401, 403])('treats diagnostics %s as denial and keeps receipts hidden during retry', async (status) => {
+  it.each([
+    401, 403,
+  ])('treats diagnostics %s as denial and keeps receipts hidden during retry', async (status) => {
     const user = userEvent.setup();
     const client = makeClient({ 'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS) });
     const { queryClient } = renderScreen(client);
     await fillPublishedSource(user);
     await user.click(screen.getByRole('button', { name: 'Prepare' }));
     await screen.findByText(REQUEST_ID);
-    vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(new ApiCallError(status, 'private detail'));
-    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] }));
+    vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(
+      new ApiCallError(status, 'private detail')
+    );
+    await act(() =>
+      queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] })
+    );
     await screen.findByText('Access denied');
     const pending = deferred<{ items: [] }>();
     vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
@@ -266,13 +293,28 @@ describe('App update administration', () => {
     await fillPublishedSource(user);
     await user.click(screen.getByRole('button', { name: 'Prepare' }));
     await screen.findByText(REQUEST_ID);
-    vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(new ApiCallError(403, 'private detail'));
-    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] }));
+    vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(
+      new ApiCallError(403, 'private detail')
+    );
+    await act(() =>
+      queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] })
+    );
     await screen.findByText('Access denied');
-    vi.mocked(client.operations['diagnostics.app']).mockRejectedValue(new ApiCallError(500, 'private detail'));
+    vi.mocked(client.operations['diagnostics.app']).mockRejectedValue(
+      new ApiCallError(500, 'private detail')
+    );
     await user.click(screen.getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(vi.mocked(client.operations['diagnostics.app']).mock.calls.length).toBeGreaterThanOrEqual(3));
-    await waitFor(() => expect(queryClient.getQueryState(['settings', 'app-update', 'diagnostics'])).toMatchObject({ status: 'error', fetchStatus: 'idle' }));
+    await waitFor(() =>
+      expect(
+        vi.mocked(client.operations['diagnostics.app']).mock.calls.length
+      ).toBeGreaterThanOrEqual(3)
+    );
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['settings', 'app-update', 'diagnostics'])).toMatchObject({
+        status: 'error',
+        fetchStatus: 'idle',
+      })
+    );
     expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
@@ -285,7 +327,9 @@ describe('App update administration', () => {
 
   it('allows prepare, consented start and receipt inspection after diagnostics 500', async () => {
     const user = userEvent.setup();
-    const client = makeClient({ 'diagnostics.app': vi.fn().mockRejectedValue(new ApiCallError(500, 'private detail')) });
+    const client = makeClient({
+      'diagnostics.app': vi.fn().mockRejectedValue(new ApiCallError(500, 'private detail')),
+    });
     renderScreen(client);
     await screen.findByText('Operational diagnostics unavailable.');
     await fillPublishedSource(user);
@@ -295,8 +339,13 @@ describe('App update administration', () => {
     await user.click(screen.getByRole('button', { name: 'Start update' }));
     await screen.findByText('launching');
     await user.click(screen.getByRole('button', { name: 'Refresh status' }));
-    await waitFor(() => expect(client.operations['app-update.status']).toHaveBeenCalledWith({ requestId: REQUEST_ID }));
-    expect(client.operations['app-update.start']).toHaveBeenCalledExactlyOnceWith({ maintenanceConsent: true, requestId: REQUEST_ID });
+    await waitFor(() =>
+      expect(client.operations['app-update.status']).toHaveBeenCalledWith({ requestId: REQUEST_ID })
+    );
+    expect(client.operations['app-update.start']).toHaveBeenCalledExactlyOnceWith({
+      maintenanceConsent: true,
+      requestId: REQUEST_ID,
+    });
   });
 
   it('prepares a published-digest source and starts only after maintenance consent', async () => {
@@ -413,7 +462,9 @@ describe('App update administration', () => {
   it('inspects the same request after an uncertain start without replaying the effect', async () => {
     const user = userEvent.setup();
     const privateDetail = 'private-update-detail';
-    const client = makeClient({ 'app-update.start': vi.fn().mockRejectedValue(new Error(privateDetail)) });
+    const client = makeClient({
+      'app-update.start': vi.fn().mockRejectedValue(new Error(privateDetail)),
+    });
     const { queryClient, container } = renderScreen(client);
     await fillPublishedSource(user);
     await user.click(screen.getByRole('button', { name: 'Prepare' }));
@@ -425,18 +476,32 @@ describe('App update administration', () => {
     expect(screen.getByLabelText('Request ID')).toHaveValue(REQUEST_ID);
     await user.click(screen.getByRole('button', { name: 'Refresh status' }));
     await screen.findByText('launching');
-    expect(client.operations['app-update.status']).toHaveBeenCalledExactlyOnceWith({ requestId: REQUEST_ID });
+    expect(client.operations['app-update.status']).toHaveBeenCalledExactlyOnceWith({
+      requestId: REQUEST_ID,
+    });
     expect(client.operations['app-update.start']).toHaveBeenCalledTimes(1);
-    expect(queryClient.getMutationCache().getAll().some((mutation) => mutation.state.error?.message.includes(privateDetail))).toBe(false);
+    expect(
+      queryClient
+        .getMutationCache()
+        .getAll()
+        .some((mutation) => mutation.state.error?.message.includes(privateDetail))
+    ).toBe(false);
   });
 
   it('keeps raw diagnostics denial details out of the query cache', async () => {
     const privateDetail = 'private-update-detail';
-    const client = makeClient({ 'diagnostics.app': vi.fn().mockRejectedValue(new ApiCallError(403, privateDetail, { details: privateDetail })) });
+    const client = makeClient({
+      'diagnostics.app': vi
+        .fn()
+        .mockRejectedValue(new ApiCallError(403, privateDetail, { details: privateDetail })),
+    });
     const { queryClient, container } = renderScreen(client);
     await screen.findByText('Access denied');
     expect(container.innerHTML).not.toContain(privateDetail);
-    const errors = queryClient.getQueryCache().getAll().map((query) => query.state.error);
+    const errors = queryClient
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.state.error);
     expect(errors.some((error) => error?.message.includes(privateDetail))).toBe(false);
     expect(JSON.stringify(errors)).not.toContain(privateDetail);
   });
@@ -504,6 +569,8 @@ describe('App update administration', () => {
 /** Hold a transport response independently of query cancellation. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
