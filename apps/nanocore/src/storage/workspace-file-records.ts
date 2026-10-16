@@ -2182,8 +2182,7 @@ function parseCanonicalThreadRecord(
   }
   if ('visibility' in raw || 'privateOwnerUserId' in raw)
     throw new Error('Thread visibility requires its required feature.');
-  // Predecessors have no audience authority. Validate their shared fields before
-  // checking their digest; full Thread refinements apply after classification.
+  // Validate predecessor fields and digest without audience authority; apply all Thread refinements after classification.
   const oldPayload = z
     .object(ThreadSchema.shape)
     .omit({ visibility: true, privateOwnerUserId: true })
