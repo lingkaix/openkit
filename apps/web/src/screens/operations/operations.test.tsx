@@ -1397,7 +1397,9 @@ describe('Recovery and search', () => {
       ])
     );
     expect(vi.mocked(client.operations['recovery.worker-list']).mock.calls).toEqual([[{}], [{}]]);
-    expect(await within(workers).findByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
+    expect(
+      await within(workers).findByText(WORKSPACE_B_WORKER.diagnosticsSummary)
+    ).toBeInTheDocument();
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).queryByText(INSPECT_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(scheduler).queryByText('agent_ops', { exact: true })).toBeNull();
