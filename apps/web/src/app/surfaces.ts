@@ -369,6 +369,16 @@ export const SURFACES: Surface[] = [
   },
 
   {
+    id: 'shared-mcp',
+    title: 'Shared MCP',
+    path: '/settings/shared-mcp',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'connect',
+    board: '10',
+    wp: 'WP-7',
+  },
+  {
     id: 'vault-admin',
     title: 'Vault backend',
     path: '/settings/vault-admin',

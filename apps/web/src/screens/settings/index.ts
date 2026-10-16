@@ -37,6 +37,7 @@ export {
 export { GeneralSettingsScreen } from './GeneralSettingsScreen';
 export { MyAdminAccessScreen } from './MyAdminAccessScreen';
 export { ServerAuditScreen } from './ServerAuditScreen';
+export { SharedMcpScreen } from './SharedMcpScreen';
 export {
   isSecretFieldName,
   projectSafeValue,

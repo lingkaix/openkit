@@ -28,6 +28,7 @@ import {
   useWorkspaceCatalog,
   useWorkspaces,
 } from './data';
+import { SharedMcpPanel } from './SharedMcpPanel';
 
 /**
  * Workspace Skill, MCP, and Agent Plugin catalog (product workflow, not an API console).
@@ -635,6 +636,8 @@ export function CatalogScreen() {
               ) : null}
             </div>
           </Card>
+
+          <SharedMcpPanel key={workspaceId} workspaceId={workspaceId} blocked={writeBlocked} />
 
           <Card>
             <h2 className="text-sm font-bold text-fg">Agent Plugins</h2>
