@@ -1482,7 +1482,7 @@ describe('app api openapi projection', () => {
   it('preserves preparation and recovery constraints in runtime JSON Schema and generated OpenAPI', () => {
     const document = createAppOpenApiDocument();
     const digest = `sha256:${'a'.repeat(64)}`;
-    const common = { administrationThreadId: 'thread_admin' };
+    const common = { administrationThreadId: testEntityId('th', 'thread_admin') };
     const preparation = {
       ...common,
       configuration: { fileId: 'agents/codex.agent.jsonc', expectedRevision: digest },

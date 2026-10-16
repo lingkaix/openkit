@@ -601,7 +601,7 @@ describe('post-terminal write admission', () => {
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
-      /MCP boot backfill conflicts with already-decided Item: it_mcp_createdat/
+      /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-748c-8305-6a5f709ad4dc/
     );
   });
 
@@ -615,7 +615,7 @@ describe('post-terminal write admission', () => {
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
-      /MCP boot backfill conflicts with already-decided Item: it_mcp_parent/
+      /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-769e-be1f-7403aafc125a/
     );
   });
 
@@ -676,7 +676,7 @@ describe('post-terminal write admission', () => {
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
-      /MCP boot backfill conflicts with already-decided Item: it_mcp_parent_backfilled/
+      /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-78cf-ac54-13510d8883d9/
     );
   });
 

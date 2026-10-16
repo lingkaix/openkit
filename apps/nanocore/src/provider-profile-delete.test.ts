@@ -77,7 +77,7 @@ function fixture(subscription = false) {
       displayName: 'Removed',
       secretKind: 'provider-api-key',
       backendKind: backend.kind,
-      backendLocator: `${backend.kind}://server/vault/removed_key`,
+      backendLocator: `${backend.kind}://server/vault/vault_00000000-0000-7d1d-9a06-27e8a2468878`,
     });
   }
   const store = createDemoStore({ dataRoot });

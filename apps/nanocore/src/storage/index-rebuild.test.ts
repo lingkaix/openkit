@@ -179,7 +179,7 @@ describe('workspace derived index rebuild', () => {
       },
       {
         id: 'invalid-id',
-        reference: 'source:ks_00000000-0000-7100-b7d4-77a48f93dbb6',
+        reference: 'source:invalid-id',
         targetId: null,
         resolved: false,
       },
@@ -759,7 +759,9 @@ describe('workspace derived index rebuild', () => {
 
     expect(() =>
       rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: testEntityId('ws', 'missing') })
-    ).toThrow('Workspace projection is missing: workspaces/missing/workspace-record.json');
+    ).toThrow(
+      `Workspace projection is missing: workspaces/${testEntityId('ws', 'missing')}/workspace-record.json`
+    );
   });
 
   it('rejects a symlinked canonical subtree instead of reading external content', () => {
@@ -875,7 +877,7 @@ describe('workspace derived index rebuild', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        'source_refs: ["source:ks_00000000-0000-7e65-a399-d53a84c98ecb"]',
+        'source_refs: ["source:invalid-id"]',
         'review_state: "accepted"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1092,7 +1094,7 @@ describe('workspace derived index rebuild', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        'source_refs: ["source:ks_00000000-0000-7e65-a399-d53a84c98ecb"]',
+        'source_refs: ["source:invalid-id"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1319,7 +1321,7 @@ describe('workspace derived index rebuild', () => {
           path: 'knowledge/pages/source-reference-index.md',
           reference: 'source:ks_00000000-0000-7e65-a399-d53a84c98ecb',
           kind: 'registered-source',
-          targetId: null,
+          targetId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb',
           resolved: false,
         },
         {
