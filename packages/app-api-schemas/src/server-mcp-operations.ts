@@ -85,7 +85,7 @@ function serverOperation<const I extends z.ZodObject, const O extends z.ZodType>
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    credentials: ['local-user', 'deployment-administrator'],
+    credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },
     target: { kind: 'server' },
     policyOperation: 'api.call',

@@ -17,6 +17,7 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { users } from '../storage/schema/index.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
@@ -92,6 +93,42 @@ const creation = {
 };
 
 describe('Server MCP administration owner and recovery', () => {
+  it('admits the current administrator Web session and denies ordinary or revoked sessions', async () => {
+    const f = fixture();
+    const session: Actor = {
+      kind: 'session',
+      userId: f.actor.userId,
+      adminTokenId: f.token.tokenId,
+    };
+    const requestId = randomUUID();
+    await expect(
+      f.call('administration.server-mcp-create', { ...creation, requestId }, session)
+    ).resolves.toMatchObject({ revision: 1 });
+    await expect(f.call('administration.server-mcp-list', {}, session)).resolves.toMatchObject({
+      revision: 1,
+    });
+    const ordinaryUserId = randomUUID();
+    f.coreDb.db
+      .insert(users)
+      .values({
+        id: ordinaryUserId,
+        displayName: 'Ordinary synthetic user',
+        email: `${ordinaryUserId}@openkit.invalid`,
+      })
+      .run();
+    await expect(
+      f.call('administration.server-mcp-list', {}, { kind: 'session', userId: ordinaryUserId })
+    ).rejects.toMatchObject({ status: 403 });
+    revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
+    await expect(f.call('administration.server-mcp-list', {}, session)).rejects.toMatchObject({
+      status: 403,
+    });
+    await expect(
+      f.call('administration.server-mcp-create', { ...creation, requestId }, session)
+    ).rejects.toMatchObject({ status: 403 });
+    expect(loadResourceCatalog(f.dataRoot, { kind: 'server' }).revision).toBe(1);
+  });
+
   it('creates disabled supply, stages without selection, selects by CAS and replays the current resource without another effect', async () => {
     const f = fixture();
     const requestId = randomUUID();

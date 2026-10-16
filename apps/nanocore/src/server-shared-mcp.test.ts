@@ -38,6 +38,7 @@ import { createApp } from './test-support/app.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -748,6 +749,60 @@ describe('Server-shared MCP through governed Worker routes', () => {
     expectRefusal(await worker.call('must-not-resolve'));
     expect(f.materialResolution).not.toHaveBeenCalled();
     expect(f.upstream.methods).toEqual([]);
+  });
+
+  it.each([
+    'rotate',
+    'rotate-canonical-only',
+    'lock',
+  ] as const)('rechecks %s material after asynchronous discovery and sends no tools/call', async (change) => {
+    const f = await fixture();
+    const { reference } = await sharedSetup(f);
+    const worker = await f.worker(f.workspaces[0]!.id);
+    const entered = f.upstream.holdDiscovery();
+    const pending = worker.call('must-not-use-stale-material');
+    try {
+      await Promise.race([
+        entered,
+        pending.then(() => {
+          throw new Error('Worker request settled before the discovery gate.');
+        }),
+      ]);
+      let mutation: Promise<unknown> = Promise.resolve();
+      if (change === 'lock') {
+        f.vaultUnlockState.lock();
+      } else if (change === 'rotate-canonical-only') {
+        // Keep the connection alive to isolate the final material identity check from teardown.
+        const rotated = f.vaultUnlockState.backend().rotate({
+          referenceId: reference.referenceId,
+          material: 'synthetic-rotated-shared-material',
+        });
+        advanceActiveVaultReferenceVersion(f.coreDb, {
+          referenceId: reference.referenceId,
+          currentVersion: rotated.currentVersion,
+        });
+      } else {
+        mutation = f.call('vault.server-mcp-secret-rotate', {
+          referenceId: reference.referenceId,
+          material: 'synthetic-rotated-shared-material',
+        });
+        await vi.waitFor(() => {
+          expect(
+            f.vaultUnlockState
+              .backend()
+              .listReferences()
+              .find((item) => item.referenceId === reference.referenceId)?.currentVersion
+          ).toBe(2);
+        });
+      }
+      f.upstream.releaseDiscovery();
+      await mutation;
+      expectRefusal(await pending);
+      expect(f.upstream.methods).not.toContain('tools/call');
+    } finally {
+      f.upstream.releaseDiscovery();
+      await pending;
+    }
   });
 
   it.each([

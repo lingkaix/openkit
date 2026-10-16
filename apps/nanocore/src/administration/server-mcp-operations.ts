@@ -423,15 +423,17 @@ export function createServerMcpOperationImplementations(
         context,
         'vault.server-mcp-secret-rotate',
         'vault_reference',
-        () => {
+        async () => {
           const { vault } = currentBackendReference(input.referenceId);
           const result = vault.rotate({ referenceId: input.referenceId, material: input.material });
-          return projectReference(
+          const updated = projectReference(
             advanceActiveVaultReferenceVersion(coreDb!, {
               referenceId: input.referenceId,
               currentVersion: result.currentVersion,
             })
           );
+          await dependencies.closeServerMcpSessions?.();
+          return updated;
         },
         (id) => projectReference(reference(id)),
         (result) => result.referenceId

@@ -19,7 +19,12 @@ export function isCurrentServerMcpMaterial(
   backend: VaultBackend,
   reference: VaultReferenceRecord
 ): boolean {
-  if (!isServerMcpReference(reference) || reference.status !== 'active') return false;
+  if (
+    backend.health().state !== 'available' ||
+    !isServerMcpReference(reference) ||
+    reference.status !== 'active'
+  )
+    return false;
   const inventory = backend
     .listReferences({ ownerScope: 'server' })
     .find((item) => item.referenceId === reference.referenceId);
