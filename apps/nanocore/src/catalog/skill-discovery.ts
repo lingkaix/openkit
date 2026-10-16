@@ -59,10 +59,19 @@ export function discoverEcosystemSkills(input: {
   readonly headers: ReadonlyMap<string, Uint8Array>;
   readonly subpath?: string;
   readonly skillName?: string;
+  /** One common archive directory, without rewriting paths or making selection explicit. */
+  readonly archiveRoot?: string;
 }): readonly DiscoveredEcosystemSkill[] {
   if (input.headers.size > 10_000) throw new SkillSourceInputError();
   const selected = input.subpath === undefined ? '' : validateSkillSourceSubpath(input.subpath);
   const prefix = selected ? `${selected}/` : '';
+  const archiveRoot =
+    input.archiveRoot === undefined ? '' : validateSkillSourceSubpath(input.archiveRoot);
+  if (archiveRoot.includes('/')) throw new SkillSourceInputError();
+  const containers = [
+    ...CONTAINERS,
+    ...(archiveRoot ? CONTAINERS.map((container) => `${archiveRoot}/${container}`) : []),
+  ];
   const roots = new Map<string, Uint8Array>();
   let bytes = 0;
   for (const [path, content] of input.headers) {
@@ -106,7 +115,7 @@ export function discoverEcosystemSkills(input: {
   const preferred = candidates.filter(
     ([root]) =>
       root.split('/').length === 1 ||
-      CONTAINERS.some(
+      containers.some(
         (container) =>
           root.startsWith(`${container}/`) &&
           root.slice(container.length + 1).split('/').length <= 3
@@ -120,7 +129,12 @@ export function discoverEcosystemSkills(input: {
   const first = parsed(preferred);
   const skills = first.length
     ? first
-    : parsed(candidates.filter(([root]) => root.split('/').length <= 5));
+    : parsed(
+        candidates.filter(
+          ([root]) =>
+            root.split('/').length <= (archiveRoot && root.startsWith(`${archiveRoot}/`) ? 6 : 5)
+        )
+      );
   return choose(
     skills.sort((left, right) =>
       Buffer.compare(Buffer.from(left.subpath), Buffer.from(right.subpath))
