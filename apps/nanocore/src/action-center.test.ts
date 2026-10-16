@@ -563,7 +563,7 @@ describe('action center app API', () => {
 
   it('projects eligible member actions and admits an administrator to foreign private requests', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_demo', 'Actor-scoped attention');
     const approvalTurn = store.createTurn('ws_demo', thread.id, 'Request approval', {
       kind: 'user',

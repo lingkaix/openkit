@@ -88,6 +88,10 @@ export class KnowledgeNotebook {
   /** Runs fixed plumbing with ambient Git configuration, hooks, network and callbacks disabled. */
   private gitBytes(args: readonly string[], input?: string, author = 'OpenKit'): Buffer {
     try {
+      // The repository itself is canonical storage; Git may not follow a substituted root.
+      const root = lstatSync(this.repositoryPath, { throwIfNoEntry: false });
+      if (root && (!root.isDirectory() || root.isSymbolicLink()))
+        throw new NotebookError('recovery_required');
       const output = execFileSync(
         'git',
         [
