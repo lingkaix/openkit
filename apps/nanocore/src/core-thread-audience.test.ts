@@ -374,7 +374,11 @@ describe('core Thread audience', () => {
       });
       const requestId = randomUUID();
       const selectors = { workspaceId: workspace.id, threadId: shared.id, turnId: turn.id };
-      const stopper = bearer(coreDb, { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }, workspace.id);
+      const stopper = bearer(
+        coreDb,
+        { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+        workspace.id
+      );
       const response = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
           headers: stopper,
@@ -387,9 +391,14 @@ describe('core Thread audience', () => {
         status: 'cancelled',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       });
-      const read = () => app.request(
-        ...operationRequest('audit.workspace-list', { workspaceId: workspace.id }, { headers: stopper })
-      );
+      const read = () =>
+        app.request(
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: workspace.id },
+            { headers: stopper }
+          )
+        );
       const first = await read();
       expect(first.status).toBe(200);
       const history = await first.json();
@@ -405,12 +414,18 @@ describe('core Thread audience', () => {
       ]);
       const replay = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
-          headers: bearer(coreDb, { scope: 'workspace', userId: 'usr_00000000-0000-7000-8000-000000000001' }, workspace.id),
+          headers: bearer(
+            coreDb,
+            { scope: 'workspace', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            workspace.id
+          ),
           body: JSON.stringify({ requestId }),
         })
       );
       expect(replay.status).toBe(200);
-      expect(await replay.json()).toMatchObject({ triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } });
+      expect(await replay.json()).toMatchObject({
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      });
       expect(await (await read()).json()).toEqual(history);
       const rejected = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
@@ -442,11 +457,18 @@ describe('core Thread audience', () => {
         summary: 'Stop request accepted.',
       });
       db.sqlite.close();
-      for (const [userId, visible] of [['usr_00000000-0000-7000-8000-000000000001', true], ['usr_00000000-0000-73d4-904a-d4c4b905df7c', false]] as const) {
+      for (const [userId, visible] of [
+        ['usr_00000000-0000-7000-8000-000000000001', true],
+        ['usr_00000000-0000-73d4-904a-d4c4b905df7c', false],
+      ] as const) {
         const response = await fixture.app.request(
-          ...operationRequest('audit.workspace-list', { workspaceId: fixture.workspace.id }, {
-            headers: bearer(fixture.coreDb, { scope: 'workspace', userId }, fixture.workspace.id),
-          })
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: fixture.workspace.id },
+            {
+              headers: bearer(fixture.coreDb, { scope: 'workspace', userId }, fixture.workspace.id),
+            }
+          )
         );
         expect(response.status).toBe(200);
         expect((await response.json()).auditEvents).toEqual(visible ? [event] : []);
