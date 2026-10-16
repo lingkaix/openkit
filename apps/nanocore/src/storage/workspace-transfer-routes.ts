@@ -8,6 +8,7 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { createZstdCompress } from 'node:zlib';
@@ -424,6 +425,37 @@ async function appendWorkspaceArchiveEntry(
   }
 }
 
+/** Streams one path-backed original through the existing archive writer and verifies its inventoried bytes. */
+async function appendWorkspaceArchiveOriginal(
+  archive: PassThrough,
+  path: string,
+  source: string,
+  expected: { readonly bytes: number; readonly digest: string }
+): Promise<void> {
+  const file = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = await file.stat();
+    if (!metadata.isFile() || metadata.size !== expected.bytes)
+      throw new Error('Workspace archive original size is inconsistent.');
+    await writeWorkspaceArchiveBytes(archive, workspaceArchiveHeader(path, 'file', expected.bytes));
+    const digest = createHash('sha256');
+    let observed = 0;
+    for await (const chunk of file.createReadStream({ highWaterMark: 65_536, autoClose: false })) {
+      observed += chunk.length;
+      if (observed > expected.bytes)
+        throw new Error('Workspace archive original exceeds its inventoried size.');
+      digest.update(chunk);
+      await writeWorkspaceArchiveBytes(archive, chunk);
+    }
+    if (observed !== expected.bytes || `sha256:${digest.digest('hex')}` !== expected.digest)
+      throw new Error('Workspace archive original integrity is inconsistent.');
+    const padding = (512 - (expected.bytes % 512)) % 512;
+    if (padding > 0) await writeWorkspaceArchiveBytes(archive, Buffer.alloc(padding));
+  } finally {
+    await file.close();
+  }
+}
+
 /**
  * Streams one verified export tree into a canonical tar pack.
  *
@@ -439,8 +471,10 @@ async function writeWorkspaceArchive(
     ...[...verified.fileContents].map(([path, text]) => [path, Buffer.from(text)] as const),
     ...[...verified.binaryFileContents].map(([path, bytes]) => [path, Buffer.from(bytes)] as const),
   ]);
+  const filePaths = [...files.keys(), ...verified.artifactPayloadFiles.keys()];
+  const inventory = new Map(verified.manifest.contentInventory.map((entry) => [entry.path, entry]));
   const directories = new Set<string>();
-  for (const path of files.keys()) {
+  for (const path of filePaths) {
     const parts = path.split('/');
     parts.pop();
     while (parts.length > 0) {
@@ -453,8 +487,11 @@ async function writeWorkspaceArchive(
   for (const directory of [...directories].sort(comparePaths)) {
     await appendWorkspaceArchiveEntry(archive, directory, 'directory');
   }
-  for (const [path, content] of [...files].sort(([left], [right]) => comparePaths(left, right))) {
-    await appendWorkspaceArchiveEntry(archive, path, 'file', content);
+  for (const path of filePaths.sort(comparePaths)) {
+    const original = verified.artifactPayloadFiles.get(path);
+    if (original)
+      await appendWorkspaceArchiveOriginal(archive, path, original, inventory.get(path)!);
+    else await appendWorkspaceArchiveEntry(archive, path, 'file', files.get(path)!);
   }
   await writeWorkspaceArchiveBytes(archive, Buffer.alloc(1024));
   archive.end();
