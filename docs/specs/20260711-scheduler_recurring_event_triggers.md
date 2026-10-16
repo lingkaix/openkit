@@ -1,8 +1,8 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: concept
-updated: 2026-09-09
+updated: 2026-10-16
 ---
 # Scheduler Recurring Triggers
 
@@ -133,9 +133,11 @@ The scan prioritizes unresolved occurrences and unmaterialized due instants whos
 
 ## Current Implementation Projection
 
-`apps/nanocore/src/lib/automation-store.ts` currently holds user-owned cron-shaped definitions in a process-local `Map`; creation always pauses them, and no executor or persistence exists. The four definition-derived `automation.*` operations still join that process-local owner and do not implement this contract and must be replaced rather than extended as a second owner.
+`apps/nanocore/src/lib/automation-store.ts` replaces the process-local cron store with durable fixed-interval definitions, immutable occurrences, and expired ranges. Its Core transaction joins the existing scheduler queue insertion to acceptance and its required AuditEvent. Definition changes and scanner writes share the existing Workspace mutation fence. Opaque request UUIDs use the existing UUIDv5 API with the fixed RFC 4122 URL namespace (`6ba7b811-9dad-11d1-80b4-00c04fd430c8`) and the UTF-8 JSON pair `[scheduleId, scheduledAt]`. The instant is normalized to UTC milliseconds before this derivation.
 
-`apps/nanocore/src/runtime/product-turn-start.ts` currently rechecks the exact `triggerActor` with `runtime.launch`, derives deterministic queue and Turn identities from a request ID, creates the admission, and immediately invokes dispatch. `apps/nanocore/src/scheduler-records.ts` stores admissions in `core.sqlite`, but its current create seam is not request-idempotent and does not yet accept the occurrence transaction. Implementation must extract or reuse narrow preparation and shared-transaction seams, then leave dispatch to the normal service, instead of wrapping the combined start path or adding a second ledger.
+`apps/nanocore/src/runtime/recurring-schedule-service.ts` serializes five-second scans and checks the exact responsible actor before preparation and transaction commit. It accepts only bounded Core-local preparation and never invokes the worker executor or combined product Turn starter. The definition-derived automation family exposes the lifecycle and bounded occurrence/range history, including current scheduler status without backend or host paths.
+
+Migration, boot composition, scheduler publication/recovery, Workspace audit aggregation, portable export/import, generated contracts, and product surfaces require integration before this feature is complete. Focused regressions cover the storage and scanner boundaries; they do not establish those integrated outcomes.
 
 ## Storage, audit, backup, and portability dependencies
 
