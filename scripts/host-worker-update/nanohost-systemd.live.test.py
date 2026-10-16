@@ -83,7 +83,7 @@ def load_maintenance():
 
 def state(unit=UNIT):
     """Read independent actual process and activation facts from the private manager."""
-    result = command(["/usr/bin/systemctl", "show", "--no-pager", "--property=MainPID,ActiveState,SubState,Restart", unit])
+    result = command(["/usr/bin/systemctl", "show", "--no-pager", "--property=MainPID,ActiveState,SubState,Restart,Result,ExecMainStatus", unit])
     need(result.returncode == 0, "service_query_failed")
     return dict(line.split("=", 1) for line in result.stdout.decode("ascii").splitlines())
 
@@ -492,6 +492,10 @@ def outer():
             failure = str(error) if isinstance(error, FixtureFailure) else "fixture_setup_or_execution_failed"
             if fixture is not None:
                 facts.update(fixture.failure_facts)
+                if (root / "manager.log").exists():
+                    raw = (root / "manager.log").read_bytes()[:65536]
+                    facts["managerReportedNamespaceFailure"] = b"NAMESPACE" in raw
+                    facts["managerReportedFixtureDockerPath"] = b"/run/docker.sock" in raw
         finally:
             group_removed = fixture is None
             if fixture is not None and fixture.identity is not None:
@@ -531,7 +535,8 @@ if __name__ == "__main__":
             try:
                 observed = state()
                 facts = {"mainPidAbsent": observed["MainPID"] == "0", "activeState": observed["ActiveState"],
-                         "subState": observed["SubState"], "domainEmpty": domain_empty()}
+                         "subState": observed["SubState"], "serviceResult": observed["Result"],
+                         "serviceExitStatus": int(observed["ExecMainStatus"]), "domainEmpty": domain_empty()}
                 for name, signature in (("UnitPath", "as"), ("Job", "(uo)"), ("Conditions", "a(sbbsi)")):
                     manager = name == "UnitPath"
                     result = command(["/usr/bin/busctl", "--system", "--json=short", "get-property", "org.freedesktop.systemd1",
