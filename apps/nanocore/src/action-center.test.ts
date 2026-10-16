@@ -125,7 +125,7 @@ function createKnowledgeProposalFixture(
     sourceReferences: [],
   });
   const sourceReference = `knowledge:${source.id}@sha256:${createHash('sha256')
-    .update(serializeUserAuthoredKnowledgePage(source), 'utf8')
+    .update(serializeUserAuthoredKnowledgePage(source, { kind: 'workspace', workspaceId }), 'utf8')
     .digest('hex')}`;
   const knowledgePageId = `action-center/${label}`;
   const canonicalPageBytes = [
