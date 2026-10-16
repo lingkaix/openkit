@@ -11,7 +11,7 @@ import { AutomationsScreen } from './AutomationsScreen';
 import { ChannelsScreen } from './ChannelsScreen';
 import { TIER_B_SURFACE_IDS } from './data';
 
-const EXPECTED_TIER_B_SURFACE_IDS = ['automations', 'channels'] as const;
+const EXPECTED_TIER_B_SURFACE_IDS = ['channels'] as const;
 
 /** Minimal client — Tier-B demos use sample fixtures, not live reads. */
 function makeClient(): CoreClient {
@@ -49,8 +49,14 @@ function Providers({ children, path }: { children?: ReactNode; path: string }) {
 }
 
 describe('WP-8 Tier-B surface catalog', () => {
-  it('keeps fixture ownership limited to the remaining Tier-B demos', () => {
-    expect(TIER_B_SURFACE_IDS).toEqual(EXPECTED_TIER_B_SURFACE_IDS);
+  it('keeps the existing sample fixture inventory separate from live publication', () => {
+    expect(TIER_B_SURFACE_IDS).toEqual(['automations', 'channels']);
+  });
+
+  it('publishes durable automations as a live primary surface', () => {
+    const surface = surfaceById('automations');
+    expect(surface).toMatchObject({ tier: 'A', nav: 'primary' });
+    expect(isSurfaceLive(surface!)).toBe(true);
   });
 
   it.each(EXPECTED_TIER_B_SURFACE_IDS)('keeps %s flag-off (isSurfaceLive false)', (id) => {
