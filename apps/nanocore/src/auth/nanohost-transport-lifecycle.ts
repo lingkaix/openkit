@@ -94,6 +94,8 @@ export function fenceNanoHostTransportAuthority(
   identityId: string,
   observedAt: string
 ): void {
+  // Process authority must stop even when reading or updating its durable readiness witness fails.
+  authority.fenceAuthoritative(identityId);
   const target = coreDb.sqlite
     .prepare(
       `SELECT target_id AS targetId, connection_generation AS connectionGeneration
@@ -102,7 +104,6 @@ export function fenceNanoHostTransportAuthority(
     .get(identityId) as
     | { readonly connectionGeneration: number; readonly targetId: string }
     | undefined;
-  authority.fenceAuthoritative(identityId);
   if (!target) return;
   recordNanoHostRuntimeTargetConnectionClose(coreDb, {
     authoritativeGeneration: null,
