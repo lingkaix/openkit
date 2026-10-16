@@ -119,7 +119,10 @@ import {
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
-import { validateRecurringPortableHistory } from './recurring-portable-history.js';
+import {
+  RECURRING_PORTABLE_FEATURE,
+  readRecurringPortableFiles,
+} from './recurring-portable-history.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
@@ -893,6 +896,26 @@ export function readWorkspaceImportSnapshot(
     presentationIds: new Map(),
   };
   const canonical = readCanonicalImportState(context);
+  if (input.verified.manifest.requiredFeatures.includes(RECURRING_PORTABLE_FEATURE)) {
+    const recurring = readRecurringPortableFiles(context.files, {
+      workspaceId: report.exportedWorkspaceId,
+      threadIds: new Set(context.threadIds.keys()),
+      turns: new Map(
+        readImportJsonl(context.files, 'records/turns.jsonl').map((row) => {
+          const turn = TurnSchema.parse(row);
+          return [turn.id, turn.threadId];
+        })
+      ),
+    });
+    // P14 owns import allocation. Do not drop history or create a private identifier formatter.
+    // Replace this bounded refusal with the shared allocate/derive API when P14 lands.
+    if (
+      recurring.schedules.length ||
+      recurring.occurrences.length ||
+      recurring.expiredRanges.length
+    )
+      throw new Error('Recurring import requires approved shared identity allocation.');
+  }
   const retrievalTraces = readRetrievalTraceImportState(context);
   const workerRuntime = readWorkerRuntimeControlState(context);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
@@ -3896,7 +3919,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
       sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
     });
   });
-  let recurringHistory: string | null = null;
+
   let workspaceConfig: string | null = null;
   let workspaceSchema: string | null = null;
   const nativeKnowledgePages = new Map<string, string>();
@@ -3906,10 +3929,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
     }
     const workspacePath = exportPath.slice('workspace-files/'.length);
     assertPortableWorkspaceFilePath(workspacePath);
-    if (workspacePath === 'imports/recurrence-history.json') {
-      validateRecurringPortableHistory(content);
-      recurringHistory = content;
-    } else if (workspacePath === 'config/workspace.jsonc') {
+    if (workspacePath === 'config/workspace.jsonc') {
       workspaceConfig = content;
     } else if (workspacePath === 'knowledge/schema/workspace-schema.yaml') {
       workspaceSchema = content;
@@ -3928,7 +3948,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
   }
 
   return {
-    recurringHistory,
+    recurringHistory: null,
     observations: groupPortableRecords(observations, (record) => record.observedAt),
     claims: groupPortableRecords(claims, (record) => record.createdAt),
     conflicts: groupPortableRecords(conflicts, (record) => record.resolvedAt ?? record.createdAt),

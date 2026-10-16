@@ -336,15 +336,6 @@ export function writeWorkspacePortableExportState(
   if (!state) {
     return;
   }
-  if (state.recurringHistory != null) {
-    validateRecurringPortableHistory(state.recurringHistory);
-    writeText(
-      root,
-      'workspace-files/imports/recurrence-history.json',
-      state.recurringHistory,
-      false
-    );
-  }
   if (state.workspaceConfig !== null) {
     writeText(root, 'workspace-files/config/workspace.jsonc', state.workspaceConfig, false);
   }

@@ -165,6 +165,41 @@ function writeExportTree(
 }
 
 describe('workspace export verifier', () => {
+  it('always exports all three empty recurring families with their required feature', () => {
+    const root = freshExportRoot('recurring-empty-export-');
+    const verified = writeWorkspaceExportTree({
+      exportRoot: root,
+      exportId: 'wsexp_recurring',
+      sourceDeploymentId: 'dep_source',
+      createdAt: timestamp,
+      workspace: { id: 'ws_demo', name: 'Demo', kind: 'code', createdAt: timestamp },
+      threads: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+      knowledge: [],
+    });
+    expect(verified.manifest.requiredFeatures).toContain('workspace.recurring-triggers.v1');
+    for (const family of ['schedules', 'occurrences', 'expired-ranges'])
+      expect(verified.fileContents.get(`records/recurring-${family}.jsonl`)).toBe('');
+    expect(verified.fileContents.has('workspace-files/imports/recurrence-history.json')).toBe(
+      false
+    );
+  });
+
+  it('rejects a recurring file without its feature and a feature without all three families', () => {
+    const root = writeExportTree('records/recurring-schedules.jsonl', '');
+    expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow('all three families');
+    const path = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    manifest.requiredFeatures = ['workspace.recurring-triggers.v1'];
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow('all three families');
+  });
+
   it('verifies manifest shape and inventory file digests offline', () => {
     const verified = verifyWorkspaceExportTree({ exportRoot: writeExportTree() });
 
