@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -264,6 +264,59 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(changed.status).toBe(409);
     expect(changed.body).toMatchObject({ code: 'idempotency_key_conflict' });
     expect((await listing(f)).notebookRevision).toBe(currentRevision);
+  });
+
+  it('replays an updated page after removal without resurrection and still rechecks its Source audience', async () => {
+    const f = fixture();
+    const source = await entryCommand(f, 'knowledge.source.register', randomUUID(), {
+      kind: 'document',
+      title: 'Replay source',
+      content: 'Independent retained source.',
+      originatingThreadId: DEMO_THREAD_ID,
+    });
+    expect(source.status, JSON.stringify(source.body)).toBe(200);
+    const id = 'notes/replay';
+    const created = await entryCommand(f, 'knowledge.create', randomUUID(), {
+      baseRevision: (await listing(f)).notebookRevision,
+      knowledgePageId: id,
+      kind: 'project-context',
+      title: 'Replay page',
+      content: 'Original bytes.',
+      sourceReferences: [`source:${source.body.source.id}@${source.body.source.contentDigest}`],
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const requestId = randomUUID();
+    const input = {
+      baseRevision: (await listing(f)).notebookRevision,
+      knowledgeEntryId: id,
+      content: 'Updated historical bytes.',
+    };
+    const updated = await entryCommand(f, 'knowledge.update', requestId, input);
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    const revision = (await listing(f)).notebookRevision;
+    const content = git(f, ['show', `${revision}:pages/${id}.md`]);
+    const deleted = await entryCommand(f, 'knowledge.delete', randomUUID(), {
+      baseRevision: revision,
+      knowledgeEntryId: id,
+      expectedContentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      confirmRemoval: true,
+    });
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+    const removedRevision = (await listing(f)).notebookRevision;
+    reopen(f);
+    expect(await entryCommand(f, 'knowledge.update', requestId, input)).toEqual(updated);
+    expect((await listing(f)).notebookRevision).toBe(removedRevision);
+    expect((await listing(f)).items.some((entry) => entry.id === id)).toBe(false);
+    expect(git(f, ['show', `${revision}:pages/${id}.md`])).toBe(content);
+
+    f.store.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    });
+    const denied = await entryCommand(f, 'knowledge.update', requestId, input);
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(JSON.stringify(denied.body)).not.toContain('Updated historical bytes.');
+    expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(removedRevision);
   });
 
   it('preserves unknown nested OKF metadata through the native entry update and restart', async () => {
