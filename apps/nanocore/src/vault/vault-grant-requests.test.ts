@@ -23,6 +23,7 @@ import { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithoutEffects,
   schedulerExecutionCorrelation,
 } from '../runtime/execution-attempt-records.js';
 import {
@@ -807,7 +808,7 @@ it.each([
       turnInput: 'Synthetic metadata request',
       requestedAgentId: pkg.agent.agentId,
     });
-    recordTestExecutionAttempt(f.coreDb, {
+    const originalAttempt = recordTestExecutionAttempt(f.coreDb, {
       entry,
       attemptId: randomUUID(),
       agentSessionId: sessionId,
@@ -886,17 +887,23 @@ it.each([
     expect(f.store.getTurnById(turn.id).status).toBe('running');
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all()).toHaveLength(0);
     expect(JSON.stringify(response)).not.toContain('synthetic-resolution-canary');
-    // A later execution observes the same Agent's durable outcome without reviving its old session.
-    f.store.updateTurn(turn.id, { status: 'completed', completedAt: now });
-    f.store.updateAgentSession(sessionId, { status: 'closed', updatedAt: now });
-    const laterTurn = f.store.createTurn(
+    // Reopen product state without live admission hooks; this fixture submitted no backend operation.
+    closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+      attemptId: originalAttempt.attemptId,
+      noOutstandingEffects: true,
+      cause: 'synthetic-preparation-ended',
+    });
+    const laterStore = new FsStore({ dataRoot: f.dataRoot });
+    laterStore.updateTurn(turn.id, { status: 'completed', completedAt: now });
+    laterStore.updateAgentSession(sessionId, { status: 'closed', updatedAt: now });
+    const laterTurn = laterStore.createTurn(
       source.workspaceId,
       source.threadId,
       'Inspect the recorded grant outcome',
       { kind: 'user', id: 'user_local' }
     );
     const laterSessionId = randomUUID();
-    f.store.createAgentSession({
+    laterStore.createAgentSession({
       id: laterSessionId,
       agentId: pkg.agent.agentId,
       workspaceId: source.workspaceId,
@@ -906,7 +913,7 @@ it.each([
       createdAt: now,
       updatedAt: now,
     });
-    f.store.updateTurn(laterTurn.id, {
+    laterStore.updateTurn(laterTurn.id, {
       status: 'running',
       agentId: pkg.agent.agentId,
       agentSessionId: laterSessionId,
@@ -916,7 +923,7 @@ it.each([
       agentSessionId: laterSessionId,
       agentSetup: createTestAgentSetup(),
       triggerActor: laterTurn.triggerActor,
-      turn: f.store.getTurnById(laterTurn.id),
+      turn: laterStore.getTurnById(laterTurn.id),
       workspaceCwd: '/workspace',
       workspaceRoots: [],
       backend: { kind: 'openshell' },
@@ -948,6 +955,7 @@ it.each([
     const readback = await dispatchOpenkitGenerativeTool(
       {
         ...context,
+        store: laterStore,
         scope: laterPackage.scope,
         actor: laterPackage.scope.triggerActor,
         packageSnapshotId: laterPackage.snapshotId,
@@ -966,7 +974,7 @@ it.each([
         },
       ],
     });
-    expect(f.store.getAgentSession(sessionId).status).toBe('closed');
+    expect(laterStore.getAgentSession(sessionId).status).toBe('closed');
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(2);
   } finally {
     workspaceDb?.sqlite.close();

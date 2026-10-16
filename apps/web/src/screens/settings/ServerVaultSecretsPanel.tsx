@@ -1,4 +1,7 @@
-import type { OperationInput } from '@openkit/app-api-schemas';
+import {
+  NarrowWorkspaceVaultGrantRequestSchema,
+  type OperationInput,
+} from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
@@ -216,6 +219,20 @@ export function ServerVaultSecretsPanel() {
     mutation.reset();
     void inventory.refetch();
   }
+  /** Apply the existing target schema before retaining grant restrictions in a mutation. */
+  function changeGrant(action: 'grant' | 'narrow', id: string) {
+    const parsed = NarrowWorkspaceVaultGrantRequestSchema.shape.constraints.safeParse(constraints);
+    if (!parsed.success) {
+      hold.current = null;
+      setMaterial('');
+      setAgentId('');
+      setSessionId('');
+      setExpiresAt('');
+      setNotice('Grant restriction fields are invalid. Enter exact supported bounds only.');
+      return;
+    }
+    mutation.mutate({ action, id, constraints: parsed.data });
+  }
   return (
     <Card className="flex flex-col gap-4">
       <h2 className="text-lg font-semibold text-fg">Shared MCP secrets</h2>
@@ -326,9 +343,7 @@ export function ServerVaultSecretsPanel() {
                   <Button
                     variant="outline"
                     isDisabled={disabled}
-                    onPress={() =>
-                      mutation.mutate({ action: 'grant', id: reference.referenceId, constraints })
-                    }
+                    onPress={() => changeGrant('grant', reference.referenceId)}
                   >
                     Create shared gateway grant {reference.referenceId}
                   </Button>
@@ -366,9 +381,7 @@ export function ServerVaultSecretsPanel() {
                   <Button
                     variant="outline"
                     isDisabled={disabled || Object.keys(constraints).length === 0}
-                    onPress={() =>
-                      mutation.mutate({ action: 'narrow', id: grant.grantId, constraints })
-                    }
+                    onPress={() => changeGrant('narrow', grant.grantId)}
                   >
                     Narrow shared grant {grant.grantId}
                   </Button>

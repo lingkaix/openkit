@@ -144,3 +144,28 @@ it('shows actual current grant issue separately from approval and disables issue
   await waitFor(() => expect(operations['vault.grant-request-list']).toHaveBeenCalledTimes(2));
   expect(operations['vault.grant-issue']).toHaveBeenCalledTimes(1);
 });
+
+it('rejects secret-shaped request fields before operation or mutation-cache admission', async () => {
+  const { operations, cache } = setup();
+  await screen.findByRole('button', { name: 'Review exact effect apr_fixture' });
+  const canary = 'ghp_synthetic_private_request_canary';
+  await userEvent.type(screen.getByLabelText('Requested reference ID'), 'vault_requested');
+  await userEvent.type(screen.getByLabelText('Requested Agent'), canary);
+  await userEvent.click(screen.getByRole('button', { name: 'Request credential-use grant' }));
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Credential request fields are invalid.'
+  );
+  expect(operations['vault.grant-request']).not.toHaveBeenCalled();
+  expect(cache.getMutationCache().getAll()).toHaveLength(0);
+  expect(
+    JSON.stringify(
+      cache
+        .getQueryCache()
+        .getAll()
+        .map((entry) => entry.state)
+    )
+  ).not.toContain(canary);
+  expect(screen.getByLabelText('Requested reference ID')).toHaveValue('');
+  expect(screen.getByLabelText('Requested Agent')).toHaveValue('');
+  expect(document.body.textContent).not.toContain(canary);
+});

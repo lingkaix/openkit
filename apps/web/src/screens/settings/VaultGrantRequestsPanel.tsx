@@ -1,4 +1,8 @@
-import type { VaultGrantRequestTerms, VaultGrantRequestView } from '@openkit/app-api-schemas';
+import {
+  type VaultGrantRequestTerms,
+  VaultGrantRequestTermsSchema,
+  type VaultGrantRequestView,
+} from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -132,6 +136,31 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
     void threads.refetch();
     if (threadId) void requests.refetch();
   }
+  /** Validate before mutation retention; rejected input never enters a request or server-state cache. */
+  function requestGrant() {
+    const parsed = VaultGrantRequestTermsSchema.safeParse({
+      referenceId: referenceId.trim(),
+      ownerScope: scope,
+      lifetime: scope,
+      injectionPath: visibility,
+      ...(agentId.trim() ? { targetAgentId: agentId.trim() } : {}),
+      ...(sessionId.trim() ? { targetAgentSessionId: sessionId.trim() } : {}),
+      ...(capabilityId ? { targetCapabilityId: capabilityId } : {}),
+      ...(expiresAt.trim() ? { expiresAt: expiresAt.trim() } : {}),
+    });
+    if (!parsed.success) {
+      setReferenceId('');
+      setAgentId('');
+      setSessionId('');
+      setExpiresAt('');
+      setNotice(
+        'Credential request fields are invalid. Enter reference IDs and supported bounds only.'
+      );
+      return;
+    }
+    setNotice(null);
+    action.mutate({ kind: 'request', terms: parsed.data });
+  }
   return (
     <Card className="flex flex-col gap-4">
       <h2 className="text-lg font-semibold text-fg">Credential-use requests</h2>
@@ -246,24 +275,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
             onChange={setExpiresAt}
             isDisabled={disabled}
           />
-          <Button
-            isDisabled={disabled || !referenceId.trim()}
-            onPress={() =>
-              action.mutate({
-                kind: 'request',
-                terms: {
-                  referenceId: referenceId.trim(),
-                  ownerScope: scope,
-                  lifetime: scope,
-                  injectionPath: visibility,
-                  ...(agentId.trim() ? { targetAgentId: agentId.trim() } : {}),
-                  ...(sessionId.trim() ? { targetAgentSessionId: sessionId.trim() } : {}),
-                  ...(capabilityId ? { targetCapabilityId: capabilityId } : {}),
-                  ...(expiresAt.trim() ? { expiresAt: expiresAt.trim() } : {}),
-                },
-              })
-            }
-          >
+          <Button isDisabled={disabled || !referenceId.trim()} onPress={requestGrant}>
             Request credential-use grant
           </Button>
           {requests.isLoading ? <Skeleton lines={3} /> : null}
