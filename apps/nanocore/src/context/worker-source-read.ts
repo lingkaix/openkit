@@ -2,20 +2,27 @@ import { type BigIntStats, constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { MAX_ARTIFACT_FILE_BYTES, parseReferenceScope, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  MAX_ARTIFACT_FILE_BYTES,
+  parseReferenceScope,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import { isArtifactVisible, isThreadIdVisible, isThreadVisible } from '../auth/thread-visibility.js';
+import {
+  isArtifactVisible,
+  isThreadIdVisible,
+  isThreadVisible,
+} from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
-import { readWorkspaceMaterialSensitivity } from '../workspace-materials.js';
-import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
 } from '../storage/workspace-file-records.js';
+import { readWorkspaceMaterialSensitivity } from '../workspace-materials.js';
 import {
   BoundedSourceError,
   openBoundedSourceView,
@@ -24,7 +31,11 @@ import {
   type SourceViewUnavailable,
   type SourceViewUnavailableReason,
 } from './bounded-source-view.js';
-import { readWorkerContextPackageTrace, type WorkerContextPackageSourceFile } from './worker-context-package.js';
+import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
+import {
+  readWorkerContextPackageTrace,
+  type WorkerContextPackageSourceFile,
+} from './worker-context-package.js';
 
 type Coverage =
   | NonNullable<WorkerContextPackageSourceFile['projection']['pdfTextLayer']>['coverage']
@@ -42,14 +53,17 @@ export type WorkerSourceReadResult =
  * @returns Verified source, canonical package root and a current-authority check for the caller's bounded operation.
  * @throws Error when authority or inventory is unavailable; callers must return a value-free refusal.
  */
-export function resolveCurrentWorkerSource(input: {
-  readonly environmentPackage: AgentEnvironmentPackage;
-  readonly coreDb: CoreDb;
-  readonly store: FsStore;
-  readonly workspaceDb: WorkspaceDb;
-  readonly signal?: AbortSignal | undefined;
-  readonly requireAdmission?: (() => void) | undefined;
-}, inventoryPath: string) {
+export function resolveCurrentWorkerSource(
+  input: {
+    readonly environmentPackage: AgentEnvironmentPackage;
+    readonly coreDb: CoreDb;
+    readonly store: FsStore;
+    readonly workspaceDb: WorkspaceDb;
+    readonly signal?: AbortSignal | undefined;
+    readonly requireAdmission?: (() => void) | undefined;
+  },
+  inventoryPath: string
+) {
   const { scope } = input.environmentPackage;
   const admit = (source?: WorkerContextPackageSourceFile) => {
     input.signal?.throwIfAborted();
@@ -130,31 +144,38 @@ export function resolveCurrentWorkerSource(input: {
         throw new Error('Current source destination is unavailable.');
     }
   };
-    admit();
-    const workspaceRoot = resolveDataRootPath(
-      input.workspaceDb.dataRoot,
-      'workspaces',
-      scope.workspaceId
-    );
-    const trace = readWorkerContextPackageTrace({
-      authorities: createWorkerContextPackageAuthorityReader(input),
-      workspaceId: scope.workspaceId,
-      threadId: scope.threadId,
-      turnId: scope.turnId,
-      workspaceRoot,
-    });
-    if (
-      trace.packageSnapshotId !== input.environmentPackage.snapshotId ||
-      trace.agentSessionId !== scope.agentSessionId
-    )
-      throw new Error('Current source package is unavailable.');
-    const source = trace.sourceFiles?.find((entry) => entry.packagePath === inventoryPath);
-    if (!source) throw new Error('Selected source is unavailable.');
-    admit(source);
+  admit();
+  const workspaceRoot = resolveDataRootPath(
+    input.workspaceDb.dataRoot,
+    'workspaces',
+    scope.workspaceId
+  );
+  const trace = readWorkerContextPackageTrace({
+    authorities: createWorkerContextPackageAuthorityReader(input),
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    workspaceRoot,
+  });
+  if (
+    trace.packageSnapshotId !== input.environmentPackage.snapshotId ||
+    trace.agentSessionId !== scope.agentSessionId
+  )
+    throw new Error('Current source package is unavailable.');
+  const source = trace.sourceFiles?.find((entry) => entry.packagePath === inventoryPath);
+  if (!source) throw new Error('Selected source is unavailable.');
+  admit(source);
   return {
     source,
     workspaceRoot,
-    packageRoot: join(workspaceRoot, 'threads', scope.threadId, 'turns', scope.turnId, 'context-package'),
+    packageRoot: join(
+      workspaceRoot,
+      'threads',
+      scope.threadId,
+      'turns',
+      scope.turnId,
+      'context-package'
+    ),
     threadId: scope.threadId,
     turnId: scope.turnId,
     assertCurrent: () => admit(source),
