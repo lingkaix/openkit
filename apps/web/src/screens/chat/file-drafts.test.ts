@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { describe, expect, it, vi } from 'vitest';
 import { sha256ArtifactFile } from '../artifacts/file-digest';
@@ -7,6 +8,9 @@ import { assertDraftFiles, submitConversationDraft } from './file-drafts';
 vi.mock('../artifacts/file-digest', () => ({
   sha256ArtifactFile: vi.fn().mockResolvedValue(`sha256:${'a'.repeat(64)}`),
 }));
+
+const workspaceId = allocateEntityId('ws');
+const threadId = allocateEntityId('th');
 
 describe('client file drafts', () => {
   it('reconciles an uncertain command using cached inventory without reading or uploading originals again', async () => {
@@ -31,11 +35,11 @@ describe('client file drafts', () => {
       operations: { 'conversation.submit': submit },
       conversationFiles: { submit: transfer },
     } as unknown as CoreClient;
-    await expect(submitConversationDraft(client, 'ws_test', 'th_test', draft)).rejects.toThrow(
+    await expect(submitConversationDraft(client, workspaceId, threadId, draft)).rejects.toThrow(
       'Acknowledgement lost.'
     );
     const hashCalls = vi.mocked(sha256ArtifactFile).mock.calls.length;
-    await expect(submitConversationDraft(client, 'ws_test', 'th_test', draft)).resolves.toEqual({
+    await expect(submitConversationDraft(client, workspaceId, threadId, draft)).resolves.toEqual({
       accepted: true,
     });
     expect(sha256ArtifactFile).toHaveBeenCalledTimes(hashCalls);

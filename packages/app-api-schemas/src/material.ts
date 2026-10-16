@@ -494,7 +494,7 @@ export const ArtifactFolderSnapshotResponseSchema = z.discriminatedUnion('status
   z
     .object({
       status: z.literal('ready'),
-      artifactId: opaqueIdSchema,
+      artifactId: ArtifactIdSchema,
       artifactVersion: z.number().int().positive(),
       originalDigest: contentDigestSchema,
       originalRetained: z.literal(true),
@@ -510,7 +510,7 @@ export const ArtifactFolderSnapshotResponseSchema = z.discriminatedUnion('status
   z
     .object({
       status: z.literal('unavailable'),
-      artifactId: opaqueIdSchema,
+      artifactId: ArtifactIdSchema,
       artifactVersion: z.number().int().positive(),
       originalDigest: contentDigestSchema,
       originalRetained: z.literal(true),

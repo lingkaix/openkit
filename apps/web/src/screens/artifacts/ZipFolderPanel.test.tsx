@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -11,8 +12,8 @@ vi.mock('../../app/core-client', () => ({
   }),
 }));
 const source = {
-  workspaceId: 'workspace',
-  artifactId: 'artifact',
+  workspaceId: allocateEntityId('ws'),
+  artifactId: allocateEntityId('ar'),
   artifactVersion: 1,
   originalDigest: `sha256:${'a'.repeat(64)}`,
 };
@@ -69,8 +70,8 @@ describe('explicit ZIP folder choice', () => {
     await userEvent.click(button);
     expect(await screen.findByText('note.txt · 9 bytes')).toBeInTheDocument();
     expect(extract).toHaveBeenCalledWith({
-      workspaceId: 'workspace',
-      artifactId: 'artifact',
+      workspaceId: source.workspaceId,
+      artifactId: source.artifactId,
       artifactVersion: 1,
       offset: 0,
     });

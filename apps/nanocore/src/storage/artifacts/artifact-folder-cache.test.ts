@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ZipFile } from 'yauzl';
+import { testEntityId } from '../../test-support/entity-ids.js';
 import {
   ensureArtifactFolderSnapshot,
   readArtifactFolderSnapshot,
@@ -38,7 +39,7 @@ async function original(id: string) {
   const bytes = Buffer.from(corpus.archives.find((entry) => entry.id === id)!.base64, 'base64');
   const source = {
     workspaceRoot,
-    artifactId: 'ar-test',
+    artifactId: testEntityId('ar', 'zip-cache-source'),
     artifactVersion: 1,
     byteLength: bytes.length,
     contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,

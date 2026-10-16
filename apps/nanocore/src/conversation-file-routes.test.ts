@@ -26,7 +26,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { turnFilePayloadPath } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -46,7 +46,7 @@ function fixture(availableBytes?: () => bigint) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  const workspaceId = 'ws_demo';
+  const workspaceId = DEMO_WORKSPACE_ID;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId });
   const thread = store.createThread(workspaceId, 'File input', undefined, 'conversation', {
     visibility: 'workspace',

@@ -121,6 +121,7 @@ export function registerConversationFileRoutes(
         store,
         metadata,
         context.get('actor'),
+        undefined,
         {
           fileAdmission: dependencies.fileAdmission,
           assertCurrent: () => {
