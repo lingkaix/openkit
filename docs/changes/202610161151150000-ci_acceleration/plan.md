@@ -15,9 +15,13 @@ The engineer requested a complete full gate below ten minutes without reducing c
 
 The coordinator confirmed the account's 20-job concurrent limit and changed the priority to total runner job-minutes first, wall time second. Keep exact-commit reuse unchanged; the fast main-push gate reuses the exact tested commit after land.sh fast-forwards main. Do not permit reuse across commits or amend that reuse rule. Optimize repeated setup and caches, group short suites, split only the long NanoCore and Worker Shim suites, and do not execute product tests twice. Landing is accepted when the comparison shows lower total job-minutes and no coverage loss, even if wall time improves less than the original ten-minute goal. Retain the two full branch runs, all required aggregate names, exact-head semantics, and the every-main-push gate.
 
+## Intent Revision 3 — 2026-10-16
+
+The engineer approved express landing for ordinary changes while the shared hosted pool is saturated. The coordinator requires every main push to run complete verification, including L4 Web e2e. Keep the existing one-pending-head concurrency group and never cancel an in-progress main run. Release candidates and changes to workflows or release scripts still require exact-head full CI before landing. The release admission job set and registry dependency now require L4 as well; a missing, skipped, failed or duplicate L4 observation cannot admit a release.
+
 ## Owners And Boundaries
 
-[Release Management](../../specs/20260829-release_management.md#candidate-ci-and-tag-reuse) owns complete deterministic admission and exact-head reuse. [Test Strategy](../../specs/20260529-test_strategy.md#coverage-expectations) owns collection equivalence, failure, skip and coverage criteria. The implementation extends the existing CI runner and release-test runner. Product suite selectors, thresholds and tests do not change. Publication jobs retain their bytes. A subsequent release still compares all invoked publication inputs with its proved baseline; this change does not extend the P15 scratch proof.
+[Release Management](../../specs/20260829-release_management.md#candidate-ci-and-tag-reuse) owns complete deterministic admission and exact-head reuse. [Test Strategy](../../specs/20260529-test_strategy.md#coverage-expectations) owns collection equivalence, failure, skip and coverage criteria. The implementation extends the existing CI runner and release-test runner. Product suite selectors, thresholds and tests do not change. Publication jobs retain their bytes except the expressly required registry dependency on L4; the Web job adds main and complete release-gate conditions without changing its steps. A subsequent release still compares all invoked publication inputs with its proved baseline; this change does not extend the P15 scratch proof.
 
 ## Checkpoint
 

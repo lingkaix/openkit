@@ -584,7 +584,7 @@ jobs:
 
   web-e2e:
     name: L4 Web e2e
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["web-e2e","full"]'), inputs.gate)
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["web-e2e","release-gate","full"]'), inputs.gate))
     needs: test-image
     runs-on: ubuntu-latest
     permissions:
@@ -1243,8 +1243,8 @@ jobs:
 
   candidate-registry:
     name: Prerelease registry admission
-    if: always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' && needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.smoke.result == 'success' && needs.workspace-portability-target.result == 'success' && needs.app-image-admin-recovery.result == 'success' && needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate == 'registry-admission'))
-    needs: [candidate-plan, candidate-index, l0-l2, nano-core-e2e, smoke, workspace-portability-target, app-image-admin-recovery, nanohost-installer]
+    if: always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' && needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.web-e2e.result == 'success' && needs.smoke.result == 'success' && needs.workspace-portability-target.result == 'success' && needs.app-image-admin-recovery.result == 'success' && needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate == 'registry-admission'))
+    needs: [candidate-plan, candidate-index, l0-l2, nano-core-e2e, web-e2e, smoke, workspace-portability-target, app-image-admin-recovery, nanohost-installer]
     runs-on: ubuntu-latest
     permissions:
       contents: read

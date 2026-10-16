@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
 import { candidateMatrix } from '../scripts/release-candidate.mjs';
-import { publicationInputsAt } from '../scripts/release-publication-check.mjs';
+import { candidateJobs, publicationInputsAt } from '../scripts/release-publication-check.mjs';
 
 const workflowBytes = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
 const workflow = parse(workflowBytes);
@@ -38,6 +38,21 @@ test('release workflow serializes tag releases and pins third-party actions', ()
       }
     }
   }
+});
+
+test('main pushes share one pending queue without cancelling the running head', () => {
+  assert.equal(workflow.concurrency['cancel-in-progress'], false);
+  assert.equal(
+    workflow.concurrency.group,
+    actionExpression(
+      "startsWith(github.ref, 'refs/tags/v') && 'openkit-release' || format('openkit-ci-{0}', github.ref)"
+    )
+  );
+});
+
+test('publication admission requires the complete exact-head gate including L4', () => {
+  for (const id of ['l0-l2', 'nano-core-e2e', 'web-e2e', 'smoke'])
+    assert.ok(candidateJobs.includes(workflow.jobs[id].name), id);
 });
 
 test('release identity build arguments belong only to candidate App builds', () => {
@@ -527,6 +542,7 @@ test('release notes are checked before publication and verified against the gene
 // verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
 // The App split re-records only the Worker matrix expression and final App dependency edges.
 // P15 re-records only github-release and verify-release for the fifth attachment and downloaded-manifest check.
+// Complete main verification adds L4 to main/release gates and the registry dependency; all other Web and registry steps stay unchanged.
 // New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
 const unchangedJobBaseline = {
   'container-image-matrix': '83615f34105ada997ed8c01f6fd06e95f87e9d5c05ffccc8c877069b1bfe849e',
@@ -541,7 +557,7 @@ const unchangedJobBaseline = {
     'e33d1577679a0bba824a60d2ab8a2bf24e2f1a47608e872c824951efa70c6ace',
   'workspace-portability-target':
     '797453722686d9086ed90ccc253580ee7c74a87c3d41b2dec96a3b50bf6fcd27',
-  'web-e2e': '9648f5055d4cbfb7dce59b6a7bf8609ed75ddd0125cc5972658c1643aaf919e0',
+  'web-e2e': 'cfd8ea150eb0ba8ae949c5f557bf95d6efac7c043613bc2c5a6962f5cb865140',
   smoke: '809f71ab17a0109adbc1775f9d7dcdb37118c99d38f30f8842981a09a925d048',
   'build-nanohost-amd64': '346b895871f280deff3d571843906b4952431d5dcf4870f64a53b7f140169180',
   'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
@@ -553,7 +569,7 @@ const unchangedJobBaseline = {
 };
 
 const candidateJobBaseline = {
-  'candidate-registry': '72cacdb0d0dc6a58f934694798f40dac51be4c7f062b714ead5b5f7e389e66f5',
+  'candidate-registry': '7fed89b69381edeadaf15a2f7cb01b3eea585f9ed27bf54bc6868f96aa108cf9',
   'candidate-plan': 'c043add46eb7d92273ec28af77bb7b896c333cdede70a3b71a123e006b86d033',
   'candidate-images': 'a0740482ba092070384eaadcc824d002b6ab9e593a3bf4d4f028ff8b4da81c7a',
   'candidate-index': '205763b1d946f852ef1cf2ae51b98bcd6adbba4b127c00bfc32f2e2ce410e89f',
@@ -787,6 +803,7 @@ test('every main push runs the complete nonpublishing candidate gate without pub
     'l0-l2-coverage',
     'l0-l2',
     'nano-core-e2e',
+    'web-e2e',
     'workspace-portability-source',
     'workspace-portability-target',
     'smoke',
@@ -815,7 +832,12 @@ test('every main push runs the complete nonpublishing candidate gate without pub
   }
   for (const id of ['app-image-admin-recovery', 'smoke-worker-images'])
     assert.equal(jobRuns(id, 'push', 'refs/heads/feature'), false, id);
-  assert.equal(jobRuns('web-e2e', 'push', 'refs/heads/main'), false);
+  for (const event of ['pull_request', 'push']) {
+    assert.equal(jobRuns('web-e2e', event, 'refs/heads/feature'), false);
+    assert.equal(jobRuns('web-e2e', event, 'refs/tags/v0.1.0-rc.9'), false);
+  }
+  assert.equal(jobRuns('web-e2e', 'workflow_dispatch', 'refs/heads/main', 'full'), true);
+  assert.equal(jobRuns('web-e2e', 'workflow_dispatch', 'refs/heads/main', 'web-e2e'), true);
 });
 
 test('L0-L2 runs complete package coverage and native/root suites through a fail-closed aggregate', () => {
@@ -1169,6 +1191,7 @@ test('registry admission runs after complete gates with read-only package author
     'candidate-index',
     'l0-l2',
     'nano-core-e2e',
+    'web-e2e',
     'smoke',
     'workspace-portability-target',
     'app-image-admin-recovery',

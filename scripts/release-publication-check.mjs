@@ -11,6 +11,7 @@ export const registryJob = 'Prerelease registry admission';
 export const candidateJobs = [
   'L0-L2 static, unit, contract',
   'L3 NanoCore e2e',
+  'L4 Web e2e',
   'L5 smoke',
   'Workspace portability source',
   'Workspace portability target',
