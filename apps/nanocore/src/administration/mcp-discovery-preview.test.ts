@@ -54,15 +54,15 @@ function fixture() {
   });
   vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 13) });
   cleanup.push(() => vaultUnlockState.lock());
-  const workspaceDbs = new Map<string, ReturnType<typeof openWorkspaceDb>>();
+  const workspaceDbs: Array<ReturnType<typeof openWorkspaceDb>> = [];
   const repositoryWorkspaceDb = (workspaceId: string) => {
-    let db = workspaceDbs.get(workspaceId);
-    if (!db) {
-      db = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(db);
-      workspaceDbs.set(workspaceId, db);
-      cleanup.push(() => db!.sqlite.close());
-    }
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(db);
+    workspaceDbs.push(db);
+    // This fallback reclaims a failing subject; assertions below prove request closure before teardown.
+    cleanup.push(() => {
+      if (db.sqlite.open) db.sqlite.close();
+    });
     return db;
   };
   const invoke = createOperationInvocation({
@@ -78,7 +78,17 @@ function fixture() {
     invoke(operation as never, input as never, { kind: 'public', actor: currentActor }) as Promise<
       Record<string, unknown>
     >;
-  return { dataRoot, coreDb, token, actor, call, store, repositoryWorkspaceDb };
+  return {
+    dataRoot,
+    coreDb,
+    token,
+    actor,
+    call,
+    store,
+    repositoryWorkspaceDb,
+    workspaceDbs,
+    vaultUnlockState,
+  };
 }
 /** Create an inert retained declaration through the real supported management operation. */
 async function seed(f: ReturnType<typeof fixture>, endpoint: string) {
@@ -170,19 +180,43 @@ describe('explicit administrator MCP discovery preview', () => {
     };
     const catalogPath = join(f.dataRoot, 'workspaces', workspace.id, 'catalog/catalog.json');
     const before = readFileSync(catalogPath);
+    const readUses = () => {
+      const db = f.repositoryWorkspaceDb(workspace.id);
+      try {
+        return listVaultUseRecords(db);
+      } finally {
+        db.sqlite.close();
+      }
+    };
     const result = await f.call('administration.mcp-discovery-preview', input);
+    expect(f.workspaceDbs.length).toBeGreaterThan(0);
+    expect(f.workspaceDbs.every((db) => !db.sqlite.open)).toBe(true);
+    expect(f.coreDb.sqlite.open).toBe(true);
     expect(result.tools).toMatchObject([{ name: 'echo' }]);
     expect(
       upstream.observedHeaders.some(
         (headers) => headers.get('authorization') === 'preview-fake-workspace-canary'
       )
     ).toBe(true);
-    expect(listVaultUseRecords(f.repositoryWorkspaceDb(workspace.id))).toMatchObject([
+    expect(readUses()).toMatchObject([
       { ownerScope: 'workspace', workspaceId: workspace.id, outcome: 'succeeded' },
     ]);
     expect(readFileSync(catalogPath)).toEqual(before);
+    const beforeFailure = upstream.observed.length;
+    const resolution = vi
+      .spyOn(f.vaultUnlockState.backend()!, 'resolve')
+      .mockImplementationOnce(() => {
+        throw new Error('Synthetic material resolution failure');
+      });
+    await expect(f.call('administration.mcp-discovery-preview', input)).rejects.toMatchObject({
+      status: 503,
+    });
+    resolution.mockRestore();
+    expect(upstream.observed).toHaveLength(beforeFailure);
+    expect(f.workspaceDbs.every((db) => !db.sqlite.open)).toBe(true);
+    expect(f.coreDb.sqlite.open).toBe(true);
     const contacts = upstream.observed.length;
-    const uses = listVaultUseRecords(f.repositoryWorkspaceDb(workspace.id)).length;
+    const uses = readUses().length;
     f.coreDb.sqlite
       .prepare("UPDATE workspace_registry SET status = 'deleted' WHERE workspace_id = ?")
       .run(workspace.id);
@@ -190,7 +224,7 @@ describe('explicit administrator MCP discovery preview', () => {
       status: 404,
     });
     expect(upstream.observed).toHaveLength(contacts);
-    expect(listVaultUseRecords(f.repositoryWorkspaceDb(workspace.id))).toHaveLength(uses);
+    expect(readUses()).toHaveLength(uses);
   });
   it('refuses stale or revoked current authority before upstream contact', async () => {
     const f = fixture();

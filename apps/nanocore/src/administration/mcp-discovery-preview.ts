@@ -283,17 +283,23 @@ export async function previewMcpDiscovery(
             'MCP preview evidence is unavailable.',
             503
           );
-        const material = createVaultUseAuditedBackend({
-          backend: backend!,
-          db,
-          ownerScope: scope.kind,
-          ...(workspaceId ? { workspaceId } : {}),
-          actor: context.actorRef,
-          resolvingPath: 'grant',
-          grantId: grant.grantId,
-          planId,
-        }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
-        const value = vaultSecretMaterialToString(material);
+        let value: string;
+        try {
+          const material = createVaultUseAuditedBackend({
+            backend: backend!,
+            db,
+            ownerScope: scope.kind,
+            ...(workspaceId ? { workspaceId } : {}),
+            actor: context.actorRef,
+            resolvingPath: 'grant',
+            grantId: grant.grantId,
+            planId,
+          }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
+          value = vaultSecretMaterialToString(material);
+        } finally {
+          // The application factory opens a request-owned Workspace handle; Core remains shared.
+          if (workspaceId) db.sqlite.close();
+        }
         if (!value.length)
           throw new OperationError(
             'forbidden',

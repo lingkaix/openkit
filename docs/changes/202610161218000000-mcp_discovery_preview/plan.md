@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-16"
 branch: lane/ga-mcp-preview
 ---
@@ -39,3 +39,13 @@ Additional Workspace fixtures first failed before their subject because they omi
 Remaining work is actual rerun inspection and local corrections, CLI/OpenAPI regeneration and integrated inventory, exact independent review and whole-module Express gate including browser execution. No preview landing, live upstream, whole-P22 acceptance, process recall or whole-cleanup-time bound is claimed. The initial no-CoreDb direction was disproved by the existing credential startup fence and replaced by the truthful actual-actor Core-backed path; that fence remains unchanged.
 
 Merged main0f0673ba after focused preview verification. Three additive Web conflicts retain both complete Server operations and Shared MCP/preview sections and route exports. Main account-cache behavior remains with its existing owner. Generation, exact integrated review and the full Express gate remain pending on the eventual committed candidate.
+
+Independent preliminary review found that the request-owned Workspace repository handle was not closed after VaultUse resolution, and the fixture cached handles until teardown. The regression now uses the actual fresh-handle factory shape and asserts closure before teardown on successful real discovery and injected resolution failure, with Core still open. The production correction closes only the Workspace handle in finally. Source inspection established the defect; no executed pre-change RED is claimed. The focused correction rerun remains pending.
+
+## Corrected Generated Candidate Evidence
+
+p22-preview-generation-and-schema.log completed successfully: all26AppAPI files and273cases, CLI/OpenAPI generation and validation,89root Skill/Web inventory cases, documentation model523documents, specification lifecycle, current index and whitespace. The descriptive-reader regression passed. Generated surfaces publish the same explicit read observation with exact selectors and no request replay promise.
+
+p22-preview-request-handle-correction.log then passed the full preview and receipt suites (19cases) and NanoCore typecheck after the request-owned handle fix. The actual credentialed Workspace path proves every fresh request handle closed before teardown, including injected material-resolution failure with no new upstream contact, while Core stays open. Source R1 is corrected; independent exact generated-head delta review remains required. Earlier68native/30Web/type results overlap this rerun and are not additive totals. The native owner now states explicitly that closure remains awaited after the discovery deadline.
+
+Complete affected-module Express gate and mandatory Web e2e, followed by the containing main-push CI, remain open. No live service or whole-P22 completion is claimed.
