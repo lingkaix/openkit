@@ -46,3 +46,10 @@ The current consumer checkpoint covers canonical Worker/Harness lineage and the 
 ## Existing Runtime Gap
 
 The outcome-initiated Assistant Task handoff has a pre-existing Context Package gap: main derives its first Turn from the frozen outcome scope, but the null-Knowledge classifier only recognizes conversation-command Task identities. The cutover preserves both accepted source scopes and does not add a Knowledge query or claim end-to-end outcome handoff proof. The separate command-initiated receiving-Thread path has its own package regression. Track the outcome classifier with the runtime/context owner; its correction must join the frozen Pending Request authority instead of inferring lineage from a UUID.
+
+
+## Verification Checkpoint
+
+The shared codec, owner amendments, producer and consumer conversions, typed boundaries and synthetic reset rehearsal are implemented. Protocol JSON Schema, OpenAPI, CLI and the documentation index are regenerated; OpenAPI validation and CLI byte parity pass. Complete current module observations include Protocol 294, App API 349, Core Client 100, Web 1228 and Shim 1093. All 16 workspace typechecks pass. The final local repository and affected-suite checks, exact-head independent review and full CI remain pending; no landing or real reset is claimed.
+
+Early independent review corrected imported Grant promotion through narrowing, remaining public Grant and Material boundaries, and synthetic reset verification ordering. A further catalog regression proves that entropy failure previously changed the Skill catalog before a candidate existed; candidate identity is now allocated after read-only entry admission and before payload or catalog publication. The full catalog and durable-write suites must confirm unchanged revision, versions, candidates and exact payload bytes on failure. These corrections restore accepted owners and add no new lifecycle.

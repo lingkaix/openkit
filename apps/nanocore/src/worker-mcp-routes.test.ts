@@ -4439,14 +4439,14 @@ describe('worker MCP routes', () => {
         fenceRef: release.fenceRef!,
       });
       const replacementTurn = store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Use the explicitly rebound grant',
         turn.triggerActor
       );
       environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: randomUUID(),
+        agentSessionId: testEntityId('as', 'as_mcp_rebound'),
         agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
         backend: { kind: 'openshell' },
         createdAt: new Date().toISOString(),

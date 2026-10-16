@@ -150,15 +150,18 @@ describe('stopped-server administrator recovery', () => {
     const dataRoot = createRecoveryDataRoot();
     const db = openCoreDb(dataRoot);
     try {
-      db.sqlite.prepare('UPDATE users SET id = ? WHERE id = ?')
+      db.sqlite
+        .prepare('UPDATE users SET id = ? WHERE id = ?')
         .run('user_legacy', 'usr_00000000-0000-7a88-a815-8b9385f27463');
     } finally {
       db.sqlite.close();
     }
     const output: string[] = [];
-    expect(() => runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
-      write: (line) => output.push(line),
-    })).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    expect(() =>
+      runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
+        write: (line) => output.push(line),
+      })
+    ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
     expect(output).toEqual([]);
     expect(existsSync(dataRootLockPath(dataRoot))).toBe(false);
   });

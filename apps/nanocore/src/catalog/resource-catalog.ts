@@ -267,6 +267,7 @@ export function submitWorkspaceSkillCandidate(input: {
   if (!entry || entry.availability !== 'available') {
     throw new CatalogNotFoundError(`Skill not found: ${input.entryId}`);
   }
+  const candidateId = allocateEntityId('cand');
   const { version } = importWorkspaceSkill({
     activate: false,
     createdAt: input.createdAt,
@@ -286,7 +287,7 @@ export function submitWorkspaceSkillCandidate(input: {
     disposition: 'proposed',
     entryId: input.entryId,
     evidenceRefs: [],
-    id: allocateEntityId('cand'),
+    id: candidateId,
     producer: input.producer,
     summary: input.summary,
   };

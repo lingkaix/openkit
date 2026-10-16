@@ -37,7 +37,9 @@ describe('canonical user lifecycle', () => {
       insertUser(coreDb);
       coreDb.sqlite.prepare('UPDATE users SET id = ?').run(userId);
       expect(isCanonicalUserActive(coreDb, userId)).toBe(false);
-      expect(coreDb.sqlite.prepare('SELECT status FROM users WHERE id = ?').get(userId)).toEqual({ status: 'active' });
+      expect(coreDb.sqlite.prepare('SELECT status FROM users WHERE id = ?').get(userId)).toEqual({
+        status: 'active',
+      });
     } finally {
       coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });

@@ -226,7 +226,10 @@ describe('nanocore e2e workspace portability', () => {
       )}\n`
     );
 
-    const before = await expectJson(await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {}), {}) as { items: Array<{ workspace: { id: string } }> };
+    const before = (await expectJson(
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {}),
+      {}
+    )) as { items: Array<{ workspace: { id: string } }> };
     await expectErrorJson(
       await postJson(`${harness.baseUrl}/api/app/operations/workspace.import`, {
         exportId,
@@ -247,7 +250,9 @@ describe('nanocore e2e workspace portability', () => {
       items: Array<{ workspace: { id: string } }>;
     };
 
-    expect(workspaces.items.map((entry) => entry.workspace.id).sort()).toEqual(before.items.map((entry) => entry.workspace.id).sort());
+    expect(workspaces.items.map((entry) => entry.workspace.id).sort()).toEqual(
+      before.items.map((entry) => entry.workspace.id).sort()
+    );
   });
 
   it('rejects tampered export content without creating a partial workspace', async () => {
@@ -273,7 +278,10 @@ describe('nanocore e2e workspace portability', () => {
 
     await writeFile(workspaceRecordPath, '{"id":"tampered"}\n');
 
-    const before = await expectJson(await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {}), {}) as { items: Array<{ workspace: { id: string } }> };
+    const before = (await expectJson(
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {}),
+      {}
+    )) as { items: Array<{ workspace: { id: string } }> };
     await expectErrorJson(
       await postJson(`${harness.baseUrl}/api/app/operations/workspace.import`, {
         exportId,
@@ -294,7 +302,9 @@ describe('nanocore e2e workspace portability', () => {
       items: Array<{ workspace: { id: string } }>;
     };
 
-    expect(workspaces.items.map((entry) => entry.workspace.id).sort()).toEqual(before.items.map((entry) => entry.workspace.id).sort());
+    expect(workspaces.items.map((entry) => entry.workspace.id).sort()).toEqual(
+      before.items.map((entry) => entry.workspace.id).sort()
+    );
   });
 });
 

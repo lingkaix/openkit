@@ -1082,7 +1082,11 @@ describe('quick chat app API', () => {
     });
 
     for (const [threadId, input, requestId] of [
-      ['th_00000000-0000-7000-8000-000000000001', initialInput, '00000000-0000-4000-8000-000000144007'],
+      [
+        'th_00000000-0000-7000-8000-000000000001',
+        initialInput,
+        '00000000-0000-4000-8000-000000144007',
+      ],
       [otherThread.id, otherInput, '00000000-0000-4000-8000-000000144008'],
     ] as const) {
       const response = await app.request(

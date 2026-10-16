@@ -162,22 +162,18 @@ export function runOpenKitOperatorCli(
     const flags = parseFlags(argv.slice(2), ['--data-root']);
     const dataRoot = requireAbsolutePath(flags['--data-root']!, 'data-root');
 
-    return runLocked(
-      dataRoot,
-      options,
-      (coreDb) => {
-        const users = coreDb.sqlite
-          .prepare(
-            `SELECT id AS userId, lower(trim(email)) AS email, display_name AS displayName
+    return runLocked(dataRoot, options, (coreDb) => {
+      const users = coreDb.sqlite
+        .prepare(
+          `SELECT id AS userId, lower(trim(email)) AS email, display_name AS displayName
            FROM users
            WHERE status = 'active'
            ORDER BY id`
-          )
-          .all() as AdminRecoveryUser[];
-        if (users.some((user) => !isEntityId('usr', user.userId))) throw recoveryRequired();
-        return users;
-      }
-    );
+        )
+        .all() as AdminRecoveryUser[];
+      if (users.some((user) => !isEntityId('usr', user.userId))) throw recoveryRequired();
+      return users;
+    });
   }
 
   if (argv[0] === 'admin' && argv[1] === 'recover-access') {

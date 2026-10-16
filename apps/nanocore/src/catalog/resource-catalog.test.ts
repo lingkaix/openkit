@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   projectWorkspaceCatalogExport,
   reconstructImportedWorkspaceCatalog,
@@ -85,6 +85,60 @@ function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolea
 }
 
 describe('workspace resource catalog', () => {
+  it('refuses candidate entropy failure before changing catalog or payload bytes', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-candidate-entropy-'));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const producer = { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' as const };
+    try {
+      const created = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        displayName: 'Repo Guidelines',
+        expectedRevision: 0,
+        producer,
+        tree: skillTree('# retained version'),
+        workspaceId,
+      });
+      /** Captures the isolated catalog and payload inventory with every exact file byte. */
+      const snapshot = () =>
+        readdirSync(dataRoot, { recursive: true, encoding: 'utf8' })
+          .sort()
+          .map((relative) => {
+            const path = join(dataRoot, relative);
+            return [
+              relative,
+              statSync(path).isFile() ? readFileSync(path).toString('base64') : null,
+            ];
+          });
+      const before = snapshot();
+      const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
+        throw new Error('Synthetic entropy failure.');
+      });
+      try {
+        expect(() =>
+          submitWorkspaceSkillCandidate({
+            baseDigest: created.version.digest,
+            createdAt: '2026-09-08T00:01:00.000Z',
+            dataRoot,
+            entryId: created.version.entryId,
+            expectedRevision: created.catalog.revision,
+            producer,
+            summary: 'Propose a new version.',
+            tree: skillTree('# candidate version'),
+            workspaceId,
+          })
+        ).toThrow('Synthetic entropy failure.');
+      } finally {
+        entropy.mockRestore();
+      }
+      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(created.catalog);
+      expect(snapshot()).toEqual(before);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('preserves every descriptive catalog annotation through revision mutations and reopening', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-extensions-'));
     const packageRoot = join(dataRoot, 'plugin-source');
