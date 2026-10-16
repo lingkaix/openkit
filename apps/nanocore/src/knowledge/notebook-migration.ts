@@ -3,7 +3,6 @@ import { type KnowledgeOwnerScope, KnowledgeOwnerScopeSchema } from '@openkit/pr
 import { DEFAULT_NOTEBOOK_INDEX, validateNotebookFiles } from './notebook.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import {
-  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   type KnowledgeValidationError,
   parseOkfDocument,
@@ -167,23 +166,6 @@ export function prepareWorkspaceNotebookMigration(input: {
   const sourceSchemaVersion = oldSchema.schema.schemaVersion;
   if (![PREDECESSOR_SCHEMA, DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION].includes(sourceSchemaVersion)) {
     fail(SCHEMA_PATH, 'migration.unsupported_schema');
-    return finish(null, null);
-  }
-  if (
-    (
-      [
-        'allowedStatuses',
-        'allowedReviewStates',
-        'allowedSensitivities',
-        'allowedFreshness',
-      ] as const
-    ).some((field) =>
-      oldSchema.schema[field].some(
-        (value) => !DEFAULT_SCOPE_KNOWLEDGE_SCHEMA[field].includes(value)
-      )
-    )
-  ) {
-    fail(SCHEMA_PATH, 'migration.unsupported_schema_semantics');
     return finish(null, null);
   }
   let scopeSchemaText: string;

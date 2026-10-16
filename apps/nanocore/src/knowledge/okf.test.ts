@@ -764,7 +764,6 @@ describe('managed schema mapping edits', () => {
   });
 });
 
-
 describe('governed core semantics', () => {
   it.each([
     ['review_state', 'allowedReviewStates'],
@@ -774,25 +773,55 @@ describe('governed core semantics', () => {
     const parsed = governedPage({});
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) throw new Error('Expected a valid generic fixture.');
-    const document = { ...parsed.document, frontmatter: { ...parsed.document.frontmatter, [field]: 'future-authority' } };
-    expect(validateOpenKitKnowledgeProfile(document).errors).toContainEqual(expect.objectContaining({ code: `profile.invalid_${field}`, field }));
-    const report = validateScopeKnowledgeSchema(document, { ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA, [schemaField]: ['future-authority'] });
+    const document = {
+      ...parsed.document,
+      frontmatter: { ...parsed.document.frontmatter, [field]: 'future-authority' },
+    };
+    expect(
+      parseOkfDocument({
+        path: 'external.md',
+        content: `---\ntype: DomainNote\n${field}: future-authority\n---\nExternal body.`,
+      }).ok
+    ).toBe(true);
+    expect(validateOpenKitKnowledgeProfile(document).errors).toContainEqual(
+      expect.objectContaining({ code: `profile.invalid_${field}`, field })
+    );
+    const report = validateScopeKnowledgeSchema(document, {
+      ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+      [schemaField]: ['future-authority'],
+    });
     expect(report.conformance).not.toBe('scope-schema-valid');
   });
 
-  it.each(['allowed_review_states', 'allowed_sensitivities', 'allowed_freshness', 'allowed_statuses'])(
-    'rejects unknown configured governance values in %s before using a schema', (field) => {
-      const content = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(new RegExp(`${field}:.*`), `${field}: [future-authority]`);
-      expect(parseScopeKnowledgeSchema(content).ok).toBe(false);
-    }
-  );
+  it.each([
+    'allowed_review_states',
+    'allowed_sensitivities',
+    'allowed_freshness',
+    'allowed_statuses',
+  ])('rejects unknown configured governance values in %s before using a schema', (field) => {
+    const content = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
+      new RegExp(`${field}:.*`),
+      `${field}: [future-authority]`
+    );
+    expect(parseScopeKnowledgeSchema(content).ok).toBe(false);
+  });
 
   it('recognizes restricted sensitivity without widening an existing schema allowlist', () => {
     const parsed = governedPage({});
     if (!parsed.ok) throw new Error('Expected a valid generic fixture.');
-    const document = { ...parsed.document, frontmatter: { ...parsed.document.frontmatter, sensitivity: 'restricted' } };
+    const document = {
+      ...parsed.document,
+      frontmatter: { ...parsed.document.frontmatter, sensitivity: 'restricted' },
+    };
     expect(validateOpenKitKnowledgeProfile(document).errors).toEqual([]);
-    expect(validateScopeKnowledgeSchema(document).errors).toContainEqual(expect.objectContaining({ code: 'scope_schema.sensitivity_not_allowed' }));
-    expect(validateScopeKnowledgeSchema(document, { ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA, allowedSensitivities: ['restricted'] }).conformance).toBe('scope-schema-valid');
+    expect(validateScopeKnowledgeSchema(document).errors).toContainEqual(
+      expect.objectContaining({ code: 'scope_schema.sensitivity_not_allowed' })
+    );
+    expect(
+      validateScopeKnowledgeSchema(document, {
+        ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+        allowedSensitivities: ['restricted'],
+      }).conformance
+    ).toBe('scope-schema-valid');
   });
 });

@@ -205,7 +205,7 @@ describe('offline Workspace notebook preparation', () => {
     expect(result.files).toBeNull();
     expect(result.diagnostics).toContainEqual({
       path: 'knowledge/schema/workspace-schema.yaml',
-      code: 'migration.unsupported_schema_semantics',
+      code: 'scope_schema.unsupported_governance_value',
     });
     expect(result.originals[0]!.bytes).toEqual(sourceSchema);
   });
