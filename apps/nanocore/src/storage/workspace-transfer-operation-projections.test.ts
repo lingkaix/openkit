@@ -383,7 +383,7 @@ describe('Workspace JSON transfer cutover', () => {
     expect(exported.status, await exported.clone().text()).toBe(200);
     const { exportId } = await exported.json();
     const downloaded = await sourceWeb.request(
-      `/api/app/workspaces/ws_demo/exports/${exportId}/archive`
+      `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`
     );
     expect(downloaded.status, await downloaded.clone().text()).toBe(200);
     const bytes = await downloaded.arrayBuffer();
@@ -520,7 +520,7 @@ describe('Workspace JSON transfer cutover', () => {
     });
     expect(exported.status, await exported.clone().text()).toBe(200);
     const { exportId } = await exported.json();
-    const archivePath = `/api/app/workspaces/ws_demo/exports/${exportId}/archive`;
+    const archivePath = `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`;
     const eligible = await app.request(archivePath, {
       headers: { authorization: `Bearer ${token.secret}` },
     });
@@ -838,7 +838,9 @@ describe('Workspace JSON transfer cutover', () => {
     const registry = db.sqlite
       .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
       .all();
-    const archive = await app.request(`/api/app/workspaces/ws_demo/exports/${exportId}/archive`);
+    const archive = await app.request(
+      `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`
+    );
     expect(archive.status).toBe(403);
     expect(await archive.json()).toMatchObject({ code: 'workspace_export_archive_forbidden' });
     for (const operation of ['workspace.import-dry-run', 'workspace.import']) {

@@ -4974,7 +4974,7 @@ describe('app api schemas', () => {
     ).toBe('ok');
     expect(
       AutomationRecordSchema.parse({
-        id: 'auto_00000000-0000-753e-a23a-1b96fc74424c',
+        id: testEntityId('auto', 'dashboard-automation'),
         name: 'Daily summary',
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: DEMO_THREAD_ID,
@@ -4982,7 +4982,7 @@ describe('app api schemas', () => {
         responsibleUserId: testEntityId('usr', 'user_creator'),
         actor: {
           kind: 'automation',
-          id: 'auto_1',
+          id: testEntityId('auto', 'dashboard-automation'),
           responsibleUserId: testEntityId('usr', 'user_creator'),
         },
         revision: 1,
