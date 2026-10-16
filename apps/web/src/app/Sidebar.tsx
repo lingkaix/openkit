@@ -13,6 +13,7 @@ import {
 } from '../screens/chat/data';
 import { AppSearch } from '../screens/operations';
 import { useWorkspaceStore } from '../screens/workspace-store';
+import { ConversationGoalGroups, type ConversationRow } from './ConversationGoalGroups';
 import { type NavGroup, type Surface, surfacesInGroup } from './surfaces';
 
 /** Static wordmark for the brand row (DESIGN.md §8.2). Height matches the Search control. */
@@ -152,6 +153,67 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
     (a, b) => Number(waiting.has(b.thread.id)) - Number(waiting.has(a.thread.id))
   );
 
+  /** Preserve current activity, attention and unread indicators inside canonical Goal groups. */
+  function renderConversation(
+    { thread, activity: observedActivity, state: serverState, unreadCount }: ConversationRow,
+    indent: 0 | 1 = 0,
+    linkedTask = false
+  ) {
+    if (!workspace) return null;
+    const activity = linkedTask ? 'task' : observedActivity;
+    const awaitingReply = waiting.has(thread.id);
+    const state =
+      serverState === 'needs-you' ? serverState : awaitingReply ? 'working' : serverState;
+    const icons: Record<typeof activity, IconName> = {
+      chat: 'chat',
+      task: 'agents',
+      goal: 'goal',
+      unknown: 'info',
+    };
+    const labels = {
+      chat: 'Assistant chat',
+      task: 'Worker task',
+      goal: 'Goal',
+      unknown: 'Activity type unknown',
+    };
+    const status = navigation.isError
+      ? 'Status unavailable'
+      : state === 'working'
+        ? awaitingReply
+          ? 'Waiting for response'
+          : 'Working'
+        : state === 'needs-you'
+          ? 'Needs your attention'
+          : 'Idle';
+    const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
+    return (
+      <NavRow
+        key={thread.id}
+        indent={indent}
+        icon={icons[activity]}
+        label={thread.name ?? thread.preview}
+        description={`${labels[activity]} · ${status}${!navigation.isError && unreadCount > 0 ? ` · ${unreadCount} unread ${unreadCount === 1 ? 'reply' : 'replies'}` : ''}`}
+        trailing={
+          !navigation.isError && unreadCount > 0 ? (
+            <CountBadge count={unreadCount} tone="neutral" />
+          ) : undefined
+        }
+        iconBadge={
+          !navigation.isError && state !== 'idle' ? (
+            <span
+              aria-hidden
+              className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ring-1 ring-sunken ${state === 'working' ? 'bg-info-fg' : 'border border-notice-fg bg-attention-dot'}`}
+            />
+          ) : undefined
+        }
+        active={['chat', 'tasks', 'goals'].some(
+          (route) => pathname === `/${route}${suffix}` || pathname.startsWith(`/${route}${suffix}/`)
+        )}
+        onPress={() => go(conversationThreadPath(workspace.id, thread.id, activity))}
+      />
+    );
+  }
+
   function switchWorkspace(nextWorkspaceId: string) {
     if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
     setWorkspaceId(nextWorkspaceId);
@@ -244,64 +306,15 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                     </Button>
                   </div>
                 ) : null}
-                {conversations.map(({ thread, activity, state: serverState, unreadCount }) => {
-                  const awaitingReply = waiting.has(thread.id);
-                  const state =
-                    serverState === 'needs-you'
-                      ? serverState
-                      : awaitingReply
-                        ? 'working'
-                        : serverState;
-                  const icons: Record<typeof activity, IconName> = {
-                    chat: 'chat',
-                    task: 'agents',
-                    goal: 'goal',
-                    unknown: 'info',
-                  };
-                  const labels = {
-                    chat: 'Assistant chat',
-                    task: 'Worker task',
-                    goal: 'Goal',
-                    unknown: 'Activity type unknown',
-                  };
-                  const status = navigation.isError
-                    ? 'Status unavailable'
-                    : state === 'working'
-                      ? awaitingReply
-                        ? 'Waiting for response'
-                        : 'Working'
-                      : state === 'needs-you'
-                        ? 'Needs your attention'
-                        : 'Idle';
-                  const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
-                  return (
-                    <NavRow
-                      key={thread.id}
-                      icon={icons[activity]}
-                      label={thread.name ?? thread.preview}
-                      description={`${labels[activity]} · ${status}${!navigation.isError && unreadCount > 0 ? ` · ${unreadCount} unread ${unreadCount === 1 ? 'reply' : 'replies'}` : ''}`}
-                      trailing={
-                        !navigation.isError && unreadCount > 0 ? (
-                          <CountBadge count={unreadCount} tone="neutral" />
-                        ) : undefined
-                      }
-                      iconBadge={
-                        !navigation.isError && state !== 'idle' ? (
-                          <span
-                            aria-hidden
-                            className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ring-1 ring-sunken ${state === 'working' ? 'bg-info-fg' : 'border border-notice-fg bg-attention-dot'}`}
-                          />
-                        ) : undefined
-                      }
-                      active={['chat', 'tasks', 'goals'].some(
-                        (route) =>
-                          pathname === `/${route}${suffix}` ||
-                          pathname.startsWith(`/${route}${suffix}/`)
-                      )}
-                      onPress={() => go(conversationThreadPath(workspace.id, thread.id, activity))}
-                    />
-                  );
-                })}
+                <ConversationGoalGroups
+                  key={workspace.id}
+                  workspaceId={workspace.id}
+                  rows={conversations}
+                  unavailable={navigation.isError}
+                  pathname={pathname}
+                  go={go}
+                  renderConversation={renderConversation}
+                />
               </div>
             </>
           ) : null}
