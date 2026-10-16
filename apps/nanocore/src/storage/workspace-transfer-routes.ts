@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { createZstdCompress } from 'node:zlib';
@@ -166,6 +173,7 @@ import {
   readCanonicalFile,
   readCanonicalTextFile,
   readPublishedTurnFileRecords,
+  readWorkspaceTurnEvents,
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
@@ -1041,21 +1049,44 @@ export function createVerifiedWorkspaceExport({
         workspaceId,
       })
     : false;
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  assertCanonicalDirectory(dataRoot);
+  assertCanonicalDirectory(join(dataRoot, 'workspaces'));
+  assertCanonicalDirectory(workspaceRoot);
   const canonicalItemRevisions: Item[] = [];
   const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
-  const turns = threads.flatMap((thread) =>
-    store.listThreadTurns(workspaceId, thread.id).map(({ id }) => {
-      const published = readPublishedTurnFileRecords(dataRoot, workspaceId, thread.id, id);
-      if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
-      // A failed persistence call can leave the cache ahead of its canonical Turn and Items.
-      canonicalItemRevisions.push(...published.itemRevisions);
-      if (published.captureCoverage) turnCaptureCoverage.set(id, published.captureCoverage);
-      return published.turn;
-    })
-  );
+  const turns = threads.flatMap((thread) => {
+    assertSafeWorkspacePathSegment(thread.id, 'Thread id');
+    const threadsRoot = join(workspaceRoot, 'threads');
+    const threadRoot = join(threadsRoot, thread.id);
+    const turnsRoot = join(threadRoot, 'turns');
+    assertCanonicalDirectory(threadsRoot);
+    assertCanonicalDirectory(threadRoot);
+    if (!lstatSync(turnsRoot, { throwIfNoEntry: false })) return [];
+    assertCanonicalDirectory(turnsRoot);
+    // A failed publication can leave the derivative cache ahead of, or without, a canonical Turn.
+    return readdirSync(turnsRoot, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .flatMap((directory) => {
+        if (directory.isSymbolicLink())
+          throw new Error('Canonical Turn directory must not contain a symbolic link.');
+        if (!directory.isDirectory()) return [];
+        const published = readPublishedTurnFileRecords(
+          dataRoot,
+          workspaceId,
+          thread.id,
+          directory.name
+        );
+        if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
+        canonicalItemRevisions.push(...published.itemRevisions);
+        if (published.captureCoverage)
+          turnCaptureCoverage.set(published.turn.id, published.captureCoverage);
+        return [published.turn];
+      })
+      .sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
+  });
   const canonicalTurns = new Map(turns.map((turn) => [turn.id, turn]));
-  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-  assertCanonicalDirectory(workspaceRoot);
   const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
   const dataSourceCatalog = existsSync(dataSourceCatalogPath)
     ? parseWorkspaceDataSourceCatalog(
@@ -1076,7 +1107,6 @@ export function createVerifiedWorkspaceExport({
         workspaceVaultGrants.map((grant) => grant.grantId)
       )
     : [];
-  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   assertSafeWorkspacePathSegment(exportId, 'Export id');
   const exportsRoot = join(dataRoot, 'server', 'exports');
   const workspacesRoot = join(exportsRoot, 'workspaces');
@@ -1285,7 +1315,7 @@ export function createVerifiedWorkspaceExport({
     workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
     workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
     agentSessions: store.listWorkspaceAgentSessions(workspaceId),
-    turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
+    turnEvents: turns.map((turn) => [turn.id, readWorkspaceTurnEvents(workspaceRoot, turn)]),
     portableFileState,
     recurringHistory,
     ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
