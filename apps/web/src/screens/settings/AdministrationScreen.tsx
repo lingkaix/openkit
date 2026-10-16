@@ -161,24 +161,34 @@ export function AdministrationScreen() {
 
   const access = useQuery({
     queryKey: administrationKeys.access,
-    queryFn: () => client.operations['token.list']({}),
+    queryFn: async ({ signal }) => {
+      const result = await client.operations['token.list']({});
+      signal.throwIfAborted();
+      return result;
+    },
+    refetchOnMount: 'always',
     retry: false,
   });
+  const currentAccess = access.isFetchedAfterMount && access.isSuccess && access.fetchStatus === 'idle';
   const administrationThread = useQuery({
     queryKey: ['settings', 'administration', 'thread', quickChat?.id ?? '', threadId ?? ''],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const thread = await client.operations['thread.read']({
         workspaceId: quickChat?.id as string,
         threadId: threadId as string,
       });
+      signal.throwIfAborted();
       if (thread.entryPath !== 'administration') {
         throw new Error('This Thread is not an administration conversation.');
       }
       return thread;
     },
-    enabled: Boolean(quickChat && threadId && access.isSuccess),
+    enabled: Boolean(quickChat && threadId && currentAccess),
+    refetchOnMount: 'always',
+    staleTime: 0,
     retry: false,
   });
+  const currentParent = administrationThread.isFetchedAfterMount && administrationThread.isSuccess && administrationThread.fetchStatus === 'idle';
   const administrationItems = useThreadItems(
     threadId && quickChat && access.isSuccess ? quickChat.id : null,
     threadId ?? ''
@@ -204,18 +214,26 @@ export function AdministrationScreen() {
       threadId ?? '',
       candidateFingerprint,
     ],
-    queryFn: () =>
-      discoverAdministrationCandidates(
+    queryFn: async ({ signal }) => {
+      const result = await discoverAdministrationCandidates(
         client,
         quickChat?.id as string,
         threadId as string,
         artifactReferences
-      ),
+      );
+      signal.throwIfAborted();
+      return result;
+    },
+    refetchOnMount: 'always',
+    staleTime: 0,
     enabled: Boolean(
-      quickChat && threadId && administrationThread.isSuccess && artifactReferences.length
+      quickChat && threadId && currentAccess && currentParent && artifactReferences.length
     ),
     retry: false,
   });
+  // Cached private facts do not establish this mount's authority. Keep command owners mounted while hidden.
+  const candidateHidden = !access.isFetchedAfterMount || !access.isSuccess || !administrationThread.isFetchedAfterMount || !administrationThread.isSuccess || [administrationItems.error, threadCandidates.error].some(isAccessDenied);
+  const candidateBlocked = connection.failed || !currentAccess || !currentParent || !administrationItems.isSuccess || administrationItems.fetchStatus !== 'idle' || (artifactReferences.length > 0 && (!threadCandidates.isSuccess || threadCandidates.fetchStatus !== 'idle'));
   const conversation = useMutation({
     mutationFn: (request: { input: string; requestId: string; threadId?: string }) =>
       client.operations['administration.conversation-submit'](request),
@@ -249,7 +267,7 @@ export function AdministrationScreen() {
         title="Administration"
         subtitle="Use a private administrator conversation to prepare technical changes, then inspect the retained Worker environments for the selected Workspace."
       />
-      {access.isLoading ? (
+      {!access.isFetchedAfterMount || access.isPending ? (
         <Skeleton lines={7} />
       ) : denied ? (
         <EmptyState
@@ -263,8 +281,9 @@ export function AdministrationScreen() {
           message="Couldn't verify administrator authority."
           onRetry={() => void access.refetch()}
         />
-      ) : (
-        <>
+      ) : null}
+      {access.data !== undefined && access.isFetchedAfterMount ? (
+        <div hidden={!access.isSuccess} className={access.isSuccess ? 'contents' : undefined}>
           <AdministratorWorkspaces />
           <section className="flex flex-col gap-3" aria-labelledby="administration-conversation">
             <div>
@@ -282,10 +301,10 @@ export function AdministrationScreen() {
             {administrationThread.isError ? (
               <ErrorBanner
                 message="This private administration Thread is unavailable."
-                onRetry={() => setSearchParams({}, { replace: true })}
+                onRetry={() => void administrationThread.refetch()}
               />
             ) : null}
-            {threadId && quickChat && administrationThread.isSuccess ? (
+            {threadId && quickChat && administrationThread.isFetchedAfterMount && administrationThread.isSuccess ? (
               <Card className="max-h-[420px] overflow-y-auto">
                 <ThreadStream
                   workspaceId={quickChat.id}
@@ -334,12 +353,8 @@ export function AdministrationScreen() {
             <AdministrationConfigurationReview
               key={`${quickChat.id}:${threadId}:${threadCandidates.data.configuration.candidate.artifactId}:${threadCandidates.data.configuration.candidate.artifactVersion}:${threadCandidates.data.configuration.candidate.contentDigest}`}
               candidate={threadCandidates.data.configuration}
-              confirmationBlocked={
-                connection.failed ||
-                threadCandidates.isError ||
-                administrationItems.isError ||
-                !administrationThread.isSuccess
-              }
+              confirmationBlocked={candidateBlocked}
+              hidden={candidateHidden}
               threadId={threadId}
               workspaceId={quickChat.id}
             />
@@ -350,6 +365,8 @@ export function AdministrationScreen() {
             administrationThreadId={threadId}
             administrationWorkspaceId={quickChat?.id ?? null}
             candidate={threadCandidates.data?.environment ?? null}
+            candidateBlocked={candidateBlocked}
+            candidateHidden={candidateHidden}
             candidateError={threadCandidates.isError}
             candidateLoading={threadCandidates.isLoading && artifactReferences.length > 0}
             disconnected={connection.failed}
@@ -357,8 +374,8 @@ export function AdministrationScreen() {
             workspaceId={workspaceId}
             workspaceName={workspace?.name ?? null}
           />
-        </>
-      )}
+        </div>
+      ) : null}
     </Page>
   );
 }
@@ -368,6 +385,8 @@ function WorkerEnvironmentSection({
   administrationThreadId,
   administrationWorkspaceId,
   candidate,
+  candidateBlocked,
+  candidateHidden,
   candidateError,
   candidateLoading,
   disconnected,
@@ -378,6 +397,8 @@ function WorkerEnvironmentSection({
   administrationThreadId: string | null;
   administrationWorkspaceId: string | null;
   candidate: EnvironmentCandidate | null;
+  candidateBlocked: boolean;
+  candidateHidden: boolean;
   candidateError: boolean;
   candidateLoading: boolean;
   disconnected: boolean;
@@ -468,6 +489,8 @@ function WorkerEnvironmentSection({
         administrationThreadId={administrationThreadId}
         administrationWorkspaceId={administrationWorkspaceId}
         candidate={candidate}
+        candidateBlocked={candidateBlocked}
+        candidateHidden={candidateHidden}
         candidateError={candidateError}
         candidateLoading={candidateLoading}
         disconnected={disconnected}
@@ -543,6 +566,8 @@ function EnvironmentPreparation({
   administrationThreadId,
   administrationWorkspaceId,
   candidate,
+  candidateBlocked,
+  candidateHidden,
   candidateError,
   candidateLoading,
   disconnected,
@@ -552,6 +577,8 @@ function EnvironmentPreparation({
   administrationThreadId: string | null;
   administrationWorkspaceId: string | null;
   candidate: EnvironmentCandidate | null;
+  candidateBlocked: boolean;
+  candidateHidden: boolean;
   candidateError: boolean;
   candidateLoading: boolean;
   disconnected: boolean;
@@ -684,12 +711,12 @@ function EnvironmentPreparation({
     );
 
   function submitPrepare() {
-    if (!prepareInput || prepare.isPending || sameSource || preparationAttempted) return;
+    if (candidateBlocked || candidateHidden || !prepareInput || prepare.isPending || sameSource || preparationAttempted) return;
     prepare.mutate({ ...prepareInput, requestId: createRequestId() });
   }
 
   function submitRecovery(recoverable: RecoverableCandidate) {
-    if (!administrationThreadId || prepare.isPending) return;
+    if (candidateBlocked || candidateHidden || recoveryAttempted || !administrationThreadId || prepare.isPending) return;
     prepare.mutate({
       administrationThreadId,
       mode: 'recover',
@@ -800,6 +827,8 @@ function EnvironmentPreparation({
       <div className="flex justify-end">
         <Button
           isDisabled={
+            candidateBlocked ||
+            candidateHidden ||
             disconnected ||
             prepare.isPending ||
             !prepareInput ||
@@ -819,9 +848,10 @@ function EnvironmentPreparation({
           message="Couldn't inspect the prepared candidate."
           onRetry={onRetryCandidate}
         />
-      ) : displayedCandidate?.kind === 'resolved' &&
+      ) : null}
+      {displayedCandidate?.kind === 'resolved' &&
         displayedCandidate.details.replaceNow &&
-        displayedCandidate.details.replaceNow.workspaceId !== workspaceId ? (
+        displayedCandidate.details.replaceNow.workspaceId !== workspaceId ? (candidateHidden ? null : (
         <div className="rounded-ok border border-border bg-sunken p-3">
           <p className="text-sm font-bold text-fg-strong">
             Prepared replacement targets another Workspace
@@ -831,17 +861,17 @@ function EnvironmentPreparation({
             switcher to review its exact Thread, storage group, and successor prompt.
           </p>
         </div>
-      ) : displayedCandidate?.kind === 'resolved' ? (
-        <PreparedCandidateReview candidate={displayedCandidate} disconnected={disconnected} />
-      ) : displayedCandidate?.kind === 'authored' ? (
+      )) : displayedCandidate?.kind === 'resolved' ? (
+        <PreparedCandidateReview candidate={displayedCandidate} disconnected={disconnected} confirmationBlocked={candidateBlocked} hidden={candidateHidden} />
+      ) : displayedCandidate?.kind === 'authored' ? (candidateHidden ? null : (
         <RecoverableCandidateCard
           candidate={displayedCandidate}
           disabled={
-            disconnected || prepare.isPending || !administrationThreadId || recoveryAttempted
+            candidateBlocked || disconnected || prepare.isPending || !administrationThreadId || recoveryAttempted
           }
           onRecover={() => submitRecovery(displayedCandidate)}
         />
-      ) : (
+      )) : candidateHidden || candidateLoading || candidateError ? null : (
         <div className="rounded-ok border border-border bg-sunken p-3">
           <p className="text-sm font-bold text-fg-strong">No environment candidate</p>
           <p className="mt-1 text-xs text-fg-muted">
@@ -896,9 +926,13 @@ function RecoverableCandidateCard({
 /** Human review and one-shot activation for an exact structured candidate Artifact. */
 function PreparedCandidateReview({
   candidate,
+  confirmationBlocked,
+  hidden,
   disconnected,
 }: {
   candidate: PreparedCandidate;
+  confirmationBlocked: boolean;
+  hidden: boolean;
   disconnected: boolean;
 }) {
   const client = useCoreClient();
@@ -938,6 +972,9 @@ function PreparedCandidateReview({
     select: (mutation) => mutation.state.status,
   });
   const attempted = priorAttempts.length > 0;
+  const blocked = hidden || confirmationBlocked || disconnected || attempted;
+  // Keep the mutation observer and its outcome while private candidate output is unavailable.
+  if (hidden) return null;
 
   return (
     <div className="flex flex-col gap-3 rounded-ok border border-border bg-card p-3">
@@ -956,7 +993,7 @@ function PreparedCandidateReview({
             {candidate.details.configuration.expectedRevision}
           </p>
         </div>
-        <Modal trigger={<Button isDisabled={disconnected || attempted}>Review activation</Button>}>
+        <Modal trigger={<Button isDisabled={blocked}>Review activation</Button>}>
           <Dialog title="Activate prepared candidate?">
             <CandidateFacts candidate={candidate} />
             <p className="break-all text-xs text-fg-muted">
@@ -975,7 +1012,11 @@ function PreparedCandidateReview({
               <Button
                 slot="close"
                 variant="negative"
-                onPress={() => activate.mutate(createRequestId())}
+                isDisabled={blocked}
+                onPress={() => {
+                  if (blocked) return;
+                  activate.mutate(createRequestId());
+                }}
               >
                 Activate candidate
               </Button>

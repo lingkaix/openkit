@@ -330,8 +330,10 @@ function LocationProbe() {
   return <output aria-label="Current path">{useLocation().pathname}</output>;
 }
 
-function renderScreen(client: CoreClient) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderScreen(
+  client: CoreClient,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
@@ -1308,6 +1310,16 @@ describe('Administration', () => {
     expect(activate).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
     expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
+    vi.mocked(client.operations[methods[source]]).mockImplementation(() => new Promise<never>(() => {}));
+    await act(async () => {
+      void queryClient.refetchQueries({ queryKey: keys[source], exact: true });
+    });
+    await waitFor(() => expect(queryClient.getQueryState(keys[source])?.fetchStatus).toBe('fetching'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryAllByText(kind === 'environment' ? /Resolved Artifact artifact_resolved/ : /"displayName": "OpenAI production"/)).toHaveLength(0);
+    expect(activate).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    await act(() => queryClient.cancelQueries({ queryKey: keys[source], exact: true }));
   });
 
   it.each(
@@ -1378,6 +1390,40 @@ describe('Administration', () => {
     }
   });
 
+  it('rechecks current administrator and exact parent authority before admitting a fresh cached candidate on remount', async () => {
+    const fixture = () => makeClient({}, {
+      'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+      'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+      'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const first = renderScreen(fixture(), queryClient);
+    expect(await screen.findByRole('button', { name: 'Review configuration' })).toBeEnabled();
+    first.unmount();
+    const client = fixture();
+    let allowAccess!: () => void;
+    let allowParent!: () => void;
+    vi.mocked(client.operations['token.list']).mockImplementation(() => new Promise((resolve) => {
+      allowAccess = () => resolve({ items: [] });
+    }));
+    const readParent = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
+    vi.mocked(client.operations['thread.read']).mockImplementation((input) => new Promise((resolve) => {
+      allowParent = () => { void Promise.resolve(readParent(input)).then(resolve); };
+    }));
+    renderScreen(client, queryClient);
+    await waitFor(() => expect(client.operations['token.list']).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+    expect(client.operations['thread.read']).not.toHaveBeenCalled();
+    await act(async () => allowAccess());
+    await waitFor(() => expect(client.operations['thread.read']).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+    expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
+    await act(async () => allowParent());
+    expect(await screen.findByRole('button', { name: 'Review configuration' })).toBeEnabled();
+    expect(client.operations['thread.read']).toHaveBeenCalledWith({ workspaceId: QUICK_CHAT.id, threadId: ADMIN_THREAD.id });
+    expect(client.operations['artifact.read']).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['environment', 'configuration'] as const)(
     'keeps the dispatched %s outcome through private parent denial and read recovery',
     async (kind) => {
@@ -1422,7 +1468,7 @@ describe('Administration', () => {
       await waitFor(() => expect(command?.state.status).toBe('success'));
       expect(screen.queryByText(kind === 'environment' ? 'Activation command result' : 'Configuration command result')).not.toBeInTheDocument();
       vi.mocked(client.operations['thread.read']).mockImplementation(readThread);
-      await act(() => queryClient.invalidateQueries({ queryKey, exact: true }));
+      await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
       expect(await screen.findByText(kind === 'environment' ? 'Activation command result' : 'Configuration command result')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: kind === 'environment' ? 'Review activation' : 'Review configuration' })).toBeDisabled();
       expect(queryClient.getMutationCache().getAll()).toContain(command);
