@@ -10,6 +10,7 @@ import {
   parseScopeKnowledgeSchema,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   stringListFrontmatterField,
+  updateOkfFrontmatter,
   validateOpenKitKnowledgeProfile,
   validateScopeKnowledgeSchema,
 } from './okf.js';
