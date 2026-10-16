@@ -146,6 +146,11 @@ pub struct EvidenceArtifact {
 #[derive(Clone)]
 pub struct EpochEvidenceWriter {
     root: PathBuf,
+    #[cfg(test)]
+    before_export: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Pauses only a fixture's measurement between its initial and final image observations.
+    #[cfg(test)]
+    pub(crate) inventory_recheck: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl EpochEvidenceWriter {
@@ -160,7 +165,19 @@ impl EpochEvidenceWriter {
             .mode(0o700)
             .create(&root)?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            #[cfg(test)]
+            before_export: None,
+            #[cfg(test)]
+            inventory_recheck: None,
+        })
+    }
+
+    /// Holds only a fixture's evidence worker, so tests can observe the real fence deadline.
+    #[cfg(test)]
+    pub(crate) fn before_export(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.before_export = Some(hook);
     }
 
     /// Appends one bounded redacted report for a live-NanoHost invalidation.
@@ -216,6 +233,10 @@ impl EpochEvidenceWriter {
         started: Instant,
         absent: bool,
     ) -> io::Result<EvidenceArtifact> {
+        #[cfg(test)]
+        if let Some(hook) = &self.before_export {
+            hook();
+        }
         let mut complete = started.elapsed() < EXPORT_TIMEOUT;
         let mut safe_fields = Map::new();
         if complete {

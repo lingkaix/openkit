@@ -193,6 +193,27 @@ impl From<io::Error> for StoreError {
     }
 }
 
+/// Preserves local archive selection and store refusal without conflating their causes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalArchiveError {
+    /// Archive parsing, platform selection or streaming verification failed.
+    Acquisition(crate::image_acquisition::AcquisitionError),
+    /// The existing store owner refused admission.
+    Store(StoreError),
+}
+
+impl From<StoreError> for LocalArchiveError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl From<crate::image_acquisition::AcquisitionError> for LocalArchiveError {
+    fn from(error: crate::image_acquisition::AcquisitionError) -> Self {
+        Self::Acquisition(error)
+    }
+}
+
 /// Durable, listener-free retained supply of verified inert image content.
 pub struct ImageStore {
     root: PathBuf,
@@ -314,10 +335,103 @@ impl ImageStore {
             let _ = sync_dir(&self.content_root);
             return Err(StoreError::DigestMismatch);
         }
+        self.publish_staged_locked(digest, &mut staged, lineage, acquired_at)
+    }
+
+    /// Admits a local manifest or selected index child through the existing staged-content owner.
+    ///
+    /// Index projection writes one attributed archive under the store lock, with
+    /// exact size checked before writing. Interrupted bytes retain the ordinary
+    /// staging inventory, capacity and explicit-removal semantics.
+    ///
+    /// # Errors
+    ///
+    /// Preserves selection failures and existing busy, capacity and storage refusals.
+    pub fn admit_local_archive(
+        &self,
+        expected_digest: &str,
+        mut source: File,
+        acquired_at: u64,
+    ) -> Result<String, LocalArchiveError> {
+        use crate::image_acquisition::{
+            ResolvedImport, import_projection_size, resolve_import_archive, write_import_projection,
+        };
+        let metadata = source.metadata().map_err(StoreError::from)?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > IMAGE_ARCHIVE_MAX_BYTES {
+            return Err(StoreError::DigestMismatch.into());
+        }
+        let resolved = resolve_import_archive(&mut source, expected_digest)?;
+        let ResolvedImport::Projected {
+            digest,
+            manifest,
+            descriptor_sizes,
+        } = resolved
+        else {
+            self.admit_oci_file(
+                expected_digest,
+                source,
+                StoreLineage::LocalArchive(expected_digest.to_string()),
+                acquired_at,
+            )?;
+            return Ok(expected_digest.to_string());
+        };
+        let _lock = self.try_lock()?;
+        match self.open_verified_locked(&digest, None) {
+            Ok(_) => return Ok(digest),
+            Err(StoreError::Missing | StoreError::Corrupt | StoreError::InvalidMetadata) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let lineage = StoreLineage::LocalArchive(digest.clone());
+        if self.recover_retained_locked(&digest, lineage.clone(), acquired_at)? {
+            return Ok(digest);
+        }
+        let size = import_projection_size(&digest, &manifest, &descriptor_sizes)?;
+        let capacity = self.capacity_locked()?;
+        if self
+            .physical_usage_locked()?
+            .checked_add(size)
+            .is_none_or(|used| used > capacity)
+        {
+            return Err(StoreError::Capacity.into());
+        }
+        let staged_path = self
+            .content_root
+            .join(format!("{}.content.tmp", digest_stem(&digest)?));
+        let mut staged = open_new_private(&staged_path)?;
+        if let Err(error) = write_import_projection(
+            &mut source,
+            &mut staged,
+            &digest,
+            &manifest,
+            &descriptor_sizes,
+        ) {
+            let _ = fs::remove_file(&staged_path);
+            let _ = sync_dir(&self.content_root);
+            return Err(error.into());
+        }
+        if staged.metadata().map_err(StoreError::from)?.len() != size {
+            let _ = fs::remove_file(&staged_path);
+            let _ = sync_dir(&self.content_root);
+            return Err(StoreError::DigestMismatch.into());
+        }
+        self.publish_staged_locked(&digest, &mut staged, lineage, acquired_at)?;
+        Ok(digest)
+    }
+
+    /// Verifies and publishes one already attributed staged archive under the caller's lock.
+    fn publish_staged_locked(
+        &self,
+        digest: &str,
+        staged: &mut File,
+        lineage: StoreLineage,
+        acquired_at: u64,
+    ) -> Result<(), StoreError> {
+        let staged_path = self
+            .content_root
+            .join(format!("{}.content.tmp", digest_stem(digest)?));
         staged.sync_all()?;
         staged.seek(SeekFrom::Start(0))?;
-        if let Err(error) = crate::image_acquisition::verify_oci_archive(&mut staged, Some(digest))
-        {
+        if let Err(error) = crate::image_acquisition::verify_oci_archive(staged, Some(digest)) {
             return self.handle_staged_archive_failure(&staged_path, error);
         }
         if self.physical_usage_locked()? > self.capacity_locked()? {
@@ -327,7 +441,7 @@ impl ImageStore {
         }
         let entry = StoreEntry {
             digest: digest.to_string(),
-            size: copied,
+            size: staged.metadata()?.len(),
             acquired_at,
             lineage,
         };

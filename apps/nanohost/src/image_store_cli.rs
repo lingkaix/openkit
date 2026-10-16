@@ -76,33 +76,18 @@ pub fn dispatch(args: &[String]) -> Result<ImageStoreCliOutcome, ImageStoreCliEr
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| ImageStoreCliError::Store(StoreError::Io))?
                 .as_secs();
-            let mut archive_file = archive.expect("validated import command owns archive");
-            let resolved =
-                crate::image_acquisition::resolve_import_archive(&mut archive_file, digest)
-                    .map_err(cli_acquisition_error)?;
-            match resolved {
-                crate::image_acquisition::ResolvedImport::Original => {
-                    store.admit_oci_file(
-                        digest,
-                        archive_file,
-                        StoreLineage::LocalArchive(digest.to_string()),
-                        acquired_at,
-                    )?;
-                    Ok(ImageStoreCliOutcome::Completed(digest.to_string()))
-                }
-                crate::image_acquisition::ResolvedImport::Projected {
-                    digest: admitted,
-                    archive: projected,
-                } => {
-                    store.admit_oci_file(
-                        &admitted,
-                        projected,
-                        StoreLineage::LocalArchive(admitted.clone()),
-                        acquired_at,
-                    )?;
-                    Ok(ImageStoreCliOutcome::Completed(admitted))
-                }
-            }
+            let archive_file = archive.expect("validated import command owns archive");
+            let admitted = store
+                .admit_local_archive(digest, archive_file, acquired_at)
+                .map_err(|error| match error {
+                    crate::image_store::LocalArchiveError::Store(error) => {
+                        ImageStoreCliError::Store(error)
+                    }
+                    crate::image_store::LocalArchiveError::Acquisition(error) => {
+                        cli_acquisition_error(error)
+                    }
+                })?;
+            Ok(ImageStoreCliOutcome::Completed(admitted))
         }
         Command::Remove(digest) => {
             store.remove(digest)?;

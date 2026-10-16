@@ -14,6 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -27,7 +28,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::epoch_evidence::{
     EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, REBUILD_FENCE_STARTED_PATH,
-    record_fence_started, record_fence_started_at,
+    record_fence_started_at,
 };
 use crate::image_acquisition::{
     AcquisitionTrigger, BuildDefinition, BuildPlan, EMPTY_BUILD_CONTEXT_DIGEST,
@@ -61,6 +62,45 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Fresh roots through complete readiness share the transport specification's hard bound.
 pub const STARTUP_READINESS_HARD_LIMIT: Duration = Duration::from_secs(120);
+
+/// Last successful readiness observation, used only by private forensic reports.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum ReadinessProof {
+    /// No readiness check has been observed.
+    Unavailable,
+    /// Both fresh private roots were created.
+    PrivateRoots,
+    /// Gateway authentication, configuration and resolver files were written.
+    Configuration,
+    /// Containerd namespaces were retained and its socket became available.
+    ContainerdSocket,
+    /// Slirp proved its route while containerd remained running.
+    PrivateNetwork,
+    /// Docker namespace membership and socket availability were proved.
+    DockerSocket,
+    /// Gateway health and all local member liveness checks succeeded.
+    GatewayHealth,
+    /// Core completed the exact readiness acknowledgement within its deadline.
+    CoreAcknowledgement,
+}
+
+impl ReadinessProof {
+    /// Snapshots one closed proof name without waiting for diagnostic collection.
+    fn report_value(observation: &AtomicU8) -> String {
+        let last_succeeded = match observation.load(Ordering::Acquire) {
+            value if value == Self::PrivateRoots as u8 => "private-roots",
+            value if value == Self::Configuration as u8 => "configuration",
+            value if value == Self::ContainerdSocket as u8 => "containerd-socket",
+            value if value == Self::PrivateNetwork as u8 => "private-network",
+            value if value == Self::DockerSocket as u8 => "docker-socket",
+            value if value == Self::GatewayHealth as u8 => "gateway-health",
+            value if value == Self::CoreAcknowledgement as u8 => "core-acknowledgement",
+            _ => "unavailable",
+        };
+        format!("last_succeeded={last_succeeded}")
+    }
+}
 
 /// Enters one retained Linux network namespace.
 unsafe fn setns_network(fd: i32) -> i32 {
@@ -1198,6 +1238,7 @@ fn harness_bridge_is_live(
 #[allow(dead_code)]
 pub struct EpochCoordinator {
     monitor: EpochMemberMonitor,
+    inspection_server: Option<crate::live_inspection::InspectionServer>,
     runtime: Handle,
     client: NanoHostOpenShellClient,
     image_store: ImageStore,
@@ -1221,6 +1262,8 @@ struct EpochMemberMonitor {
     member_failure: mpsc::Receiver<EpochFault>,
     worker: Option<JoinHandle<()>>,
     harness_tasks: Arc<Mutex<Option<(AbortHandle, AbortHandle)>>>,
+    readiness: Arc<AtomicU8>,
+    inspection: Option<Arc<crate::live_inspection::InspectionState>>,
 }
 
 /// Child-handle aggregate whose normal drop always kills and reaps the group.
@@ -1233,6 +1276,212 @@ struct OwnedEpochChildren {
 struct PrivateNamespaceDescriptors {
     network: Arc<OwnedFd>,
     mount: Arc<OwnedFd>,
+}
+
+/// Incarnation-bound private report inputs; no path, command line or output is retained.
+struct MemberInventory {
+    role: MemberFailureSubject,
+    pid: u32,
+    process: Option<File>,
+    status: serde_json::Value,
+}
+
+impl MemberInventory {
+    /// Pins procfs while the unreaped child handle still prevents PID reuse.
+    fn pin(index: usize, child: &mut Child) -> Self {
+        let process = (|| {
+            if child.try_wait().ok()?.is_some() {
+                return None;
+            }
+            let process = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(format!("/proc/{}", child.id()))
+                .ok()?;
+            if child.try_wait().ok()?.is_some() {
+                return None;
+            }
+            Some(process)
+        })();
+        Self {
+            role: MEMBER_ROLE_BY_START_INDEX
+                .get(index)
+                .copied()
+                .unwrap_or(MemberFailureSubject::Unknown),
+            pid: child.id(),
+            process,
+            status: serde_json::json!({"state": "unavailable"}),
+        }
+    }
+
+    /// Keeps actual pre-fence wait observations distinct from later group termination.
+    fn observe_status(&mut self, child: &mut Child) {
+        self.status = match child.try_wait() {
+            Ok(None) => serde_json::json!({"state": "running"}),
+            Ok(Some(status)) => match observation_from_exit_status(status) {
+                MemberObservation::ExitCode(code) => {
+                    serde_json::json!({"state": "exited", "code": code})
+                }
+                MemberObservation::Signal(signal) => {
+                    serde_json::json!({"state": "signaled", "signal": signal})
+                }
+                _ => serde_json::json!({"state": "unavailable"}),
+            },
+            Err(_) => serde_json::json!({"state": "unavailable"}),
+        };
+    }
+
+    /// Measures only the pinned process in the bounded export worker, never a reused PID.
+    fn report(
+        self,
+        #[cfg(test)] before_recheck: Option<&(dyn Fn() + Send + Sync)>,
+    ) -> serde_json::Value {
+        let mut binary = serde_json::json!("unavailable");
+        let mut cgroup = serde_json::json!("unavailable");
+        if let Some(process) = self.process {
+            let measured = (|| {
+                let image = open_process_entry(&process, c"exe")?;
+                let before = image.metadata().ok()?;
+                if !before.is_file() {
+                    return None;
+                }
+                #[cfg(test)]
+                if let Some(hook) = before_recheck {
+                    hook();
+                }
+                let membership = read_process_cgroup(&process);
+                let group = membership
+                    .as_ref()
+                    .and_then(|bytes| resolve_member_cgroup(bytes));
+                let after = open_process_entry(&process, c"exe")?.metadata().ok()?;
+                let unchanged = |left: &fs::Metadata, right: &fs::Metadata| {
+                    left.dev() == right.dev()
+                        && left.ino() == right.ino()
+                        && left.len() == right.len()
+                        && left.ctime() == right.ctime()
+                        && left.ctime_nsec() == right.ctime_nsec()
+                };
+                if !unchanged(&before, &after) || !unchanged(&before, &image.metadata().ok()?) {
+                    return None;
+                }
+                let group = group.filter(|_| membership == read_process_cgroup(&process));
+                Some((before, group))
+            })();
+            if let Some((image, group)) = measured {
+                binary = serde_json::json!({
+                    "device": image.dev(), "inode": image.ino(), "size": image.len(),
+                });
+                if let Some(group) = group {
+                    cgroup = serde_json::json!({"device": group.dev(), "inode": group.ino()});
+                }
+            }
+        }
+        serde_json::json!({
+            "role": self.role.token(), "pid": self.pid, "binary": binary,
+            "version": "unavailable", "cgroup": cgroup, "status": self.status,
+        })
+    }
+}
+
+/// Opens a fixed virtual process entry relative to the retained incarnation, including its exe link.
+fn open_process_entry(process: &File, entry: &std::ffi::CStr) -> Option<File> {
+    // SAFETY: the directory remains owned, the entry is a fixed NUL-terminated name,
+    // and a successful call transfers one new descriptor into File ownership.
+    let fd = unsafe {
+        libc::openat(
+            process.as_raw_fd(),
+            entry.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    };
+    (fd >= 0).then(|| unsafe { File::from_raw_fd(fd) })
+}
+
+/// Reads only a bounded kernel cgroup membership projection, with no retained path text.
+fn read_process_cgroup(process: &File) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open_process_entry(process, c"cgroup")?
+        .take(8193)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= 8192).then_some(bytes)
+}
+
+/// Resolves an exact unified membership to filesystem identity; unsupported namespaces stay unknown.
+#[cfg(target_os = "linux")]
+fn resolve_member_cgroup(bytes: &[u8]) -> Option<fs::Metadata> {
+    let source = std::str::from_utf8(bytes).ok()?;
+    let mut records = source.lines();
+    let path = records.next()?.strip_prefix("0::/")?;
+    if records.next().is_some() {
+        return None;
+    }
+    // A subtree mount cannot resolve a hierarchy-absolute membership by simple joining.
+    // Require the exact unified hierarchy root rather than guess a namespace translation.
+    let mut mounts = String::new();
+    File::open("/proc/self/mountinfo")
+        .ok()?
+        .take(262145)
+        .read_to_string(&mut mounts)
+        .ok()?;
+    if mounts.len() > 262144 {
+        return None;
+    }
+    let matching_mounts = mounts
+        .lines()
+        .filter(|line| {
+            let Some((mount, filesystem)) = line.split_once(" - ") else {
+                return false;
+            };
+            let fields = mount.split_ascii_whitespace().collect::<Vec<_>>();
+            fields.get(3) == Some(&"/")
+                && fields.get(4) == Some(&"/sys/fs/cgroup")
+                && filesystem.split_ascii_whitespace().next() == Some("cgroup2")
+        })
+        .count();
+    if matching_mounts != 1 {
+        return None;
+    }
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/sys/fs/cgroup")
+        .ok()?;
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: the descriptor and output allocation remain valid during fstatfs.
+    // A successful return initializes the output; only then is the second condition evaluated.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), filesystem.as_mut_ptr()) } != 0
+        || unsafe { filesystem.assume_init() }.f_type != libc::CGROUP2_SUPER_MAGIC
+    {
+        return None;
+    }
+    for component in path.split('/').filter(|component| !component.is_empty()) {
+        if component == "." || component == ".." {
+            return None;
+        }
+        let component = CString::new(component).ok()?;
+        // SAFETY: the retained parent descriptor and component live through openat;
+        // no symlink can redirect a component outside the observed hierarchy.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: a successful openat transfers one new owned descriptor.
+        directory = unsafe { File::from_raw_fd(fd) };
+    }
+    directory.metadata().ok()
+}
+
+/// Keeps Linux cgroup proof unavailable on other Unix development hosts.
+#[cfg(not(target_os = "linux"))]
+fn resolve_member_cgroup(_bytes: &[u8]) -> Option<fs::Metadata> {
+    None
 }
 
 impl Drop for OwnedEpochChildren {
@@ -1252,20 +1501,31 @@ impl EpochMemberMonitor {
             None,
             evidence,
             PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+            Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
+            None,
         )
     }
 
     /// Starts the monitor while retaining the proved private namespace descriptors.
     fn start_with_namespaces(
-        children: Vec<Child>,
+        mut children: Vec<Child>,
         private_namespaces: Option<PrivateNamespaceDescriptors>,
-        mut evidence: EpochEvidenceWriter,
+        evidence: EpochEvidenceWriter,
         fence_started_path: PathBuf,
+        readiness: Arc<AtomicU8>,
+        inspection: Option<Arc<crate::live_inspection::InspectionState>>,
     ) -> Self {
+        let inventory = children
+            .iter_mut()
+            .enumerate()
+            .map(|(index, child)| MemberInventory::pin(index, child))
+            .collect();
         let (fence, fence_rx) = mpsc::sync_channel(1);
         let (failure_tx, member_failure) = mpsc::sync_channel(1);
         let harness_tasks = Arc::new(Mutex::new(None));
         let watched_tasks = Arc::clone(&harness_tasks);
+        let observed_readiness = Arc::clone(&readiness);
+        let observed_inspection = inspection.clone();
         let worker = thread::spawn(move || {
             let mut children = OwnedEpochChildren {
                 children,
@@ -1274,11 +1534,16 @@ impl EpochMemberMonitor {
             if let Some(fault) =
                 Self::observe_members(&mut children.children, &fence_rx, &watched_tasks)
             {
+                if let Some(inspection) = &observed_inspection {
+                    inspection.close();
+                }
                 fence_initiated(
-                    &mut evidence,
+                    &evidence,
                     &mut children.children,
                     &fault,
                     fence_started_path,
+                    &observed_readiness,
+                    inventory,
                 );
                 let _ = failure_tx.send(fault);
             }
@@ -1288,6 +1553,8 @@ impl EpochMemberMonitor {
             member_failure,
             worker: Some(worker),
             harness_tasks,
+            readiness,
+            inspection,
         }
     }
 
@@ -1415,6 +1682,9 @@ impl EpochMemberMonitor {
 
     /// Requests one export-before-fence and waits for complete sibling reap.
     fn fence(&mut self, fault: EpochFault) {
+        if let Some(inspection) = &self.inspection {
+            inspection.close();
+        }
         let _ = self.fence.send(Some(fault));
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -1429,6 +1699,9 @@ impl EpochMemberMonitor {
     /// Stops and joins every epoch member before host-side attachments are released.
     #[allow(dead_code)]
     fn stop(&mut self) {
+        if let Some(inspection) = &self.inspection {
+            inspection.close();
+        }
         if self.worker.is_some() {
             let _ = self.fence.send(None);
         }
@@ -1441,11 +1714,56 @@ impl EpochMemberMonitor {
 impl Drop for EpochMemberMonitor {
     /// Performs normal whole-group termination exactly once.
     fn drop(&mut self) {
+        if let Some(inspection) = &self.inspection {
+            inspection.close();
+        }
         if self.worker.is_some() {
             let _ = self.fence.send(None);
         }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+    }
+}
+
+/// Gives contract tests their own paths and children while retaining the actual monitor and fence.
+#[cfg(test)]
+pub(crate) struct InventoryMonitorFixture(EpochMemberMonitor);
+
+#[cfg(test)]
+impl InventoryMonitorFixture {
+    /// Starts fixed-order owned children with a private evidence root and optional blocked export.
+    pub(crate) fn start(
+        children: Vec<Child>,
+        root: &Path,
+        before_export: Option<Arc<dyn Fn() + Send + Sync>>,
+        inventory_recheck: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        let mut evidence = EpochEvidenceWriter::new(root.join("reports")).unwrap();
+        evidence.inventory_recheck = inventory_recheck;
+        if let Some(hook) = before_export {
+            evidence.before_export(hook);
+        }
+        Self(EpochMemberMonitor::start_with_namespaces(
+            children,
+            None,
+            evidence,
+            root.join("fence-started"),
+            Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
+            None,
+        ))
+    }
+
+    /// Requests the existing explicit fault and waits for all owned children to be reaped.
+    pub(crate) fn fence(&mut self) {
+        self.0.fence(EpochFault::IdentityMismatch);
+    }
+
+    /// Waits for the production monitor's first cause after its complete fence.
+    pub(crate) fn failure(&self, limit: Duration) -> Option<String> {
+        match self.0.member_failure.recv_timeout(limit).ok()? {
+            EpochFault::MemberExited(Some(failure)) => Some(failure.report_value()),
+            _ => None,
         }
     }
 }
@@ -1470,47 +1788,30 @@ impl EpochCoordinator {
         let image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
         let persistent_volumes = persistent_volumes.take().ok_or(EpochFault::PartialStart)?;
         let mut children = Vec::with_capacity(plan.members().len());
+        let readiness = Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8));
         let runtime = {
-            let export_before_fence = |fault: EpochFault| {
-                let mut writer = evidence.clone();
-                let (completed_tx, completed_rx) = mpsc::sync_channel(1);
-                let fence_started = SystemTime::now();
-                let worker = catch_unwind(AssertUnwindSafe(|| {
-                    thread::spawn(move || {
-                        let started = Instant::now();
-                        let _ = record_fence_started(fence_started);
-                        let fields = invalidation_report_fields(&fault);
-                        let field_refs = fields
-                            .iter()
-                            .map(|(name, value)| (*name, value.as_str()))
-                            .collect::<Vec<_>>();
-                        let _ = writer.export_invalidation(
-                            invalidation_trigger(&fault),
-                            &field_refs,
-                            started,
-                        );
-                        let _ = completed_tx.send(());
-                    })
-                }));
-                if let Ok(_worker) = worker {
-                    let _ = completed_rx.recv_timeout(EXPORT_TIMEOUT);
-                }
+            let fence_failed_startup = |fault: EpochFault, children: &mut [Child]| {
+                fence_startup_failure(
+                    &evidence,
+                    children,
+                    &fault,
+                    PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+                    &readiness,
+                );
             };
             if create_private_dir(plan.epoch_root()).is_err() {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             if create_private_dir(plan.run_root()).is_err() {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::PrivateRoots as u8, Ordering::Release);
             let resolver_target = match fs::canonicalize("/etc/resolv.conf") {
                 Ok(path) if path.is_file() => path,
                 _ => {
-                    export_before_fence(EpochFault::PartialStart);
-                    terminate_children(&mut children);
+                    fence_failed_startup(EpochFault::PartialStart, &mut children);
                     return Err(EpochFault::PartialStart);
                 }
             };
@@ -1519,10 +1820,10 @@ impl EpochCoordinator {
                     .is_err()
                 || write_private_file(plan.resolver_path(), plan.resolver_contents()).is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::Configuration as u8, Ordering::Release);
 
             let runtime = Handle::current();
 
@@ -1534,8 +1835,7 @@ impl EpochCoordinator {
             )
             .is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             let private_namespaces = match children
@@ -1546,8 +1846,7 @@ impl EpochCoordinator {
                 }) {
                 Ok(descriptor) => descriptor,
                 Err(fault) => {
-                    export_before_fence(fault.clone());
-                    terminate_children(&mut children);
+                    fence_failed_startup(fault.clone(), &mut children);
                     return Err(fault);
                 }
             };
@@ -1555,10 +1854,10 @@ impl EpochCoordinator {
                 .last_mut()
                 .is_some_and(|child| wait_for_socket(child, plan.containerd_socket()));
             if !containerd_ready {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::ContainerdSocket as u8, Ordering::Release);
 
             let slirp_ready = match spawn_member(
                 &mut children,
@@ -1579,10 +1878,10 @@ impl EpochCoordinator {
                 .first_mut()
                 .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
             if !slirp_ready || !containerd_running {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::PrivateNetwork as u8, Ordering::Release);
 
             if spawn_member(
                 &mut children,
@@ -1592,8 +1891,7 @@ impl EpochCoordinator {
             )
             .is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             let dockerd_ready = children.last_mut().is_some_and(|child| {
@@ -1604,10 +1902,10 @@ impl EpochCoordinator {
                 .first_mut()
                 .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
             if !dockerd_ready || !containerd_running {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::DockerSocket as u8, Ordering::Release);
 
             if spawn_member(
                 &mut children,
@@ -1623,16 +1921,14 @@ impl EpochCoordinator {
                     .first_mut()
                     .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             if client
                 .bind_network_namespace(Arc::clone(&private_namespaces.network))
                 .is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
 
@@ -1667,14 +1963,21 @@ impl EpochCoordinator {
                     Ok(Err(fault)) => fault,
                     Err(_) | Ok(Ok(())) => EpochFault::PartialStart,
                 };
-                export_before_fence(fault.clone());
-                terminate_children(&mut children);
+                fence_failed_startup(fault.clone(), &mut children);
                 return Err(fault);
             }
+            readiness.store(ReadinessProof::GatewayHealth as u8, Ordering::Release);
             (runtime, private_namespaces)
         };
 
         let (runtime, private_namespaces) = runtime;
+        // The handle comes from the owned Gateway child after its health proof.
+        let inspection = children.last().and_then(|gateway| {
+            crate::live_inspection::InspectionState::new(physical_epoch.clone(), gateway.id()).ok()
+        });
+        let inspection_server = inspection.as_ref().and_then(|state| {
+            crate::live_inspection::InspectionServer::start(Arc::clone(state)).ok()
+        });
 
         Ok(Self {
             monitor: EpochMemberMonitor::start_with_namespaces(
@@ -1682,7 +1985,10 @@ impl EpochCoordinator {
                 Some(private_namespaces),
                 evidence,
                 PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+                readiness,
+                inspection,
             ),
+            inspection_server,
             runtime,
             client,
             image_store,
@@ -1704,6 +2010,18 @@ impl EpochCoordinator {
     /// Returns the private physical-incarnation witness retained by this coordinator.
     pub fn physical_epoch(&self) -> &str {
         &self.physical_epoch
+    }
+
+    /// Shares only the ephemeral operator observation with native connection carriage.
+    pub(crate) fn inspection_state(&self) -> Option<Arc<crate::live_inspection::InspectionState>> {
+        self.monitor.inspection.clone()
+    }
+
+    /// Records a completed Core acknowledgement for reports, never as readiness authority.
+    pub fn record_readiness_acknowledgement(&self) {
+        self.monitor
+            .readiness
+            .store(ReadinessProof::CoreAcknowledgement as u8, Ordering::Release);
     }
 
     /// Returns the epoch-retained outer route projection for successor rebinding.
@@ -1756,7 +2074,10 @@ impl EpochCoordinator {
                     member_failure,
                     worker: None,
                     harness_tasks: Arc::new(Mutex::new(None)),
+                    readiness: Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
+                    inspection: None,
                 },
+                inspection_server: None,
                 runtime: Handle::current(),
                 client: NanoHostOpenShellClient::new(
                     "http://127.0.0.1:1".into(),
@@ -1779,14 +2100,6 @@ impl EpochCoordinator {
         )
     }
 
-    /// Keeps synthetic epoch members supervised until the test injects their terminal event.
-    #[cfg(test)]
-    pub(crate) fn fixture_member_events(&mut self) -> mpsc::SyncSender<EpochFault> {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        self.monitor.member_failure = receiver;
-        sender
-    }
-
     /// Uses the production invalidation monitor with only fixture-owned report and marker paths.
     #[cfg(test)]
     pub(crate) fn fixture_invalidation_reports(&mut self, root: &Path) -> PathBuf {
@@ -1797,8 +2110,16 @@ impl EpochCoordinator {
             None,
             evidence,
             root.join("fence-started"),
+            Arc::clone(&self.monitor.readiness),
+            self.monitor.inspection.clone(),
         );
         reports
+    }
+
+    /// Injects a fault through the real monitor's report-before-fence path.
+    #[cfg(test)]
+    pub(crate) fn fixture_invalidation_requester(&self) -> mpsc::SyncSender<Option<EpochFault>> {
+        self.monitor.fence.clone()
     }
 
     /// Proves live-epoch identity before the storage owner opens worker-controlled children.
@@ -2513,6 +2834,7 @@ impl EpochCoordinator {
 impl Drop for EpochCoordinator {
     /// Stops the whole epoch before releasing its exact retained storage writer hint.
     fn drop(&mut self) {
+        self.inspection_server.take();
         self.monitor.stop();
         if let Some(sandbox) = self.current_sandbox.take() {
             let _ = self.persistent_volumes.detach(&sandbox.name);
@@ -2520,22 +2842,86 @@ impl Drop for EpochCoordinator {
     }
 }
 
-/// Starts exactly one bounded invalidation export before fencing owned children.
-fn fence_initiated(
-    evidence: &mut EpochEvidenceWriter,
+/// Captures the actually started prefix and enters the existing bounded invalidation fence.
+fn fence_startup_failure(
+    evidence: &EpochEvidenceWriter,
     children: &mut [Child],
     fault: &EpochFault,
     fence_started_path: PathBuf,
+    readiness: &AtomicU8,
 ) {
+    let inventory = children
+        .iter_mut()
+        .enumerate()
+        .map(|(index, child)| MemberInventory::pin(index, child))
+        .collect();
+    fence_initiated(
+        evidence,
+        children,
+        fault,
+        fence_started_path,
+        readiness,
+        inventory,
+    );
+}
+
+/// Invokes the actual startup failure producer with fixture-owned processes and evidence paths.
+#[cfg(test)]
+pub(crate) fn fixture_startup_failure(
+    children: Vec<Child>,
+    root: &Path,
+    fault: EpochFault,
+    before_export: Option<Arc<dyn Fn() + Send + Sync>>,
+) {
+    let mut children = OwnedEpochChildren {
+        children,
+        private_namespaces: None,
+    };
+    let mut evidence = EpochEvidenceWriter::new(root.join("reports")).unwrap();
+    if let Some(hook) = before_export {
+        evidence.before_export(hook);
+    }
+    fence_startup_failure(
+        &evidence,
+        &mut children.children,
+        &fault,
+        root.join("fence-started"),
+        &AtomicU8::new(ReadinessProof::Unavailable as u8),
+    );
+}
+
+/// Starts exactly one bounded invalidation export before fencing owned children.
+fn fence_initiated(
+    evidence: &EpochEvidenceWriter,
+    children: &mut [Child],
+    fault: &EpochFault,
+    fence_started_path: PathBuf,
+    readiness: &AtomicU8,
+    mut inventory: Vec<MemberInventory>,
+) {
+    for (member, child) in inventory.iter_mut().zip(children.iter_mut()) {
+        member.observe_status(child);
+    }
     let mut writer = evidence.clone();
     let fault = fault.clone();
+    let readiness = ReadinessProof::report_value(readiness);
     let (completed_tx, completed_rx) = mpsc::sync_channel(1);
     let fence_started = SystemTime::now();
     let worker = catch_unwind(AssertUnwindSafe(|| {
         thread::spawn(move || {
             let started = Instant::now();
             let _ = record_fence_started_at(&fence_started_path, fence_started);
-            let fields = invalidation_report_fields(&fault);
+            let mut fields = invalidation_report_fields(&fault);
+            fields.push(("readiness", readiness));
+            let mut members = Vec::with_capacity(inventory.len());
+            for member in inventory {
+                #[cfg(test)]
+                let value = member.report(writer.inventory_recheck.as_deref());
+                #[cfg(not(test))]
+                let value = member.report();
+                members.push(value);
+            }
+            fields.push(("members", serde_json::Value::Array(members).to_string()));
             let field_refs = fields
                 .iter()
                 .map(|(name, value)| (*name, value.as_str()))
@@ -3157,6 +3543,10 @@ mod tests {
             member_failure,
             worker: Some(worker),
             harness_tasks,
+            readiness: Arc::new(super::AtomicU8::new(
+                super::ReadinessProof::Unavailable as u8,
+            )),
+            inspection: None,
         }
     }
 
@@ -3397,6 +3787,52 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("short-lived test child")
+    }
+
+    /// Local health does not imply a Core acknowledgement when startup is invalidated.
+    #[test]
+    fn readiness_report_retains_local_proof_before_core_acknowledgement() {
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-readiness-report-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let reports = root.join("reports");
+        let readiness = Arc::new(super::AtomicU8::new(
+            super::ReadinessProof::GatewayHealth as u8,
+        ));
+        let mut monitor = EpochMemberMonitor::start_with_namespaces(
+            Vec::new(),
+            None,
+            EpochEvidenceWriter::new(reports.clone()).unwrap(),
+            root.join("fence-started"),
+            readiness,
+            None,
+        );
+        monitor.invalidate_startup();
+        let artifacts = std::fs::read_dir(&reports)
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0]["trigger"], "epoch-creation-failure");
+        assert_eq!(artifacts[0]["complete"], true);
+        assert_eq!(artifacts[0]["fields"]["fence"], "initiated");
+        assert_eq!(
+            artifacts[0]["fields"]["readiness"],
+            "last_succeeded=gateway-health"
+        );
+        assert!(root.join("fence-started").is_file());
+        drop(monitor);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -5277,7 +5713,24 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("fn invalidation_trigger").next())
             .expect("running invalidation boundary");
-        let all_fences_bounded = [startup_fence, running_fence].into_iter().all(|boundary| {
+        let startup_capture = coordinator
+            .split_once("fn fence_startup_failure(")
+            .and_then(|(_, source)| {
+                source
+                    .split("/// Invokes the actual startup failure producer")
+                    .next()
+            })
+            .expect("startup process capture boundary");
+        // Startup now enters the same fence owner, so check that call boundary
+        // before applying the unchanged hard-bound checks to its sole worker.
+        assert!(startup_fence.contains("fence_startup_failure("));
+        assert!(!startup_fence.contains("terminate_children("));
+        assert!(startup_capture.contains("MemberInventory::pin"));
+        assert!(startup_capture.contains("fence_initiated("));
+        assert!(!startup_capture.contains("terminate_children("));
+        assert!(!startup_capture.contains("thread::spawn"));
+        assert_eq!(running_fence.matches("export_invalidation(").count(), 1);
+        let all_fences_bounded = [running_fence].into_iter().all(|boundary| {
             let worker = boundary.find("thread::spawn(move || {");
             let worker_body = worker.and_then(|worker| {
                 boundary[worker..]
