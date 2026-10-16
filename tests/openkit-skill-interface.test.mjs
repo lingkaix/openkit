@@ -1987,6 +1987,8 @@ test('Artifact CLI transfers import and download originals through the bundled c
   const sourcePath = join(root, 'source.bin');
   const destinationPath = join(root, 'original.bin');
   writeFileSync(sourcePath, bytes);
+  const workspaceId = protocol.allocateEntityId('ws');
+  const artifactId = protocol.allocateEntityId('ar');
   const env = {
     OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456',
     OPENKIT_NANOCORE_TOKEN: 'okt_artifact_fixture',
@@ -2002,7 +2004,7 @@ test('Artifact CLI transfers import and download originals through the bundled c
         if (headers.get('x-openkit-request-id') !== 'cli-raw-import') throw new Error('request identity changed');
         const body = Buffer.from(await new Response(options.body).arrayBuffer());
         if (!body.equals(Buffer.from('${bytes.toString('hex')}', 'hex'))) throw new Error('original changed');
-        return Response.json({ artifactId: 'ar_cli', artifactVersion: 1 }, { status: 201 });
+        return Response.json({ artifactId: '${artifactId}', artifactVersion: 1 }, { status: 201 });
       }
       if (parsed.pathname !== '/api/app/operations/artifact.download' || options.method !== 'GET') throw new Error('unexpected download');
       if (parsed.searchParams.get('artifactVersion') !== '1' || parsed.searchParams.has('requestId')) throw new Error('selector changed');
@@ -2013,7 +2015,7 @@ test('Artifact CLI transfers import and download originals through the bundled c
     ['ops', 'call', 'artifact.import', '--input', '-'],
     env,
     JSON.stringify({
-      workspaceId: 'ws_demo',
+      workspaceId,
       requestId: 'cli-raw-import',
       title: 'Original',
       mediaType: 'application/octet-stream',
@@ -2024,13 +2026,13 @@ test('Artifact CLI transfers import and download originals through the bundled c
     [fetchModule]
   );
   assert.equal(uploaded.code, 0, uploaded.stdout + uploaded.stderr);
-  assert.deepEqual(JSON.parse(uploaded.stdout).data, { artifactId: 'ar_cli', artifactVersion: 1 });
+  assert.deepEqual(JSON.parse(uploaded.stdout).data, { artifactId, artifactVersion: 1 });
   const downloaded = await runCli(
     ['ops', 'call', 'artifact.download', '--input', '-'],
     env,
     JSON.stringify({
-      workspaceId: 'ws_demo',
-      artifactId: 'ar_cli',
+      workspaceId,
+      artifactId,
       artifactVersion: 1,
       destinationPath,
     }),
@@ -2062,15 +2064,17 @@ test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local
   assert.equal(upload.clientMethod, 'artifactFiles.import');
   assert.equal(download.clientMethod, 'artifactFiles.download');
   assert.equal(download.mutating, true, 'writing the destination is a local mutation');
+  const workspaceId = protocol.allocateEntityId('ws');
+  const artifactId = protocol.allocateEntityId('ar');
   const metadata = {
-    workspaceId: 'ws_demo',
+    workspaceId,
     requestId: 'artifact-cli-import',
     title: 'Exact binary',
     mediaType: 'application/octet-stream',
     byteLength: original.size,
     contentDigest: original.sha256,
   };
-  const selector = { workspaceId: 'ws_demo', artifactId: 'ar_binary', artifactVersion: 1 };
+  const selector = { workspaceId, artifactId, artifactVersion: 1 };
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
     fetch: async (input, init) => {
@@ -2108,7 +2112,7 @@ test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local
   assert.equal(Object.hasOwn(client.operations, 'artifact.download'), false);
   assert.deepEqual(
     await upload.handler({ client }, upload.inputSchema.parse({ ...metadata, sourcePath })),
-    { artifactId: 'ar_binary', artifactVersion: 1 }
+    { artifactId, artifactVersion: 1 }
   );
   assert.deepEqual(
     await download.handler(
