@@ -468,3 +468,5 @@ New API-key Provider profiles allocate one canonical Vault reference through the
 The Web end-to-end suite runs with one worker to keep the shared development machine within its test resource bound. The root test:e2e:web command builds and runs the complete suite.
 
 The local Web E2E simulator image fixture reuses its recorded Artifact identity for the same request and allocates canonical ar UUIDv7 only for a new settlement.
+
+The Notebook history panel offers one-page editing from a complete current-authorized diff. The Page text/Markdown editor preserves exact current text, previews current-to-edited bytes, and submits a fixed-base `knowledge.notebook.update` command through the composed Core Client. Page and summary limits are 2 MiB and 4 KiB in UTF-8, with no clipping. An unknown result keeps only the saved request available for retry; a conflict needs explicit current-history inspection before another edit. Workspace changes, unavailable history and direct access denial hide the editor and its bytes. Publication refreshes Knowledge, indexes, attention and history; native OKF, Source and schema validation remain authoritative.
