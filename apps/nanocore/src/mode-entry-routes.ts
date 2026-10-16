@@ -3465,7 +3465,11 @@ export function createConversationService({
           contextRefs: [
             { kind: 'workspace', id: workspaceId },
             { kind: 'thread', id: receivingThreadId },
-            ...artifacts.map((artifact) => ({ kind: 'artifact' as const, id: artifact.id })),
+            ...artifacts.map((artifact) => ({
+              kind: 'artifact' as const,
+              id: artifact.id,
+              artifactVersion: artifact.version,
+            })),
           ],
           resources: artifacts.map((artifact) => ({
             kind: 'artifact',

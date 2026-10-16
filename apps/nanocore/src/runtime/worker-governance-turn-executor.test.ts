@@ -72,6 +72,7 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
+import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -7928,6 +7929,114 @@ describe('WorkerGovernanceTurnExecutor', () => {
           fixture.turn.id
         )
       ).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('snapshots only explicitly selected Artifact versions with bounded delivered text', async () => {
+    const fixture = await createWorkerContextExecutorFixture('selected-artifact');
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    const admission = new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n);
+    const original = 'Selected original text. '.repeat(300);
+    const recordedAt = '2026-10-17T00:00:00.000Z';
+    const makeArtifact = (id: string, body: string) =>
+      withCanonicalFileWriteAdmission(admission, () =>
+        fixture.store.createArtifact({
+          id,
+          workspaceId: fixture.turn.workspaceId,
+          threadId: null,
+          turnId: null,
+          kind: 'file',
+          title: id,
+          status: 'ready',
+          summary: null,
+          version: 1,
+          content: { format: 'text', body },
+          contentDigest: turnRuntimeSha256(Buffer.from(body, 'utf8')),
+          lastMutationRequestId: id,
+          origin: {
+            kind: 'imported',
+            sourceKind: 'direct-import',
+            sourceId: id,
+            sourceDigest: turnRuntimeSha256(Buffer.from(body, 'utf8')),
+            actor: { kind: 'user', id: LOCAL_USER_ID },
+            requestId: id,
+            recordedAt,
+          },
+          createdAt: recordedAt,
+          updatedAt: recordedAt,
+        })
+      );
+    const selected = makeArtifact('ar_context_selected', original);
+    makeArtifact('ar_context_unselected', 'UNSELECTED PRIVATE MARKER');
+    const request = JSON.parse(fixture.workerRequest);
+    request.contextRefs.push({
+      kind: 'artifact',
+      id: selected.id,
+      artifactVersion: selected.version,
+    });
+    try {
+      const prepared = await prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(
+          workspaceDb,
+          fixture.turn.workspaceId,
+          fixture.turn.threadId,
+          fixture.turn.id
+        )!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: JSON.stringify(request),
+          workspaceId: fixture.turn.workspaceId,
+        },
+        admission
+      );
+      const sources = prepared.packageFiles.sourceFiles?.filter(
+        (source) => source.source.kind === 'artifact'
+      );
+      expect(sources).toHaveLength(1);
+      expect(sources![0]).toMatchObject({
+        source: { artifactVersion: 1, reference: { objectId: selected.id } },
+        originalDigest: selected.contentDigest,
+        byteLength: Buffer.byteLength(original),
+        projection: { kind: 'excerpt', byteLength: 2_048, truncated: true },
+      });
+      expect(
+        readFileSync(join(fixture.packageRoot, sources![0]!.originalSnapshotPath), 'utf8')
+      ).toBe(original);
+      expect(readFileSync(join(fixture.packageRoot, sources![0]!.packagePath), 'utf8')).toBe(
+        original.slice(0, 2_048)
+      );
+      request.contextRefs[1].artifactVersion = 2;
+      await expect(
+        prepareWorkerTurnContextPackage(
+          fixture.coreDb,
+          workspaceDb,
+          fixture.store,
+          getWorkerCheckpoint(
+            workspaceDb,
+            fixture.turn.workspaceId,
+            fixture.turn.threadId,
+            fixture.turn.id
+          )!,
+          {
+            agentSessionId: fixture.agentSessionId,
+            requestId: fixture.requestId,
+            threadId: fixture.turn.threadId,
+            turnId: fixture.turn.id,
+            workerRequest: JSON.stringify(request),
+            workspaceId: fixture.turn.workspaceId,
+          },
+          admission
+        )
+      ).rejects.toThrow('Artifact');
     } finally {
       workspaceDb.sqlite.close();
       fixture.coreDb.sqlite.close();

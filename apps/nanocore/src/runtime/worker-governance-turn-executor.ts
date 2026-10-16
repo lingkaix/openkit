@@ -24,8 +24,9 @@ import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { isThreadVisible } from '../auth/thread-visibility.js';
+import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import { prepareMaterialSourceInput } from '../context/material-source-files.js';
 import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
@@ -433,8 +434,37 @@ export async function prepareWorkerTurnContextPackage(
 
   const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
   const originalInputs = structuredClone(turn.fileInputs ?? []);
+  // Only request selectors and explicitly requested Artifact-reference Items select originals.
+  const artifactRefs = [
+    ...workerRequest.requestedArtifactRefs,
+    ...includedPriorItems.flatMap((item) =>
+      item.type === 'artifact-reference'
+        ? [{ artifactId: item.artifactId, artifactVersion: item.artifactVersion }]
+        : []
+    ),
+  ];
+  const selectedArtifacts = new Map<string, ReturnType<FsStore['getArtifact']>>();
+  for (const reference of artifactRefs) {
+    let artifact: ReturnType<FsStore['getArtifact']>;
+    try {
+      artifact = store.getArtifact(input.workspaceId, reference.artifactId);
+    } catch {
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Selected Artifact is unavailable.',
+        503
+      );
+    }
+    if (reference.artifactVersion !== undefined && reference.artifactVersion !== artifact.version)
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Selected Artifact version is unavailable.',
+        503
+      );
+    selectedArtifacts.set(artifact.id, structuredClone(artifact));
+  }
   const assertCurrentSources = () => {
-    if (!originalInputs.length && !materialSelections.length) return;
+    if (!originalInputs.length && !materialSelections.length && !selectedArtifacts.size) return;
     if (!coreDb)
       throw new TurnStartValidationError(
         'source_unavailable',
@@ -461,6 +491,34 @@ export async function prepareWorkerTurnContextPackage(
         503
       );
   };
+  const assertCurrentArtifact = (artifact: Readonly<ReturnType<FsStore['getArtifact']>>) => {
+    assertCurrentSources();
+    const current = store.getArtifact(input.workspaceId, artifact.id);
+    const sourceAdmission = findSchedulerAdmissionForTurn(coreDb!, input)!;
+    const destination = store.getThread(input.workspaceId, input.threadId);
+    const sourceThread =
+      current.origin.kind === 'imported'
+        ? null
+        : store.getThread(input.workspaceId, current.origin.threadId);
+    if (
+      current.status !== 'ready' ||
+      !isDeepStrictEqual(current, artifact) ||
+      !isArtifactVisible(
+        store,
+        current,
+        responsibleUserIdForActor(sourceAdmission.triggerActor) ?? undefined,
+        sourceAdmission.serverAdminTokenId !== null
+      ) ||
+      (sourceThread?.visibility === 'private' &&
+        (destination.visibility !== 'private' ||
+          destination.privateOwnerUserId !== sourceThread.privateOwnerUserId))
+    )
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Current Artifact source audience is unavailable.',
+        503
+      );
+  };
   let sourceFiles: WorkerContextPackageSourceFileInput[];
   try {
     sourceFiles = await prepareTurnFileSourceInputs({
@@ -468,6 +526,13 @@ export async function prepareWorkerTurnContextPackage(
       turn,
       assertCurrent: assertCurrentSources,
     });
+    sourceFiles.push(
+      ...(await prepareArtifactSourceInputs({
+        workspaceRoot,
+        artifacts: [...selectedArtifacts.values()],
+        assertCurrent: assertCurrentArtifact,
+      }))
+    );
     for (const [index, selection] of materialSelections.entries()) {
       const assertCurrentMaterial = () => {
         assertCurrentSources();
@@ -495,7 +560,7 @@ export async function prepareWorkerTurnContextPackage(
     if (error instanceof TurnStartValidationError) throw error;
     const refusal = new TurnStartValidationError(
       'source_unavailable',
-      'Turn input originals are unavailable.',
+      'Selected source originals are unavailable.',
       503
     );
     refusal.cause = error;
@@ -524,6 +589,7 @@ export async function prepareWorkerTurnContextPackage(
   );
   await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
   assertCurrentSources();
+  for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);
   return {
     checkpoint,
     requestId: input.requestId,
