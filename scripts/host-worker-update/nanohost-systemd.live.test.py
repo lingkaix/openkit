@@ -47,10 +47,19 @@ def write(path, data, mode=0o644):
     path.chmod(mode)
 
 
-def command(argv, timeout=15):
+def command(argv, timeout=15, *, cgroup=None):
     """Bound a fixed fixture command; its output is never a public diagnostic."""
+    def enter_owned_group():
+        """Move before exec so namespace-local scope migration and cleanup are contained."""
+        fd = os.open(cgroup / "cgroup.procs", os.O_WRONLY | os.O_CLOEXEC)
+        try:
+            need(os.write(fd, b"0") == 1, "observer_cgroup_move_incomplete")
+        finally:
+            os.close(fd)
+
     child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, env=ENV, start_new_session=True)
+                             stderr=subprocess.PIPE, env=ENV, start_new_session=True,
+                             preexec_fn=enter_owned_group if cgroup is not None else None)
     try:
         stdout, stderr = child.communicate(timeout=timeout)
         return subprocess.CompletedProcess(argv, child.returncode, stdout, stderr)
@@ -428,8 +437,11 @@ class PrivateManager:
         """Enter only the observed private manager's namespaces and filesystem root."""
         current = self.group.stat()
         need((current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino), "owned_cgroup_substituted")
+        observer = self.group / "openkit-fixture-observer"
+        observer.mkdir(exist_ok=True)
         return command(["/usr/bin/nsenter", "--target", str(self.pid), "--user", "--preserve-credentials",
-                        "--mount", "--pid", "--net", "--uts", "--cgroup", "--root", "--wdns=/", "--", *argv], timeout=timeout)
+                        "--mount", "--pid", "--net", "--uts", "--cgroup", "--root", "--wdns=/", "--", *argv],
+                       timeout=timeout, cgroup=observer)
 
     def phase(self, name, case):
         """Require a terminal structured observation from the actual namespaced recipe."""
