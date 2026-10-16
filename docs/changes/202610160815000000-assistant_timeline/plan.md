@@ -20,7 +20,7 @@ The engineer assigned lane L-AK the P19, P20 and P26 packages on 2026-10-16, in 
 
 The branch implements singleton private Timeline admission, the ordinary personal Workspace one-way metadata migration, stateless entry retirement, governed history search/range reads and shared source-bound rolling context. Assistant command/pending continuation, private administration and Goal Coordinator use the same assembler and ordinary Provider path. Exact canonical history remains retained. Focused regressions prove bounded batches, restart, current source/audience enforcement, shared budgets, real Gateway accounting and archive portability. The external checkpoint records exact named commands and observed results.
 
-P19 now includes the complete fixed ordinary Tool set, exact human-selected Task/Goal handoffs, immutable receiving-Thread lineage and shared source-proof verification for dispatch/restart/closeout. The retired keyword classifier is removed. P19 feature implementation and focused owner-suite reconciliation are complete; landing gates remain required. Generated OpenAPI and CLI stay deferred to the landing window. Train 3 has landed on main; the lane still needs integration in its landing window. No host acceptance or release publication is authorized.
+P19 now includes the complete fixed ordinary Tool set, exact human-selected Task/Goal handoffs, immutable receiving-Thread lineage and shared source-proof verification for dispatch/restart/closeout. The retired keyword classifier is removed. P19 feature implementation and focused owner-suite reconciliation are complete. The branch holds the landing window, includes current main through a1f2c6b8, and has regenerated OpenAPI, protocol schemas and bundled CLI. Full affected suites, repository gates, independent exact-head review and full CI remain required. No host acceptance or release publication is authorized.
 
 ## Seam And Evidence
 
@@ -28,7 +28,7 @@ The first seam joins public thread.create to canonical Thread storage and restar
 
 ## Next Action
 
-The independent full mode-entry suite passed124cases and current NanoCore typecheck passed. Preserve the exact queued/terminal source tuple without synthetic receipts. The coordinator approved the larger required import extension and required its proof/remint/digest logic to move to workspace-import-assistant-history.ts; that move is complete and real archive round-trip, restart/reuse and corrupt-proof tests still pass. Owner/manual alignment and focused evidence are reviewed. Commit the feature and acquire the landing window for main integration, generation, gates, review and CI.
+The independent full mode-entry suite passed124cases and pre-integration NanoCore typecheck passed. Preserve the exact queued/terminal source tuple without synthetic receipts. The coordinator approved the larger required import extension and required its proof/remint/digest logic to move to workspace-import-assistant-history.ts; that move is complete and real archive round-trip, restart/reuse and corrupt-proof tests still pass. Complete the post-integration gates and independent exact-head review, then run full CI and land through the lane script.
 
 ## Intent Revision 2
 
