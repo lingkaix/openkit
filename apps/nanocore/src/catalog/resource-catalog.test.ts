@@ -423,6 +423,9 @@ describe('workspace resource catalog', () => {
         tree,
         workspaceId: 'ws_demo',
       });
+      const path = catalogDocumentPath(dataRoot, 'ws_demo');
+      const retained = annotateCatalogHistory(original.catalog);
+      writeFileSync(path, JSON.stringify(retained));
       const repeated = importWorkspaceSkill({
         activate: false,
         createdAt: '2026-09-08T00:01:00.000Z',
@@ -440,6 +443,10 @@ describe('workspace resource catalog', () => {
       expect(reopened.skills.versions).toEqual([original.version]);
       expect(reopened.skills.entries[0]?.currentDigest).toBe(original.version.digest);
       expect(reopened.skills.candidates).toEqual([]);
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+        ...(retained as object),
+        revision: repeated.catalog.revision,
+      });
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }

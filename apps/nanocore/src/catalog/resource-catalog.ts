@@ -164,6 +164,7 @@ export function publishWorkspaceResourceCatalog(input: {
 
 /**
  * Imports one Skill directory as an inactive-or-current version depending on create semantics.
+ * Reuses immutable metadata for identical bytes; provenance describes only the first admission.
  *
  * @param input Workspace, identity, and tree.
  * @returns Updated catalog and version.
@@ -171,13 +172,17 @@ export function publishWorkspaceResourceCatalog(input: {
 export function importWorkspaceSkill(input: {
   readonly activate: boolean;
   readonly baseCatalog?: ResourceCatalogDocument;
+  readonly baseDigest?: string | null;
   readonly createdAt: string;
   readonly dataRoot: string;
   readonly displayName: string;
   readonly expectedRevision: number;
   readonly id?: string;
   readonly persist?: boolean;
+  readonly pluginMemberKey?: string | null;
+  readonly pluginVersionDigest?: string | null;
   readonly producer: CatalogProducer;
+  readonly sourceSubpath?: string | null;
   readonly tree: readonly CatalogTreeFile[];
   readonly workspaceId: string;
 }): { catalog: ResourceCatalogDocument; version: SkillVersionRecord } {
@@ -191,7 +196,10 @@ export function importWorkspaceSkill(input: {
     join(layout.catalogSkillSnapshots, id, digest.slice('sha256:'.length)),
     entries
   );
-  const version: SkillVersionRecord = {
+  const retainedVersion = current.skills.versions.find(
+    (item) => item.entryId === id && item.digest === digest
+  );
+  const version: SkillVersionRecord = retainedVersion ?? {
     createdAt: input.createdAt,
     digest,
     digestFormat: 'openkit-tree-v1',
@@ -199,11 +207,11 @@ export function importWorkspaceSkill(input: {
     inventory: inventoryFromEntries(entries),
     producer: input.producer,
     provenance: {
-      baseDigest: null,
-      pluginMemberKey: null,
-      pluginVersionDigest: null,
+      baseDigest: input.baseDigest ?? null,
+      pluginMemberKey: input.pluginMemberKey ?? null,
+      pluginVersionDigest: input.pluginVersionDigest ?? null,
       sourceCommit: null,
-      sourceSubpath: null,
+      sourceSubpath: input.sourceSubpath ?? null,
       uploadedSourceId: null,
     },
     publisherVersion: null,
@@ -229,9 +237,7 @@ export function importWorkspaceSkill(input: {
           id,
         },
       ];
-  const versions = current.skills.versions.some(
-    (item) => item.entryId === id && item.digest === digest
-  )
+  const versions = retainedVersion
     ? current.skills.versions
     : [...current.skills.versions, version];
   const nextCatalog = parseResourceCatalogDocument({
@@ -247,7 +253,11 @@ export function importWorkspaceSkill(input: {
     expectedRevision: input.expectedRevision,
     workspaceId: input.workspaceId,
   });
-  return { catalog, version };
+  // Public results use the known-field projection; retained annotations stay in catalog storage.
+  return {
+    catalog,
+    version: catalog.skills.versions.find((item) => item.entryId === id && item.digest === digest)!,
+  };
 }
 
 /** Submits a Skill candidate without changing the current pointer. */
@@ -269,6 +279,7 @@ export function submitWorkspaceSkillCandidate(input: {
   }
   const { version } = importWorkspaceSkill({
     activate: false,
+    baseDigest: input.baseDigest,
     createdAt: input.createdAt,
     dataRoot: input.dataRoot,
     displayName: entry.displayName,
@@ -665,7 +676,10 @@ export function importWorkspacePlugin(input: {
       expectedRevision: input.expectedRevision,
       id: skill.id,
       persist: false,
+      pluginMemberKey: skill.packageKey,
+      pluginVersionDigest: packageTree.digest,
       producer: input.producer,
+      sourceSubpath: skill.packageKey,
       tree: skill.tree,
       workspaceId: input.workspaceId,
     });

@@ -5,7 +5,7 @@ This directory owns the existing scoped catalog records and immutable installed 
 ## Boundaries
 
 - `resource-catalog.ts` validates retained catalog authority, admits complete bounded trees and publishes one revision-protected catalog document. Exact version digests identify installed bytes; producer and source provenance explain their origin without granting current access.
-- Skill versions retain their original PluginVersion membership and candidate base. Reusing identical content in one entry returns its existing immutable version facts; later imports do not rewrite those facts. Plugin membership remains with the exact PluginVersion record.
+- Skill admission records the original package digest, member key and source subpath, or the exact base digest for an independent candidate. Reusing identical content in one entry returns its existing immutable version facts; later imports do not rewrite those facts or the original PluginVersion membership. Retained descriptive annotations remain in storage and do not enter public results.
 - `catalog-operations.ts` joins the shared Operation Definitions to these native owners. Current read, write and configuration authority, command receipts and Audit retain their existing owners.
 - `catalog-portability.ts` preserves installed bytes and historical lineage through the existing Workspace portability boundary. Imported historical selection or review evidence grants no target authority.
 - Runtime setup and AEP resolve exact versions before materialization. Catalog mutation does not change files in an admitted AgentSession or prove real Worker consumption.
