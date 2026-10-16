@@ -1181,7 +1181,8 @@ class FakeTurnExecutor implements TurnExecutor {
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
     const assistantItem = store.createItem({
-      id: deriveEntityId('it', ['worker-result', turnId]),
+      // Match the simulator; worker-result belongs to the conversation status Item.
+      id: deriveEntityId('it', ['assistant', turnId]),
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId,
@@ -5450,13 +5451,13 @@ describe('nanocore server', () => {
         })
       ).toEqual([expect.objectContaining({ workerStorageChoice: admittedWorkerStorageChoice })]);
       expect(parsed.completion).toEqual({
-        itemId: deriveEntityId('it', ['worker-result', parsed.turn.id]),
+        itemId: deriveEntityId('it', ['assistant', parsed.turn.id]),
         text: 'Completed by fake executor.',
       });
       expect(parsed.evidence).toEqual({
         itemIds: [
           deriveEntityId('it', ['task-user', parsed.turn.id]),
-          deriveEntityId('it', ['worker-result', parsed.turn.id]),
+          deriveEntityId('it', ['assistant', parsed.turn.id]),
         ],
         artifactIds: [],
         reviewIds: [],
