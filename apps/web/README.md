@@ -446,3 +446,9 @@ Vitest uses the shared [per-run temporary-directory setup](../../tests/support/v
 ### Shared MCP configuration
 
 Settings **Shared MCP** projects the current administrator-only Server catalog through typed operations. New HTTP or stdio configurations start disabled. Immutable version staging and selection, explicit tool/schema policy, exact Vault grant binding replacement and retained-history removal use the catalog and binding revisions from the current read. No upstream connection occurs in this configuration screen; material entry and grant administration remain in Vault. A conflict keeps the draft, unknown outcomes require explicit current-state reload, and current denial hides cached configuration. Workspace Catalog has a separate redacted shared-supply panel; its disable/restore affects only that Workspace and explains retained same-id local collisions. The panel never edits Server configuration. Focused checks are `src/screens/settings/SharedMcpScreen.test.tsx` and `src/screens/workspace/SharedMcpPanel.test.tsx` through the installed Vitest command with one worker.
+
+New API-key Provider profiles allocate one canonical Vault reference through the browser-safe Protocol codec. The form retains that candidate across a failed create retry and stores it in the authored Provider file; reads and key rotation use the recorded reference.
+
+The Web end-to-end suite runs with one worker to keep the shared development machine within its test resource bound. The root test:e2e:web command builds and runs the complete suite.
+
+The local Web E2E simulator image fixture reuses its recorded Artifact identity for the same request and allocates canonical ar UUIDv7 only for a new settlement.

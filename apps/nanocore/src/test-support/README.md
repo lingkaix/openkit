@@ -42,3 +42,9 @@ Simulated and metadata-only consumers may explicitly install `withTestPreparedNa
 The HTTP MCP fixture exposes server-observed header snapshots for exact bearer and raw-header replacement assertions. These observations contain only synthetic test canaries and stay fixture-local.
 
 `recordTestAgentEnvironmentPackage` accepts an explicit Core database when the test exercises a storage or physical runtime consumer. Use the same Core owner as the Workspace and executor so the package retains that data root's deployment and admission facts; its standalone default remains for package-only fixtures.
+
+`local-user.ts` explicitly seeds a canonical fixture User for tests that assert exact identity bytes, then invokes the production recorded-User owner. Local identity lifecycle tests use the production initializer directly. The fixture supplies no production default or alternate identifier mechanism.
+
+`createAppWithLocalIdentity` supplies only the explicit local fixture identity when a test has no Core database. Tests of production runtime or configuration defaults use it without simulated-provider or environment injection. Existing Core and server authority remain caller-owned.
+
+`entity-ids.ts` allocates shared-codec IDs once for process-local fixture keys. Setup and assertions share those exact allocations. It declares no owner derivation and supplies no cross-process replay authority; process-boundary tests pass the recorded IDs explicitly.

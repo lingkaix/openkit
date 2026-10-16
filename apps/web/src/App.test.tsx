@@ -20,7 +20,7 @@ import { useWorkspaceStore } from './screens/workspace-store';
  */
 function makeClient(
   metaOk: boolean,
-  workspaces = [{ id: 'ws1', name: 'Market research' }]
+  workspaces = [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }]
 ): CoreClient {
   return {
     core: {
@@ -60,7 +60,7 @@ function makeClient(
             workspace,
             isOwner: true,
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -72,7 +72,7 @@ function makeClient(
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           })
@@ -238,8 +238,8 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     const user = userEvent.setup();
     await renderAt('/', {
       workspaces: [
-        { id: 'ws_authorized', name: 'Authoritative Workspace' },
-        { id: 'ws_other', name: 'Other Workspace' },
+        { id: 'ws_00000000-0000-703e-a6be-9a9f8ac8f52c', name: 'Authoritative Workspace' },
+        { id: 'ws_00000000-0000-71f5-922f-6fd42f52f580', name: 'Other Workspace' },
       ],
     });
 
@@ -286,7 +286,9 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Authoritative Workspace' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Other Workspace' }));
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws_other');
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(
+      'ws_00000000-0000-71f5-922f-6fd42f52f580'
+    );
     expect(await screen.findByRole('button', { name: 'Other Workspace' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page');
     await user.click(screen.getByRole('button', { name: 'Account' }));

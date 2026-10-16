@@ -4,17 +4,17 @@
   "properties": {
     "id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
     "workspaceId": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
     "threadId": {
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -25,7 +25,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -105,11 +105,11 @@
             },
             "threadId": {
               "type": "string",
-              "minLength": 1
+              "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
             },
             "turnId": {
               "type": "string",
-              "minLength": 1
+              "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
             },
             "requestId": {
               "type": "string",
@@ -154,7 +154,7 @@
                     },
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     }
                   },
                   "required": [
@@ -170,7 +170,6 @@
                       "type": "string",
                       "enum": [
                         "agent",
-                        "automation",
                         "integration",
                         "system"
                       ]
@@ -183,7 +182,37 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id",
+                    "responsibleUserId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "automation"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "responsibleUserId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"

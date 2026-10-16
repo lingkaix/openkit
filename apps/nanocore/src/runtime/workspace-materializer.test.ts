@@ -3,6 +3,7 @@ import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -13,15 +14,20 @@ import {
 describe('workspace materializer records', () => {
   it('builds product-safe input snapshots from an Agent Environment Package', () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Update docs',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'session_1',
+      agentSessionId: testEntityId('as', 'session_1'),
       triggerActor: turn.triggerActor,
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
       backend: {
         kind: 'openshell',
       },
@@ -83,16 +89,21 @@ describe('workspace materializer records', () => {
 
   it('builds the exact S39 context handoff without changing generated near misses', () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Use the accepted context package', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Use the accepted context package',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const packageRootDigest = `sha256:${'a'.repeat(64)}`;
     const environmentPackage = resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'session_context_1',
+      agentSessionId: testEntityId('as', 'session_context_1'),
       triggerActor: turn.triggerActor,
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
       backend: {
         kind: 'openshell',
       },
@@ -162,7 +173,7 @@ describe('workspace materializer records', () => {
       resourceId: `context_${turn.id}`,
       resourceKind: 'filesystem',
       strategy: 'filesystem',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       writableRoots: [],
     });
     expect(nearMissSnapshot).toMatchObject({
@@ -202,7 +213,7 @@ describe('workspace materializer records', () => {
       packageSnapshotId: environmentPackage.snapshotId,
       strategy: 'filesystem',
       workerSessionId: 'backend_session_context_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(records[0]).not.toHaveProperty('sourceId');
     expect(records[1]).toMatchObject({
@@ -214,15 +225,20 @@ describe('workspace materializer records', () => {
 
   it('carries catalog source ids into workspace lineage records', () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs from catalog source', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Update docs from catalog source',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'session_source_1',
+      agentSessionId: testEntityId('as', 'session_source_1'),
       triggerActor: turn.triggerActor,
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
       backend: {
         kind: 'openshell',
       },
@@ -297,7 +313,7 @@ describe('workspace materializer records', () => {
         resourceId: 'repo',
         resourceKind: 'git_repository',
         strategy: 'git',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         writableRoots: ['repo'],
       },
     ] as const;
@@ -350,7 +366,7 @@ describe('workspace materializer records', () => {
       id: 'wcs_1',
       materializationRecordId: 'wmr_1',
       inputSnapshotId: 'wis_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       resourceId: 'repo',
       strategy: 'git',
       base: { commit: 'abc123', contentDigest: null },
@@ -358,7 +374,7 @@ describe('workspace materializer records', () => {
       changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
       patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
       bundle: null,
-      artifactIds: ['ar_patch'],
+      artifactIds: ['ar_00000000-0000-7f26-8292-8ac950dddeba'],
       evidenceRefs: [{ kind: 'test', ref: 'ev_test' }],
       redaction: { status: 'redacted', notes: [] },
       createdAt: '2026-06-27T01:00:00.000Z',

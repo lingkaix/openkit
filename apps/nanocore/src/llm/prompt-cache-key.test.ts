@@ -80,8 +80,8 @@ describe('PromptCacheKeyResolver', () => {
         metadata: {
           openkit: {
             promptCacheKey: 'metadata-key',
-            workspaceId: 'ws_1',
-            threadId: 'th_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
           },
         },
       })
@@ -101,8 +101,8 @@ describe('PromptCacheKeyResolver', () => {
       responsesRequest({
         metadata: {
           openkit: {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             agentSessionId: 'session_demo',
           },
         },
@@ -113,8 +113,8 @@ describe('PromptCacheKeyResolver', () => {
       responsesRequest({
         metadata: {
           openkit: {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             agentSessionId: 'session_demo',
           },
         },
@@ -139,8 +139,8 @@ describe('PromptCacheKeyResolver', () => {
         responsesRequest({ model: index === 1 ? 'gpt-5.2' : 'gpt-5.1' }),
         {
           agentSessionId: 'session_demo',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         }
       )
     );
@@ -174,7 +174,7 @@ describe('PromptCacheKeyResolver', () => {
         metadata: {
           openkit: {
             promptCacheKey: 'chat-metadata-key',
-            workspaceId: 'ws_chat',
+            workspaceId: 'ws_00000000-0000-7308-ad05-7997f99b7505',
           },
         },
       })
@@ -185,7 +185,7 @@ describe('PromptCacheKeyResolver', () => {
         metadata: {
           openkit: {
             sessionId: 'session_chat',
-            workspaceId: 'ws_chat',
+            workspaceId: 'ws_00000000-0000-7308-ad05-7997f99b7505',
           },
         },
       })
@@ -194,7 +194,7 @@ describe('PromptCacheKeyResolver', () => {
     expect(explicit.prompt_cache_key).toBe('chat-client-key');
     expect(metadata.prompt_cache_key).toBe('chat-metadata-key');
     expect(derived.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
-    expect(derived.prompt_cache_key).not.toContain('ws_chat');
+    expect(derived.prompt_cache_key).not.toContain('ws_00000000-0000-7308-ad05-7997f99b7505');
   });
 });
 
@@ -216,7 +216,7 @@ describe('resolveWorkerPromptCacheKey', () => {
     providerId: 'openai_codex',
     runtimeFamily: 'codex',
     subscriptionProviderId: 'openai-codex' as const,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 
   it('keeps the same explicit native lineage stable', () => {
@@ -257,7 +257,7 @@ describe('resolveWorkerPromptCacheKey', () => {
     ['subscription provider', { subscriptionProviderId: 'xai' as const }],
     ['account', { accountSlotId: 'team_b' }],
     ['model', { model: 'gpt-5.2' }],
-    ['workspace', { workspaceId: 'ws_other' }],
+    ['workspace', { workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' }],
   ])('isolates %s identity', (_label, override) => {
     const baseline = resolveSubscriptionWorkerPromptCacheKey(input);
     const isolated = resolveSubscriptionWorkerPromptCacheKey({ ...input, ...override });

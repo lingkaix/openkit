@@ -1,4 +1,4 @@
-import { WorkspaceIdSchema } from '@openkit/protocol';
+import { InvitationIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 import {
@@ -87,7 +87,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'Accept the addressed invitation for its invitee.',
     inputSchema: AcceptWorkspaceInvitationRequestSchema.safeExtend({
-      invitationId: z.string().min(1),
+      invitationId: InvitationIdSchema,
     }),
     outputSchema: WorkspaceInvitationMutationResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
@@ -103,7 +103,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'Decline the addressed invitation for its invitee.',
     inputSchema: DeclineWorkspaceInvitationRequestSchema.safeExtend({
-      invitationId: z.string().min(1),
+      invitationId: InvitationIdSchema,
     }),
     outputSchema: WorkspaceInvitationMutationResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
@@ -120,7 +120,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     description: 'Revoke a pending Workspace invitation.',
     inputSchema: RevokeWorkspaceInvitationRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      invitationId: z.string().min(1),
+      invitationId: InvitationIdSchema,
     }),
     outputSchema: WorkspaceInvitationMutationResponseSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
@@ -136,7 +136,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     description: 'Remove a member from the Workspace.',
     inputSchema: RemoveWorkspaceMemberRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      targetUserId: z.string().min(1),
+      targetUserId: UserIdSchema,
     }),
     outputSchema: WorkspaceMemberMutationResponseSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
@@ -206,7 +206,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Disable a canonical user and revoke their live access.',
-    inputSchema: DisableUserRequestSchema.safeExtend({ targetUserId: z.string().min(1) }),
+    inputSchema: DisableUserRequestSchema.safeExtend({ targetUserId: UserIdSchema }),
     outputSchema: DisableUserResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },

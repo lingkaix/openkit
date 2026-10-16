@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import {
   ApiErrorSchema,
+  deriveEntityId,
   ProductTurnSchema,
   TurnReadProjectionSchema,
   TurnSchema,
@@ -12,7 +12,6 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -43,10 +42,12 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
+const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 /**
  * Returns the local provider registry that matches `createTestAgentSetup()`.
@@ -350,8 +351,8 @@ async function createSchedulerFixture(
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const app = createApp({
     agentManifests: [manifest],
@@ -389,20 +390,20 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
     .prepare(
       `INSERT INTO users (
         id, display_name, email, email_verified, created_at, updated_at, kind
-      ) VALUES ('user_other', 'Other User', 'other@example.com', false, ?, ?, 'human')`
+      ) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other User', 'other@example.com', false, ?, ?, 'human')`
     )
     .run(now, now);
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
         workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES ('ws_demo', 'user_other', 'active', NULL, ?, NULL, 1, ?, ?)`
+      ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(timestamp, timestamp, timestamp);
 
@@ -458,12 +459,7 @@ function schedulerTurnId(
   threadId: string,
   requestId: string
 ): string {
-  const suffix = createHash('sha256')
-    .update(`${canonicalActorRef}:${workspaceId}:${threadId}:${requestId}`)
-    .digest('hex')
-    .slice(0, 16);
-
-  return `turn_${requestId}_${suffix}`;
+  return deriveEntityId('tu', [canonicalActorRef, workspaceId, threadId, requestId, null]);
 }
 
 describe('generic turn routes', () => {
@@ -478,8 +474,8 @@ describe('generic turn routes', () => {
           {},
           {
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               agentId: manifest.id,
               input: 'Organize the supplied context',
               requestId: '00000000-0000-4000-8000-000000000399',
@@ -491,7 +487,13 @@ describe('generic turn routes', () => {
       const turn = TurnSchema.parse(await response.json());
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
       await vi.waitFor(() =>
-        expect(fixture.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe('completed')
+        expect(
+          fixture.store.getTurn(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            turn.id
+          ).status
+        ).toBe('completed')
       );
     } finally {
       fixture.coreDb.sqlite.close();
@@ -499,13 +501,22 @@ describe('generic turn routes', () => {
   });
   it('reads one turn through its owning workspace and thread path', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Read this turn', LOCAL_ACTOR);
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Read this turn',
+      LOCAL_ACTOR
+    );
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     const response = await app.request('/api/app/operations/turn.read', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }),
+      body: JSON.stringify({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+      }),
     });
 
     expect(response.status).toBe(200);
@@ -517,30 +528,50 @@ describe('generic turn routes', () => {
 
   it('omits AgentSession identity from ordinary turn reads while the durable Turn retains it', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Hide AgentSession identity', LOCAL_ACTOR);
-    store.updateTurn(turn.id, { agentSessionId: 'as_hidden' });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Hide AgentSession identity',
+      LOCAL_ACTOR
+    );
+    store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7271-8ba3-bea82b217022' });
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     const response = await app.request('/api/app/operations/turn.read', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }),
+      body: JSON.stringify({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+      }),
     });
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(JSON.stringify(body)).not.toContain('agentSessionId');
-    expect(store.getTurn('ws_demo', 'th_demo', turn.id).agentSessionId).toBe('as_hidden');
+    expect(
+      store.getTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        turn.id
+      ).agentSessionId
+    ).toBe('as_00000000-0000-7271-8ba3-bea82b217022');
   });
 
   it('does not read a turn through a different workspace or thread path', async () => {
     const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Keep this turn scoped', LOCAL_ACTOR);
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Keep this turn scoped',
+      LOCAL_ACTOR
+    );
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     for (const path of [
-      `/api/workspaces/ws_quick_chat/threads/th_demo/turns/${turn.id}`,
-      `/api/workspaces/ws_demo/threads/th_missing/turns/${turn.id}`,
+      `/api/workspaces/ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28/threads/th_00000000-0000-7000-8000-000000000001/turns/${turn.id}`,
+      `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-70ca-938d-c2a0530f9882/turns/${turn.id}`,
     ]) {
       const [, , , workspaceId, , threadId, , turnId] = path.split('/');
       const response = await app.request('/api/app/operations/turn.read', {
@@ -557,8 +588,8 @@ describe('generic turn routes', () => {
   it('rejects an interrupt scope mismatch before executor or store mutation', async () => {
     const store = createDemoStore();
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Do not interrupt across scopes',
       LOCAL_ACTOR
     );
@@ -568,7 +599,11 @@ describe('generic turn routes', () => {
     const response = await app.request(
       ...operationRequest(
         'turn.interrupt',
-        { workspaceId: 'ws_demo', threadId: 'th_missing', turnId: turn.id },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-70ca-938d-c2a0530f9882',
+          turnId: turn.id,
+        },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -608,8 +643,8 @@ describe('generic turn routes', () => {
           {},
           {
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               agentId: 'agent_codex_host',
               input: 'Unsupported interrupt',
               requestId: '00000000-0000-4000-8000-000000000308',
@@ -626,7 +661,11 @@ describe('generic turn routes', () => {
       const response = await app.request(
         ...operationRequest(
           'turn.interrupt',
-          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: turn.id,
+          },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -662,7 +701,12 @@ describe('generic turn routes', () => {
 
   it('does not rewrite a terminal turn through a new interrupt command', async () => {
     const store = createDemoStore();
-    const created = store.createTurn('ws_demo', 'th_demo', 'Already complete', LOCAL_ACTOR);
+    const created = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Already complete',
+      LOCAL_ACTOR
+    );
     const turn = store.updateTurn(created.id, {
       completedAt: '2026-07-12T00:00:00.000Z',
       status: 'completed',
@@ -673,7 +717,11 @@ describe('generic turn routes', () => {
     const response = await app.request(
       ...operationRequest(
         'turn.interrupt',
-        { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: turn.id,
+        },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -722,10 +770,13 @@ describe('generic turn routes', () => {
               agentId: 'agent_codex_host',
               input: 'Pause for the responsible user.',
               requestId: startRequestId,
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
-            headers: { 'content-type': 'application/json', 'x-user-id': 'user_local' },
+            headers: {
+              'content-type': 'application/json',
+              'x-user-id': 'usr_00000000-0000-7000-8000-000000000001',
+            },
           }
         )
       );
@@ -735,13 +786,13 @@ describe('generic turn routes', () => {
       await setImmediate();
       const acceptedAt = turn.startedAt ?? new Date().toISOString();
       const requestItem = fixture.store.createItem({
-        id: `it_responsible_user_${turn.id}`,
+        id: testEntityId('it', `it_responsible_user_${turn.id}`),
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,
         type: 'user-input-request',
         status: 'completed',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         userInputRequestId: `ui_responsible_user_${turn.id}`,
         prompt: 'Only the responsible user may answer.',
         questions: [
@@ -757,18 +808,21 @@ describe('generic turn routes', () => {
         createdAt: acceptedAt,
         completedAt: acceptedAt,
       });
-      const workspaceDb = openWorkspaceDb(fixture.dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(
+        fixture.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
         applyScopedMigrations(workspaceDb);
         raiseRecordedPendingRequest(fixture.store, workspaceDb.sqlite, {
           requestId: requestItem.userInputRequestId,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           raisingTurnId: turn.id,
           requestItemId: requestItem.id,
           kind: 'user-input',
           requesterKind: 'assistant',
-          responsibleUserId: 'user_local',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
           questions: requestItem.type === 'user-input-request' ? requestItem.questions : [],
           questionDigest: 'digest-responsible-user',
           now: acceptedAt,
@@ -786,21 +840,33 @@ describe('generic turn routes', () => {
             body: JSON.stringify({
               answers: { choice: ['Continue'] },
               requestId: '00000000-0000-4000-8000-000000000411',
-              threadId: 'th_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               userInputRequestId: requestItem.userInputRequestId,
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
-            headers: { 'content-type': 'application/json', 'x-user-id': 'user_other' },
+            headers: {
+              'content-type': 'application/json',
+              'x-user-id': 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+            },
           }
         )
       );
 
       expect(response.status, await response.clone().text()).toBe(403);
       expect(ApiErrorSchema.parse(await response.json()).code).toBe('workspace_access_denied');
-      expect(fixture.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe('running');
+      expect(
+        fixture.store.getTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          turn.id
+        ).status
+      ).toBe('running');
       expect(
         fixture.store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter((item) => item.type === 'user-input-response')
       ).toEqual([]);
     } finally {
@@ -844,7 +910,10 @@ describe('generic turn routes', () => {
       manifest
     );
     const requestId = '00000000-0000-4000-8000-000000000399';
-    const itemsBefore = fixture.store.listThreadItems('ws_demo', 'th_demo');
+    const itemsBefore = fixture.store.listThreadItems(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    );
     try {
       const response = await fixture.app.request(
         ...operationRequest(
@@ -856,8 +925,8 @@ describe('generic turn routes', () => {
               agentId: manifest.id,
               input: 'Prepare this admitted Agent',
               requestId,
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -872,7 +941,12 @@ describe('generic turn routes', () => {
         expect(response.status).toBe(202);
         const accepted = TurnSchema.parse(await response.json());
         expect(accepted.id).toBe(
-          schedulerTurnId(JSON.stringify(LOCAL_ACTOR), 'ws_demo', 'th_demo', requestId)
+          schedulerTurnId(
+            JSON.stringify(LOCAL_ACTOR),
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            requestId
+          )
         );
         await vi.waitFor(() =>
           expect(readTurnAttempt(fixture.coreDb, accepted.id)?.phase).toBe('closed')
@@ -890,8 +964,8 @@ describe('generic turn routes', () => {
         ).toEqual({ disposition: 'not_accepted', operation_id: null });
         expect(
           fixture.store.getCommandRequest('turn.start', requestId, {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
           })
         ).toMatchObject({ response: { kind: 'turn', id: accepted.id } });
       }
@@ -909,8 +983,8 @@ describe('generic turn routes', () => {
               {
                 queueEntryId: schedulerTurnId(
                   JSON.stringify(LOCAL_ACTOR),
-                  'ws_demo',
-                  'th_demo',
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  'th_00000000-0000-7000-8000-000000000001',
                   requestId
                 ).replace(/^turn_/, 'queue_'),
                 status: 'admitted',
@@ -921,9 +995,19 @@ describe('generic turn routes', () => {
         expect(
           fixture.coreDb.sqlite.prepare('SELECT attempt_id FROM scheduler_execution_attempts').all()
         ).toEqual([]);
-        expect(fixture.store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+        expect(
+          fixture.store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual([]);
         expect(fixture.store.listCommandRequests()).toEqual([]);
-        expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toEqual(itemsBefore);
+        expect(
+          fixture.store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual(itemsBefore);
       }
       expect(prepare).toHaveBeenCalledTimes(preAcceptance ? 0 : 1);
       expect(executor.startCalls).toBe(0);
@@ -972,8 +1056,8 @@ describe('generic turn routes', () => {
               agentId: 'agent_codex_host',
               input: 'Complete synchronously',
               requestId: '00000000-0000-4000-8000-000000000301',
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -1012,8 +1096,8 @@ describe('generic turn routes', () => {
               agentId: 'agent_codex_host',
               input: 'Run on the remote target',
               requestId: '00000000-0000-4000-8000-000000000309',
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -1047,7 +1131,10 @@ describe('generic turn routes', () => {
         expect(
           readTurnAttempt(
             fixture.coreDb,
-            fixture.store.listThreadTurns('ws_demo', 'th_demo')[0]!.id
+            fixture.store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )[0]!.id
           )?.phase
         ).toBe('closed')
       );
@@ -1071,8 +1158,8 @@ describe('generic turn routes', () => {
               agentId: 'agent_codex_host',
               input: 'Keep running until interrupted',
               requestId: '00000000-0000-4000-8000-000000000302',
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -1084,14 +1171,18 @@ describe('generic turn routes', () => {
       const interruptResponse = await fixture.app.request(
         ...operationRequest(
           'turn.interrupt',
-          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: startedTurn.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: startedTurn.id,
+          },
           {
             method: 'POST',
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000303',
-              threadId: 'th_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId: startedTurn.id,
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -1130,8 +1221,8 @@ describe('generic turn routes', () => {
       agentId: 'agent_codex_host',
       input: 'Replay this completed turn',
       requestId: '00000000-0000-4000-8000-000000000304',
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
 
     try {
@@ -1189,12 +1280,12 @@ describe('generic turn routes', () => {
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind, status
-        ) VALUES ('user_admin_nomember', 'Admin', 'admin-nomember@example.com', false, ?, ?, 'human', 'active')`
+        ) VALUES ('usr_00000000-0000-79cf-b70a-b5595737412e', 'Admin', 'admin-nomember@example.com', false, ?, ?, 'human', 'active')`
       )
       .run(now, now);
     const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'user_admin_nomember',
+      ownerUserId: 'usr_00000000-0000-79cf-b70a-b5595737412e',
       scope: 'server-admin',
       tokenId: 'token_admin_direct_turn',
       workspaceIds: [],
@@ -1203,8 +1294,8 @@ describe('generic turn routes', () => {
       agentId: 'agent_codex_host',
       input: 'Run the directly requested task.',
       requestId: '00000000-0000-4000-8000-000000000304',
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const request = () =>
       fixture.app.request(
@@ -1235,7 +1326,10 @@ describe('generic turn routes', () => {
           .get(turn.id)
       ).toEqual({
         tokenId: issued.tokenId,
-        triggerActorJson: JSON.stringify({ kind: 'user', id: 'user_admin_nomember' }),
+        triggerActorJson: JSON.stringify({
+          kind: 'user',
+          id: 'usr_00000000-0000-79cf-b70a-b5595737412e',
+        }),
       });
       await vi.waitFor(() =>
         expect(readTurnAttempt(fixture.coreDb, turn.id)?.phase).toBe('closed')
@@ -1258,17 +1352,17 @@ describe('generic turn routes', () => {
     const executor = new RecordingTurnExecutor({ completeStarts: false });
     const fixture = await createSchedulerFixture(executor, 'invalid-thread');
     const requestId = '00000000-0000-4000-8000-000000000305';
-    const threadId = 'th_missing';
+    const threadId = 'th_00000000-0000-70ca-938d-c2a0530f9882';
     const turnId = schedulerTurnId(
-      JSON.stringify({ kind: 'user', id: 'user_local' }),
-      'ws_demo',
+      JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }),
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       requestId
     );
     const sourceCatalogPath = join(
       fixture.coreDb.dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'config',
       'data-sources.jsonc'
     );
@@ -1286,7 +1380,7 @@ describe('generic turn routes', () => {
               input: 'Do not admit an invalid thread',
               requestId,
               threadId,
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -1354,7 +1448,10 @@ describe('Core Turn durable admission response', () => {
       true
     );
     const requestId = '00000000-0000-4000-8000-000000000991';
-    const scope = { workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     const input = {
       ...scope,
       agentId: 'agent_codex_host',
@@ -1364,9 +1461,9 @@ describe('Core Turn durable admission response', () => {
     const token =
       entry === 'remote-mcp'
         ? createOpenKitAccessTokenRecord(coreDb, {
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             scope: 'workspace',
-            workspaceIds: ['ws_demo'],
+            workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
             expiresAt: '2099-01-01T00:00:00.000Z',
           })
         : null;
@@ -1533,7 +1630,10 @@ describe('Core Turn receipt recovery boundary', () => {
       createTestAgentSetup().manifest,
       true
     );
-    const scope = { workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     const input = {
       ...scope,
       agentId: 'agent_codex_host',
@@ -1617,7 +1717,10 @@ describe('Core Turn fast terminal admission', () => {
       createTestAgentSetup().manifest,
       true
     );
-    const scope = { workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     const requestId = '00000000-0000-4000-8000-000000000992';
     const pending = app.request(
       ...operationRequest(

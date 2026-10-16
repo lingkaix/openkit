@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createRuntimeConfigManager } from './runtime-config.js';
 
 const assignment = {
-  responsibleUserId: 'user_admin',
+  responsibleUserId: 'usr_00000000-0000-7000-8000-000000000002',
   agentId: 'agent_worker',
   networkGrantId: 'repository-read',
   host: 'git.example.test',

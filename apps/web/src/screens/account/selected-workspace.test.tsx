@@ -14,7 +14,7 @@ import { accountAdmissionKey } from './session';
 const PROJECT_WORKSPACE: WorkspaceRecord = {
   counts: { artifactCount: 0, knowledgeEntryCount: 0, threadCount: 0 },
   createdAt: '2026-08-04T00:00:00.000Z',
-  id: 'ws_project',
+  id: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053',
   kind: 'general',
   name: 'Project Workspace',
   status: 'active',
@@ -22,18 +22,18 @@ const PROJECT_WORKSPACE: WorkspaceRecord = {
 };
 const OTHER_WORKSPACE: WorkspaceRecord = {
   ...PROJECT_WORKSPACE,
-  id: 'ws_other',
+  id: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
   name: 'Other Workspace',
 };
 const USER_A_QUICK_CHAT: WorkspaceRecord = {
   ...PROJECT_WORKSPACE,
-  id: 'ws_quick_a',
+  id: 'ws_00000000-0000-737c-9c81-84e684e8ce40',
   kind: 'quick-chat',
   name: 'Quick Chat',
 };
 const USER_B_QUICK_CHAT: WorkspaceRecord = {
   ...PROJECT_WORKSPACE,
-  id: 'ws_quick_b',
+  id: 'ws_00000000-0000-7e52-8632-71d920cde3ce',
   kind: 'quick-chat',
   name: 'Quick Chat',
 };
@@ -44,7 +44,7 @@ function summary(workspace: WorkspaceRecord, isOwner: boolean): AccountWorkspace
     membershipStatus: 'active',
     accessCause: 'membership',
     membershipRevision: 17,
-    ownerUserId: 'user-owner',
+    ownerUserId: 'usr_00000000-0000-7108-840f-833c46c69722',
     registryRevision: 9,
     workspace,
   };
@@ -53,13 +53,13 @@ function summary(workspace: WorkspaceRecord, isOwner: boolean): AccountWorkspace
 const REMOVED_MEMBER = {
   createdAt: '2026-08-01T00:00:00.000Z',
   isOwner: false,
-  invitationId: 'inv-current',
+  invitationId: 'inv_00000000-0000-7d98-aedf-51772368ee4c',
   joinedAt: '2026-08-01T00:00:00.000Z',
   removedAt: '2026-08-04T00:00:00.000Z',
   revision: 18,
   status: 'removed' as const,
   updatedAt: '2026-08-04T00:00:00.000Z',
-  userId: 'user-current',
+  userId: 'usr_00000000-0000-732c-ad36-35686dc3d29f',
   workspaceId: PROJECT_WORKSPACE.id,
 };
 
@@ -112,7 +112,7 @@ function renderAccountSelection(options: {
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         }
     ),

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type {
   GenerativePresentation,
   GenerativePresentationDataModelResponse,
@@ -18,6 +18,7 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  allocateEntityId,
   type Item,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
@@ -139,8 +140,8 @@ export async function publishGenerativePresentation(
           maximum: ACCEPTED_MESSAGE_BYTE_LIMIT,
         });
       }
-      const presentationId = randomUUID();
-      const itemId = `it_${randomUUID()}`;
+      const presentationId = allocateEntityId('pres');
+      const itemId = allocateEntityId('it');
       const createdAt = new Date().toISOString();
       const row: PresentationRow = {
         presentation_id: presentationId,

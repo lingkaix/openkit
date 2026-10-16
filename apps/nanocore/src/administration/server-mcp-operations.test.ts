@@ -10,7 +10,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
@@ -18,6 +18,8 @@ import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { users } from '../storage/schema/index.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
@@ -36,14 +38,14 @@ function fixture(closeServerMcpSessions?: () => Promise<void>) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const actor: Actor = {
     kind: 'token',
-    userId: 'user_local',
+    userId: FIXTURE_LOCAL_USER_ID,
     tokenScope: 'server-admin',
     tokenId: token.tokenId,
   };
@@ -126,7 +128,7 @@ describe('Server MCP administration owner and recovery', () => {
     await expect(f.call('administration.server-mcp-list', {}, session)).resolves.toMatchObject({
       revision: 1,
     });
-    const ordinaryUserId = randomUUID();
+    const ordinaryUserId = testEntityId('usr', 'ordinary-shared-mcp-administrator-test');
     f.coreDb.db
       .insert(users)
       .values({
@@ -239,7 +241,7 @@ describe('Server MCP administration owner and recovery', () => {
         expect.objectContaining({
           resource: `vault-grant:${grant.grantId}`,
           vaultGrantId: narrowed.grant.grantId,
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
         }),
       ])
     );
@@ -266,7 +268,7 @@ describe('Server MCP administration owner and recovery', () => {
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
           outcome: 'succeeded',
         }),
       ])
@@ -275,7 +277,7 @@ describe('Server MCP administration owner and recovery', () => {
 
   it('excludes Provider and bootstrap Server references from every shared-MCP lifecycle', async () => {
     const f = fixture();
-    const referenceId = `vault_${randomUUID()}`;
+    const referenceId = testEntityId('vault', 'excluded-server-provider-reference');
     f.backend.store({
       referenceId,
       material: 'synthetic-provider-material',
@@ -310,14 +312,14 @@ describe('Server MCP administration owner and recovery', () => {
     await f.call('administration.server-mcp-create', { ...creation, requestId });
     const workspace = f.store.createWorkspace('Ordinary member');
     const member = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const memberActor: Actor = {
       kind: 'token',
-      userId: 'user_local',
+      userId: FIXTURE_LOCAL_USER_ID,
       tokenScope: 'workspace',
       tokenId: member.tokenId,
     };

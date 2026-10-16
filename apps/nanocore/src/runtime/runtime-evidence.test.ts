@@ -16,14 +16,14 @@ import {
 describe('runtime evidence', () => {
   it('records package-scoped transcript collection evidence idempotently', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-evidence-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const packageSnapshotId = 'aepsnap_runtime_provenance_1';
     const input = {
       packageSnapshotId,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      agentSessionId: 'as_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
       backendType: 'openshell',
       backendVersion: '0.0.80',
       placement: 'local' as const,
@@ -47,10 +47,10 @@ describe('runtime evidence', () => {
 
       expect(first).toMatchObject({
         id: expectedId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         backendType: 'openshell',
         backendVersion: '0.0.80',
         placement: 'local',
@@ -66,7 +66,9 @@ describe('runtime evidence', () => {
         collectedAt: input.collectedAt,
       });
       expect(replay).toEqual(first);
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([first]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([first]);
 
       for (const divergent of [
         { ...input, contentDigests: ['sha256:divergent'] },
@@ -76,7 +78,9 @@ describe('runtime evidence', () => {
           /runtime evidence replay conflict/i
         );
       }
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([first]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([first]);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -84,7 +88,7 @@ describe('runtime evidence', () => {
 
   it('strips unknown optional fields from imported runtime evidence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-evidence-unknown-fields-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -92,12 +96,12 @@ describe('runtime evidence', () => {
       importWorkspaceRuntimeEvidence(workspaceDb, [
         {
           id: 'rte_imported_extra',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           goalId: null,
           taskId: null,
-          agentSessionId: 'session_demo',
+          agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
           backendType: 'openshell',
           backendVersion: '0.0.63',
           placement: 'local',
@@ -131,9 +135,9 @@ describe('runtime evidence', () => {
         } as RuntimeEvidenceRecord,
       ]);
 
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([
-        expect.not.objectContaining({ futureOptionalNote: expect.anything() }),
-      ]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([expect.not.objectContaining({ futureOptionalNote: expect.anything() })]);
     } finally {
       workspaceDb.sqlite.close();
     }

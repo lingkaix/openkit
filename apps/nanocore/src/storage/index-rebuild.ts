@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
   RetrieveKnowledgeRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
+  allocateEntityId,
   type PageReference,
   parseReferenceScope,
   type RetrievalTraceReference,
@@ -593,7 +594,7 @@ export async function retrieveWorkspaceKnowledge(
   const pinnedPageIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
   const limit = normalized.limit;
   const createdAt = input.now?.() ?? new Date().toISOString();
-  const traceId = input.traceId ?? `krt_${randomUUID()}`;
+  const traceId = input.traceId ?? allocateEntityId('krt');
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);

@@ -6,7 +6,6 @@ import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath } from './runtime/feedback.js';
@@ -14,6 +13,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -27,16 +27,33 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-core-command-cutover-'));
   roots.push(root);
   const store = createDemoStore({ dataRoot: root });
-  const thread = store.createThread('ws_demo', 'Commands', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
-  const turn = store.createTurn('ws_demo', thread.id, 'Interrupt me', {
-    kind: 'user',
-    id: 'user_local',
-  });
-  const idle = store.createThread('ws_demo', 'Idle', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
+  const thread = store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Commands',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    thread.id,
+    'Interrupt me',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
+  const idle = store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Idle',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
   const app = createAppWithWorkspaceAuthority({
     store,
     ...(bootReadiness ? { bootReadiness } : {}),
@@ -49,21 +66,39 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
     turn,
     rows: [
       ['workspace.create', 'POST', '/api/workspaces', { name: 'Created', requestId }, 201],
-      ['workspace.read', 'GET', '/api/workspaces/ws_demo', {}, 200],
-      ['workspace.update', 'PATCH', '/api/workspaces/ws_demo', { name: 'Renamed', requestId }, 200],
-      ['workspace.dashboard', 'GET', '/api/app/workspaces/ws_demo/dashboard', {}, 200],
-      ['thread.list', 'GET', '/api/workspaces/ws_demo/threads', {}, 200],
+      ['workspace.read', 'GET', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001', {}, 200],
+      [
+        'workspace.update',
+        'PATCH',
+        '/api/workspaces/ws_00000000-0000-7000-8000-000000000001',
+        { name: 'Renamed', requestId },
+        200,
+      ],
+      [
+        'workspace.dashboard',
+        'GET',
+        '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/dashboard',
+        {},
+        200,
+      ],
+      [
+        'thread.list',
+        'GET',
+        '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads',
+        {},
+        200,
+      ],
       [
         'thread.update',
         'PATCH',
-        `/api/workspaces/ws_demo/threads/${thread.id}`,
+        `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/${thread.id}`,
         { name: 'Renamed', requestId },
         200,
       ],
       [
         'thread.archive',
         'POST',
-        `/api/workspaces/ws_demo/threads/${thread.id}/archive`,
+        `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/${thread.id}/archive`,
         { requestId },
         200,
       ],
@@ -71,14 +106,24 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
         'turn.start',
         'POST',
         '/api/turns',
-        { workspaceId: 'ws_demo', threadId: idle.id, input: 'Hello', requestId },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: idle.id,
+          input: 'Hello',
+          requestId,
+        },
         409,
       ],
       [
         'turn.interrupt',
         'POST',
-        `/api/workspaces/ws_demo/threads/${thread.id}/turns/${turn.id}/interrupt`,
-        { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id, requestId },
+        `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/${thread.id}/turns/${turn.id}/interrupt`,
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          turnId: turn.id,
+          requestId,
+        },
         409,
       ],
       [
@@ -119,10 +164,14 @@ describe('core command operation cutover', () => {
             : id === 'turn.feedback'
               ? { turnId: turn.id }
               : id.startsWith('thread.') && id !== 'thread.list'
-                ? { workspaceId: 'ws_demo', threadId: thread.id }
+                ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id }
                 : id === 'turn.interrupt'
-                  ? { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id }
-                  : { workspaceId: 'ws_demo' };
+                  ? {
+                      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                      threadId: thread.id,
+                      turnId: turn.id,
+                    }
+                  : { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
         const input = { ...body, ...selectors };
         const before = store.getTurnById(turn.id);
         const receipts = store.listCommandRequests();
@@ -197,8 +246,8 @@ for (const index of [0, 2, 5, 6]) {
       id === 'workspace.create'
         ? {}
         : id.startsWith('thread.')
-          ? { workspaceId: 'ws_demo', threadId: thread.id }
-          : { workspaceId: 'ws_demo' };
+          ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id }
+          : { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
     const response = await app.request(
       ...operationRequest(id, selectors, { body: JSON.stringify(body) })
     );
@@ -227,7 +276,7 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
   });
   const { app, rows, store, thread, turn } = fixture(bootReadiness);
   const workspaces = store.listWorkspaces();
-  const threads = store.listThreads('ws_demo');
+  const threads = store.listThreads('ws_00000000-0000-7000-8000-000000000001');
   const receipts = store.listCommandRequests();
   const feedbackPath = feedbackFilePath(store, turn);
   expect(existsSync(feedbackPath)).toBe(false);
@@ -239,7 +288,7 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
         : id === 'turn.feedback'
           ? { turnId: turn.id }
           : {
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               ...(id.startsWith('thread.') ? { threadId: thread.id } : {}),
             };
     const response = await app.request(
@@ -248,7 +297,7 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
     expect(response.status, id).toBe(503);
     expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
     expect(store.listWorkspaces()).toEqual(workspaces);
-    expect(store.listThreads('ws_demo')).toEqual(threads);
+    expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toEqual(threads);
     expect(store.getTurnById(turn.id)).toEqual(turn);
     expect(existsSync(feedbackPath)).toBe(false);
     expect(store.listCommandRequests()).toEqual(receipts);
@@ -266,13 +315,17 @@ it('admits member Workspace updates once and refuses readonly or removed authori
     const timestamp = new Date(now).toISOString();
     coreDb.sqlite
       .prepare(
-        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('user_owner', 'Owner', 'owner@example.com', false, ?, ?, 'human'), ('user_editor', 'Editor', 'editor@example.com', false, ?, ?, 'human')`
+        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, ?, ?, 'human'), ('usr_00000000-0000-7609-aed5-db4b5c95e76c', 'Editor', 'editor@example.com', false, ?, ?, 'human')`
       )
       .run(now, now, now, now);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_owner', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'user_editor', 'active', NULL, ?, NULL, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7609-aed5-db4b5c95e76c', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(timestamp, timestamp, timestamp);
     const app = createAppWithWorkspaceAuthority({
@@ -283,7 +336,7 @@ it('admits member Workspace updates once and refuses readonly or removed authori
         api: {
           getSession: async () => ({
             session: { id: 'session_editor' },
-            user: { id: 'user_editor' },
+            user: { id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
           }),
         },
         handler: async () => Response.json({ status: 'auth-ok' }),
@@ -292,14 +345,19 @@ it('admits member Workspace updates once and refuses readonly or removed authori
     const receipts = store.listCommandRequests();
     const request = operationRequest(
       'workspace.update',
-      { workspaceId: 'ws_demo' },
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       { body: JSON.stringify({ name: 'Member rename', requestId: randomUUID() }) }
     );
     const response = await app.request(...request);
     expect(response.status).toBe(200);
     const updated = await response.json();
-    expect(updated).toMatchObject({ id: 'ws_demo', name: 'Member rename' });
-    expect(store.getWorkspace('ws_demo').name).toBe('Member rename');
+    expect(updated).toMatchObject({
+      id: 'ws_00000000-0000-7000-8000-000000000001',
+      name: 'Member rename',
+    });
+    expect(store.getWorkspace('ws_00000000-0000-7000-8000-000000000001').name).toBe(
+      'Member rename'
+    );
     const committedReceipts = store.listCommandRequests();
     expect(committedReceipts).toHaveLength(receipts.length + 1);
     const replay = await app.request(...request);
@@ -308,16 +366,16 @@ it('admits member Workspace updates once and refuses readonly or removed authori
     expect(store.listCommandRequests()).toEqual(committedReceipts);
 
     const readonly = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_editor',
+      ownerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const before = store.getWorkspace('ws_demo');
+    const before = store.getWorkspace('ws_00000000-0000-7000-8000-000000000001');
     const readonlyDenied = await app.request(
       ...operationRequest(
         'workspace.update',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           headers: { authorization: `Bearer ${readonly.secret}` },
           body: JSON.stringify({ name: 'Readonly rename', requestId: randomUUID() }),
@@ -325,19 +383,22 @@ it('admits member Workspace updates once and refuses readonly or removed authori
       )
     );
     expect(readonlyDenied.status).toBe(403);
-    expect(store.getWorkspace('ws_demo')).toEqual(before);
+    expect(store.getWorkspace('ws_00000000-0000-7000-8000-000000000001')).toEqual(before);
     expect(store.listCommandRequests()).toEqual(committedReceipts);
 
     const owner = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_owner',
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const removed = await app.request(
       ...operationRequest(
         'workspace.member-remove',
-        { workspaceId: 'ws_demo', targetUserId: 'user_editor' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          targetUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+        },
         {
           headers: { authorization: `Bearer ${owner.secret}` },
           body: JSON.stringify({ expectedRevision: 1, requestId: randomUUID() }),
@@ -349,13 +410,13 @@ it('admits member Workspace updates once and refuses readonly or removed authori
     const denied = await app.request(
       ...operationRequest(
         'workspace.update',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         { body: JSON.stringify({ name: 'Removed member rename', requestId: randomUUID() }) }
       )
     );
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ code: 'workspace_access_denied' });
-    expect(store.getWorkspace('ws_demo')).toEqual(before);
+    expect(store.getWorkspace('ws_00000000-0000-7000-8000-000000000001')).toEqual(before);
     expect(store.listCommandRequests()).toEqual(afterRemovalReceipts);
   } finally {
     coreDb.sqlite.close();
@@ -380,9 +441,13 @@ it.each([
     return listThreads(workspaceId);
   });
   const response = await app.request(
-    ...operationRequest(id, id === 'workspace.create' ? {} : { workspaceId: 'ws_demo' }, {
-      body: JSON.stringify(body),
-    })
+    ...operationRequest(
+      id,
+      id === 'workspace.create' ? {} : { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      {
+        body: JSON.stringify(body),
+      }
+    )
   );
   expect(response.status).toBe(404);
   expect(await response.json()).toMatchObject({
@@ -408,25 +473,38 @@ it.each([
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot: root });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const issued = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const app = createAppWithWorkspaceAuthority({ store, coreDb, mode: 'server' });
     const input = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_missing',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
       requestId: randomUUID(),
     };
     const observed = () => ({
-      workspace: store.getWorkspace('ws_demo'),
-      thread: store.getThread('ws_demo', 'th_demo'),
-      turns: store.listThreadTurns('ws_demo', 'th_demo'),
-      items: store.listThreadItems('ws_demo', 'th_demo'),
+      workspace: store.getWorkspace('ws_00000000-0000-7000-8000-000000000001'),
+      thread: store.getThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      ),
+      turns: store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      ),
+      items: store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      ),
       receipts: store.listCommandRequests(),
     });
     const before = structuredClone(observed());
@@ -455,10 +533,10 @@ it.each([
     );
     expect(observed()).toEqual(before);
     const code = 'turn_interrupt_failed';
-    const message = 'Turn not found: tu_missing';
+    const message = 'Turn not found: tu_00000000-0000-7577-9378-7e96d0d15fd2';
     if (projection === 'HTTP') {
       expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+      expect(await response.json()).toEqual({ protocolVersion: '0.6.0', code, message });
     } else {
       expect(response.status).toBe(200);
       const body = await response.json();

@@ -74,8 +74,8 @@ function createContext(requestId = randomUUID()): KernelCommandContext & { works
     store,
     inflightCommands: new WeakMap(),
     dataRoot,
-    workspaceId: 'ws_demo',
-    actor: { kind: 'user', id: 'user_local' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     requestId,
   };
 }

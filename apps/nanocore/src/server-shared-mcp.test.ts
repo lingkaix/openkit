@@ -16,7 +16,7 @@ import {
   revokeOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
+
 import {
   composeWorkspaceMcpCatalog,
   createMcpConfig,
@@ -46,7 +46,9 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
@@ -136,7 +138,7 @@ async function fixture() {
   const workspaceDbs = workspaces.map((workspace) => {
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       workspaceId: workspace.id,
     });
     const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -145,7 +147,7 @@ async function fixture() {
     return db;
   });
   const admin = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
@@ -236,17 +238,17 @@ async function fixture() {
       manager
         .current()
         .workspaceMcpServerCatalogs.find((entry) => entry.workspaceId === workspaceId)?.catalog;
-    const thread = store.createThread(workspaceId, 'Consume shared MCP', randomUUID());
+    const thread = store.createThread(workspaceId, 'Consume shared MCP');
     const turn = store.createTurn(workspaceId, thread.id, 'Call echo', {
       kind: 'user',
-      id: 'user_local',
+      id: FIXTURE_LOCAL_USER_ID,
     });
     const setup = createTestAgentSetup({ mcpIds: [serverId] });
     admitTestNativeEnvironment(coreDb, setup.manifest);
     const pkg = resolveAgentEnvironmentPackage({
       coreDb,
       agentSetup: setup,
-      agentSessionId: randomUUID(),
+      agentSessionId: testEntityId('as', `shared-mcp-${turn.id}`),
       backend: { kind: 'openshell' },
       captureCoverage: { scope: 'server', value: 'off' },
       requestId: randomUUID(),
@@ -290,7 +292,7 @@ async function fixture() {
     const bindingRef = `binding_${turn.id}`;
     const attempt = recordTestExecutionAttempt(coreDb, {
       entry: admission,
-      attemptId: randomUUID(),
+      attemptId: testEntityId('attempt', `shared-mcp-${turn.id}`),
       agentSessionId: pkg.scope.agentSessionId,
       inputRef: pkg.snapshotId,
       bindingRef,
@@ -668,7 +670,10 @@ describe('Server-shared MCP through governed Worker routes', () => {
         capability_call_id: use.capability_call_id,
         vault_grant_id: grant.grantId,
       });
-      expect(JSON.parse(String(audit!.actor_json))).toEqual({ kind: 'user', id: 'user_local' });
+      expect(JSON.parse(String(audit!.actor_json))).toEqual({
+        kind: 'user',
+        id: FIXTURE_LOCAL_USER_ID,
+      });
     }
     for (const db of f.workspaceDbs) {
       expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_use_records').get()).toEqual({
@@ -850,14 +855,14 @@ describe('Server-shared MCP through governed Worker routes', () => {
         schemaPolicy: 'tracking',
       });
     }
-    let approvingUserId = 'user_local';
+    let approvingUserId = FIXTURE_LOCAL_USER_ID;
     let approvingCredential = f.admin.secret;
     const session =
       authority === 'administrator-session' ||
       authority === 'revoked-administrator-session' ||
       authority === 'ordinary-session';
     if (authority === 'other-administrator' || session) {
-      approvingUserId = randomUUID();
+      approvingUserId = testEntityId('usr', `shared-mcp-approver-${authority}`);
       f.coreDb.db
         .insert(users)
         .values({
@@ -917,7 +922,7 @@ describe('Server-shared MCP through governed Worker routes', () => {
         'approved-executed'
       );
       expect(f.upstream.methods.filter((method) => method === 'tools/call')).toHaveLength(1);
-      expect(settled.responsibleUserId).toBe('user_local');
+      expect(settled.responsibleUserId).toBe(FIXTURE_LOCAL_USER_ID);
       if (session)
         expect(settled.decidingActorContext).toMatchObject({
           kind: 'session',

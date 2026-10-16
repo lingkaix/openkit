@@ -50,6 +50,7 @@ import {
   type WorkspaceDataSourceCatalog,
   WorkspaceDataSourceCatalogSchema,
 } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
@@ -975,7 +976,7 @@ export class RuntimeConfigFileService {
   "baseUrl": "https://openrouter.ai/api/v1",
   "models": ["openai/gpt-5.1"],
   "defaultModel": "openai/gpt-5.1",
-  "secretRef": "vault://provider_${id}"
+  "secretRef": "vault://${allocateEntityId('vault')}"
 }
 `;
     }

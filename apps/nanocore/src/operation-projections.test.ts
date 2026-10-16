@@ -19,7 +19,6 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import * as commands from './generative-kernel/commands.js';
@@ -49,7 +48,9 @@ import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -71,7 +72,7 @@ describe('shared family contract', () => {
     // An untyped caller can cross the compile-time JSON-only boundary; runtime must fail closed.
     const error = await invoke(id as JsonOperationId, null, {
       kind: 'public',
-      actor: { kind: 'local', userId: 'user_local' },
+      actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
     }).catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(OperationError);
     expect(error).toMatchObject({ code: 'unsupported_operation', status: 400 });
@@ -87,11 +88,15 @@ describe('shared family contract', () => {
       const response = await f.app.request('/api/app/operations/workspace.read', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(outcome === 'success' ? { workspaceId: 'ws_demo' } : {}),
+        body: JSON.stringify(
+          outcome === 'success' ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' } : {}
+        ),
       });
       expect(response.status).toBe(outcome === 'success' ? 200 : 400);
       expect(await response.json()).toMatchObject(
-        outcome === 'success' ? { id: 'ws_demo' } : { code: 'invalid_request' }
+        outcome === 'success'
+          ? { id: 'ws_00000000-0000-7000-8000-000000000001' }
+          : { code: 'invalid_request' }
       );
       expect(response.headers.get('cache-control')).toBe('no-store');
     } finally {
@@ -101,15 +106,20 @@ describe('shared family contract', () => {
 
   it('keeps overlapping dynamic success statuses local to each request', async () => {
     const f = await operationFixture();
-    const turn = f.store.createTurn('ws_demo', 'th_demo', 'Dynamic response', f.command.actor);
+    const turn = f.store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Dynamic response',
+      f.command.actor
+    );
     const body = {
       outcome: 'answered',
       explanation: 'Done.',
       turn,
       item: f.store.createItem({
-        id: 'it_dynamic',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-714e-b73b-fee7fe0cf1a3',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
         status: 'completed',
@@ -118,10 +128,10 @@ describe('shared family contract', () => {
         completedAt: turn.startedAt!,
       }),
       handoff: null,
-      originatingWorkspaceId: 'ws_demo',
-      originatingThreadId: 'th_demo',
-      receivingWorkspaceId: 'ws_demo',
-      receivingThreadId: 'th_demo',
+      originatingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      receivingThreadId: 'th_00000000-0000-7000-8000-000000000001',
       targetRef: 'internal-role:assistant',
       logicalModelId: null,
     };
@@ -135,7 +145,7 @@ describe('shared family contract', () => {
     });
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'local', userId: 'user_local' });
+      c.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       await next();
     });
     registerOperationJsonRoutes({
@@ -163,8 +173,8 @@ describe('shared family contract', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
         body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           targetRef: 'internal-role:assistant',
           input,
         }),
@@ -192,7 +202,12 @@ describe('shared family contract', () => {
       observed(error);
       return c.text('Internal Server Error', 500);
     });
-    const turn = f.store.createTurn('ws_demo', 'th_demo', 'Resolver subject', f.command.actor);
+    const turn = f.store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Resolver subject',
+      f.command.actor
+    );
     const failure =
       subject === 'handler'
         ? vi.spyOn(f.store, 'getWorkspaceResources').mockImplementation(() => {
@@ -209,8 +224,12 @@ describe('shared family contract', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(
             subject === 'handler'
-              ? { workspaceId: 'ws_demo' }
-              : { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }
+              ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+              : {
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
+                  turnId: turn.id,
+                }
           ),
         }
       );
@@ -239,7 +258,7 @@ describe('shared family contract', () => {
     try {
       const { projections } = await operationProjections(f);
       const input = {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         appId: f.appRecord.appId,
         collection: 'entries',
         schemaRevision: 1,
@@ -248,7 +267,7 @@ describe('shared family contract', () => {
       };
       for (const name of ['http', 'worker']) {
         await expect(projections[name]!('kernel.records.create', input)).rejects.toEqual({
-          ...(name === 'http' ? { protocolVersion: '0.5.0' } : {}),
+          ...(name === 'http' ? { protocolVersion: '0.6.0' } : {}),
           code: 'limit_exceeded',
           message: 'Record limit exceeded.',
           details: { limit: 'records', maximum: 2 },
@@ -263,14 +282,14 @@ describe('shared family contract', () => {
       });
       expect(httpFailure.status).toBe(400);
       expect(await httpFailure.json()).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'limit_exceeded',
         message: 'Record limit exceeded.',
         details: { limit: 'records', maximum: 2 },
         path: ['/data'],
       });
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
@@ -303,9 +322,15 @@ describe('shared family contract', () => {
       expect(JSON.stringify(envelope)).not.toContain('private-secret');
       expect(JSON.stringify(envelope)).not.toContain('stack');
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', {
-          schemaRevision: 1,
-        }).totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.appRecord.appId,
+          'entries',
+          {
+            schemaRevision: 1,
+          }
+        ).totalItems
       ).toBe(0);
     } finally {
       failure.mockRestore();
@@ -320,7 +345,7 @@ describe('shared family contract', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
         body: JSON.stringify({
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           appId: 'private-secret-sentinel',
           collection: 'entries',
           schemaRevision: 1,
@@ -330,7 +355,7 @@ describe('shared family contract', () => {
       expect(response.status).toBe(400);
       const body = await response.json();
       expect(body).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'invalid_request',
         message: 'Invalid operation input.',
         details: { fields: ['appId'] },
@@ -349,12 +374,16 @@ async function operationFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const command = {
     store,
     dataRoot,
-    workspaceId: 'ws_demo',
-    actor: { kind: 'user' as const, id: 'user_local' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
     requestId: randomUUID(),
     inflightCommands: new WeakMap(),
   };
@@ -386,21 +415,26 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     baseUrl: 'http://nanocore.test',
     fetch: (input, init) => f.app.fetch(new Request(input, init)),
   });
-  const turn = f.store.createTurn('ws_demo', 'th_demo', 'Operation invariant', f.command.actor);
+  const turn = f.store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Operation invariant',
+    f.command.actor
+  );
   f.store.createAgentSession({
-    id: 'as_operation',
+    id: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     agentId: 'agent_codex_host',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     status: 'busy',
     message: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
-  f.store.updateTurn(turn.id, { agentSessionId: 'as_operation' });
+  f.store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f' });
   const environmentPackage = resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
-    agentSessionId: 'as_operation',
+    agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     agentSetup: createTestAgentSetup(),
     backend: { kind: 'openshell' },
     createdAt: new Date().toISOString(),
@@ -411,7 +445,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     workspaceRoots: [],
   });
   const workerAuthority = createOpenKitAccessTokenRecord(f.coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -430,8 +464,8 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
   });
   recordTestExecutionAttempt(f.coreDb, {
     entry,
-    attemptId: 'lease_operation',
-    agentSessionId: 'as_operation',
+    attemptId: testEntityId('attempt', 'lease_operation'),
+    agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     inputRef: environmentPackage.snapshotId,
     bindingRef: 'binding_operation',
     sessionCompatibilityKey: 'operation-projection-session',
@@ -510,7 +544,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
 describe('operation projection cutover', () => {
   it('refuses a one-time-secret result before native dispatch even if a built-in Worker mapping accidentally supplies it', async () => {
     const f = await operationFixture();
-    const db = openWorkspaceDb(f.command.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(f.command.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const selected = OPENKIT_GENERATIVE_TOOL_OPERATIONS as unknown as Record<string, string>;
     try {
       const before = f.coreDb.sqlite
@@ -528,16 +562,16 @@ describe('operation projection cutover', () => {
                 store: f.store,
                 dataRoot: f.command.dataRoot,
                 workspaceDb: db,
-                workspaceId: 'ws_demo',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
                 actor: f.command.actor,
                 inflightCommands: new WeakMap(),
                 packageSnapshotId: 'package_fixture',
                 workspaceMutationAdmission: new WorkspaceMutationAdmission(),
                 scope: {
-                  workspaceId: 'ws_demo',
-                  threadId: 'th_demo',
-                  turnId: 'turn_fixture',
-                  agentSessionId: 'as_fixture',
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
+                  turnId: 'tu_00000000-0000-7772-b181-2e0959d2eeb3',
+                  agentSessionId: 'as_00000000-0000-73ba-ba74-ff17bfabd390',
                 },
               },
               name,
@@ -596,7 +630,10 @@ describe('operation projection cutover', () => {
     const createInvocation = vi.spyOn(invocation, 'createOperationInvocation');
     try {
       const { projections, mcp } = await operationProjections(f);
-      const selector = { workspaceId: 'ws_demo', appId: f.appRecord.appId };
+      const selector = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: f.appRecord.appId,
+      };
       const mutations: unknown[] = [];
       for (const initiating of Object.keys(projections)) {
         const input = {
@@ -615,11 +652,21 @@ describe('operation projection cutover', () => {
         }
         mutations.push(expected);
         expect(
-          listRecords(f.command.dataRoot, 'ws_demo', selector.appId, 'entries', {
-            schemaRevision: 1,
-          }).items
+          listRecords(
+            f.command.dataRoot,
+            'ws_00000000-0000-7000-8000-000000000001',
+            selector.appId,
+            'entries',
+            {
+              schemaRevision: 1,
+            }
+          ).items
         ).toEqual(expect.arrayContaining(mutations));
-        const db = openExistingAppDb(f.command.dataRoot, 'ws_demo', selector.appId);
+        const db = openExistingAppDb(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          selector.appId
+        );
         try {
           const audits = db.sqlite
             .prepare("SELECT actor_json FROM audit_events WHERE action = 'kernel.records.create'")
@@ -633,8 +680,13 @@ describe('operation projection cutover', () => {
         }
       }
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', selector.appId, 'entries', { schemaRevision: 1 })
-          .totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          selector.appId,
+          'entries',
+          { schemaRevision: 1 }
+        ).totalItems
       ).toBe(Object.keys(projections).length);
       const wrongBoundInput = await mcp.request('/api/worker-capabilities/mcp/openkit-generative', {
         method: 'POST',
@@ -651,7 +703,7 @@ describe('operation projection cutover', () => {
             name: operationToolName('kernel.records.create'),
             arguments: {
               ...selector,
-              workspaceId: 'ws_other',
+              workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
               collection: 'entries',
               schemaRevision: 1,
               data: { note: 'denied' },
@@ -663,8 +715,13 @@ describe('operation projection cutover', () => {
         error: { data: { code: 'bound_input_conflict' } },
       });
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', selector.appId, 'entries', { schemaRevision: 1 })
-          .totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          selector.appId,
+          'entries',
+          { schemaRevision: 1 }
+        ).totalItems
       ).toBe(Object.keys(projections).length);
     } finally {
       createInvocation.mockRestore();
@@ -692,26 +749,29 @@ describe('operation projection cutover', () => {
         invoke(
           'kernel.records.create',
           {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             appId: f.appRecord.appId,
             collection: 'entries',
             requestId: randomUUID(),
             schemaRevision: 1,
             data: { note: 'committed' },
           },
-          { kind: 'public', actor: { kind: 'local', userId: 'user_local' } }
+          {
+            kind: 'public',
+            actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          }
         )
       ).rejects.toMatchObject({
         code: 'invalid_operation_output',
         message: expect.stringContaining('does not undo committed effects'),
       });
-      await owners.workspaceMutationAdmission.close('ws_demo');
-      owners.workspaceMutationAdmission.reopen('ws_demo');
+      await owners.workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
+      owners.workspaceMutationAdmission.reopen('ws_00000000-0000-7000-8000-000000000001');
       const corrupt = await f.app.request('/api/app/operations/kernel.records.create', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
         body: JSON.stringify({
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           appId: f.appRecord.appId,
           collection: 'entries',
           schemaRevision: 1,
@@ -724,9 +784,15 @@ describe('operation projection cutover', () => {
         message: expect.stringContaining('does not undo committed effects'),
       });
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', {
-          schemaRevision: 1,
-        }).items
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.appRecord.appId,
+          'entries',
+          {
+            schemaRevision: 1,
+          }
+        ).items
       ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ revision: 1, data: { note: 'committed' } }),
@@ -748,16 +814,19 @@ describe('operation projection cutover', () => {
         store: f.store,
       });
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const headers = {
         authorization: `Bearer ${issued.secret}`,
         'content-type': 'application/json',
       };
-      const selector = { workspaceId: 'ws_demo', appId: f.appRecord.appId };
+      const selector = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: f.appRecord.appId,
+      };
       const read = await server.request('/api/app/operations/kernel.apps.get', {
         method: 'POST',
         headers,
@@ -780,8 +849,13 @@ describe('operation projection cutover', () => {
         code: 'workspace_access_denied',
       });
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', selector.appId, 'entries', { schemaRevision: 1 })
-          .totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          selector.appId,
+          'entries',
+          { schemaRevision: 1 }
+        ).totalItems
       ).toBe(0);
       revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
       const revoked = await server.request('/api/app/operations/kernel.apps.get', {
@@ -805,10 +879,10 @@ describe('operation projection cutover', () => {
       });
       const context = {
         kind: 'public' as const,
-        actor: { kind: 'local' as const, userId: 'user_local' },
+        actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
       };
       const input = {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         appId: f.appRecord.appId,
         collection: 'entries',
         requestId: randomUUID(),
@@ -828,14 +902,26 @@ describe('operation projection cutover', () => {
         }
       );
       expect(await invoke('kernel.records.create', input, context)).toEqual(updated);
-      const before = listRecords(f.command.dataRoot, 'ws_demo', input.appId, 'entries', {
-        schemaRevision: 1,
-      });
+      const before = listRecords(
+        f.command.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001',
+        input.appId,
+        'entries',
+        {
+          schemaRevision: 1,
+        }
+      );
       await expect(
         invoke('kernel.records.create', { ...input, data: { note: 'conflict' } }, context)
       ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', input.appId, 'entries', { schemaRevision: 1 })
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          input.appId,
+          'entries',
+          { schemaRevision: 1 }
+        )
       ).toEqual(before);
     } finally {
       f.coreDb.sqlite.close();
@@ -846,24 +932,27 @@ describe('operation projection cutover', () => {
     const f = await operationFixture();
     try {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const actor: Actor = {
         kind: 'token',
-        userId: 'user_local',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
         tokenId: issued.record.tokenId,
         tokenScope: 'workspace-readonly',
-        tokenWorkspaceIds: ['ws_demo'],
+        tokenWorkspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       };
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
         workspaceMutationAdmission: new WorkspaceMutationAdmission(),
       });
-      const selector = { workspaceId: 'ws_demo', appId: f.appRecord.appId };
+      const selector = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: f.appRecord.appId,
+      };
       expect(await invoke('kernel.apps.get', selector, { kind: 'public', actor })).toEqual(
         f.appRecord
       );
@@ -881,8 +970,13 @@ describe('operation projection cutover', () => {
         )
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', selector.appId, 'entries', { schemaRevision: 1 })
-          .totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          selector.appId,
+          'entries',
+          { schemaRevision: 1 }
+        ).totalItems
       ).toBe(0);
       revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
       await expect(
@@ -905,12 +999,15 @@ describe('operation projection cutover', () => {
         kind: 'worker' as const,
         actor: f.command.actor,
         requestId: randomUUID(),
-        bindings: { workspaceId: 'ws_demo', requestId: randomUUID() },
+        bindings: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          requestId: randomUUID(),
+        },
         lineage: {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_wrong',
-          agentSessionId: 'session_wrong',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-7f0b-950b-062b02380791',
+          agentSessionId: testEntityId('as', 'session_wrong'),
           packageSnapshotId: 'package_wrong',
         },
       };
@@ -921,12 +1018,16 @@ describe('operation projection cutover', () => {
         data: { note: 'denied' },
       };
       await expect(
-        invoke('kernel.records.create', { ...input, workspaceId: 'ws_other' }, context)
+        invoke(
+          'kernel.records.create',
+          { ...input, workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
+          context
+        )
       ).rejects.toMatchObject({ code: 'bound_input_conflict' });
       await expect(
         invoke(
           'kernel.records.create',
-          { ...input, actor: { kind: 'user', id: 'user_other' } },
+          { ...input, actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' } },
           context
         )
       ).rejects.toMatchObject({ code: 'bound_input_conflict' });
@@ -934,8 +1035,13 @@ describe('operation projection cutover', () => {
         code: 'workspace_access_denied',
       });
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', input.appId, 'entries', { schemaRevision: 1 })
-          .totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          input.appId,
+          'entries',
+          { schemaRevision: 1 }
+        ).totalItems
       ).toBe(0);
     } finally {
       f.coreDb.sqlite.close();
@@ -948,7 +1054,7 @@ describe('operation projection cutover', () => {
       const other = f.store.createWorkspace('Other authorized Workspace');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: other.id,
       });
       const invoke = createOperationInvocation({
@@ -958,7 +1064,7 @@ describe('operation projection cutover', () => {
       });
       const context = {
         kind: 'public' as const,
-        actor: { kind: 'local' as const, userId: 'user_local' },
+        actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
       };
       const child = await createLightApp(
         { ...f.command, workspaceId: other.id, requestId: randomUUID() },
@@ -970,12 +1076,15 @@ describe('operation projection cutover', () => {
       expect(
         await invoke(
           'kernel.apps.get',
-          { workspaceId: 'ws_demo', appId: f.appRecord.appId },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', appId: f.appRecord.appId },
           context
         )
       ).toEqual(f.appRecord);
       const { projections } = await operationProjections(f);
-      const wrongChild = { workspaceId: 'ws_demo', appId: child.appId };
+      const wrongChild = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: child.appId,
+      };
       const ownerRead = commands.getLightApp(
         f.command.dataRoot,
         wrongChild.workspaceId,
@@ -1013,7 +1122,7 @@ describe('operation projection cutover', () => {
         });
         await expect(project('kernel.apps.get', wrongChild)).resolves.toEqual(ownerRead);
         for (const [workspaceId, appId] of [
-          ['ws_demo', f.appRecord.appId],
+          ['ws_00000000-0000-7000-8000-000000000001', f.appRecord.appId],
           [other.id, child.appId],
         ]) {
           expect(
@@ -1030,7 +1139,10 @@ describe('operation projection cutover', () => {
     const f = await operationFixture();
     try {
       const { projections } = await operationProjections(f);
-      const selector = { workspaceId: 'ws_demo', appId: randomUUID() };
+      const selector = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: randomUUID(),
+      };
       const ownerRead = commands.getLightApp(
         f.command.dataRoot,
         selector.workspaceId,
@@ -1045,9 +1157,15 @@ describe('operation projection cutover', () => {
         await expect(project('kernel.apps.get', selector)).resolves.toEqual(ownerRead);
       }
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', {
-          schemaRevision: 1,
-        }).totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.appRecord.appId,
+          'entries',
+          {
+            schemaRevision: 1,
+          }
+        ).totalItems
       ).toBe(0);
     } finally {
       f.coreDb.sqlite.close();
@@ -1058,7 +1176,10 @@ describe('operation projection cutover', () => {
     const f = await operationFixture();
     try {
       const { projections, workerAuthorityTokenId } = await operationProjections(f);
-      const selector = { workspaceId: 'ws_demo', appId: f.appRecord.appId };
+      const selector = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: f.appRecord.appId,
+      };
       expect(await projections.worker!('kernel.apps.get', selector)).toEqual(f.appRecord);
       revokeOpenKitAccessTokenRecord(f.coreDb, workerAuthorityTokenId);
       await expect(projections.worker!('kernel.apps.get', selector)).rejects.toMatchObject({
@@ -1074,9 +1195,15 @@ describe('operation projection cutover', () => {
         })
       ).rejects.toMatchObject({ code: 'mcp-denied' });
       expect(
-        listRecords(f.command.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', {
-          schemaRevision: 1,
-        }).totalItems
+        listRecords(
+          f.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.appRecord.appId,
+          'entries',
+          {
+            schemaRevision: 1,
+          }
+        ).totalItems
       ).toBe(0);
     } finally {
       f.coreDb.sqlite.close();
@@ -1086,7 +1213,10 @@ describe('operation projection cutover', () => {
   it('uses canonical JSON routes for the read and replayable mutation', async () => {
     const fixture = await operationFixture();
     try {
-      const input = { workspaceId: 'ws_demo', appId: fixture.appRecord.appId };
+      const input = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: fixture.appRecord.appId,
+      };
       const read = await fixture.app.request('/api/app/operations/kernel.apps.get', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1106,17 +1236,27 @@ describe('operation projection cutover', () => {
       });
       expect(mutation.status).toBe(200);
       expect(
-        listRecords(fixture.command.dataRoot, 'ws_demo', input.appId, 'entries', {
-          schemaRevision: 1,
-        }).items
+        listRecords(
+          fixture.command.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          input.appId,
+          'entries',
+          {
+            schemaRevision: 1,
+          }
+        ).items
       ).toEqual([await mutation.json()]);
       expect(
-        (await fixture.app.request(`/api/app/workspaces/ws_demo/light-apps/${input.appId}`)).status
+        (
+          await fixture.app.request(
+            `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/light-apps/${input.appId}`
+          )
+        ).status
       ).toBe(404);
       expect(
         (
           await fixture.app.request(
-            `/api/app/workspaces/ws_demo/light-apps/${input.appId}/collections/entries/records`,
+            `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/light-apps/${input.appId}/collections/entries/records`,
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -1187,7 +1327,7 @@ describe('Workspace Thread Turn projection cutover', () => {
     const f = await operationFixture();
     try {
       const projections = await publicJourneyProjections(f);
-      const selector = { workspaceId: 'ws_demo' };
+      const selector = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
       for (const [initiating, create] of Object.entries(projections)) {
         const input = {
           ...selector,
@@ -1197,7 +1337,12 @@ describe('Workspace Thread Turn projection cutover', () => {
         };
         const thread = (await create('thread.create', input)) as { id: string; visibility: string };
         expect(thread.visibility).toBe('workspace');
-        const turn = f.store.createTurn('ws_demo', thread.id, 'journey', f.command.actor);
+        const turn = f.store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          thread.id,
+          'journey',
+          f.command.actor
+        );
         const child = { ...selector, threadId: thread.id };
         let collection: unknown;
         let dashboard: unknown;
@@ -1209,30 +1354,32 @@ describe('Workspace Thread Turn projection cutover', () => {
           expect(list).toMatchObject({
             items: expect.arrayContaining([
               expect.objectContaining({
-                workspace: expect.objectContaining({ id: 'ws_demo' }),
+                workspace: expect.objectContaining({
+                  id: 'ws_00000000-0000-7000-8000-000000000001',
+                }),
                 isOwner: true,
               }),
             ]),
           });
           expect(await project('workspace.resources', selector)).toEqual(
-            f.store.getWorkspaceResources('ws_demo')
+            f.store.getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001')
           );
           expect(await project('thread.create', input)).toEqual(
-            f.store.getThread('ws_demo', thread.id)
+            f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id)
           );
           expect(await project('thread.read', child)).toEqual(
-            f.store.getThread('ws_demo', thread.id)
+            f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id)
           );
           expect(await project('thread.items', child)).toEqual({
-            items: f.store.listThreadItems('ws_demo', thread.id),
+            items: f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id),
             nextCursor: null,
           });
           const read = await project('thread.dashboard', child);
           dashboard ??= read;
           expect(read).toEqual(dashboard);
           expect(read).toMatchObject({
-            thread: f.store.getThread('ws_demo', thread.id),
-            viewerUserId: 'user_local',
+            thread: f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id),
+            viewerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           });
           const result = await project('turn.read', { ...child, turnId: turn.id });
           turnRead ??= result;
@@ -1240,13 +1387,13 @@ describe('Workspace Thread Turn projection cutover', () => {
           expect(result).toMatchObject({ id: turn.id, contextPackageDigest: null });
           expect(result).not.toHaveProperty('agentSessionId');
         }
-        const before = f.store.listThreads('ws_demo').length;
+        const before = f.store.listThreads('ws_00000000-0000-7000-8000-000000000001').length;
         for (const project of Object.values(projections)) {
           await expect(
             project('thread.create', { ...input, name: 'changed' })
           ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
         }
-        expect(f.store.listThreads('ws_demo')).toHaveLength(before);
+        expect(f.store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(before);
       }
       for (const [initiating, project] of Object.entries(projections)) {
         const privateThread = await project('thread.create', {
@@ -1256,7 +1403,7 @@ describe('Workspace Thread Turn projection cutover', () => {
         });
         expect(privateThread).toMatchObject({
           visibility: 'private',
-          privateOwnerUserId: 'user_local',
+          privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         });
       }
     } finally {
@@ -1268,36 +1415,54 @@ describe('Workspace Thread Turn projection cutover', () => {
     const f = await operationFixture();
     try {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const projections = await publicJourneyProjections(f, issued.secret);
-      const foreign = f.store.createThread('ws_demo', 'private marker', undefined, 'conversation', {
-        visibility: 'private',
-        privateOwnerUserId: 'user_foreign',
-      });
-      const turn = f.store.createTurn('ws_demo', foreign.id, 'protected marker', f.command.actor);
-      const before = f.store.listThreads('ws_demo').length;
+      const foreign = f.store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'private marker',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
+        }
+      );
+      const turn = f.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        foreign.id,
+        'protected marker',
+        f.command.actor
+      );
+      const before = f.store.listThreads('ws_00000000-0000-7000-8000-000000000001').length;
       for (const project of Object.values(projections)) {
         await expect(
-          project('workspace.resources', { workspaceId: 'ws_unknown' })
+          project('workspace.resources', { workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })
         ).rejects.toMatchObject({
           code: 'workspace_access_denied',
           message: 'Workspace access denied.',
         });
         for (const id of ['thread.read', 'thread.items', 'thread.dashboard']) {
           await expect(
-            project(id, { workspaceId: 'ws_demo', threadId: foreign.id })
+            project(id, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: foreign.id,
+            })
           ).rejects.toMatchObject({ code: 'not_found', message: 'Thread not found.' });
         }
         await expect(
-          project('turn.read', { workspaceId: 'ws_demo', threadId: foreign.id, turnId: turn.id })
+          project('turn.read', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: foreign.id,
+            turnId: turn.id,
+          })
         ).rejects.toMatchObject({ code: 'not_found', message: 'Thread not found.' });
         await expect(
           project('thread.create', {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             name: 'denied',
             requestId: randomUUID(),
             visibility: 'workspace',
@@ -1307,7 +1472,7 @@ describe('Workspace Thread Turn projection cutover', () => {
           message: 'Workspace access denied.',
         });
       }
-      expect(f.store.listThreads('ws_demo')).toHaveLength(before);
+      expect(f.store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(before);
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -1317,22 +1482,52 @@ describe('Workspace Thread Turn projection cutover', () => {
     const f = await operationFixture();
     try {
       const projections = await publicJourneyProjections(f);
-      const visible = f.store.createThread('ws_demo', 'visible Thread');
-      const other = f.store.createThread('ws_demo', 'other visible Thread');
-      const turn = f.store.createTurn('ws_demo', other.id, 'wrong lineage', f.command.actor);
-      const threadCount = f.store.listThreads('ws_demo').length;
-      const visibleTurnCount = f.store.listThreadTurns('ws_demo', visible.id).length;
-      const otherTurnCount = f.store.listThreadTurns('ws_demo', other.id).length;
+      const visible = f.store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'visible Thread'
+      );
+      const other = f.store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'other visible Thread'
+      );
+      const turn = f.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        other.id,
+        'wrong lineage',
+        f.command.actor
+      );
+      const threadCount = f.store.listThreads('ws_00000000-0000-7000-8000-000000000001').length;
+      const visibleTurnCount = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        visible.id
+      ).length;
+      const otherTurnCount = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        other.id
+      ).length;
       for (const project of Object.values(projections)) {
         expect(
-          await project('thread.read', { workspaceId: 'ws_demo', threadId: visible.id })
-        ).toEqual(f.store.getThread('ws_demo', visible.id));
+          await project('thread.read', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: visible.id,
+          })
+        ).toEqual(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', visible.id));
         await expect(
-          project('turn.read', { workspaceId: 'ws_demo', threadId: visible.id, turnId: turn.id })
+          project('turn.read', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: visible.id,
+            turnId: turn.id,
+          })
         ).rejects.toMatchObject({ code: 'not_found', message: `Turn not found: ${turn.id}` });
-        expect(f.store.listThreads('ws_demo')).toHaveLength(threadCount);
-        expect(f.store.listThreadTurns('ws_demo', visible.id)).toHaveLength(visibleTurnCount);
-        expect(f.store.listThreadTurns('ws_demo', other.id)).toHaveLength(otherTurnCount);
+        expect(f.store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+          threadCount
+        );
+        expect(
+          f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', visible.id)
+        ).toHaveLength(visibleTurnCount);
+        expect(
+          f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', other.id)
+        ).toHaveLength(otherTurnCount);
       }
     } finally {
       f.coreDb.sqlite.close();
@@ -1342,19 +1537,21 @@ describe('Workspace Thread Turn projection cutover', () => {
   it('rejects conflicting HTTP Thread creation body and header request identities with zero effects', async () => {
     const f = await operationFixture();
     try {
-      const threadCount = f.store.listThreads('ws_demo').length;
+      const threadCount = f.store.listThreads('ws_00000000-0000-7000-8000-000000000001').length;
       const response = await f.app.request('/api/app/operations/thread.create', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
         body: JSON.stringify({
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           name: 'conflicting identity',
           requestId: randomUUID(),
         }),
       });
       expect(response.status).toBe(403);
       await expect(response.json()).resolves.toMatchObject({ code: 'bound_input_conflict' });
-      expect(f.store.listThreads('ws_demo')).toHaveLength(threadCount);
+      expect(f.store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+        threadCount
+      );
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -1366,21 +1563,21 @@ describe('Workspace Thread Turn projection cutover', () => {
       const other = f.store.createWorkspace('administrator candidate');
       f.coreDb.sqlite
         .prepare(
-          "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'user_foreign', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'user_local'"
+          "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
         )
         .run();
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
-        ownerUserId: 'user_foreign',
+        ownerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
         workspaceId: other.id,
       });
       const foreign = f.store.createThread(other.id, 'foreign private', undefined, 'conversation', {
         visibility: 'private',
-        privateOwnerUserId: 'user_foreign',
+        privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
       });
       const turn = f.store.createTurn(other.id, foreign.id, 'administrator read', f.command.actor);
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1415,7 +1612,10 @@ describe('Workspace Thread Turn projection cutover', () => {
         await invoke(
           'thread.read' as never,
           { workspaceId: other.id, threadId: foreign.id },
-          { kind: 'public', actor: { kind: 'session', userId: 'user_local' } }
+          {
+            kind: 'public',
+            actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          }
         )
       ).toEqual(f.store.getThread(other.id, foreign.id));
       revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
@@ -1423,7 +1623,10 @@ describe('Workspace Thread Turn projection cutover', () => {
         invoke(
           'thread.read' as never,
           { workspaceId: other.id, threadId: foreign.id },
-          { kind: 'public', actor: { kind: 'session', userId: 'user_local' } }
+          {
+            kind: 'public',
+            actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          }
         )
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });
     } finally {
@@ -1434,16 +1637,33 @@ describe('Workspace Thread Turn projection cutover', () => {
   it('deletes every replaced route and hand-written client CLI access and OpenAPI mapping', async () => {
     const f = await operationFixture();
     try {
-      const turn = f.store.createTurn('ws_demo', 'th_demo', 'old route', f.command.actor);
+      const turn = f.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'old route',
+        f.command.actor
+      );
       for (const [method, path] of [
         ['GET', '/api/workspaces'],
         ['GET', '/api/app/workspaces'],
-        ['GET', '/api/workspaces/ws_demo/resources'],
-        ['POST', '/api/workspaces/ws_demo/threads'],
-        ['GET', '/api/workspaces/ws_demo/threads/th_demo'],
-        ['GET', '/api/app/workspaces/ws_demo/threads/th_demo/items'],
-        ['GET', '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'],
-        ['GET', `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}`],
+        ['GET', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/resources'],
+        ['POST', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads'],
+        [
+          'GET',
+          '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001',
+        ],
+        [
+          'GET',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/items',
+        ],
+        [
+          'GET',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/dashboard',
+        ],
+        [
+          'GET',
+          `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/turns/${turn.id}`,
+        ],
       ])
         expect(
           (
@@ -1505,7 +1725,7 @@ describe('Goal definition projections', () => {
     try {
       const projections = await publicJourneyProjections(f);
       const created = (await projections.client('goal.create', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: randomUUID(),
         intent: 'Review design',
       })) as import('@openkit/app-api-schemas').GoalView;
@@ -1532,14 +1752,14 @@ describe('Goal definition projections', () => {
           goal.workspaceId,
           goal.threadId,
           'Projection check',
-          { kind: 'user', id: 'user_local' },
+          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           undefined,
           { executorKind: 'coordinator', agentId: 'goal-coordinator' }
         );
         const tools = createGoalTools({
           store: f.store,
           db,
-          actor: { kind: 'local', userId: 'user_local' },
+          actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
           goalId: goal.goalId,
           turnId: turn.id,
           services: {},
@@ -1594,29 +1814,41 @@ describe('Goal definition projections', () => {
     const f = await operationFixture();
     try {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const readOnly = await publicJourneyProjections(f, issued.secret);
       await expect(
         readOnly.http('goal.create', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           requestId: randomUUID(),
           intent: 'Denied',
         })
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });
-      const foreign = f.store.createThread('ws_demo', 'Private', undefined, 'conversation', {
-        visibility: 'private',
-        privateOwnerUserId: 'user_foreign',
-      });
+      const foreign = f.store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Private',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
+        }
+      );
       await expect(
-        readOnly.http('goal.read', { workspaceId: 'ws_demo', threadId: foreign.id })
+        readOnly.http('goal.read', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: foreign.id,
+        })
       ).rejects.toMatchObject({ code: 'not_found' });
       revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
       await expect(
-        readOnly.http('goal.read', { workspaceId: 'ws_demo', threadId: 'th_demo' })
+        readOnly.http('goal.read', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        })
       ).rejects.toMatchObject({ code: expect.any(String) });
     } finally {
       f.coreDb.sqlite.close();
@@ -1628,35 +1860,45 @@ import { executeGoalOperation } from './runtime/goal-owner.js';
 
 it('discloses and grants a Coordinator proposal to the current administrator without membership, retaining actual attribution and refusing revoked consumption', async () => {
   const f = await operationFixture();
-  const db = openWorkspaceDb(f.command.dataRoot, 'ws_demo');
+  const db = openWorkspaceDb(f.command.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   try {
     f.coreDb.sqlite
       .prepare(
-        "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,last_seen_at) SELECT 'user_admin',kind,display_name,'admin@local.openkit.invalid',email_verified,created_at,updated_at,last_seen_at FROM users WHERE id='user_local'"
+        "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,last_seen_at) SELECT 'usr_00000000-0000-768a-8658-44c33d82c1f5',kind,display_name,'admin@local.openkit.invalid',email_verified,created_at,updated_at,last_seen_at FROM users WHERE id='usr_00000000-0000-7000-8000-000000000001'"
       )
       .run();
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_admin',
+      ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const context = { actor: { kind: 'local' as const, userId: 'user_local' } };
+    const context = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
     const created = await executeGoalOperation(
       'goal.create',
-      { workspaceId: 'ws_demo', requestId: randomUUID(), intent: 'Review design' },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        requestId: randomUUID(),
+        intent: 'Review design',
+      },
       context,
       f.store,
       db
     );
     const goal = created.goal!;
-    const scope = { workspaceId: 'ws_demo', threadId: goal.threadId, goalId: goal.goalId };
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: goal.threadId,
+      goalId: goal.goalId,
+    };
     const turn = f.store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       goal.threadId,
       'Coordinate',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       undefined,
       { executorKind: 'coordinator', agentId: 'goal-coordinator' }
     );
@@ -1688,15 +1930,15 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
       decision: 'granted',
     })) as import('@openkit/app-api-schemas').GoalView;
     expect(resolved.requests[0]).toMatchObject({
-      decidingActorId: 'user_admin',
+      decidingActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       claim: 'unclaimed',
       disposition: null,
     });
     const consuming = f.store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       goal.threadId,
       'Consume exact outcome',
-      { kind: 'user', id: 'user_admin' },
+      { kind: 'user', id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
       undefined,
       { executorKind: 'coordinator', agentId: 'goal-coordinator' }
     );
@@ -1724,7 +1966,7 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
         )
         .get(request.requestId)
     ).toEqual({
-      deciding_actor_id: 'user_admin',
+      deciding_actor_id: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       claim: 'unclaimed',
       disposition: 'denied-not-executed',
     });
@@ -1741,21 +1983,36 @@ function privateEngineFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  const thread = store.createThread('ws_demo', 'Private operation', undefined, 'conversation', {
-    visibility: 'private',
-    privateOwnerUserId: 'user_local',
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const turn = store.createTurn('ws_demo', thread.id, 'Private read', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const thread = store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Private operation',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    thread.id,
+    'Private read',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const controller = new AbortController();
   const context: AssistantOperationInvocationContext = {
     kind: 'assistant-command',
     entryScope: 'conversation.submit',
-    actor: { kind: 'local', userId: 'user_local' },
-    workspaceId: 'ws_demo',
+    actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: thread.id,
     turnId: turn.id,
     requestId: randomUUID(),
@@ -1921,7 +2178,10 @@ describe('#144 private native invocation and public exclusion', () => {
         invoke(
           'skill.read' as JsonOperationId,
           {},
-          { kind: 'public', actor: { kind: 'local', userId: 'user_local' } }
+          {
+            kind: 'public',
+            actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          }
         )
       ).rejects.toMatchObject({ code: 'unsupported_operation', status: 400 });
       expect(touched).not.toHaveBeenCalled();
@@ -1933,7 +2193,7 @@ describe('#144 private native invocation and public exclusion', () => {
   it('omits and refuses the private operation in remote MCP discovery and invocation', async () => {
     const f = await operationFixture();
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',

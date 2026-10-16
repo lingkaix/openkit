@@ -15,9 +15,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-
 import { WorkspaceDeletionPhaseSchema } from '@openkit/app-api-schemas';
-import { RequestIdSchema, TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AuditEventIdSchema,
+  deriveEntityId,
+  RequestIdSchema,
+  TimestampSchema,
+  UserIdSchema,
+  WorkspaceExportIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { CoreDb } from './storage/db.js';
 import {
@@ -44,19 +51,19 @@ export const WorkspaceDeletionRequestRecordSchema = z
     schemaVersion: z.literal(1),
     workspaceId: WorkspaceIdSchema,
     requestId: RequestIdSchema,
-    originalOwnerUserId: z.string().min(1),
+    originalOwnerUserId: UserIdSchema,
     // The actual initiator is required; recovery ownership never supplies it.
-    initiatingUserId: z.string().min(1),
+    initiatingUserId: UserIdSchema,
     expectedRegistryRevision: z.number().int().positive(),
     confirmation: z.string().min(1),
     createdAt: TimestampSchema,
     phase: WorkspaceDeletionPhaseSchema,
-    recoveryExportId: z.string().min(1).nullable(),
+    recoveryExportId: WorkspaceExportIdSchema.nullable(),
     recoveryExportManifestDigest: z.string().min(1).nullable(),
     closureId: z.string().min(1).nullable(),
     closureDigest: z.string().min(1).nullable(),
     stagingRelativePath: z.string().min(1).nullable(),
-    terminalAuditEventId: z.string().min(1).nullable(),
+    terminalAuditEventId: AuditEventIdSchema.nullable(),
     commandReceiptKey: z.string().min(1).nullable(),
     retainedStaging: z.boolean(),
     cleanedAt: TimestampSchema.nullable(),
@@ -373,7 +380,7 @@ export function assertWorkspaceDeletionRecoveryExportAuthority(
     request.originalOwnerUserId !== input.authorityUserId ||
     request.recoveryExportId !== null ||
     request.recoveryExportManifestDigest !== null ||
-    input.exportId !== `wsexp_delete_${request.requestId}` ||
+    input.exportId !== deriveEntityId('wsexp', ['delete', request.requestId]) ||
     registry?.status !== 'deleting' ||
     registry.ownerUserId !== request.originalOwnerUserId ||
     registry.registryRevision !== request.expectedRegistryRevision + 1

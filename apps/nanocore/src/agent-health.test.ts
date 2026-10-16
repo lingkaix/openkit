@@ -70,7 +70,7 @@ describe('Agent inventory and health operations', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
         }
       )
     );

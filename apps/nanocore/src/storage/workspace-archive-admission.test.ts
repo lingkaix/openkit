@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -32,14 +32,18 @@ function archiveFixture() {
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Archive admission');
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: workspace.id });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: workspace.id,
+  });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const app = createApp({
     auth: {
       api: {
         getSession: async () => ({
           session: { id: 'archive_session' },
-          user: { id: 'user_local' },
+          user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
         }),
       },
       handler: async () => Response.json({ status: 'auth-ok' }),
@@ -52,7 +56,7 @@ function archiveFixture() {
   });
   const token = (scope: 'workspace' | 'workspace-readonly' | 'server-admin') =>
     createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope,
       workspaceIds: scope === 'server-admin' ? [] : [workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -197,11 +201,11 @@ describe('retained archive primary admission', () => {
       target.coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
         .get(result.importedWorkspaceId)
-    ).toEqual({ owner_user_id: 'user_local' });
+    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
     expect(
       target.coreDb.sqlite
         .prepare('SELECT user_id, status FROM workspace_members WHERE workspace_id = ?')
         .all(result.importedWorkspaceId)
-    ).toEqual([{ user_id: 'user_local', status: 'active' }]);
+    ).toEqual([{ user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' }]);
   });
 });

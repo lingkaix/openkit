@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,11 +11,12 @@ import {
 import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
@@ -117,19 +119,19 @@ describe('Generative UI Thread audience', () => {
     const workspace = store.createWorkspace('Audience team');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const now = Date.now();
     coreDb.sqlite
       .prepare(
-        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('user_other', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
+        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(now, now);
     const stamp = '2026-09-16T00:00:00.000Z';
     coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'user_other', 'active', NULL, ?, NULL, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, stamp, stamp, stamp);
 
@@ -138,14 +140,14 @@ describe('Generative UI Thread audience', () => {
       'Own private audience thread',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const otherPrivateThread = store.createThread(
       workspace.id,
       'Other private audience thread',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_other' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
     const sharedThread = store.createThread(
       workspace.id,
@@ -158,20 +160,20 @@ describe('Generative UI Thread audience', () => {
       workspace.id,
       ownPrivateThread.id,
       'Publish own private view',
-      { kind: 'user', id: 'user_local' }
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const otherPrivateTurn = store.createTurn(
       workspace.id,
       otherPrivateThread.id,
       'Publish other private view',
-      { kind: 'user', id: 'user_other' }
+      { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
     const sharedTurn = store.createTurn(workspace.id, sharedThread.id, 'Publish shared view', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const ownPrivateSource = store.createItem({
-      id: `it_${ownPrivateTurn.id}_source`,
+      id: testEntityId('it', `it_${ownPrivateTurn.id}_source`),
       workspaceId: workspace.id,
       threadId: ownPrivateThread.id,
       turnId: ownPrivateTurn.id,
@@ -182,7 +184,7 @@ describe('Generative UI Thread audience', () => {
       completedAt: ownPrivateTurn.startedAt ?? stamp,
     });
     const otherPrivateSource = store.createItem({
-      id: `it_${otherPrivateTurn.id}_source`,
+      id: testEntityId('it', `it_${otherPrivateTurn.id}_source`),
       workspaceId: workspace.id,
       threadId: otherPrivateThread.id,
       turnId: otherPrivateTurn.id,
@@ -193,7 +195,7 @@ describe('Generative UI Thread audience', () => {
       completedAt: otherPrivateTurn.startedAt ?? stamp,
     });
     const sharedSource = store.createItem({
-      id: `it_${sharedTurn.id}_source`,
+      id: testEntityId('it', `it_${sharedTurn.id}_source`),
       workspaceId: workspace.id,
       threadId: sharedThread.id,
       turnId: sharedTurn.id,
@@ -212,19 +214,19 @@ describe('Generative UI Thread audience', () => {
       store,
     });
     const ownerToken = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const memberToken = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_other',
+      ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const adminToken = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -635,7 +637,7 @@ describe('Generative UI Thread audience', () => {
                 fallbackText: SHARED_TEXT,
                 itemId: sharedSource.id,
                 itemText: SHARED_TEXT,
-                threadId: 'th_missing_audience',
+                threadId: 'th_00000000-0000-75cf-b813-27265cbf1c73',
                 title: SHARED_TITLE,
                 turnId: sharedTurn.id,
               })
@@ -664,7 +666,7 @@ describe('Generative UI Thread audience', () => {
                 itemText: SHARED_TEXT,
                 threadId: sharedThread.id,
                 title: SHARED_TITLE,
-                turnId: 'tu_missing_audience',
+                turnId: 'tu_00000000-0000-75c8-8f53-32726d19cb05',
               })
             ),
           }
@@ -672,7 +674,7 @@ describe('Generative UI Thread audience', () => {
       );
       expect(missingTurnPublish.status).toBe(404);
       const missingTurnText = await missingTurnPublish.text();
-      expect(missingTurnText).not.toContain('tu_missing_audience');
+      expect(missingTurnText).not.toContain('tu_00000000-0000-75c8-8f53-32726d19cb05');
       expect(JSON.parse(missingTurnText)).toMatchObject({ code: 'not_found' });
 
       expect(
@@ -796,7 +798,7 @@ describe('Generative UI Thread audience', () => {
         noInsertDb.sqlite.close();
       }
 
-      const forgedId = randomUUID();
+      const forgedId = testEntityId('pres', 'retained-private-source-presentation');
       const forgedMessages = [
         ...nativeMessages('surface-audience', [
           { id: 'root', component: 'Text', text: { path: '/text' } },
@@ -826,9 +828,9 @@ describe('Generative UI Thread audience', () => {
             workspace.id,
             sharedThread.id,
             sharedTurn.id,
-            `it_${forgedId}`,
+            testEntityId('it', `retained-private-source-${forgedId}`),
             stamp,
-            JSON.stringify({ kind: 'user', id: 'user_local' }),
+            JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }),
             randomUUID(),
             null,
             `sha256:${'ab'.repeat(32)}`,

@@ -1,5 +1,5 @@
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
+import { type ActorRef, responsibleUserIdForActor, WorkspaceIdSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -47,7 +47,7 @@ const GatewayWorkspaceAttributionSchema = z
       .object({
         openkit: z
           .object({
-            workspaceId: z.string().min(1).optional(),
+            workspaceId: WorkspaceIdSchema.optional(),
           })
           .passthrough()
           .optional(),

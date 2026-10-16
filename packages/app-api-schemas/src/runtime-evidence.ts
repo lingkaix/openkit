@@ -1,3 +1,9 @@
+import {
+  AgentSessionIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Product-safe file manifest summary attached to runtime evidence. */
@@ -13,12 +19,12 @@ export const RuntimeEvidenceManifestEntrySchema = z
 export const RuntimeEvidenceRecordSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1).nullable(),
-    turnId: z.string().min(1).nullable(),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema.nullable(),
+    turnId: TurnIdSchema.nullable(),
     goalId: z.string().min(1).nullable(),
     taskId: z.string().min(1).nullable(),
-    agentSessionId: z.string().min(1).nullable(),
+    agentSessionId: AgentSessionIdSchema.nullable(),
     backendType: z.string().min(1).nullable(),
     backendVersion: z.string().min(1).nullable(),
     placement: z.enum(['local', 'remote', 'unknown']),
@@ -66,7 +72,7 @@ export const RuntimeEvidenceRecordSchema = z
 /** Read-only workspace runtime evidence list response. */
 export const ListWorkspaceRuntimeEvidenceResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     runtimeEvidence: z.array(RuntimeEvidenceRecordSchema),
   })
   .strict();

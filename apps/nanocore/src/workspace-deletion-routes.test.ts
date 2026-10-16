@@ -11,13 +11,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
@@ -37,7 +36,10 @@ import {
   createVerifiedWorkspaceExport,
   workspaceDeletionRecoveryExportId,
 } from './storage/workspace-transfer-routes.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
   createWorkspaceDeletionClosure,
@@ -73,11 +75,11 @@ it.each([
     const workspace = store.createWorkspace('Current deletion credential');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: phase === 'requested' ? 'workspace' : 'server-admin',
       workspaceIds: phase === 'requested' ? [workspace.id] : [],
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -104,7 +106,7 @@ it.each([
     // A named busy session keeps the existing early-202 path observable without external work.
     const now = new Date().toISOString();
     store.createAgentSession({
-      id: randomUUID(),
+      id: testEntityId('as', 'deletion-current-credential-busy'),
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: store.createThread(workspace.id, 'Still running').id,
@@ -117,8 +119,8 @@ it.each([
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
-      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId: randomUUID(),
       workspaceId: workspace.id,
     });
@@ -159,7 +161,11 @@ it.each([
           'SELECT owner_user_id, status, revision FROM workspace_registry WHERE workspace_id = ?'
         )
         .get(workspace.id)
-    ).toEqual({ owner_user_id: 'user_local', status: 'active', revision: 1 });
+    ).toEqual({
+      owner_user_id: 'usr_00000000-0000-7000-8000-000000000001',
+      status: 'active',
+      revision: 1,
+    });
     expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(true);
     expect(existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id))).toBe(false);
   } finally {
@@ -182,11 +188,11 @@ it('resumes an exact fenced request after its registry transition without ordina
     const workspace = store.createWorkspace('Fenced deletion restart');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -205,8 +211,8 @@ it('resumes an exact fenced request after its registry transition without ordina
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
-      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId: randomUUID(),
       workspaceId: workspace.id,
     });
@@ -221,7 +227,13 @@ it('resumes an exact fenced request after its registry transition without ordina
         expectedRegistryRevision: request.expectedRegistryRevision,
       })
     )();
-    expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, 'user_local')).toBeNull();
+    expect(
+      resolveWorkspaceMembershipRelation(
+        coreDb,
+        workspace.id,
+        'usr_00000000-0000-7000-8000-000000000001'
+      )
+    ).toBeNull();
     const response = await app.request(
       ...operationRequest(
         'workspace.delete',
@@ -238,8 +250,8 @@ it('resumes an exact fenced request after its registry transition without ordina
     );
     expect(response.status).toBe(200);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId)).toMatchObject({
-      initiatingUserId: 'user_local',
-      originalOwnerUserId: 'user_local',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       phase: 'cleaned',
     });
     expect(admission.isClosed(workspace.id)).toBe(true);
@@ -290,7 +302,7 @@ it.each(
     const workspace = store.createWorkspace('Legal hold fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
@@ -398,6 +410,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
 
   try {
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Deletion fixture');
     const app = createApp({
@@ -410,7 +423,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const thread = store.createThread(workspace.id, 'Deletion quiescence blocker');
@@ -418,7 +431,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: timestamp,
-      id: 'session_workspace_deletion_blocker',
+      id: testEntityId('as', 'session_workspace_deletion_blocker'),
       message: null,
       status: 'busy',
       threadId: thread.id,
@@ -473,7 +486,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
     expect(requestRecord).toMatchObject({
       confirmation,
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       phase: 'fenced',
       requestId,
       schemaVersion: 1,
@@ -524,7 +537,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
       code: 'workspace_deletion_in_progress',
     });
 
-    store.updateAgentSession('session_workspace_deletion_blocker', {
+    store.updateAgentSession(testEntityId('as', 'session_workspace_deletion_blocker'), {
       status: 'closed',
       updatedAt: new Date().toISOString(),
     });
@@ -585,7 +598,7 @@ it.each([
     const workspace = store.createWorkspace(`${blocker} fixture`);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const timestamp = new Date().toISOString();
@@ -606,8 +619,8 @@ it.each([
              staging_directory_ref, workspace_handoff_state, state,
              physical_cleaned_at, created_at, updated_at
            ) VALUES (
-             'lease_deletion_backend', ?, 'thread_deletion_backend',
-             'turn_deletion_backend', 'session_deletion_backend',
+             'attempt_00000000-0000-7000-8000-000000000971', ?, 'th_00000000-0000-7000-8000-000000000971',
+             'tu_00000000-0000-7578-82f0-b9b0663a3388', 'as_00000000-0000-7000-8000-000000000971',
              'package_deletion_backend', 'test', 'deployment_deletion_backend',
              'backend_deletion_backend', 'target_deletion_backend', ?,
              '{"imageRef":"openkit/test:deletion"}', 'sandbox_deletion_backend',
@@ -691,14 +704,14 @@ function insertDeletionQuiescenceLease(
   turnId: string;
 } {
   const timestamp = new Date().toISOString();
-  const threadId = input.threadId ?? `thread_${input.suffix}`;
-  const turnId = input.turnId ?? `turn_${input.suffix}`;
-  const agentSessionId = input.agentSessionId ?? `session_${input.suffix}`;
+  const threadId = input.threadId ?? testEntityId('th', `thread_${input.suffix}`);
+  const turnId = input.turnId ?? testEntityId('tu', `turn_${input.suffix}`);
+  const agentSessionId = input.agentSessionId ?? testEntityId('as', `session_${input.suffix}`);
   const packageSnapshotId = input.packageSnapshotId ?? `package_${input.suffix}`;
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${input.suffix}`,
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     workspaceId: input.workspaceId,
     threadId,
     turnId,
@@ -708,7 +721,7 @@ function insertDeletionQuiescenceLease(
   });
   const attempt = recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease_${input.suffix}`,
+    attemptId: testEntityId('attempt', `lease_${input.suffix}`),
     agentSessionId,
     inputRef: packageSnapshotId,
     bindingRef: `sandbox_${input.suffix}`,
@@ -762,7 +775,7 @@ function insertDeletionQuiescenceBackend(
        )`
     )
     .run(
-      `lease_${input.suffix}`,
+      testEntityId('attempt', `lease_${input.suffix}`),
       input.workspaceId,
       input.threadId,
       input.turnId,
@@ -791,7 +804,7 @@ async function closeDeletionQuiescenceAttempt(
   suffix: string
 ): Promise<void> {
   const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
-    attemptId: `lease_${suffix}`,
+    attemptId: testEntityId('attempt', `lease_${suffix}`),
     cause: 'turn-failed',
   });
   const correlation = schedulerExecutionCorrelation(attempt);
@@ -831,7 +844,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
     const workspace = store.createWorkspace('Failed cleaned lease fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     for (const suffix of suffixes) {
@@ -883,15 +896,15 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
         .prepare(
           `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
            FROM scheduler_execution_attempts
-           WHERE attempt_id LIKE 'lease_cleaned_failed_%'
-           ORDER BY attempt_id`
+           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
+           ORDER BY rowid`
         )
-        .all()
+        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
     ).toEqual(
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
         phase: 'closed',
-        fenceRef: `self-check:lease_${suffix}`,
+        fenceRef: `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
       }))
     );
     expect(
@@ -899,10 +912,10 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
         .prepare(
           `SELECT state, physical_cleaned_at AS physicalCleanedAt
            FROM worker_backend_sessions
-           WHERE attempt_id LIKE 'lease_cleaned_failed_%'
-           ORDER BY attempt_id`
+           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
+           ORDER BY rowid`
         )
-        .all()
+        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
     ).toEqual(suffixes.map(() => ({ physicalCleanedAt, state: 'cleaned' })));
   } finally {
     coreDb.sqlite.close();
@@ -924,7 +937,7 @@ it('keeps deletion fenced when one of five failed attempts remains closing witho
     const workspace = store.createWorkspace('Sibling unproved lease fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     for (const suffix of suffixes) {
@@ -981,15 +994,18 @@ it('keeps deletion fenced when one of five failed attempts remains closing witho
         .prepare(
           `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
            FROM scheduler_execution_attempts
-           WHERE attempt_id LIKE 'lease_sibling_%'
-           ORDER BY attempt_id`
+           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
+           ORDER BY rowid`
         )
-        .all()
+        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
     ).toEqual(
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
         phase: suffix === 'sibling_unproved' ? 'closing' : 'closed',
-        fenceRef: suffix === 'sibling_unproved' ? null : `self-check:lease_${suffix}`,
+        fenceRef:
+          suffix === 'sibling_unproved'
+            ? null
+            : `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
       }))
     );
   } finally {
@@ -1052,7 +1068,7 @@ it.each([
     const workspace = store.createWorkspace(`${fixture.suffix} fixture`);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const lineage = insertDeletionQuiescenceLease(coreDb, {
@@ -1076,10 +1092,10 @@ it.each([
           .prepare(
             'SELECT phase, fence_ref AS fenceRef, disposition, terminal_cause AS cause FROM scheduler_execution_attempts WHERE attempt_id = ?'
           )
-          .get(`lease_${fixture.suffix}`)
+          .get(testEntityId('attempt', `lease_${fixture.suffix}`))
       ).toEqual({
         phase: 'closed',
-        fenceRef: `self-check:lease_${fixture.suffix}`,
+        fenceRef: `self-check:${testEntityId('attempt', `lease_${fixture.suffix}`)}`,
         disposition: 'unknown',
         cause: 'turn-failed',
       });
@@ -1087,23 +1103,26 @@ it.each([
     if (fixture.backend === 'missing') {
       coreDb.sqlite
         .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
-        .run(`lease_${fixture.suffix}`);
+        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
     } else if (fixture.backend === 'mismatched-thread') {
       coreDb.sqlite
         .prepare('UPDATE worker_backend_sessions SET thread_id = ? WHERE attempt_id = ?')
-        .run(`thread_other_${fixture.suffix}`, `lease_${fixture.suffix}`);
+        .run(
+          testEntityId('th', `thread_other_${fixture.suffix}`),
+          testEntityId('attempt', `lease_${fixture.suffix}`)
+        );
     } else if (fixture.backend === 'physical-cleaned') {
       coreDb.sqlite
         .prepare(
           "UPDATE worker_backend_sessions SET state = 'physical-cleaned' WHERE attempt_id = ?"
         )
-        .run(`lease_${fixture.suffix}`);
+        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
     } else if (fixture.backend === 'cleaned-without-timestamp') {
       coreDb.sqlite
         .prepare(
           'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
         )
-        .run(`lease_${fixture.suffix}`);
+        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
     }
     const app = createApp({
       coreDb,
@@ -1145,7 +1164,7 @@ it.each([
            FROM scheduler_execution_attempts
            WHERE attempt_id = ?`
         )
-        .get(`lease_${fixture.suffix}`)
+        .get(testEntityId('attempt', `lease_${fixture.suffix}`))
     ).toEqual({
       recoveryState: 'needs-evidence',
       phase: fixture.leaseStatus === 'failed' ? 'closed' : 'closing',
@@ -1167,7 +1186,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
     const workspace = store.createWorkspace('Disabled owner deletion fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const requestId = '00000000-0000-4000-8000-000000000016';
@@ -1175,12 +1194,14 @@ it('terminates a pre-transition deletion request when its original owner is disa
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
-      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: workspace.id,
     });
-    coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, 'user_local'))();
+    coreDb.sqlite.transaction(() =>
+      disableCanonicalUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+    )();
     const mutationAdmission = new WorkspaceMutationAdmission();
 
     createApp({
@@ -1212,12 +1233,12 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
-        ) VALUES ('user_admin', 'Admin', 'admin@example.com', false, ?, ?, 'human', 'active', NULL)`
+        ) VALUES ('usr_00000000-0000-768a-8658-44c33d82c1f5', 'Admin', 'admin@example.com', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(now, now);
     const admin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_admin',
+      ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       scope: 'server-admin',
       workspaceIds: [],
     });
@@ -1226,12 +1247,12 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     const deletingWorkspace = store.createWorkspace('Post-transition disabled owner fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: deletingWorkspace.id,
     });
     const requestId = '00000000-0000-4000-8000-000000000023';
@@ -1240,8 +1261,8 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       confirmation: `permanently-delete-workspace:${deletingWorkspace.id}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
-      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId: deletingRequestId,
       workspaceId: deletingWorkspace.id,
     });
@@ -1249,7 +1270,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       beginWorkspaceDeletion({
         coreDb,
         expectedRegistryRevision: 1,
-        originalOwnerUserId: 'user_local',
+        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: deletingWorkspace.id,
       })
     )();
@@ -1271,8 +1292,8 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
-      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: workspace.id,
     });
@@ -1280,7 +1301,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     const responsePromise = app.request(
       ...operationRequest(
         'user.disable',
-        { targetUserId: 'user_local' },
+        { targetUserId: 'usr_00000000-0000-7000-8000-000000000001' },
         {
           body: JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000024' }),
           headers: {
@@ -1325,7 +1346,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
     const workspace = store.createWorkspace('Conflicting deletion fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const requestIds = [
@@ -1337,13 +1358,15 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
         confirmation: `permanently-delete-workspace:${workspace.id}:1`,
         createdAt: new Date().toISOString(),
         expectedRegistryRevision: 1,
-        originalOwnerUserId: 'user_local',
-        initiatingUserId: 'user_local',
+        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
         requestId,
         workspaceId: workspace.id,
       });
     }
-    coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, 'user_local'))();
+    coreDb.sqlite.transaction(() =>
+      disableCanonicalUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+    )();
     const mutationAdmission = new WorkspaceMutationAdmission();
 
     createApp({
@@ -1380,14 +1403,14 @@ it('restores registry-owned boot fences without relying on a nonterminal request
     for (const workspace of [deletingWorkspace, deletedWorkspace]) {
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
       coreDb.sqlite.transaction(() =>
         beginWorkspaceDeletion({
           coreDb,
           expectedRegistryRevision: 1,
-          originalOwnerUserId: 'user_local',
+          originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           workspaceId: workspace.id,
         })
       )();
@@ -1396,7 +1419,7 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       completeWorkspaceDeletion({
         coreDb,
         expectedRegistryRevision: 2,
-        originalOwnerUserId: 'user_local',
+        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: deletedWorkspace.id,
       })
     )();
@@ -1405,8 +1428,8 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       confirmation: `permanently-delete-workspace:${deletedWorkspace.id}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
-      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: deletedWorkspace.id,
     });
@@ -1417,10 +1440,10 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       closureId: `wsclose_delete_${requestId}`,
       commandReceiptKey: 'workspace-delete-receipt',
       phase: 'cleaned',
-      recoveryExportId: `wsexp_delete_${requestId}`,
+      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
       recoveryExportManifestDigest: 'export-digest',
       stagingRelativePath: workspaceDeletionStagingRelativePath(deletedWorkspace.id, requestId),
-      terminalAuditEventId: 'workspace-delete-audit',
+      terminalAuditEventId: testEntityId('aud', 'workspace-delete-audit'),
     });
     const mutationAdmission = new WorkspaceMutationAdmission();
 
@@ -1456,7 +1479,7 @@ it.each([
     const workspace = store.createWorkspace(`${crashPoint} crash fixture`);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const repositoryWorkspaceDb = (workspaceId: string) => {
@@ -1473,8 +1496,8 @@ it.each([
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'user_local',
-      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: workspace.id,
     });
@@ -1482,16 +1505,33 @@ it.each([
       beginWorkspaceDeletion({
         coreDb,
         expectedRegistryRevision: 1,
-        originalOwnerUserId: 'user_local',
+        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       })
     )();
     request = writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'deleting' });
-    const exportId = `wsexp_delete_${requestId}`;
+    const exportId = workspaceDeletionRecoveryExportId(requestId);
+    const wrongExportId = workspaceDeletionRecoveryExportId('00000000-0000-4000-8000-000000000973');
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: requestId,
+        exportId: wrongExportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    expect(
+      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, wrongExportId))
+    ).toBe(false);
     const exported = createVerifiedWorkspaceExport({
-      authorityUserId: 'user_local',
+      authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
       coreDb,
       dataRoot,
+      deletionRecoveryRequestId: requestId,
       exportId,
       repositoryWorkspaceDb,
       store,
@@ -1509,7 +1549,7 @@ it.each([
         coreDb,
         cutoffTimestamp: new Date().toISOString(),
         dataRoot,
-        originalOwnerUserId: 'user_local',
+        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         recoveryExportId: exportId,
         recoveryExportManifestDigest: exported.manifestDigest,
         repositoryWorkspaceDb,
@@ -1589,7 +1629,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     const workspace = store.createWorkspace('Deletion retrieval trace fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const thread = store.createThread(workspace.id, 'Deletion trace owner');
@@ -1598,13 +1638,13 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       title: 'Deletion recovery trace',
       content: 'Retain this retrieval trace in the verified recovery export.',
     });
-    const traceId = 'krt_00000000-0000-4000-8000-000000000901';
+    const traceId = 'krt_00000000-0000-7c9e-a8c7-f3f6e7618033';
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {
         store,
         coreDb,
-        actor: { kind: 'user', id: 'user_local' },
-        requestActor: { kind: 'local', userId: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         outputThreadId: thread.id,
       },
       caller: 'task-mode',
@@ -1627,10 +1667,10 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       applyScopedMigrations(workspaceDb);
       return workspaceDb;
     };
-    const unauthorizedExportId = 'wsexp_unauthorized_retrieval_trace';
+    const unauthorizedExportId = 'wsexp_00000000-0000-796a-a49a-520342225098';
     expect(() =>
       createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         exportId: unauthorizedExportId,
@@ -1648,7 +1688,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     const unboundExportId = workspaceDeletionRecoveryExportId(unboundRequestId);
     expect(() =>
       createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         deletionRecoveryRequestId: unboundRequestId,
@@ -1693,7 +1733,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     const deletion = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
     expect(deletion).toMatchObject({
       phase: 'cleaned',
-      recoveryExportId: `wsexp_delete_${requestId}`,
+      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
       recoveryExportManifestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
     const exportRoot = join(
@@ -1726,6 +1766,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
 
   try {
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Terminal deletion fixture');
     const app = createApp({
@@ -1737,7 +1778,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const priorExportResponse = await app.request(
@@ -1760,13 +1801,13 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       'administration',
       {
         visibility: 'private',
-        privateOwnerUserId: 'user_local',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
     const now = Date.now();
     for (const [userId, email] of [
-      ['user_member', 'member@example.com'],
-      ['user_invitee', 'invitee@example.com'],
+      ['usr_00000000-0000-7d56-82f8-ec994b63859b', 'member@example.com'],
+      ['usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'invitee@example.com'],
     ] as const) {
       coreDb.sqlite
         .prepare(
@@ -1782,7 +1823,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
         `INSERT INTO workspace_members (
           workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, 'user_member', 'active', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES (?, 'usr_00000000-0000-7d56-82f8-ec994b63859b', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, nowIso, nowIso, nowIso);
     coreDb.sqlite
@@ -1791,12 +1832,12 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
           invitation_id, workspace_id, invitee_user_id, inviter_user_id,
           status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
         ) VALUES (
-          'inv_workspace_deletion', ?, 'user_invitee', 'user_local',
+          'inv_00000000-0000-74df-bb9f-c7268d65b989', ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7000-8000-000000000001',
           'pending', '2099-01-01T00:00:00.000Z', NULL, NULL, NULL, 1, ?, ?
         )`
       )
       .run(workspace.id, nowIso, nowIso);
-    expect(privateThread.privateOwnerUserId).toBe('user_local');
+    expect(privateThread.privateOwnerUserId).toBe('usr_00000000-0000-7000-8000-000000000001');
     const canonicalWorkspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const workspaceBackupRoot = join(workspaceBackupParent, 'workspace');
     cpSync(canonicalWorkspaceRoot, workspaceBackupRoot, { recursive: true });
@@ -1831,7 +1872,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       },
     });
     const completedRequest = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
-    expect(completedRequest.recoveryExportId).toBe(`wsexp_delete_${requestId}`);
+    expect(completedRequest.recoveryExportId).toBe(deriveEntityId('wsexp', ['delete', requestId]));
     expect(completedRequest.closureId).toBe(`wsclose_delete_${requestId}`);
     const workspaceExportsRoot = join(dataRoot, 'server', 'exports', 'workspaces', workspace.id);
     expect(existsSync(join(workspaceExportsRoot, priorExport.exportId))).toBe(false);
@@ -1843,12 +1884,16 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
            FROM workspace_registry WHERE workspace_id = ?`
         )
         .get(workspace.id)
-    ).toEqual({ owner_user_id: 'user_local', revision: 3, status: 'deleted' });
+    ).toEqual({
+      owner_user_id: 'usr_00000000-0000-7000-8000-000000000001',
+      revision: 3,
+      status: 'deleted',
+    });
     expect(
       coreDb.sqlite
         .prepare(
           `SELECT status
-           FROM workspace_members WHERE workspace_id = ? AND user_id = 'user_local'`
+           FROM workspace_members WHERE workspace_id = ? AND user_id = 'usr_00000000-0000-7000-8000-000000000001'`
         )
         .get(workspace.id)
     ).toEqual({ status: 'active' });
@@ -1856,7 +1901,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       coreDb.sqlite
         .prepare(
           `SELECT status, removed_at
-           FROM workspace_members WHERE workspace_id = ? AND user_id = 'user_member'`
+           FROM workspace_members WHERE workspace_id = ? AND user_id = 'usr_00000000-0000-7d56-82f8-ec994b63859b'`
         )
         .get(workspace.id)
     ).toEqual({ removed_at: expect.any(String), status: 'removed' });
@@ -1864,7 +1909,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       coreDb.sqlite
         .prepare(
           `SELECT status, revoked_at
-           FROM workspace_invitations WHERE invitation_id = 'inv_workspace_deletion'`
+           FROM workspace_invitations WHERE invitation_id = 'inv_00000000-0000-74df-bb9f-c7268d65b989'`
         )
         .get()
     ).toEqual({ revoked_at: expect.any(String), status: 'revoked' });
@@ -1881,8 +1926,16 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
         .prepare('SELECT COUNT(*) AS count FROM idempotency_requests WHERE request_id = ?')
         .get(requestId)
     ).toEqual({ count: 1 });
-    expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, 'user_local')).toBeNull();
-    expect(listActiveWorkspaceIdsForActor(coreDb, 'user_local')).not.toContain(workspace.id);
+    expect(
+      resolveWorkspaceMembershipRelation(
+        coreDb,
+        workspace.id,
+        'usr_00000000-0000-7000-8000-000000000001'
+      )
+    ).toBeNull();
+    expect(
+      listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+    ).not.toContain(workspace.id);
 
     const deletionRequestPath = join(
       dataRoot,
@@ -1993,7 +2046,10 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       )
     );
     expect(contradictoryReplay.status).toBe(409);
-    const activeWorkspaceIds = listActiveWorkspaceIdsForActor(coreDb, 'user_local');
+    const activeWorkspaceIds = listActiveWorkspaceIdsForActor(
+      coreDb,
+      'usr_00000000-0000-7000-8000-000000000001'
+    );
     const contradictoryRecovery = await app.request(
       ...operationRequest(
         'workspace.deleted-recover',
@@ -2009,13 +2065,15 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       )
     );
     expect(contradictoryRecovery.status).toBe(409);
-    expect(listActiveWorkspaceIdsForActor(coreDb, 'user_local')).toEqual(activeWorkspaceIds);
+    expect(
+      listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+    ).toEqual(activeWorkspaceIds);
     rmSync(canonicalWorkspaceRoot, { recursive: true });
 
     const reboundRequest = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
     writeWorkspaceDeletionRequest(dataRoot, {
       ...reboundRequest,
-      originalOwnerUserId: 'user_other',
+      originalOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     });
     const unboundRecovery = await app.request(
       ...operationRequest(
@@ -2042,7 +2100,10 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       workspace.id,
       reboundRequest.closureId!
     );
-    const activeBeforeManifestTamper = listActiveWorkspaceIdsForActor(coreDb, 'user_local');
+    const activeBeforeManifestTamper = listActiveWorkspaceIdsForActor(
+      coreDb,
+      'usr_00000000-0000-7000-8000-000000000001'
+    );
     const exportManifestPath = join(
       workspaceExportsRoot,
       reboundRequest.recoveryExportId!,
@@ -2093,9 +2154,9 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       )
     );
     expect(tamperedClosureRecovery.status).toBe(409);
-    expect(listActiveWorkspaceIdsForActor(coreDb, 'user_local')).toEqual(
-      activeBeforeManifestTamper
-    );
+    expect(
+      listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+    ).toEqual(activeBeforeManifestTamper);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual(reboundRequest);
     writeFileSync(closureManifestPath, closureManifestText);
 
@@ -2148,7 +2209,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       coreDb.sqlite
         .prepare('SELECT owner_user_id, status FROM workspace_registry WHERE workspace_id = ?')
         .get(recovered.recovery.import.importedWorkspaceId)
-    ).toEqual({ owner_user_id: 'user_local', status: 'active' });
+    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' });
     expect(
       coreDb.sqlite
         .prepare(
@@ -2156,7 +2217,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
            WHERE workspace_id = ? ORDER BY user_id`
         )
         .all(recovered.recovery.import.importedWorkspaceId)
-    ).toEqual([{ status: 'active', user_id: 'user_local' }]);
+    ).toEqual([{ status: 'active', user_id: 'usr_00000000-0000-7000-8000-000000000001' }]);
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });

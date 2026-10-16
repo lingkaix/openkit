@@ -15,6 +15,7 @@ import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -94,12 +95,12 @@ function createFixture(): RouteFixture {
   openDatabases.push(coreDb);
 
   for (const [userId, email] of [
-    ['user_owner', 'owner@example.com'],
-    ['user_invitee', 'invitee@example.com'],
-    ['user_editor', 'editor@example.com'],
-    ['user_viewer', 'viewer@example.com'],
-    ['user_admin', 'admin@example.com'],
-    ['user_disable', 'disable@example.com'],
+    ['usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com'],
+    ['usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'invitee@example.com'],
+    ['usr_00000000-0000-7609-aed5-db4b5c95e76c', 'editor@example.com'],
+    ['usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'viewer@example.com'],
+    ['usr_00000000-0000-768a-8658-44c33d82c1f5', 'admin@example.com'],
+    ['usr_00000000-0000-7ab7-8a59-636a897b0c66', 'disable@example.com'],
   ] as const) {
     insertUser(coreDb, userId, email);
   }
@@ -107,16 +108,22 @@ function createFixture(): RouteFixture {
   const store = new FsStore();
   const workspaceId = store.createWorkspace('Shared Workspace').id;
   const foreignWorkspaceId = store.createWorkspace('Foreign Workspace').id;
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_owner', workspaceId });
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_owner',
+    ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+    workspaceId,
+  });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     workspaceId: foreignWorkspaceId,
   });
-  insertMember(coreDb, workspaceId, 'user_editor');
-  insertMember(coreDb, workspaceId, 'user_viewer');
+  insertMember(coreDb, workspaceId, 'usr_00000000-0000-7609-aed5-db4b5c95e76c');
+  insertMember(coreDb, workspaceId, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8');
 
-  const actorState: ActorState = { current: { kind: 'session', userId: 'user_owner' } };
+  const actorState: ActorState = {
+    current: { kind: 'session', userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
+  };
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use('*', async (context, next) => {
@@ -222,7 +229,7 @@ describe('Workspace sharing routes', () => {
     const fixture = createFixture();
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'user_admin',
+      ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       scope: 'server-admin',
       tokenId: 'token_admin_list',
       workspaceIds: [],
@@ -232,7 +239,7 @@ describe('Workspace sharing routes', () => {
       tokenId: 'token_admin_list',
       tokenScope: 'server-admin',
       tokenWorkspaceIds: [],
-      userId: 'user_admin',
+      userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
     };
     const body = readAuthorizedWorkspaces(
       fixture.coreDb,
@@ -243,7 +250,7 @@ describe('Workspace sharing routes', () => {
 
     expect(body.items).toEqual([
       expect.objectContaining({
-        ownerUserId: 'user_owner',
+        ownerUserId: testEntityId('usr', 'user_owner'),
         membershipStatus: null,
         accessCause: 'administrator',
         isOwner: false,
@@ -257,15 +264,15 @@ describe('Workspace sharing routes', () => {
     const fixture = createFixture();
     const now = '2026-07-19T00:00:00.000Z';
     for (const [invitationId, workspaceId] of [
-      ['inv_fenced', fixture.workspaceId],
-      ['inv_deleting', fixture.foreignWorkspaceId],
+      ['inv_00000000-0000-7fa0-886a-4a5b14d6d0c8', fixture.workspaceId],
+      ['inv_00000000-0000-718f-bfd8-7eb610e403a9', fixture.foreignWorkspaceId],
     ] as const) {
       fixture.coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
             invitation_id, workspace_id, invitee_user_id, inviter_user_id,
             status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
-          ) VALUES (?, ?, 'user_invitee', 'user_owner', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES (?, ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(invitationId, workspaceId, '2026-07-26T00:00:00.000Z', now, now);
     }
@@ -277,7 +284,10 @@ describe('Workspace sharing routes', () => {
          WHERE workspace_id = ?`
       )
       .run(now, fixture.foreignWorkspaceId);
-    fixture.actorState.current = { kind: 'session', userId: 'user_invitee' };
+    fixture.actorState.current = {
+      kind: 'session',
+      userId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
+    };
 
     const response = await fixture.app.request(
       ...operationRequest('workspace.my-invitation-list', {}, {})
@@ -351,9 +361,9 @@ describe('Workspace sharing routes', () => {
         .get()
     ).toEqual({
       action: 'workspace.invitation.create',
-      actorJson: JSON.stringify({ kind: 'user', id: 'user_owner' }),
+      actorJson: JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' }),
       resourceRevision: 1,
-      subjectJson: JSON.stringify({ kind: 'user', id: 'user_invitee' }),
+      subjectJson: JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0' }),
       workspaceId: fixture.workspaceId,
     });
     expect(
@@ -366,7 +376,10 @@ describe('Workspace sharing routes', () => {
     const noOp = await fixture.app.request(
       ...operationRequest(
         'workspace.ownership-transfer',
-        { workspaceId: fixture.workspaceId, targetUserId: 'user_owner' },
+        {
+          workspaceId: fixture.workspaceId,
+          targetUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        },
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
@@ -380,7 +393,10 @@ describe('Workspace sharing routes', () => {
     const conflict = await fixture.app.request(
       ...operationRequest(
         'workspace.ownership-transfer',
-        { workspaceId: fixture.workspaceId, targetUserId: 'user_owner' },
+        {
+          workspaceId: fixture.workspaceId,
+          targetUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        },
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
@@ -403,7 +419,7 @@ describe('Workspace sharing routes', () => {
     await expect(conflict.json()).resolves.toMatchObject({
       code: 'revision_conflict',
       details: {
-        current: { registryRevision: 1, ownerUserId: 'user_owner' },
+        current: { registryRevision: 1, ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
         resource: 'workspace',
       },
     });
@@ -418,10 +434,10 @@ describe('Workspace sharing routes', () => {
           `INSERT INTO workspace_invitations (
             invitation_id, workspace_id, invitee_user_id, inviter_user_id,
             status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
-          ) VALUES ('inv_foreign', ?, 'user_invitee', 'user_owner', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES ('inv_00000000-0000-7d26-983c-83c7b6f9b27f', ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(fixture.foreignWorkspaceId, '2026-07-26T00:00:00.000Z', now, now);
-      return 'inv_foreign';
+      return 'inv_00000000-0000-7d26-983c-83c7b6f9b27f';
     })();
     const mismatch = await fixture.app.request(
       ...operationRequest(
@@ -441,7 +457,7 @@ describe('Workspace sharing routes', () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       tokenId: 'token_admin',
       scope: 'server-admin',
-      ownerUserId: 'user_admin',
+      ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
@@ -449,22 +465,22 @@ describe('Workspace sharing routes', () => {
       kind: 'token',
       tokenId: 'token_admin',
       tokenScope: 'server-admin',
-      userId: 'user_admin',
+      userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
     };
     recordServerAuditEvent({
       action: 'user.disable',
-      actor: { id: 'user_admin', kind: 'user' },
+      actor: { id: 'usr_00000000-0000-768a-8658-44c33d82c1f5', kind: 'user' },
       coreDb: fixture.coreDb,
       outcome: 'succeeded',
       requestId: '00000000-0000-4000-8000-000000000005',
-      resource: 'user:user_disable',
-      subject: { id: 'user_disable', kind: 'user' },
+      resource: 'user:usr_00000000-0000-7ab7-8a59-636a897b0c66',
+      subject: { id: 'usr_00000000-0000-7ab7-8a59-636a897b0c66', kind: 'user' },
       summary: 'Canonical user disabled.',
     });
     const uncertain = await fixture.app.request(
       ...operationRequest(
         'user.disable',
-        { targetUserId: 'user_disable' },
+        { targetUserId: 'usr_00000000-0000-7ab7-8a59-636a897b0c66' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -483,7 +499,10 @@ describe('Workspace sharing routes', () => {
 
   it('allows leave only from current policy authority or the exact own tombstone receipt', async () => {
     const fixture = createFixture();
-    fixture.actorState.current = { kind: 'session', userId: 'user_editor' };
+    fixture.actorState.current = {
+      kind: 'session',
+      userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+    };
     const input = {
       expectedRevision: 1,
       requestId: '00000000-0000-4000-8000-000000000006',
@@ -547,7 +566,7 @@ describe('Workspace sharing routes', () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       tokenId: 'token_admin',
       scope: 'server-admin',
-      ownerUserId: 'user_admin',
+      ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
@@ -555,7 +574,7 @@ describe('Workspace sharing routes', () => {
       kind: 'token',
       tokenId: 'token_admin',
       tokenScope: 'server-admin',
-      userId: 'user_admin',
+      userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
     };
     const read = await fixture.app.request(
       ...operationRequest(
@@ -582,7 +601,7 @@ describe('Workspace sharing routes', () => {
     const disabled = await fixture.app.request(
       ...operationRequest(
         'user.disable',
-        { targetUserId: 'user_disable' },
+        { targetUserId: 'usr_00000000-0000-7ab7-8a59-636a897b0c66' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -595,7 +614,7 @@ describe('Workspace sharing routes', () => {
     const disabledNoOp = await fixture.app.request(
       ...operationRequest(
         'user.disable',
-        { targetUserId: 'user_disable' },
+        { targetUserId: 'usr_00000000-0000-7ab7-8a59-636a897b0c66' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -609,7 +628,7 @@ describe('Workspace sharing routes', () => {
     await expect(read.json()).resolves.toEqual({
       recovery: {
         administratorMembershipStatus: null,
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         registryRevision: 1,
         workspaceId: fixture.workspaceId,
       },
@@ -629,16 +648,16 @@ describe('Workspace sharing routes', () => {
 
   it('rejects administrator recovery for the owner-only Quick Chat Workspace', async () => {
     const fixture = createFixture();
-    const workspaceId = quickChatWorkspaceIdForUser('user_owner');
+    const workspaceId = quickChatWorkspaceIdForUser('usr_00000000-0000-7011-88df-c2b1e8466b6f');
     recordWorkspaceOwnerMembership({
       coreDb: fixture.coreDb,
-      ownerUserId: 'user_owner',
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       workspaceId,
     });
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       tokenId: 'token_admin',
       scope: 'server-admin',
-      ownerUserId: 'user_admin',
+      ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
@@ -646,7 +665,7 @@ describe('Workspace sharing routes', () => {
       kind: 'token',
       tokenId: 'token_admin',
       tokenScope: 'server-admin',
-      userId: 'user_admin',
+      userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
     };
 
     const response = await fixture.app.request(
@@ -672,7 +691,7 @@ describe('Workspace sharing routes', () => {
         .prepare(
           'SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = ? AND user_id = ?'
         )
-        .get(workspaceId, 'user_admin')
+        .get(workspaceId, 'usr_00000000-0000-768a-8658-44c33d82c1f5')
     ).toEqual({ count: 0 });
   });
 });

@@ -7,7 +7,6 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
@@ -15,6 +14,8 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -23,14 +24,22 @@ afterEach(closeRetrievalServices);
 describe('search app API', () => {
   it('opens only authorized workspaces and never scans global items', async () => {
     const store = createDemoStore({ dataRoot: mkdtempSync(join(tmpdir(), 'openkit-search-')) });
-    const allowedThread = store.createThread('ws_demo', 'Authorized needle thread');
-    const allowedTurn = store.createTurn('ws_demo', allowedThread.id, 'Authorized needle turn', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const allowedThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Authorized needle thread'
+    );
+    const allowedTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      allowedThread.id,
+      'Authorized needle turn',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createItem({
-      id: 'it_authorized_needle',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-7c1a-9937-67af1fde2325',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: allowedThread.id,
       turnId: allowedTurn.id,
       type: 'assistant-message',
@@ -43,10 +52,10 @@ describe('search app API', () => {
     const deniedThread = store.createThread(deniedWorkspace.id, 'Denied needle thread');
     const deniedTurn = store.createTurn(deniedWorkspace.id, deniedThread.id, 'Denied needle turn', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.createItem({
-      id: 'it_denied_needle',
+      id: 'it_00000000-0000-7259-a0ef-9cfa5f715f90',
       workspaceId: deniedWorkspace.id,
       threadId: deniedThread.id,
       turnId: deniedTurn.id,
@@ -64,7 +73,10 @@ describe('search app API', () => {
     });
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'local', userId: 'user_local' } as AuthVariables['actor']);
+      c.set('actor', {
+        kind: 'local',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
+      } as AuthVariables['actor']);
       await next();
     });
     app.post('/api/app/operations/app.search', async (c) =>
@@ -74,8 +86,11 @@ describe('search app API', () => {
           {
             kind: 'public',
             actor: c.get('actor'),
-            actorRef: { kind: 'user', id: 'user_local' },
-            scope: { kind: 'authorized-workspace-set', workspaceIds: ['ws_demo'] },
+            actorRef: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            scope: {
+              kind: 'authorized-workspace-set',
+              workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+            },
           }
         )
       )
@@ -86,23 +101,30 @@ describe('search app API', () => {
 
     expect(response.status).toBe(200);
     expect(items).toContainEqual(
-      expect.objectContaining({ kind: 'item', id: 'it_authorized_needle' })
+      expect.objectContaining({ kind: 'item', id: 'it_00000000-0000-7c1a-9937-67af1fde2325' })
     );
-    expect(items).not.toContainEqual(expect.objectContaining({ id: 'it_denied_needle' }));
+    expect(items).not.toContainEqual(
+      expect.objectContaining({ id: 'it_00000000-0000-7259-a0ef-9cfa5f715f90' })
+    );
     expect(listWorkspaces).not.toHaveBeenCalled();
     expect(listAllItems).not.toHaveBeenCalled();
   });
 
   it('searches workspaces, threads, knowledge, artifacts, and items', async () => {
     const store = createDemoStore({ dataRoot: mkdtempSync(join(tmpdir(), 'openkit-search-')) });
-    const thread = store.createThread('ws_demo', 'Needle thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Find needle', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Needle thread');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Find needle',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createItem({
-      id: 'it_search_needle',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-75ee-bb30-08d9b9c9b051',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -119,7 +141,11 @@ describe('search app API', () => {
     await expect(res.json()).resolves.toMatchObject({
       items: expect.arrayContaining([
         expect.objectContaining({ kind: 'thread', id: thread.id, title: 'Needle thread' }),
-        expect.objectContaining({ kind: 'item', id: 'it_search_needle', title: 'Needle answer' }),
+        expect.objectContaining({
+          kind: 'item',
+          id: 'it_00000000-0000-75ee-bb30-08d9b9c9b051',
+          title: 'Needle answer',
+        }),
       ]),
     });
   });
@@ -127,7 +153,7 @@ describe('search app API', () => {
   it('delegates Knowledge search to the same segmented governed owner', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-search-cjk-'));
     const store = createDemoStore({ dataRoot });
-    const page = store.createKnowledgeEntry('ws_demo', {
+    const page = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Unrelated',
       content: '我们完成了测试，并修复了缺陷。',
@@ -141,7 +167,7 @@ describe('search app API', () => {
       kind: 'knowledge',
       id: page.id,
       title: 'Unrelated',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   });
 
@@ -157,7 +183,7 @@ describe('search app API', () => {
     for (const workspace of [allowedWorkspace, deniedWorkspace]) {
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
     }
@@ -169,7 +195,7 @@ describe('search app API', () => {
       const thread = store.createThread(workspace.id, `${prefix} visibility needle thread`);
       const turn = store.createTurn(workspace.id, thread.id, `${prefix} visibility needle turn`, {
         kind: 'user',
-        id: 'user_local',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
       });
       const timestamp = turn.startedAt ?? new Date().toISOString();
       const artifactBody = `${prefix} visibility needle body`;
@@ -180,7 +206,7 @@ describe('search app API', () => {
         content: `${prefix} visibility needle content`,
       });
       store.createArtifact({
-        id: `ar_search_${prefix}`,
+        id: testEntityId('ar', `ar_search_${prefix}`),
         workspaceId: workspace.id,
         threadId: thread.id,
         turnId: turn.id,
@@ -202,7 +228,7 @@ describe('search app API', () => {
         updatedAt: timestamp,
       });
       store.createItem({
-        id: `it_search_${prefix}`,
+        id: testEntityId('it', `it_search_${prefix}`),
         workspaceId: workspace.id,
         threadId: thread.id,
         turnId: turn.id,
@@ -216,7 +242,7 @@ describe('search app API', () => {
 
     const scopedToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
       workspaceIds: [allowedWorkspace.id],
     });
@@ -254,8 +280,12 @@ describe('search app API', () => {
       expect(items).not.toContainEqual(
         expect.objectContaining({ kind: 'workspace', id: deniedWorkspace.id })
       );
-      expect(items).not.toContainEqual(expect.objectContaining({ id: 'ar_search_denied' }));
-      expect(items).not.toContainEqual(expect.objectContaining({ id: 'it_search_denied' }));
+      expect(items).not.toContainEqual(
+        expect.objectContaining({ id: 'ar_00000000-0000-7b07-ae01-517f9ca2c172' })
+      );
+      expect(items).not.toContainEqual(
+        expect.objectContaining({ id: 'it_00000000-0000-7a91-b782-a7855a1e7ea2' })
+      );
       expect(
         items.every((item) => !('workspaceId' in item) || item.workspaceId === allowedWorkspace.id)
       ).toBe(true);
@@ -266,7 +296,7 @@ describe('search app API', () => {
           .prepare(
             `INSERT INTO users
               (id, display_name, email, email_verified, created_at, updated_at, kind)
-             VALUES ('user_replacement_owner', 'Replacement Owner',
+             VALUES ('usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'Replacement Owner',
                      'search-replacement@example.com', false, ?, ?, 'human')`
           )
           .run(Date.now(), Date.now());
@@ -275,13 +305,13 @@ describe('search app API', () => {
             `INSERT INTO workspace_members (
               workspace_id, user_id, status, invitation_id,
               joined_at, removed_at, revision, created_at, updated_at
-            ) VALUES (?, 'user_replacement_owner', 'active', NULL, ?, NULL, 1, ?, ?)`
+            ) VALUES (?, 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'active', NULL, ?, NULL, 1, ?, ?)`
           )
           .run(allowedWorkspace.id, transferredAt, transferredAt, transferredAt);
         coreDb.sqlite
           .prepare(
             `UPDATE workspace_registry
-             SET owner_user_id = 'user_replacement_owner', revision = revision + 1, updated_at = ?
+             SET owner_user_id = 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', revision = revision + 1, updated_at = ?
              WHERE workspace_id = ?`
           )
           .run(transferredAt, allowedWorkspace.id);
@@ -291,7 +321,12 @@ describe('search app API', () => {
              SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
              WHERE workspace_id = ? AND user_id = ?`
           )
-          .run(transferredAt, transferredAt, allowedWorkspace.id, 'user_local');
+          .run(
+            transferredAt,
+            transferredAt,
+            allowedWorkspace.id,
+            'usr_00000000-0000-7000-8000-000000000001'
+          );
       })();
       app = createApp({ auth, coreDb, dataRoot, mode: 'server', store });
 

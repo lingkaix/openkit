@@ -145,7 +145,7 @@ async function createMaterial(
   title: string,
   content: string
 ): Promise<MaterialSummary> {
-  await page.goto(`${stack?.webUrl}/materials/ws_demo/${threadId}`);
+  await page.goto(`${stack?.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
   await page
     .getByRole('button', { name: /^New Material$/ })
     .first()
@@ -159,7 +159,7 @@ async function createMaterial(
 
   const response = await getJson<{ materials: MaterialSummary[] }>(
     '/api/app/operations/material.list',
-    { workspaceId: 'ws_demo' }
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
   );
   const material = response.materials.find((candidate) => candidate.title === title);
   expect(material, `Material ${title} must be server-visible after browser save`).toBeTruthy();
@@ -176,7 +176,7 @@ async function createMaterial(
 async function materialRevisions(materialId: string): Promise<MaterialRevision[]> {
   return (
     await getJson<{ revisions: MaterialRevision[] }>('/api/app/operations/material.revision-list', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: materialId,
     })
   ).revisions;
@@ -196,7 +196,11 @@ async function materialRevision(
   return (
     await getJson<{ revision: MaterialRevisionView }>(
       '/api/app/operations/material.revision-read',
-      { workspaceId: 'ws_demo', materialId: materialId, revisionId: revisionId }
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: materialId,
+        revisionId: revisionId,
+      }
     )
   ).revision;
 }
@@ -211,7 +215,7 @@ async function materialRevision(
  * @throws When browser submission, the Task response, question rendering, or terminal proof fails.
  */
 async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
-  await page.goto(`${stack?.webUrl}/tasks/ws_demo/${threadId}`);
+  await page.goto(`${stack?.webUrl}/tasks/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
   await page.getByRole('textbox', { name: 'Message' }).fill(input);
   const turnResponse = page.waitForResponse(
     (response) =>
@@ -230,7 +234,7 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   await expect(page.getByText("Couldn't send that message. Try again.")).toHaveCount(0);
   const turn = await getJson<{ status: string; contextPackageDigest: string | null }>(
     '/api/app/operations/turn.read',
-    { workspaceId: 'ws_demo', threadId, turnId: submission.turn.id }
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId, turnId: submission.turn.id }
   );
   expect(turn.status).toBe('completed');
   expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
@@ -249,7 +253,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const browserRuntimeErrors: string[] = [];
   page.on('pageerror', (error) => browserRuntimeErrors.push(error.message));
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
-  const threadId = 'th_demo';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
   const revisionOneContent = '# Release note\n\nRevision one.';
   const revisionTwoContent =
     '# Release note\n\nRevision two, saved after revision one was delivered.';
@@ -275,9 +279,13 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
       return false;
     const input = response.request().postDataJSON();
-    return input.workspaceId === 'ws_demo' && input.threadId === threadId;
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' && input.threadId === threadId
+    );
   });
-  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   const projectionResponse = await materialProjectionResponse;
   const projectionBody = await projectionResponse.text();
   await expect(
@@ -306,7 +314,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
       return false;
     const input = response.request().postDataJSON();
-    return input.workspaceId === 'ws_demo' && input.materialId === primary.materialId;
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+      input.materialId === primary.materialId
+    );
   });
   await page.getByRole('button', { name: /^Save$/ }).click();
   const revisionTwoSave = await saveResponse;
@@ -340,7 +351,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .locator('dd')
   ).toHaveText('Unknown / none / not available');
 
-  await page.goto(`${stack.webUrl}/tasks/ws_demo/${threadId}`);
+  await page.goto(`${stack.webUrl}/tasks/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
   const answerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
@@ -368,7 +379,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
 
   const artifacts = (
     await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })
   ).items;
   const proposals = (
@@ -377,7 +388,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
         const reviews = (
           await getJson<{ reviews: ProposalReviewSummary[] }>(
             '/api/app/operations/artifact.review-list',
-            { workspaceId: 'ws_demo', artifactId: artifact.id }
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', artifactId: artifact.id }
           )
         ).reviews;
         return reviews.some(
@@ -389,7 +400,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
   ).filter((artifact): artifact is ProposalArtifactSummary => artifact !== null);
   expect(proposals).toHaveLength(2);
-  await page.goto(`${stack.webUrl}/goals/ws_demo/${threadId}/artifacts/${proposals[0]!.id}`);
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`
+  );
   await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toBeVisible();
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
@@ -412,7 +425,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
   await page.setViewportSize(previousViewport);
 
-  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   await expect(materialEditor).toHaveValue(proposals[0]!.content.body);
   const revisionsAfterApply = await materialRevisions(primary.materialId);
   expect(revisionsAfterApply).toHaveLength(3);
@@ -431,7 +446,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   );
   const materialAfterApply = (
     await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: primary.materialId,
     })
   ).material;
@@ -453,7 +468,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   );
   const materialAfterUserSave = (
     await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: primary.materialId,
     })
   ).material;
@@ -462,7 +477,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     .map((revision) => revision.revisionId)
     .sort();
 
-  await page.goto(`${stack.webUrl}/goals/ws_demo/${threadId}/artifacts/${proposals[1]!.id}`);
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[1]!.id}`
+  );
   const reviewedProposal = page.getByRole('region', { name: /reviewed artifact proposal/i });
   const recordedBase = page.getByRole('region', { name: /recorded base revision/i });
   await expect(reviewedProposal).toBeVisible();
@@ -477,7 +494,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   );
   const materialAfterConflict = (
     await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: primary.materialId,
     })
   ).material;
@@ -485,7 +502,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   expect(
     (
       await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).items.find((artifact) => artifact.id === proposals[1]!.id)?.content.body
   ).toBe(proposals[1]!.content.body);
@@ -499,7 +516,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
   );
-  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   const recoveredRevisions = await materialRevisions(primary.materialId);
   expect(recoveredRevisions.map((revision) => revision.revisionId).sort()).toEqual(
     revisionIdsAfterUserSave
@@ -520,7 +539,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const recoveredProjection = (
     await getJson<{ material: ThreadMaterialSummary | null }>(
       '/api/app/operations/material.thread-read',
-      { workspaceId: 'ws_demo', threadId: threadId }
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: threadId }
     )
   ).material;
   expect(recoveredProjection).not.toBeNull();

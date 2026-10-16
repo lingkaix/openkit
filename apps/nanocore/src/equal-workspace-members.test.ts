@@ -16,34 +16,44 @@ import {
   createVerifiedWorkspaceExport,
   workspaceDeletionRecoveryExportId,
 } from './storage/workspace-transfer-routes.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import {
   createWorkspaceDeletionRequest,
   readWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
+const USER_IDS = {
+  owner: testEntityId('usr', 'equal-owner'),
+  member: testEntityId('usr', 'equal-member'),
+  other: testEntityId('usr', 'equal-other'),
+  invitee: testEntityId('usr', 'equal-invitee'),
+  privateOwner: testEntityId('usr', 'equal-private-owner'),
+};
+
 /** Inserts synthetic canonical users without granting deployment administration. */
-function insertUser(coreDb: ReturnType<typeof openCoreDb>, id: string): void {
+function insertUser(coreDb: ReturnType<typeof openCoreDb>, id: string, label: string): void {
   coreDb.sqlite
     .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
     VALUES (?, ?, ?, 0, ?, ?, 'human', 'active')`)
-    .run(id, id, `${id}@example.test`, Date.now(), Date.now());
+    .run(id, label, `${label}@example.test`, Date.now(), Date.now());
 }
 
 it('requires the actual initiating user in the current deletion request', () => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-deletion-required-initiator-'));
   try {
     const requestId = randomUUID();
+    const workspaceId = testEntityId('ws', 'deletion-required-initiator');
     const request = createWorkspaceDeletionRequest(root, {
-      confirmation: 'permanently-delete-workspace:ws_current:1',
+      confirmation: `permanently-delete-workspace:${workspaceId}:1`,
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      initiatingUserId: 'member',
-      originalOwnerUserId: 'owner',
+      initiatingUserId: USER_IDS.member,
+      originalOwnerUserId: USER_IDS.owner,
       requestId,
-      workspaceId: 'ws_current',
+      workspaceId: workspaceId,
     });
-    expect(readWorkspaceDeletionRequest(root, 'ws_current', requestId)).toEqual(request);
+    expect(readWorkspaceDeletionRequest(root, workspaceId, requestId)).toEqual(request);
     const { initiatingUserId: _initiatingUserId, ...missingInitiator } = request;
     writeFileSync(
       join(
@@ -51,13 +61,13 @@ it('requires the actual initiating user in the current deletion request', () => 
         'server',
         'exports',
         'workspace-deletions',
-        'ws_current',
+        workspaceId,
         requestId,
         'request.json'
       ),
       JSON.stringify(missingInitiator)
     );
-    expect(() => readWorkspaceDeletionRequest(root, 'ws_current', requestId)).toThrow();
+    expect(() => readWorkspaceDeletionRequest(root, workspaceId, requestId)).toThrow();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -68,13 +78,16 @@ it('admits member management and exact member deletion replay while preserving p
   const coreDb = openCoreDb(root);
   try {
     applyMigrations(coreDb);
-    for (const id of ['owner', 'member', 'other', 'invitee', 'private-owner'])
-      insertUser(coreDb, id);
+    for (const [label, id] of Object.entries(USER_IDS)) insertUser(coreDb, id, label);
     const store = new FsStore({ dataRoot: root });
     const workspace = store.createWorkspace('Equal members');
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'owner' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: USER_IDS.owner,
+    });
     const now = new Date().toISOString();
-    for (const id of ['member', 'other', 'private-owner'])
+    for (const id of [USER_IDS.member, USER_IDS.other, USER_IDS.privateOwner])
       coreDb.sqlite
         .prepare(`INSERT INTO workspace_members
       (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
@@ -87,23 +100,23 @@ it('admits member management and exact member deletion replay while preserving p
       'administration',
       {
         visibility: 'private',
-        privateOwnerUserId: 'private-owner',
+        privateOwnerUserId: USER_IDS.privateOwner,
       }
     );
     const member = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'member',
+      ownerUserId: USER_IDS.member,
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const other = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'other',
+      ownerUserId: USER_IDS.other,
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const originalOwner = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'owner',
+      ownerUserId: USER_IDS.owner,
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -112,7 +125,7 @@ it('admits member management and exact member deletion replay while preserving p
       api: {
         getSession: async () => ({
           session: { id: 'synthetic-owner-session' },
-          user: { id: 'owner' },
+          user: { id: USER_IDS.owner },
         }),
       },
       handler: async () => Response.json({ status: 'auth-ok' }),
@@ -143,7 +156,9 @@ it('admits member management and exact member deletion replay while preserving p
       member.secret
     );
     expect(invitation.status, await invitation.clone().text()).toBe(201);
-    expect(await invitation.json()).toMatchObject({ invitation: { inviterUserId: 'member' } });
+    expect(await invitation.json()).toMatchObject({
+      invitation: { inviterUserId: USER_IDS.member },
+    });
     const deniedPrivate = await call(
       'thread.items',
       { workspaceId: workspace.id, threadId: privateThread.id },
@@ -162,7 +177,7 @@ it('admits member management and exact member deletion replay while preserving p
     expect(ordinaryExport.status, await ordinaryExport.clone().text()).toBe(500);
     expect(() =>
       createVerifiedWorkspaceExport({
-        authorityUserId: 'member',
+        authorityUserId: USER_IDS.member,
         coreDb,
         dataRoot: root,
         repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
@@ -173,7 +188,7 @@ it('admits member management and exact member deletion replay while preserving p
     const missingDeletionRequestId = randomUUID();
     expect(() =>
       createVerifiedWorkspaceExport({
-        authorityUserId: 'owner',
+        authorityUserId: USER_IDS.owner,
         coreDb,
         dataRoot: root,
         deletionRecoveryRequestId: missingDeletionRequestId,
@@ -197,7 +212,10 @@ it('admits member management and exact member deletion replay while preserving p
       deletion: { phase: 'cleaned', status: 'deleted' },
     });
     const request = readWorkspaceDeletionRequest(root, workspace.id, requestId);
-    expect(request).toMatchObject({ initiatingUserId: 'member', originalOwnerUserId: 'owner' });
+    expect(request).toMatchObject({
+      initiatingUserId: USER_IDS.member,
+      originalOwnerUserId: USER_IDS.owner,
+    });
     const verified = verifyWorkspaceExportTree({
       exportRoot: join(
         root,
@@ -214,7 +232,7 @@ it('admits member management and exact member deletion replay while preserving p
       .split('\n')
       .map((line) => JSON.parse(line));
     expect(exportedThreads).toContainEqual(
-      expect.objectContaining({ id: privateThread.id, privateOwnerUserId: 'private-owner' })
+      expect.objectContaining({ id: privateThread.id, privateOwnerUserId: USER_IDS.privateOwner })
     );
     const before = coreDb.sqlite
       .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
@@ -277,14 +295,14 @@ it('admits member management and exact member deletion replay while preserving p
       coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
         .get(restoredId)
-    ).toEqual({ owner_user_id: 'owner' });
+    ).toEqual({ owner_user_id: USER_IDS.owner });
     expect(
       coreDb.sqlite
         .prepare('SELECT user_id FROM workspace_members WHERE workspace_id = ?')
         .all(restoredId)
-    ).toEqual([{ user_id: 'owner' }]);
+    ).toEqual([{ user_id: USER_IDS.owner }]);
     expect(store.listThreads(restoredId)).toContainEqual(
-      expect.objectContaining({ privateOwnerUserId: 'private-owner' })
+      expect.objectContaining({ privateOwnerUserId: USER_IDS.privateOwner })
     );
     expect(
       (
@@ -292,7 +310,7 @@ it('admits member management and exact member deletion replay while preserving p
           .prepare("SELECT actor_json FROM audit_events WHERE action = 'workspace.delete'")
           .all() as { actor_json: string }[]
       ).map((row) => JSON.parse(row.actor_json))
-    ).toEqual([{ id: 'member', kind: 'user' }]);
+    ).toEqual([{ id: USER_IDS.member, kind: 'user' }]);
   } finally {
     await closeRetrievalServices();
     coreDb.sqlite.close();

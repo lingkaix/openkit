@@ -1,8 +1,8 @@
 {
-  "protocolVersion": "0.5.0",
+  "protocolVersion": "0.6.0",
   "schema": "actor-ref",
   "data": {
     "kind": "user",
-    "id": "0190f4c8-0000-7abc-8def-000000000000"
+    "id": "usr_00000000-0000-77da-b5b9-4453949c9f8f"
   }
 }

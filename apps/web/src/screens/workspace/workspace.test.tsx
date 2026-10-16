@@ -1,5 +1,6 @@
 import { KnowledgeDerivedIndexesResponseSchema, operationHttpPath } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -21,7 +22,7 @@ const WORKSPACE_COUNTS = {
   knowledgeEntryCount: 0,
 } as const;
 const WORKSPACE_A = {
-  id: 'ws_1',
+  id: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   name: 'Market research',
   kind: 'general',
   status: 'active',
@@ -30,7 +31,7 @@ const WORKSPACE_A = {
   updatedAt: TIMESTAMP_NEW,
 } as const;
 const WORKSPACE_B = {
-  id: 'ws_2',
+  id: 'ws_00000000-0000-7fee-b878-266b367d3b31',
   name: 'Second workspace',
   kind: 'general',
   status: 'active',
@@ -42,10 +43,10 @@ const WORKSPACE_B = {
 const APPROVAL_ROW = {
   id: 'approval:ap1',
   kind: 'approval',
-  workspaceId: 'ws_1',
-  threadId: 'th1',
-  turnId: 't1',
-  itemId: 'i1',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+  threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+  itemId: 'it_00000000-0000-7596-a3e2-be317d999ead',
   title: 'Scout asks to sign in to the vendor portal',
   summary: 'To pull competitor pricing.',
   severity: 'needs_input',
@@ -54,10 +55,10 @@ const APPROVAL_ROW = {
   source: {
     type: 'approval',
     approvalRequestId: 'ap1',
-    workspaceId: 'ws_1',
-    threadId: 'th1',
-    turnId: 't1',
-    itemId: 'i1',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+    itemId: 'it_00000000-0000-7596-a3e2-be317d999ead',
   },
   actions: [
     {
@@ -72,17 +73,22 @@ const APPROVAL_ROW = {
       method: 'POST',
       href: operationHttpPath('approval.respond'),
     },
-    { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws_1/threads/th1' },
+    {
+      kind: 'open_thread',
+      label: 'Open',
+      method: 'GET',
+      href: '/api/workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/threads/th_00000000-0000-70a0-9cde-4561f64881c6',
+    },
   ],
 };
 
 const OPEN_ONLY_ROW = {
   id: 'question:q1',
   kind: 'question',
-  workspaceId: 'ws_1',
-  threadId: 'th2',
-  turnId: 't2',
-  itemId: 'i2',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+  threadId: 'th_00000000-0000-7c00-b9fc-382312fdf476',
+  turnId: 'tu_00000000-0000-7229-8099-120c4bdc703e',
+  itemId: 'it_00000000-0000-785f-a82d-59daa7b54760',
   title: 'Answer required',
   summary: 'Which market segment should we prioritize?',
   severity: 'needs_input',
@@ -91,10 +97,10 @@ const OPEN_ONLY_ROW = {
   source: {
     type: 'protocol_item',
     itemType: 'user-input-request',
-    workspaceId: 'ws_1',
-    threadId: 'th2',
-    turnId: 't2',
-    itemId: 'i2',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+    threadId: 'th_00000000-0000-7c00-b9fc-382312fdf476',
+    turnId: 'tu_00000000-0000-7229-8099-120c4bdc703e',
+    itemId: 'it_00000000-0000-785f-a82d-59daa7b54760',
   },
   actions: [
     {
@@ -103,17 +109,22 @@ const OPEN_ONLY_ROW = {
       method: 'POST',
       href: '/api/app/operations/question.answer',
     },
-    { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws_1/threads/th2' },
+    {
+      kind: 'open_thread',
+      label: 'Open',
+      method: 'GET',
+      href: '/api/workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/threads/th_00000000-0000-7c00-b9fc-382312fdf476',
+    },
   ],
 };
 
 const ARTIFACT_INSPECTION_ROW = {
   id: 'artifact-review:rev1',
   kind: 'artifact_review',
-  workspaceId: 'ws_1',
-  threadId: 'th_goal',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+  threadId: 'th_00000000-0000-7bc1-aed1-ff6f35ab7b65',
   title: 'Review worker output',
-  artifactId: 'ar1',
+  artifactId: 'ar_00000000-0000-74db-816f-1af8204a4ae4',
   artifactVersion: 1,
   summary: 'Inspect this exact Artifact version before choosing a verdict.',
   severity: 'needs_input',
@@ -122,10 +133,10 @@ const ARTIFACT_INSPECTION_ROW = {
   source: {
     type: 'artifact_review',
     reviewId: 'rev1',
-    artifactId: 'ar1',
+    artifactId: 'ar_00000000-0000-74db-816f-1af8204a4ae4',
     artifactVersion: 1,
-    workspaceId: 'ws_1',
-    threadId: 'th_goal',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+    threadId: 'th_00000000-0000-7bc1-aed1-ff6f35ab7b65',
   },
   actions: [
     {
@@ -203,7 +214,7 @@ const AGENT_DETAIL = {
 /** Builds one Worker row matching WorkspaceWorkersResponseSchema. */
 function workspaceWorker(overrides: Record<string, unknown> = {}) {
   return {
-    threadId: 'th_worker',
+    threadId: 'th_00000000-0000-7511-9db5-ba3f596149a8',
     threadTitle: 'Implement inventory',
     agentId: 'agent_ledger',
     agentName: 'Ledger',
@@ -212,7 +223,7 @@ function workspaceWorker(overrides: Record<string, unknown> = {}) {
     stale: false,
     work: {
       kind: 'goal',
-      turnId: 'turn_worker',
+      turnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
       goalId: 'goal_worker',
       taskId: 'task_worker',
     },
@@ -264,13 +275,13 @@ const KNOWLEDGE_ENTRY_B = {
 };
 
 const KNOWLEDGE_SOURCE = {
-  id: 'ks_source',
-  workspaceId: 'ws_1',
+  id: 'ks_00000000-0000-7bd1-af16-9b85c4b6b792',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   kind: 'transcript',
   title: 'Customer interview Q3',
   uri: null,
   contentDigest: `sha256:${'a'.repeat(64)}`,
-  originatingThreadId: 'th1',
+  originatingThreadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
   originatingTurnId: 't1',
   originatingFileId: 'file1',
   capturedAt: TIMESTAMP_OLD,
@@ -279,8 +290,8 @@ const KNOWLEDGE_SOURCE = {
 };
 
 const KNOWLEDGE_OBSERVATION = {
-  id: 'ko_observation',
-  workspaceId: 'ws_1',
+  id: 'ko_00000000-0000-76d0-bef9-badf8370ba7e',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   kind: 'user-feedback',
   summary: 'Customers repeatedly ask for shorter weekly updates.',
   sourceReferences: [],
@@ -294,8 +305,8 @@ const KNOWLEDGE_OBSERVATION = {
 };
 
 const KNOWLEDGE_CLAIM = {
-  id: 'kc_claim',
-  workspaceId: 'ws_1',
+  id: 'kc_00000000-0000-747f-8d3e-e498342da992',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   statement: 'Weekly updates should fit on one screen.',
   sourceReferences: [],
   scope: 'workspace',
@@ -346,7 +357,7 @@ const NEXT_CLAIM = {
 } as const;
 const NEXT_CONFLICT_INPUT = {
   summary: 'Later notes disagree about digest length.',
-  subjectReferences: ['knowledge:mem2', 'claim:kc_later'],
+  subjectReferences: ['knowledge:mem2', 'claim:kc_00000000-0000-7e60-9480-27c165e5ae71'],
   producer: 'user:follow-up',
 } as const;
 const NEXT_RESOLUTION = {
@@ -356,40 +367,40 @@ const NEXT_RESOLUTION = {
 
 const REGISTERED_SOURCE = {
   ...KNOWLEDGE_SOURCE,
-  id: 'ks_registered',
+  id: 'ks_00000000-0000-7d81-9fe3-dccb95a48d4c',
   kind: REGISTER_SOURCE_INPUT.kind,
   title: REGISTER_SOURCE_INPUT.title,
   updatedAt: TIMESTAMP_NEW,
 };
 const SERVER_OBSERVATION = {
   ...KNOWLEDGE_OBSERVATION,
-  id: 'ko_server',
+  id: 'ko_00000000-0000-7f12-9f16-0ca914f88814',
   kind: OBSERVATION_KIND,
   summary: 'Server-confirmed shorter weekly updates.',
 };
 const SERVER_CLAIM = {
   ...KNOWLEDGE_CLAIM,
-  id: 'kc_server',
+  id: 'kc_00000000-0000-75a1-97fa-1535b96d4adb',
   statement: 'Server-confirmed weekly updates fit on one screen.',
 };
 
 const SOURCE_DERIVED_REPRESENTATION = {
-  id: 'ks_source:text',
-  workspaceId: 'ws_1',
+  id: 'ks_00000000-0000-7bd1-af16-9b85c4b6b792:text',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   sourceId: KNOWLEDGE_SOURCE.id,
   kind: 'text',
-  path: 'sources/derived/ks_source/text.json',
-  materialPath: 'sources/materials/ks_source/content.txt',
+  path: 'sources/derived/ks_00000000-0000-7bd1-af16-9b85c4b6b792/text.json',
+  materialPath: 'sources/materials/ks_00000000-0000-7bd1-af16-9b85c4b6b792/content.txt',
   contentDigest: KNOWLEDGE_DIGEST,
   sourceContentDigest: KNOWLEDGE_DIGEST,
   createdAt: TIMESTAMP_OLD,
 };
 
 const KNOWLEDGE_CONFLICT = {
-  id: 'kf_conflict',
-  workspaceId: 'ws_1',
-  subjectReferences: ['knowledge:mem1', 'claim:kc_claim'],
-  sourceReferences: ['source:ks_source'],
+  id: 'kf_00000000-0000-752b-b650-d31bcc5e3fb6',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+  subjectReferences: ['knowledge:mem1', 'claim:kc_00000000-0000-747f-8d3e-e498342da992'],
+  sourceReferences: ['source:ks_00000000-0000-7bd1-af16-9b85c4b6b792'],
   status: 'conflicting',
   summary: 'Weekly-update length has contradictory evidence.',
   suggestedActions: [],
@@ -408,12 +419,12 @@ const RESOLVED_KNOWLEDGE_CONFLICT = {
 };
 const SERVER_CONFLICT = {
   ...KNOWLEDGE_CONFLICT,
-  id: 'kf_server',
+  id: 'kf_00000000-0000-758c-9c9d-b759b132333e',
   summary: 'Server-confirmed contradictory weekly-update evidence.',
 };
 const SECOND_CONFLICT = {
   ...KNOWLEDGE_CONFLICT,
-  id: 'kf_second',
+  id: 'kf_00000000-0000-7338-b193-4926afe8a5a8',
   summary: 'A later conflict about citation freshness.',
 };
 const SERVER_RESOLVED_CONFLICT = {
@@ -489,7 +500,7 @@ const KNOWLEDGE_INDEXES = knowledgeIndexesFor(WORKSPACE_A.id, {
     {
       conceptId: KNOWLEDGE_ENTRY.id,
       path: 'knowledge/pages/mem1.md',
-      reference: 'source:ks_source',
+      reference: 'source:ks_00000000-0000-7bd1-af16-9b85c4b6b792',
       kind: 'registered-source',
       targetId: KNOWLEDGE_SOURCE.id,
       resolved: true,
@@ -500,12 +511,12 @@ const KNOWLEDGE_INDEXES = knowledgeIndexesFor(WORKSPACE_A.id, {
 const KNOWLEDGE_RETRIEVAL = {
   queryContext: {
     serverId: 'srv_local',
-    workspaceId: 'ws_1',
-    actor: { kind: 'user', id: 'user_local' },
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
   },
-  sourceScope: 'page/workspace/ws_1',
+  sourceScope: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
   notebookRevision: null,
-  workspaceId: 'ws_1',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   caller: 'app-api',
   requestDigest: RETRIEVAL_REQUEST_DIGEST,
   retrievalParameters: {
@@ -517,16 +528,22 @@ const KNOWLEDGE_RETRIEVAL = {
   createdAt: TIMESTAMP_NEW,
   selected: [
     {
-      reference: { scopeId: 'page/workspace/ws_1', objectId: KNOWLEDGE_ENTRY.id },
+      reference: {
+        scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+        objectId: KNOWLEDGE_ENTRY.id,
+      },
       revision: KNOWLEDGE_PAGE_DIGEST,
       contentDigest: KNOWLEDGE_PAGE_DIGEST,
       score: 4,
-      sourceReferences: ['source:ks_source'],
+      sourceReferences: ['source:ks_00000000-0000-7bd1-af16-9b85c4b6b792'],
     },
   ],
   excluded: [
     {
-      reference: { scopeId: 'page/workspace/ws_1', objectId: 'old-plan' },
+      reference: {
+        scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+        objectId: 'old-plan',
+      },
       revision: null,
       contentDigest: null,
       sourceReferences: [],
@@ -538,7 +555,7 @@ const KNOWLEDGE_RETRIEVAL = {
 const KNOWLEDGE_CONTEXT = {
   operationId: 'km_context',
   operation: 'prepare-context-material',
-  workspaceId: 'ws_1',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   caller: 'app-api',
   outcome: 'prepared',
   selected: KNOWLEDGE_RETRIEVAL.selected,
@@ -548,14 +565,17 @@ const KNOWLEDGE_CONTEXT = {
 const KNOWLEDGE_ANSWER = {
   operationId: 'km_answer',
   operation: 'answer',
-  workspaceId: 'ws_1',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   caller: 'app-api',
   query: MANAGER_QUESTION,
   outcome: 'answered',
   answer: 'Keep weekly updates to one screen.',
   citations: [
     {
-      reference: { scopeId: 'page/workspace/ws_1', objectId: KNOWLEDGE_ENTRY.id },
+      reference: {
+        scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+        objectId: KNOWLEDGE_ENTRY.id,
+      },
       kind: 'preference',
       title: KNOWLEDGE_ENTRY.title,
       excerpt: KNOWLEDGE_ENTRY.content,
@@ -578,7 +598,7 @@ const KNOWLEDGE_REPAIR = {
 const KNOWLEDGE_REPAIRS = {
   operationId: 'km_repair',
   operation: 'suggest-repair',
-  workspaceId: 'ws_1',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   caller: 'app-api',
   outcome: 'suggested',
   suggestions: [KNOWLEDGE_REPAIR],
@@ -587,7 +607,7 @@ const KNOWLEDGE_REPAIRS = {
 const KNOWLEDGE_HEALTH = {
   operationId: 'km_health',
   operation: 'health-check',
-  workspaceId: 'ws_1',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   caller: 'app-api',
   outcome: 'needs-attention',
   summary: 'Knowledge Manager found 1 repair suggestion.',
@@ -609,7 +629,7 @@ const KNOWLEDGE_HEALTH = {
 const KNOWLEDGE_PROPOSAL_ROW = {
   id: 'non-authoritative-wrapper-id',
   kind: 'knowledge_review',
-  workspaceId: 'non-authoritative-wrapper-workspace',
+  workspaceId: 'ws_00000000-0000-7373-8a71-f00a4c2752a1',
   title: 'Review knowledge proposal for writing/weekly-updates',
   summary: 'Keep weekly updates concise and source-linked.',
   severity: 'needs_input',
@@ -618,7 +638,7 @@ const KNOWLEDGE_PROPOSAL_ROW = {
   source: {
     type: 'knowledge',
     knowledgeProposalId: 'kp_exact',
-    workspaceId: 'ws_1',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
     status: 'pending',
   },
   actions: [
@@ -694,7 +714,7 @@ function makeClient(
       'catalog.plugin-import': vi.fn(),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.create': vi.fn().mockResolvedValue({
-        id: 'ws-new',
+        id: 'ws_00000000-0000-7d43-b70e-4865c8f2a794',
         name: 'New workspace',
         kind: 'general',
         status: 'active',
@@ -715,7 +735,7 @@ function makeClient(
         recentThreads: [],
         activeWork: [
           {
-            threadId: 'th1',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             title: 'Competitive pricing report',
             status: 'running',
             mode: 'goal',
@@ -793,7 +813,7 @@ function makeClient(
             workspace,
             isOwner: true,
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -808,7 +828,7 @@ function makeClient(
                 workspace,
                 isOwner: true,
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -1334,7 +1354,10 @@ describe('Overview / Action Center (board 07)', () => {
     expect(client.operations['pending-request.withdraw']).toHaveBeenCalledWith(
       expect.objectContaining({
         pendingRequestId: 'ap1',
-        ...{ workspaceId: 'ws_1', threadId: 'th1' },
+        ...{
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        },
       })
     );
   });
@@ -1397,9 +1420,9 @@ describe('Overview / Action Center (board 07)', () => {
         expect.objectContaining({
           approvalRequestId: 'ap1',
           ...{
-            workspaceId: 'ws_1',
-            threadId: 'th1',
-            turnId: 't1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
             decision: 'granted',
             requestId: expect.any(String),
           },
@@ -1416,7 +1439,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open thread' })).toHaveAttribute(
       'href',
-      '/chat/ws_1/th2'
+      '/chat/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7c00-b9fc-382312fdf476'
     );
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
@@ -1429,10 +1452,10 @@ describe('Overview / Action Center (board 07)', () => {
     const row = {
       id: `${type}:review1`,
       kind: type,
-      workspaceId: 'ws_1',
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       title: 'Review workspace changes',
       createdAt: TIMESTAMP_OLD,
-      source: { type, workspaceId: 'ws_1', reviewId: 'review1' },
+      source: { type, workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', reviewId: 'review1' },
       actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
     };
     renderApp(
@@ -1486,7 +1509,7 @@ describe('Overview / Action Center (board 07)', () => {
   it('lists every ongoing Task and Goal with activity and status', async () => {
     const items = [
       overviewConversation({
-        id: 'th_goal_need',
+        id: 'th_00000000-0000-7b19-b5bb-af56be77aa80',
         name: 'Launch research program',
         preview: 'Waiting on pricing sources',
         activity: 'goal',
@@ -1494,7 +1517,7 @@ describe('Overview / Action Center (board 07)', () => {
       }),
       ...[1, 2, 3, 4].map((index) =>
         overviewConversation({
-          id: `th_task_${index}`,
+          id: allocateEntityId('th'),
           name: `Task ${index}`,
           preview: `Current task context ${index}`,
           activity: 'task',
@@ -1503,7 +1526,7 @@ describe('Overview / Action Center (board 07)', () => {
       ),
       ...[1, 2, 3].map((index) =>
         overviewConversation({
-          id: `th_goal_${index}`,
+          id: allocateEntityId('th'),
           name: `Goal ${index}`,
           preview: `Current goal context ${index}`,
           activity: 'goal',
@@ -1511,7 +1534,7 @@ describe('Overview / Action Center (board 07)', () => {
         })
       ),
       overviewConversation({
-        id: 'th_idle_chat',
+        id: 'th_00000000-0000-7285-8e85-cb499b88558f',
         name: 'Idle chat',
         preview: 'Yesterday',
         activity: 'chat',
@@ -1534,11 +1557,11 @@ describe('Overview / Action Center (board 07)', () => {
     ).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: 'Open goal' })[0]).toHaveAttribute(
       'href',
-      '/goals/ws_1/th_goal_need'
+      '/goals/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7b19-b5bb-af56be77aa80'
     );
     expect(screen.getAllByRole('link', { name: 'Open task' })[0]).toHaveAttribute(
       'href',
-      '/tasks/ws_1/th_task_1'
+      `/tasks/ws_00000000-0000-73c3-900f-8d310e4ba201/${items[1]!.thread.id}`
     );
     expect(screen.getAllByText('Working').length).toBeGreaterThanOrEqual(7);
     expect(screen.getByRole('heading', { name: 'Task 4' })).toBeInTheDocument();
@@ -1579,7 +1602,7 @@ describe('Overview / Action Center (board 07)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -1649,9 +1672,9 @@ describe('Overview / Action Center (board 07)', () => {
         expect.objectContaining({
           approvalRequestId: 'ap1',
           ...{
-            workspaceId: 'ws_1',
-            threadId: 'th1',
-            turnId: 't1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
             decision: 'denied',
             requestId: expect.any(String),
           },
@@ -1776,7 +1799,7 @@ describe('Overview / Action Center (board 07)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -1836,7 +1859,7 @@ describe('Overview / Action Center (board 07)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -1867,12 +1890,12 @@ describe('Overview / Action Center (board 07)', () => {
       id: 'review',
       kind: 'artifact_review',
       title: 'Review report',
-      artifactId: 'ar1',
+      artifactId: 'ar_00000000-0000-74db-816f-1af8204a4ae4',
       artifactVersion: 1,
       source: {
         type: 'artifact_review',
-        workspaceId: 'ws_1',
-        artifactId: 'ar1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        artifactId: 'ar_00000000-0000-74db-816f-1af8204a4ae4',
         artifactVersion: 1,
       },
       actions: [{ kind: 'accept_review', label: 'Accept', disabled: false }],
@@ -1914,7 +1937,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(await screen.findByText('Review worker output')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open goal' })).toHaveAttribute(
       'href',
-      '/goals/ws_1/th_goal/artifacts/ar1'
+      '/goals/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7bc1-aed1-ff6f35ab7b65/artifacts/ar_00000000-0000-74db-816f-1af8204a4ae4'
     );
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Accept review' })).not.toBeInTheDocument();
@@ -2272,7 +2295,7 @@ describe('Catalog', () => {
         createdAt: TIMESTAMP_NEW,
         disposition: 'proposed',
         entryId: 'repo-guidelines',
-        id: 'cand_demo',
+        id: 'cand_00000000-0000-74db-8fec-97e4e6509f7b',
         summary: 'Clarify the rollback section.',
       },
       revision: 4,
@@ -2344,7 +2367,7 @@ describe('Catalog', () => {
         createdAt: TIMESTAMP_NEW,
         disposition: 'proposed',
         entryId: 'repo-guidelines',
-        id: 'cand_demo',
+        id: 'cand_00000000-0000-74db-8fec-97e4e6509f7b',
         summary: 'Clarify the rollback section.',
       },
       revision: 4,
@@ -2639,7 +2662,7 @@ describe('Agents roster continued', () => {
             workspace,
             isOwner: true,
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -2712,7 +2735,11 @@ describe('Agents roster continued', () => {
     expect(refreshHealth).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
 
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws_1' }));
+    await waitFor(() =>
+      expect(refreshHealth).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      })
+    );
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Rechecked')).toBeInTheDocument();
     expect(refreshHealth).toHaveBeenCalledTimes(1);
@@ -2811,7 +2838,11 @@ describe('Agents roster continued', () => {
     expect(within(details).getByText(/Authoritative health/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws_1' }));
+    await waitFor(() =>
+      expect(refreshHealth).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      })
+    );
     expect(refreshHealth).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
     expect(get.mock.calls).toEqual([[{ agentId: AGENT_READY.id }], [{ agentId: AGENT_READY.id }]]);
@@ -2838,7 +2869,7 @@ describe('Agents roster continued', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -2973,7 +3004,7 @@ describe('Agents actual Workers', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -2994,17 +3025,17 @@ describe('Agents actual Workers', () => {
       workspaceId: WORKSPACE_A.id,
       items: [
         workspaceWorker({
-          threadId: 'th_alpha',
+          threadId: 'th_00000000-0000-71df-8935-a802c1b80094',
           threadTitle: 'Alpha thread',
           work: {
             kind: 'goal',
-            turnId: 'turn_alpha',
+            turnId: 'tu_00000000-0000-7413-b5a2-56c5fc6d1dcc',
             goalId: 'goal_alpha',
             taskId: 'task_alpha',
           },
         }),
         workspaceWorker({
-          threadId: 'th_beta',
+          threadId: 'th_00000000-0000-7604-a755-bde28ca74914',
           threadTitle: 'Beta thread',
           status: 'idle',
           work: { kind: 'none' },
@@ -3029,10 +3060,10 @@ describe('Agents actual Workers', () => {
     expect(within(workers).getByText('No current assignment')).toBeInTheDocument();
     expect(
       within(workers).getByRole('link', { name: 'Open conversation Alpha thread' })
-    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_alpha`);
+    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_00000000-0000-71df-8935-a802c1b80094`);
     expect(
       within(workers).getByRole('link', { name: 'Open conversation Beta thread' })
-    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_beta`);
+    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_00000000-0000-7604-a755-bde28ca74914`);
     const idleDetails = within(workers)
       .getAllByText('View details')[1]
       ?.closest('details') as HTMLElement;
@@ -3194,11 +3225,16 @@ describe('Agents actual Workers', () => {
           workspaceId,
           items:
             workspaceId === WORKSPACE_A.id
-              ? [workspaceWorker({ threadTitle: 'Visible A thread', threadId: 'th_a' })]
+              ? [
+                  workspaceWorker({
+                    threadTitle: 'Visible A thread',
+                    threadId: 'th_00000000-0000-7279-b079-f44dc2908dec',
+                  }),
+                ]
               : [
                   workspaceWorker({
                     threadTitle: 'Visible B thread',
-                    threadId: 'th_b',
+                    threadId: 'th_00000000-0000-708c-baf6-3651003cdbd1',
                     agentName: 'Scout',
                   }),
                 ],
@@ -3218,7 +3254,7 @@ describe('Agents actual Workers', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -3287,7 +3323,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(createKnowledge).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           kind: 'preference',
           title: 'Prefer concise memos',
           content: 'Keep it short.',
@@ -3344,7 +3380,7 @@ describe('Knowledge (board 14)', () => {
 
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         knowledgeEntryId: KNOWLEDGE_ENTRY.id,
         ...{
           requestId: expect.any(String),
@@ -3393,7 +3429,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(save);
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         knowledgeEntryId: entry.id,
         ...{
           content: 'Changed server content',
@@ -3468,7 +3504,7 @@ describe('Knowledge (board 14)', () => {
 
     await waitFor(() =>
       expect(deleteKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         knowledgeEntryId: KNOWLEDGE_ENTRY.id,
         ...{
           requestId: expect.any(String),
@@ -3856,9 +3892,15 @@ describe('Knowledge (board 14)', () => {
     for (const rawValue of ['transcript', 'retained', 'needs-review', 'weak_evidence']) {
       expect(document.body).not.toHaveTextContent(rawValue);
     }
-    expect(listKnowledgeSources).toHaveBeenCalledWith({ workspaceId: 'ws_1' });
-    expect(listKnowledgeObservations).toHaveBeenCalledWith({ workspaceId: 'ws_1' });
-    expect(listKnowledgeClaims).toHaveBeenCalledWith({ workspaceId: 'ws_1' });
+    expect(listKnowledgeSources).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+    });
+    expect(listKnowledgeObservations).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+    });
+    expect(listKnowledgeClaims).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+    });
   });
 
   it('keeps a Loading skeleton visible until the attention read settles', async () => {
@@ -3956,7 +3998,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(action);
     await waitFor(() =>
       expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         proposalId: 'kp_exact',
         ...{
           decision,
@@ -4113,7 +4155,7 @@ describe('Knowledge (board 14)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -4225,7 +4267,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(sources).getByRole('button', { name: 'Register source' }));
     await waitFor(() =>
       expect(registerKnowledgeSource).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         ...{
           requestId: expect.any(String),
           kind: REGISTER_SOURCE_INPUT.kind,
@@ -4245,7 +4287,7 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() =>
       expect(readKnowledgeSource).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         sourceId: KNOWLEDGE_SOURCE.id,
       })
     );
@@ -4311,7 +4353,9 @@ describe('Knowledge (board 14)', () => {
         selector: ':not(option)',
       })
     ).toBeInTheDocument();
-    expect(listKnowledgeConflicts.mock.calls).toEqual([[{ workspaceId: 'ws_1' }]]);
+    expect(listKnowledgeConflicts.mock.calls).toEqual([
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
+    ]);
 
     await selectListedOption(user, ledger, 'Observation kind', OBSERVATION_KIND_OPTION);
     await fillKnowledgeFields(user, ledger, [
@@ -4322,7 +4366,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(recordKnowledgeObservation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           requestId: expect.any(String),
           kind: OBSERVATION_KIND,
           summary: KNOWLEDGE_OBSERVATION.summary,
@@ -4332,8 +4376,8 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeObservations).toHaveBeenCalledTimes(2));
     expect(listKnowledgeObservations.mock.calls).toEqual([
-      [{ workspaceId: 'ws_1' }],
-      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
     ]);
     expect(await within(ledger).findByText(SERVER_OBSERVATION.summary)).toBeInTheDocument();
     expect(
@@ -4348,7 +4392,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(recordKnowledgeClaim).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           requestId: expect.any(String),
           statement: KNOWLEDGE_CLAIM.statement,
           producer: KNOWLEDGE_CLAIM.producer,
@@ -4357,8 +4401,8 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeClaims).toHaveBeenCalledTimes(2));
     expect(listKnowledgeClaims.mock.calls).toEqual([
-      [{ workspaceId: 'ws_1' }],
-      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
     ]);
     expect(await within(ledger).findByText(SERVER_CLAIM.statement)).toBeInTheDocument();
     expect(screen.queryByText('Mutation claim must not become visible')).not.toBeInTheDocument();
@@ -4372,7 +4416,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(recordKnowledgeConflict).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           requestId: expect.any(String),
           summary: CONFLICT_SUMMARY,
           subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
@@ -4382,8 +4426,8 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(2));
     expect(listKnowledgeConflicts.mock.calls).toEqual([
-      [{ workspaceId: 'ws_1' }],
-      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
     ]);
     expect(
       await within(ledger).findByText(SERVER_CONFLICT.summary, {
@@ -4400,7 +4444,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(ledger).getByRole('button', { name: 'Resolve conflict' }));
     await waitFor(() =>
       expect(resolveKnowledgeConflict).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         conflictId: KNOWLEDGE_CONFLICT.id,
         ...{
           requestId: expect.any(String),
@@ -4411,9 +4455,9 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(3));
     expect(listKnowledgeConflicts.mock.calls).toEqual([
-      [{ workspaceId: 'ws_1' }],
-      [{ workspaceId: 'ws_1' }],
-      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
+      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
     ]);
     expect(screen.queryByText('Mutation resolution is not authority')).not.toBeInTheDocument();
     expect(
@@ -4447,7 +4491,11 @@ describe('Knowledge (board 14)', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
     const retrieval = knowledgePanel('Retrieval');
-    await waitFor(() => expect(readKnowledgeIndexes).toHaveBeenCalledWith({ workspaceId: 'ws_1' }));
+    await waitFor(() =>
+      expect(readKnowledgeIndexes).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      })
+    );
     expect(document.body).not.toHaveTextContent('knowledge/pages/mem1.md');
     expect(knowledgeScreenSource).not.toMatch(/\.fullText\b|indexTerms/);
 
@@ -4455,7 +4503,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
     await waitFor(() =>
       expect(retrieveKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         ...{ query: cjkQuery },
       })
     );
@@ -4470,7 +4518,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(retrieval).getByRole('button', { name: 'Prepare context' }));
     await waitFor(() =>
       expect(prepareKnowledgeContext).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         ...{ query: cjkQuery },
       })
     );
@@ -4499,11 +4547,17 @@ describe('Knowledge (board 14)', () => {
         KNOWLEDGE_RETRIEVAL.selected[0],
         {
           ...KNOWLEDGE_RETRIEVAL.selected[0],
-          reference: { scopeId: 'page/workspace/ws_1', objectId: second.id },
+          reference: {
+            scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+            objectId: second.id,
+          },
         },
         {
           ...KNOWLEDGE_RETRIEVAL.selected[0],
-          reference: { scopeId: 'page/workspace/ws_1', objectId: 'missing-page' },
+          reference: {
+            scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+            objectId: 'missing-page',
+          },
         },
       ],
     };
@@ -4564,11 +4618,14 @@ describe('Knowledge (board 14)', () => {
     const user = userEvent.setup();
     const otherWorkspaceResult = {
       ...KNOWLEDGE_RETRIEVAL,
-      sourceScope: 'page/workspace/ws_2',
+      sourceScope: 'page/workspace/ws_00000000-0000-7fee-b878-266b367d3b31',
       selected: [
         {
           ...KNOWLEDGE_RETRIEVAL.selected[0],
-          reference: { scopeId: 'page/workspace/ws_2', objectId: KNOWLEDGE_ENTRY.id },
+          reference: {
+            scopeId: 'page/workspace/ws_00000000-0000-7fee-b878-266b367d3b31',
+            objectId: KNOWLEDGE_ENTRY.id,
+          },
         },
       ],
       excluded: [],
@@ -4693,7 +4750,7 @@ describe('Knowledge (board 14)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -4757,7 +4814,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(manager).getByRole('button', { name: 'Answer' }));
     await waitFor(() =>
       expect(answerKnowledgeManager).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         ...{ query: MANAGER_QUESTION },
       })
     );
@@ -4767,12 +4824,15 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(manager).getByRole('button', { name: 'Check health' }));
     await waitFor(() =>
       expect(suggestKnowledgeRepairs).toHaveBeenCalledWith({
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         ...{ limit: 10 },
       })
     );
     await waitFor(() =>
-      expect(checkKnowledgeHealth).toHaveBeenCalledWith({ workspaceId: 'ws_1', ...{ limit: 10 } })
+      expect(checkKnowledgeHealth).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        ...{ limit: 10 },
+      })
     );
     expect(await within(manager).findByText(KNOWLEDGE_HEALTH.summary)).toBeInTheDocument();
     expect(within(manager).getByText(KNOWLEDGE_REPAIR.title)).toBeInTheDocument();
@@ -4811,7 +4871,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             kind: REGISTER_SOURCE_INPUT.kind,
             title: REGISTER_SOURCE_INPUT.title,
             content: REGISTER_SOURCE_INPUT.content,
@@ -4833,7 +4893,9 @@ describe('Knowledge (board 14)', () => {
         derivedRepresentations: [SOURCE_DERIVED_REPRESENTATION],
       },
       result: 'Text',
-      expected: [[{ workspaceId: 'ws_1', sourceId: KNOWLEDGE_SOURCE.id }]],
+      expected: [
+        [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', sourceId: KNOWLEDGE_SOURCE.id }],
+      ],
     },
     {
       method: 'knowledge.observation.record',
@@ -4864,7 +4926,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             kind: OBSERVATION_KIND,
             summary: KNOWLEDGE_OBSERVATION.summary,
             producer: KNOWLEDGE_OBSERVATION.producer,
@@ -4897,7 +4959,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             statement: KNOWLEDGE_CLAIM.statement,
             producer: KNOWLEDGE_CLAIM.producer,
           }),
@@ -4929,7 +4991,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             statement: KNOWLEDGE_CLAIM.statement,
             producer: KNOWLEDGE_CLAIM.producer,
           }),
@@ -4945,7 +5007,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load|access denied/i,
       success: { items: [KNOWLEDGE_CONFLICT] },
       result: KNOWLEDGE_CONFLICT.summary,
-      expected: [[{ workspaceId: 'ws_1' }]],
+      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }]],
     },
     {
       method: 'knowledge.conflict.list',
@@ -4956,7 +5018,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load/i,
       success: { items: [KNOWLEDGE_CONFLICT] },
       result: KNOWLEDGE_CONFLICT.summary,
-      expected: [[{ workspaceId: 'ws_1' }]],
+      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }]],
     },
     {
       method: 'knowledge.conflict.record',
@@ -4984,7 +5046,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             summary: CONFLICT_SUMMARY,
             subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
             producer: KNOWLEDGE_CONFLICT.producer,
@@ -5018,7 +5080,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             summary: CONFLICT_SUMMARY,
             subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
             producer: KNOWLEDGE_CONFLICT.producer,
@@ -5055,7 +5117,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws_1',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
             conflictId: KNOWLEDGE_CONFLICT.id,
             resolution: CONFLICT_RESOLUTION,
             resolvedBy: 'user:test',
@@ -5072,7 +5134,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load|access denied/i,
       success: KNOWLEDGE_INDEXES,
       result: null,
-      expected: [[{ workspaceId: 'ws_1' }]],
+      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }]],
     },
     {
       method: 'knowledge.indexes',
@@ -5083,7 +5145,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load/i,
       success: KNOWLEDGE_INDEXES,
       result: null,
-      expected: [[{ workspaceId: 'ws_1' }]],
+      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }]],
     },
     {
       method: 'knowledge.retrieval',
@@ -5096,7 +5158,9 @@ describe('Knowledge (board 14)', () => {
       fields: [['Query', RETRIEVAL_QUERY]] as const,
       success: KNOWLEDGE_RETRIEVAL,
       result: KNOWLEDGE_ENTRY.id,
-      expected: [[{ workspaceId: 'ws_1', ...{ query: RETRIEVAL_QUERY } }]],
+      expected: [
+        [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', ...{ query: RETRIEVAL_QUERY } }],
+      ],
     },
     {
       method: 'knowledge.context.prepare',
@@ -5109,7 +5173,9 @@ describe('Knowledge (board 14)', () => {
       fields: [['Query', RETRIEVAL_QUERY]] as const,
       success: KNOWLEDGE_CONTEXT,
       result: 'prepared',
-      expected: [[{ workspaceId: 'ws_1', ...{ query: RETRIEVAL_QUERY } }]],
+      expected: [
+        [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', ...{ query: RETRIEVAL_QUERY } }],
+      ],
     },
     {
       method: 'knowledge.answer',
@@ -5122,7 +5188,14 @@ describe('Knowledge (board 14)', () => {
       fields: [['Question', MANAGER_QUESTION]] as const,
       success: KNOWLEDGE_ANSWER,
       result: KNOWLEDGE_ANSWER.answer,
-      expected: [[{ workspaceId: 'ws_1', ...{ query: MANAGER_QUESTION } }]],
+      expected: [
+        [
+          {
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            ...{ query: MANAGER_QUESTION },
+          },
+        ],
+      ],
     },
     {
       method: 'knowledge.repair.suggest',
@@ -5134,7 +5207,7 @@ describe('Knowledge (board 14)', () => {
       action: 'Suggest repairs',
       success: KNOWLEDGE_REPAIRS,
       result: KNOWLEDGE_REPAIR.title,
-      expected: [[{ workspaceId: 'ws_1', ...{ limit: 10 } }]],
+      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', ...{ limit: 10 } }]],
     },
     {
       method: 'knowledge.repair.suggest',
@@ -5146,7 +5219,7 @@ describe('Knowledge (board 14)', () => {
       action: 'Suggest repairs',
       success: KNOWLEDGE_REPAIRS,
       result: KNOWLEDGE_REPAIR.title,
-      expected: [[{ workspaceId: 'ws_1', ...{ limit: 10 } }]],
+      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', ...{ limit: 10 } }]],
     },
     {
       method: 'knowledge.health.check',
@@ -5158,7 +5231,7 @@ describe('Knowledge (board 14)', () => {
       action: 'Check health',
       success: KNOWLEDGE_HEALTH,
       result: KNOWLEDGE_HEALTH.summary,
-      expected: [[{ workspaceId: 'ws_1', ...{ limit: 10 } }]],
+      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', ...{ limit: 10 } }]],
     },
   ])('scopes a $kind $method retry to the $panel panel', async (testCase) => {
     const user = userEvent.setup();
@@ -5223,7 +5296,11 @@ describe('Knowledge (board 14)', () => {
     }
     if (owner && 'owner' in testCase && testCase.owner) {
       await waitFor(() => expect(owner.mock.calls.length).toBeGreaterThanOrEqual(2));
-      expect(owner.mock.calls.every((call) => call[0]?.workspaceId === 'ws_1')).toBe(true);
+      expect(
+        owner.mock.calls.every(
+          (call) => call[0]?.workspaceId === 'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        )
+      ).toBe(true);
     }
     await proveScopedRetrySettled(
       panel,
@@ -5306,7 +5383,7 @@ describe('Knowledge (board 14)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -5356,7 +5433,7 @@ describe('Knowledge (board 14)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -5424,7 +5501,7 @@ describe('Knowledge (board 14)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -5536,7 +5613,7 @@ describe('Knowledge (board 14)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -5642,7 +5719,7 @@ describe('Knowledge (board 14)', () => {
               workspace,
               isOwner: true,
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -5717,7 +5794,7 @@ describe('Knowledge (board 14)', () => {
                 workspace,
                 isOwner: true,
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })
             ),
@@ -5802,7 +5879,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           kind: NEXT_REGISTER_SOURCE_INPUT.kind,
           title: NEXT_REGISTER_SOURCE_INPUT.title,
           content: NEXT_REGISTER_SOURCE_INPUT.content,
@@ -5844,7 +5921,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           kind: NEXT_OBSERVATION_KIND,
           summary: NEXT_OBSERVATION.summary,
           producer: NEXT_OBSERVATION.producer,
@@ -5882,7 +5959,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           statement: NEXT_CLAIM.statement,
           producer: NEXT_CLAIM.producer,
         }),
@@ -5922,7 +5999,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           summary: NEXT_CONFLICT_INPUT.summary,
           subjectReferences: NEXT_CONFLICT_INPUT.subjectReferences,
           producer: NEXT_CONFLICT_INPUT.producer,
@@ -5964,7 +6041,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           conflictId: SECOND_CONFLICT.id,
           resolution: NEXT_RESOLUTION.resolution,
           resolvedBy: NEXT_RESOLUTION.resolvedBy,
@@ -6120,7 +6197,7 @@ describe('First run (board 18)', () => {
             workspace,
             isOwner: true,
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -6146,7 +6223,7 @@ describe('First run (board 18)', () => {
             workspace,
             isOwner: true,
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -6171,7 +6248,7 @@ describe('Archived threads', () => {
   it('lists selected-Workspace archived Threads and restores through updateThread', async () => {
     const user = userEvent.setup();
     const archivedThread = {
-      id: 'th_archived_first',
+      id: 'th_00000000-0000-70d8-aa77-6b797e35dbcf',
       workspaceId: WORKSPACE_A.id,
       name: 'Past conversation',
       preview: 'Archived conversation',
@@ -6180,7 +6257,7 @@ describe('Archived threads', () => {
       updatedAt: TIMESTAMP_OLD,
     };
     const previewOnlyThread = {
-      id: 'th_archived_second',
+      id: 'th_00000000-0000-7784-9997-974e92b22f7c',
       workspaceId: WORKSPACE_A.id,
       name: null,
       preview: 'Preview-only conversation',
@@ -6222,7 +6299,7 @@ describe('New workspace (board 07)', () => {
   it('creates a workspace from the form', async () => {
     const user = userEvent.setup();
     const createWorkspace = vi.fn().mockResolvedValue({
-      id: 'ws-new',
+      id: 'ws_00000000-0000-7d43-b70e-4865c8f2a794',
       name: 'Launch prep',
       kind: 'general',
       status: 'active',
