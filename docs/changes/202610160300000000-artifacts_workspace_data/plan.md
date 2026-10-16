@@ -18,15 +18,18 @@ The engineer assigned P17, P18, and P27 in that order: arbitrary-file Artifacts 
 
 ## Increments
 
-1. Complete the exact file lifecycle: reserve-aware admission, streamed capture and download, safe folder intake, immutable publication and replay, independent raw-output accounting, binary review, and portability.
-2. Complete authorized per-Turn read-only snapshots, bounded source projections, exact input lineage and delivery, PDF text and explicit vision views, and failure/refusal behavior.
-3. Complete the Artifact and Material review surfaces, precise feedback, and explicit candidate selection.
+1. Land the exact any-file Artifact lifecycle: reserve-aware admission, streamed capture and download, immutable publication and replay, independent raw-output accounting, exact credential admission, and portability.
+2. Land D01 client file drafts and Turn-owned immutable inputs. A helper implements this in its own branch.
+3. Land safe ZIP folder intake. A second helper implements this in its own branch.
+4. Land authorized per-Turn read-only snapshots, bounded source projections, exact input lineage and delivery, PDF text and explicit vision views, and failure/refusal behavior.
 
-Each increment includes owner alignment, local guides, focused regressions, integration checks, independent review, and exact-head full CI before landing. Shared integration paths are edited only inside the lane's landing window. Cross-lane changes require coordinated ownership.
+The coordinator transferred P27 Artifact and Material Web review to L-WEB on 2026-10-16. L-AW retains the file-input portions of the Composer and chat screens. The original assignment above remains intent history.
+
+Each increment includes owner alignment, local guides, focused regressions, integration checks, independent review, and exact-head full CI before landing. Landing protocol v2 prepares shared integration, generation, gates, independent review and full CI before acquiring the final landing window. Cross-lane changes require coordinated ownership.
 
 ## Checkpoint
 
-The fixture and oracle branch at 3b8ea153 is merged. No production change has landed. Begin at file admission and private payload staging. Existing Artifact content is non-empty inline text; arbitrary binary and empty originals cannot pass it. No byte conversion can satisfy exact original identity.
+The fixture and oracle branch at 3b8ea153 is merged. No production change has landed. WIP 5f5f21b6 is pushed as a backup, and main a1f2c6b8 is merged. Exact file storage, streaming and raw accounting are implemented and under integration checks. D01 and ZIP are separate landable features.
 
 ## Verification
 
@@ -34,4 +37,4 @@ Use the prior frozen corpus under `tests/fixtures/large-context/` for byte, size
 
 ## Next Action
 
-Add a regression against the current Artifact contract. Expected observation: the empty and arbitrary-byte file representation is refused. Implement bounded file counters, concurrent free-space reservation, and private streaming staging next. A failed probe that exposes a cross-lane owner dependency will narrow an interface request before editing that owner's path.
+Complete the first-feature integration checks, regenerate the API and CLI, obtain exact-head independent review and run full branch CI before acquiring the landing window. Preserve the same session, attempt, no-follow, replay and live-Turn fences across Core, NanoHost and helper streaming.

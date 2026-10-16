@@ -1,6 +1,7 @@
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
 import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useThreads, useWorkspaces } from '../chat/data';
 import { useArtifact } from '../goal/data';
@@ -276,30 +277,48 @@ export function useArtifacts(workspaceId: string | null) {
 /**
  * Imports one immutable Workspace Artifact bound to the command's Workspace.
  *
- * @returns Mutation over `client.operations['artifact.import']`.
+ * @returns Mutation over the exact original `client.artifactFiles.import` binding.
  */
 export function useImportWorkspaceArtifact() {
   const client = useCoreClient();
+  // Mutation variables retain one command and File through unknown settlement. Weak keys release
+  // the prepared bytes and digest when the caller releases that draft; no server draft exists.
+  const preparations = useRef(
+    new WeakMap<ArtifactImportInput, Promise<{ body: Blob; contentDigest: string }>>()
+  );
   return useMutation({
     mutationFn: async (input: ArtifactImportInput) => {
-      const file = typeof input.content === 'string' ? new Blob([input.content]) : input.content;
-      if (file.size > MAX_ARTIFACT_FILE_BYTES) {
-        throw new ApiCallError(413, 'The file admission byte limit was exceeded.', {
-          code: 'file_too_large',
-        });
+      let preparation = preparations.current.get(input);
+      if (!preparation) {
+        const file = typeof input.content === 'string' ? new Blob([input.content]) : input.content;
+        if (file.size > MAX_ARTIFACT_FILE_BYTES) {
+          throw new ApiCallError(413, 'The file admission byte limit was exceeded.', {
+            code: 'file_too_large',
+          });
+        }
+        preparation = sha256ArtifactFile(file).then((contentDigest) => ({
+          body: file,
+          contentDigest,
+        }));
+        preparations.current.set(input, preparation);
+      }
+      let prepared: Awaited<typeof preparation>;
+      try {
+        prepared = await preparation;
+      } catch (error) {
+        preparations.current.delete(input);
+        throw error;
       }
       return client.artifactFiles.import(
         {
           workspaceId: input.workspaceId,
-          ...{
-            title: input.title,
-            mediaType: input.mediaType,
-            byteLength: file.size,
-            contentDigest: await sha256ArtifactFile(file),
-            requestId: input.requestId,
-          },
+          title: input.title,
+          mediaType: input.mediaType,
+          byteLength: prepared.body.size,
+          contentDigest: prepared.contentDigest,
+          requestId: input.requestId,
         },
-        file
+        prepared.body
       );
     },
     retry: false,

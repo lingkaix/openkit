@@ -73,6 +73,13 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
       // Non-review content remains readable as escaped text below.
     }
   }
+  if (content.format === 'file') {
+    return <div className="flex min-w-0 flex-col gap-2 text-sm text-fg-muted">
+      <p>Version {artifact.data.version} · {content.mediaType} · {content.byteLength.toLocaleString()} bytes</p>
+      <p className="break-all">{artifact.data.contentDigest}</p>
+      <p>Inspect this exact version in Artifacts to download its original bytes.</p>
+    </div>;
+  }
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <p className="text-xs text-fg-muted">Version {artifact.data.version}</p>

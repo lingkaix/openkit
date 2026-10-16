@@ -570,7 +570,7 @@ export function ArtifactsScreen() {
           ) : null}
           {detail ? (
             <p className="text-sm text-fg-muted">
-              {selected.data.origin.kind === 'turn-output'
+              {detail.origin.kind === 'turn-output'
                 ? 'This output is already linked to its producing conversation. To ask an agent to use it, attach it in the conversation composer.'
                 : 'Add a reference to this imported file in the selected conversation. This does not send a message to an agent or start work.'}
             </p>

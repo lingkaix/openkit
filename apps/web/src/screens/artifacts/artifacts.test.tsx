@@ -56,27 +56,27 @@ const MULTILINE_PLAIN_DIGEST =
 const MULTILINE_JSON = '{\n  "title": "weekly",\n  "ready": true\n}';
 const MULTILINE_JSON_DIGEST =
   'sha256:8d2a142ab0a8c7d7a220b2ad401f49f4e1e2060483dbf425048336b538b38fda';
-const MULTILINE_MARKDOWN_IMPORT = ImportWorkspaceArtifactRequestSchema.parse({
+const MULTILINE_MARKDOWN_IMPORT = {
   requestId: 'req_multiline_markdown',
   title: 'Multiline import',
   mediaType: 'text/markdown',
   content: MULTILINE_MARKDOWN,
   contentDigest: MULTILINE_MARKDOWN_DIGEST,
-});
-const MULTILINE_PLAIN_IMPORT = ImportWorkspaceArtifactRequestSchema.parse({
+} as const;
+const MULTILINE_PLAIN_IMPORT = {
   requestId: 'req_multiline_plain',
   title: 'Multiline import',
   mediaType: 'text/plain',
   content: MULTILINE_PLAIN,
   contentDigest: MULTILINE_PLAIN_DIGEST,
-});
-const MULTILINE_JSON_IMPORT = ImportWorkspaceArtifactRequestSchema.parse({
+} as const;
+const MULTILINE_JSON_IMPORT = {
   requestId: 'req_multiline_json',
   title: 'Multiline import',
   mediaType: 'application/json',
   content: MULTILINE_JSON,
   contentDigest: MULTILINE_JSON_DIGEST,
-});
+} as const;
 
 function workspaceRecord(
   id: string,
@@ -353,7 +353,18 @@ function makeClient(
       ...overrides.core,
     },
     app: { ...overrides.app },
-
+    // These tests override the import command; its current binding carries metadata and a Blob.
+    artifactFiles: {
+      import:
+        overrides.operations?.['artifact.import'] ?? vi.fn().mockResolvedValue(IMPORT_MUTATION),
+      browserDownloadUrl: ({
+        artifactId,
+        artifactVersion,
+      }: {
+        artifactId: string;
+        artifactVersion: number;
+      }) => `/download/${artifactId}/${artifactVersion}`,
+    },
     operations: {
       'thread.list': vi
         .fn()
@@ -381,7 +392,6 @@ function makeClient(
               : Promise.reject(new Error(`Artifact not found: ${artifactId}`));
           }
         ),
-      'artifact.import': vi.fn().mockResolvedValue(IMPORT_MUTATION),
       'artifact.introduce': vi.fn().mockResolvedValue(INTRODUCE_MUTATION),
       'turn.read': vi.fn(),
       ...overrides.operations,
@@ -517,7 +527,7 @@ async function startImportedIntroduction(user: ReturnType<typeof userEvent.setup
   expect(IMPORTED_ARTIFACT.threadId).toBeNull();
   expect(IMPORTED_ARTIFACT.turnId).toBeNull();
   await chooseIntroduceThread(user);
-  expect(await screen.findByText(IMPORTED_ARTIFACT.content.body)).toBeInTheDocument();
+  expect(await screen.findByText(IMPORT_CONTENT)).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: /add to conversation/i }));
   await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1));
   const command = acceptedIntroduce(introduceWorkspaceArtifact);
@@ -611,7 +621,7 @@ async function startTypedCommandFailure(
     await submitImport(user);
   } else {
     await chooseIntroduceThread(user);
-    expect(await screen.findByText(IMPORTED_ARTIFACT.content.body)).toBeInTheDocument();
+    expect(await screen.findByText(IMPORT_CONTENT)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /add to conversation/i }));
   }
 
@@ -637,6 +647,11 @@ async function disconnectWrites(queryClient: QueryClient, meta: ReturnType<typeo
 }
 
 beforeEach(() => {
+  // jsdom's Blob lacks the browser byte-read method; FileReader supplies actual fixture bytes.
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {configurable:true, writable:true, value: function(this: Blob) {
+    return new Promise<ArrayBuffer>((resolve,reject)=>{ const reader = new FileReader();
+      reader.onload = ()=>resolve(reader.result as ArrayBuffer); reader.onerror = ()=>reject(reader.error); reader.readAsArrayBuffer(this); });
+  }});
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
@@ -653,7 +668,7 @@ describe('Artifacts', () => {
     expect(screen.getByText(ARTIFACT.title)).toBeInTheDocument();
     expect(screen.getByText('Report · v1')).toBeInTheDocument();
     expect(screen.getByText('File · v1')).toBeInTheDocument();
-    expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
     assertNoLeakedInternals();
     expect(vi.mocked(client.operations['artifact.list']).mock.calls).toEqual([
       [{ workspaceId: WORKSPACE.id }],
@@ -667,7 +682,7 @@ describe('Artifacts', () => {
         [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
       ])
     );
-    expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
+    expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();
     assertNoLeakedInternals();
 
     const surface = surfaceById('artifacts');
@@ -687,9 +702,9 @@ describe('Artifacts', () => {
         [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
       ])
     );
-    expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
-    expect(screen.queryByText(IMPORTED_ARTIFACT.content.body)).not.toBeInTheDocument();
-    expect(screen.queryByText(ARTIFACT_B.content.body)).not.toBeInTheDocument();
+    expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();
+    expect(screen.queryByText(IMPORT_CONTENT)).not.toBeInTheDocument();
+    expect(screen.queryByText(OPS_BODY)).not.toBeInTheDocument();
     assertNoLeakedInternals();
   });
 
@@ -722,9 +737,9 @@ describe('Artifacts', () => {
       expect(screen.queryByText(IMPORTED_ARTIFACT.title)).not.toBeInTheDocument();
     }
     expect(client.operations['artifact.read']).not.toHaveBeenCalled();
-    expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
-    expect(screen.queryByText(IMPORTED_ARTIFACT.content.body)).not.toBeInTheDocument();
-    expect(screen.queryByText(ARTIFACT_B.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
+    expect(screen.queryByText(IMPORT_CONTENT)).not.toBeInTheDocument();
+    expect(screen.queryByText(OPS_BODY)).not.toBeInTheDocument();
     assertNoLeakedInternals();
   });
 
@@ -813,14 +828,83 @@ describe('Artifacts', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load that artifact/i);
     expect(alert).not.toHaveTextContent('artifact-read-private failure');
-    expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
+    expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();
     expect(getArtifact.mock.calls).toEqual([
       [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
       [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
     ]);
+  });
+
+  it('imports exact arbitrary file bytes and shows an immutable original download', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0, 255, 128, 13, 10])], 'original.bin', {
+      type: 'application/octet-stream',
+    });
+    const fileImport = vi.fn().mockResolvedValue(IMPORT_MUTATION);
+    const fileArtifact = ArtifactSchema.parse({
+      ...IMPORTED_ARTIFACT,
+      content: { format: 'file', mediaType: 'application/octet-stream', byteLength: 5 },
+    });
+    renderApp(
+      '/artifacts',
+      makeClient({
+        operations: {
+          'artifact.import': fileImport,
+          'artifact.read': vi.fn().mockResolvedValue(fileArtifact),
+        },
+      })
+    );
+    await user.click(await screen.findByRole('button', { name: /import artifact/i }));
+    await user.upload(
+      document.querySelector('input[type="file"]') as HTMLInputElement,
+      file as unknown as File
+    );
+    await user.click(screen.getByRole('button', { name: /^import$/i }));
+    await waitFor(() => expect(fileImport).toHaveBeenCalledTimes(1));
+    expect(fileImport.mock.calls[0]![0]).toMatchObject({
+      title: 'original.bin',
+      byteLength: 5,
+      mediaType: 'application/octet-stream',
+    });
+    expect(new Uint8Array(await (fileImport.mock.calls[0]![1] as Blob).arrayBuffer())).toEqual(
+      new Uint8Array([0, 255, 128, 13, 10])
+    );
+    await openArtifact(user, IMPORTED_ARTIFACT.title);
+    expect(await screen.findByRole('link', { name: 'Download original' })).toHaveAttribute(
+      'href',
+      `/download/${IMPORTED_ARTIFACT.id}/1`
+    );
+    expect(screen.queryByText(IMPORT_CONTENT)).not.toBeInTheDocument();
+  });
+
+  it('reconciles an unknown file import without reading the retained File again', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0, 255, 128])], 'retained.bin', {
+      type: 'application/octet-stream',
+    });
+    const fileImport = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Acknowledgement unavailable'))
+      .mockResolvedValue(IMPORT_MUTATION);
+    renderApp('/artifacts', makeClient({ operations: { 'artifact.import': fileImport } }));
+    await user.click(await screen.findByRole('button', { name: /import artifact/i }));
+    await user.upload(
+      document.querySelector('input[type="file"]') as HTMLInputElement,
+      file as unknown as File
+    );
+    await user.click(screen.getByRole('button', { name: /^import$/i }));
+    await waitFor(() => expect(fileImport).toHaveBeenCalledTimes(1));
+    const unreadable = vi.spyOn(file, 'slice').mockImplementation(() => {
+      throw new Error('Original handle unreadable');
+    });
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(fileImport).toHaveBeenCalledTimes(2));
+    expect(fileImport.mock.calls[1]![0]).toEqual(fileImport.mock.calls[0]![0]);
+    expect(fileImport.mock.calls[1]![1]).toBe(file);
+    expect(unreadable).not.toHaveBeenCalled();
   });
 
   it('imports through the current schema then settles from an authoritative list refetch', async () => {
@@ -849,9 +933,10 @@ describe('Artifacts', () => {
       title: IMPORT_TITLE,
       mediaType: 'text/markdown',
       contentDigest: IMPORT_DIGEST,
-      content: IMPORT_CONTENT,
+      byteLength: new TextEncoder().encode(IMPORT_CONTENT).byteLength,
       requestId: expect.any(String),
     });
+    expect(await (importWorkspaceArtifact.mock.calls[0]![1] as Blob).text()).toBe(IMPORT_CONTENT);
     await waitFor(() => expect(listArtifacts).toHaveBeenCalledTimes(2));
     expect(screen.getByText(ARTIFACT.title)).toBeInTheDocument();
     expect(screen.queryByText(IMPORT_MUTATION.artifactId)).not.toBeInTheDocument();
@@ -1429,7 +1514,7 @@ describe('Artifacts', () => {
     expect(ARTIFACT.turnId).toBe('tu_weekly');
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     await openArtifact(user, ARTIFACT.title);
-    expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
+    expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();
     await waitFor(() =>
       expect(vi.mocked(client.operations['artifact.read']).mock.calls).toEqual([
         [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
@@ -1651,7 +1736,7 @@ describe('Artifacts', () => {
     expect(next).toMatchObject({
       title: IMPORT_TITLE,
       mediaType: 'text/markdown',
-      content: IMPORT_CONTENT_V2,
+      byteLength: new TextEncoder().encode(IMPORT_CONTENT_V2).byteLength,
     });
     expect(next.contentDigest).not.toBe(first.contentDigest);
     assertNoLeakedInternals();
@@ -1786,10 +1871,11 @@ describe('Artifacts', () => {
     expect(acceptedImport(importWorkspaceArtifact)).toMatchObject({
       title: request.title,
       mediaType: request.mediaType,
-      content: request.content,
+      byteLength: new TextEncoder().encode(request.content).byteLength,
       contentDigest: request.contentDigest,
       requestId: expect.any(String),
     });
+    expect(await (importWorkspaceArtifact.mock.calls[0]![1] as Blob).text()).toBe(request.content);
     assertNoLeakedInternals();
   });
 
@@ -1881,7 +1967,7 @@ describe('Artifacts', () => {
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     expect(screen.getByText(ARTIFACT.summary as string)).toBeInTheDocument();
     await openArtifact(user, ARTIFACT.title);
-    expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
+    expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();
     expect(listWorkspaces).toHaveBeenCalledTimes(1);
 
     await submitImport(user);
@@ -1894,7 +1980,7 @@ describe('Artifacts', () => {
     expect(alert).not.toHaveTextContent('workspace_access_denied');
     expect(screen.queryByText(ARTIFACT.title)).not.toBeInTheDocument();
     expect(screen.queryByText(ARTIFACT.summary as string)).not.toBeInTheDocument();
-    expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_MUTATION.artifactId)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_TITLE)).not.toBeInTheDocument();
     for (const name of [/import artifact/i, /add to conversation/i, /^import$/i]) {
@@ -1910,19 +1996,19 @@ describe('Artifacts', () => {
     expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(ARTIFACT.title)).not.toBeInTheDocument();
     expect(screen.queryByText(ARTIFACT.summary as string)).not.toBeInTheDocument();
-    expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
     expect(screen.queryByText('list-refetch-denied-private failure')).not.toBeInTheDocument();
 
     recoveredArtifacts.resolve(ListArtifactsResponseSchema.parse({ items: [ARTIFACT] }));
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     expect(screen.getByText(ARTIFACT.summary as string)).toBeInTheDocument();
-    expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /import artifact/i })).toBeEnabled()
     );
     await openArtifact(user, ARTIFACT.title);
     await waitFor(() => expect(getArtifact).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
+    expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();
     assertNoLeakedInternals();
   });
 });

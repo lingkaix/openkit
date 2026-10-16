@@ -2,12 +2,12 @@ import { Blob } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { sha256ArtifactFile } from './file-digest';
+import { sha256ArtifactFile } from '../src/screens/artifacts/file-digest';
 
 /** Independent exact originals frozen before the production file path. */
 const corpus = JSON.parse(
   readFileSync(
-    new NodeURL('../../../../../tests/fixtures/large-context/cases.json', import.meta.url),
+    new NodeURL('../../../tests/fixtures/large-context/cases.json', import.meta.url),
     'utf8'
   )
 ) as {

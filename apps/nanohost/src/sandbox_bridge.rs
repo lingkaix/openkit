@@ -1816,7 +1816,9 @@ mod tests {
             .1
             .split_once("/// Settles a streamed export")
             .expect("end of import staging owner")
-            .0;
+            .0
+            .split_whitespace()
+            .collect::<String>();
         assert!(
             import
                 .find("source.reader()")
@@ -1829,7 +1831,9 @@ mod tests {
             .1
             .split_once("/// Bounded ordered epoch-local")
             .expect("end of export staging owner")
-            .0;
+            .0
+            .split_whitespace()
+            .collect::<String>();
         assert!(export.contains("stage.length() > request.byte_length"));
         assert!(export.contains("stage.complete(None)"));
         let stage = include_str!("file_transfer.rs");

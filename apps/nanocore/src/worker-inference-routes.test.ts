@@ -715,6 +715,20 @@ function postRawWorkerResponses(
 }
 
 describe('worker inference routes', () => {
+  it('refuses successful Provider output without native raw observation proof', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementation(async (_provider, request) => ({
+      id: 'resp_unobserved', object: 'response', model: request.model, output: [], status: 'completed',
+    }));
+    const response = await postWorkerResponses(fixture, { model: WORKER_LOGICAL_MODEL_ID, input: 'Observe exactly' });
+    expect(response.status).toBe(503);
+    const workspaceDb = openWorkspaceDb(fixture.coreDb!.dataRoot, fixture.environmentPackage.scope.workspaceId);
+    try {
+      expect(workspaceDb.sqlite.prepare("SELECT status, error_code FROM capability_calls WHERE service_ref = 'worker-inference-gateway'").all()).toEqual([
+        {status:'failed', error_code:'worker_raw_output_unavailable'},
+      ]);
+    } finally { workspaceDb.sqlite.close(); }
+  });
   it('dispatches canonical Responses through the AEP provider', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     const response = await postWorkerResponses(

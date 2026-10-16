@@ -661,7 +661,9 @@ function InspectedWorkspaceArtifact({ artifactId }: { artifactId: string }) {
   return (
     <div className="mt-2 flex flex-col gap-2">
       <p className="text-sm font-bold text-fg-strong">{artifact.data.title}</p>
-      <pre className="whitespace-pre-wrap text-sm text-fg">{artifact.data.content.body}</pre>
+      {artifact.data.content.format === 'file' ? (
+        <p className="text-sm text-fg-muted">{artifact.data.content.mediaType} · {artifact.data.content.byteLength.toLocaleString()} bytes · {artifact.data.contentDigest}. Inspect this exact version in Artifacts to download its original bytes.</p>
+      ) : <pre className="whitespace-pre-wrap text-sm text-fg">{artifact.data.content.body}</pre>}
     </div>
   );
 }

@@ -12,7 +12,6 @@ This directory owns admission and exact-byte payload operations for arbitrary-fi
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/storage/artifacts --maxWorkers=1` through the backlog CPU slot helper. `file-contract.test.ts` verifies the integrated shared Artifact schema. Passing storage helper tests does not prove complete route, Worker, Web or release acceptance.
 
-`zip-snapshot.ts` uses yauzl's lazy central-directory reader. It verifies actual expanded size and CRC, rejects unsafe paths and non-regular types, checks normalized collisions and bounds the entry inventory. A completed snapshot is still private staging. Explicit nested extraction shares its existing byte, entry, capacity and time budgets. Original archives are unchanged by extraction failure. Parser and resource defaults still require qualification before release.
 
 `worker-credential-scan.ts` defines the generic bounded digest-window seam. Core selects original credential proof and uses the existing supervised retrieval service to scan private staged originals with overlap. The sidecar receives generic window lengths, encodings, digests and bounds only. Exact literal comparison remains in the streaming Core stage. Complete range coverage and an asynchronous complete-original digest check precede publication; failed or limited comparison never grants admission.
 
