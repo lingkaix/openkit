@@ -689,7 +689,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
           secretPath: join(fixtureRoot, 'transport-b.token'),
         },
       },
-      deploymentId: 'deployment-worker-mcp-smoke',
+      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000602',
       identityId: 'nanohost-worker-mcp-smoke',
       rendezvousUrl: `http://127.0.0.1:${nanoHostPort}`,
     },
@@ -839,9 +839,9 @@ async function issueNanoHostToken(dataRoot) {
           identity_id, deployment_id, status, created_at
         ) VALUES (?, ?, 'active', ?)`
       )
-      .run('nanohost-worker-mcp-smoke', 'deployment-worker-mcp-smoke', '2026-09-05T00:00:00.000Z');
+      .run('nanohost-worker-mcp-smoke', 'dep_0190f4c8-0000-7000-8000-000000000602', '2026-09-05T00:00:00.000Z');
     return createNanoHostTransportTokenRecord(coreDb, {
-      deploymentId: 'deployment-worker-mcp-smoke',
+      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000602',
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerNanoHostIdentityId: 'nanohost-worker-mcp-smoke',
       responsibleServerAdminActorId: 'usr_00000000-0000-7000-8000-000000000001',
