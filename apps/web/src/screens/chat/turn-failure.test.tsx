@@ -5,6 +5,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { testEntityId } from '../../../../nanocore/src/test-support/entity-ids.js';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { useWorkspaceStore } from '../workspace-store';
@@ -174,7 +175,9 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
         items: [USER_MESSAGE, ACCEPTED_STATUS_ITEM],
         nextCursor: null,
       }),
-      'thread.dashboard': vi.fn().mockResolvedValue({ turns: [FAILED_DASHBOARD_TURN] }),
+      'thread.dashboard': vi
+        .fn()
+        .mockResolvedValue({ thread: THREAD, turns: [FAILED_DASHBOARD_TURN] }),
       ...core,
       ...app,
       'workspace.list': vi
@@ -214,18 +217,12 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
   } as unknown as CoreClient;
 }
 
-function renderTask(client: CoreClient) {
+function renderTask(client: CoreClient, path = `/tasks/${THREAD.workspaceId}/${THREAD.id}`) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter
-          initialEntries={[
-            '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7b47-b9e3-5a516884858f',
-          ]}
-        >
-          {children}
-        </MemoryRouter>
+        <MemoryRouter initialEntries={[path]}>{children}</MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -239,6 +236,47 @@ beforeEach(() => {
 });
 
 describe('task runtime activity', () => {
+  it.each([
+    true,
+    false,
+  ])('locates only a retained Turn from the current authorized Thread: %s', async (present) => {
+    const prior = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scroll,
+    });
+    try {
+      const target = present ? FAILED_DASHBOARD_TURN.id : testEntityId('tu', 'tu_unavailable');
+      const client = makeClient({
+        'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+        'thread.dashboard': vi.fn().mockResolvedValue({
+          thread: THREAD,
+          turns: [{ ...COMPLETED_DASHBOARD_TURN, status: 'pending', completedAt: null, items: [] }],
+        }),
+      });
+      renderTask(
+        client,
+        `/tasks/${THREAD.workspaceId}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
+      );
+      if (present) {
+        expect(await screen.findByText(`Recorded Turn ${target} · pending`)).toBeInTheDocument();
+        await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+        expect(scroll.mock.contexts[0]).toHaveTextContent(`Recorded Turn ${target}`);
+      } else {
+        expect(
+          await screen.findByText('Recorded Turn is unavailable in this Thread.')
+        ).toBeInTheDocument();
+        expect(scroll).not.toHaveBeenCalled();
+      }
+      expect(client.operations['turn.start']).not.toHaveBeenCalled();
+      expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+    } finally {
+      if (prior) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', prior);
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    }
+  });
+
   it('shows activity once after the last interleaved group without inventing actions', async () => {
     renderTask(
       makeClient(
@@ -250,6 +288,7 @@ describe('task runtime activity', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [HISTORICAL_FAILED_TURN, COMPLETED_DASHBOARD_TURN],
             runtimeActivity: [
               {
@@ -300,6 +339,7 @@ describe('task runtime activity', () => {
         { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [
               { ...HISTORICAL_FAILED_TURN, items: [], status: 'completed', error: null },
               { ...COMPLETED_DASHBOARD_TURN, items: [] },
@@ -352,7 +392,11 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         {},
-        { 'thread.dashboard': vi.fn().mockResolvedValue({ turns: [COMPLETED_DASHBOARD_TURN] }) }
+        {
+          'thread.dashboard': vi
+            .fn()
+            .mockResolvedValue({ thread: THREAD, turns: [COMPLETED_DASHBOARD_TURN] }),
+        }
       )
     );
 
@@ -377,6 +421,7 @@ describe('task turn failure (dashboard reload)', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [HISTORICAL_FAILED_TURN, LATER_COMPLETED_TURN],
           }),
         }
@@ -418,6 +463,7 @@ describe('task turn failure (dashboard reload)', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [
               { ...HISTORICAL_FAILED_TURN, completedAt: '2026-09-16T05:21:30.000Z' },
               FAILED_DASHBOARD_TURN,
@@ -443,7 +489,11 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
-        { 'thread.dashboard': vi.fn().mockResolvedValue({ turns: [EMPTY_FAILED_DASHBOARD_TURN] }) }
+        {
+          'thread.dashboard': vi
+            .fn()
+            .mockResolvedValue({ thread: THREAD, turns: [EMPTY_FAILED_DASHBOARD_TURN] }),
+        }
       )
     );
 
@@ -465,6 +515,7 @@ describe('task turn failure (dashboard reload)', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [HISTORICAL_EMPTY_FAILED_TURN, LATER_COMPLETED_TURN],
           }),
         }

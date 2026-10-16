@@ -611,7 +611,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const sharedStore =
     options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   const workspaceMutationAdmission =
-    options.workspaceMutationAdmission ?? new WorkspaceMutationAdmission();
+    options.workspaceMutationAdmission ??
+    options.automationStore?.mutationAdmission ??
+    new WorkspaceMutationAdmission();
+  if (
+    options.automationStore &&
+    (options.automationStore.coreDb !== options.coreDb ||
+      options.automationStore.mutationAdmission !== workspaceMutationAdmission)
+  )
+    throw new Error(
+      'Recurring schedules require the application Core database and Workspace mutation fence.'
+    );
   if (dataRoot) {
     restoreWorkspaceDeletionMutationAdmission({
       dataRoot,
@@ -803,7 +813,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
-  const automationStore = options.automationStore ?? new AutomationStore();
+  const automationStore =
+    options.automationStore ??
+    (options.coreDb ? new AutomationStore(options.coreDb, workspaceMutationAdmission) : undefined);
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
   const workerMcpGateway =
@@ -1849,7 +1861,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     turnExecutor,
 
     app,
-    automationStore,
+    ...(automationStore ? { automationStore } : {}),
     conversationService: chatService,
     taskStart,
     pendingRequestServices,
@@ -1903,7 +1915,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     turnExecutor,
 
     app,
-    automationStore,
+    ...(automationStore ? { automationStore } : {}),
     conversationService: chatService,
     taskStart,
     pendingRequestServices,

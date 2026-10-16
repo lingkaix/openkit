@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
@@ -141,9 +141,62 @@ describe('openkit-generative MCP', () => {
       const apps = listed.structuredContent as { items: Array<{ appId: string; title: string }> };
       expect(apps.items.some((item) => item.title === SCHEMA.title)).toBe(true);
       expect(created.structuredContent).toMatchObject({ title: SCHEMA.title, lifecycle: 'active' });
+      const app = created.structuredContent as { appId: string; schemaRevision: number };
+      const record = await dispatchOpenkitGenerativeTool(
+        { ...context, protocolRequestId: randomUUID() },
+        'kernel_records_create',
+        {
+          appId: app.appId,
+          collection: 'mappings',
+          schemaRevision: app.schemaRevision,
+          data: { membership_id: 'member-1', crm_id: 'customer-1', active: true },
+        }
+      );
+      const retained = record.structuredContent as { id: string; revision: number };
+      const updateContext = { ...context, protocolRequestId: randomUUID() };
+      const update = {
+        appId: app.appId,
+        collection: 'mappings',
+        recordId: retained.id,
+        schemaRevision: app.schemaRevision,
+        expectedRecordRevision: retained.revision,
+        data: { active: false },
+      };
+      const result = await dispatchOpenkitGenerativeTool(
+        updateContext,
+        'kernel_records_update',
+        update
+      );
+      expect(result.structuredContent).toMatchObject({
+        id: retained.id,
+        revision: 2,
+        data: { active: false },
+      });
+      expect(
+        await dispatchOpenkitGenerativeTool(updateContext, 'kernel_records_update', update)
+      ).toEqual(result);
+      await expect(
+        dispatchOpenkitGenerativeTool(
+          { ...context, protocolRequestId: randomUUID() },
+          'kernel_records_update',
+          update
+        )
+      ).rejects.toMatchObject({ code: 'conflict' });
+      const current = await dispatchOpenkitGenerativeTool(context, 'kernel_records_get', {
+        appId: app.appId,
+        collection: 'mappings',
+        recordId: retained.id,
+        schemaRevision: app.schemaRevision,
+      });
+      expect(current.structuredContent).toMatchObject({
+        id: retained.id,
+        revision: 2,
+        data: { active: false },
+      });
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -250,6 +303,7 @@ describe('openkit-generative MCP', () => {
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   ConversationTargetCatalogSchema,
+  OPERATION_DEFINITIONS,
   type QuickChatRequestSchema,
   QuickChatResponseSchema,
   type StartTaskModeRequestSchema,
@@ -39,6 +40,8 @@ import {
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
+import { uuidv5 } from './generative-kernel/uuid.js';
+import { createAssistantGenerativeTools } from './generative-ui/internal-tools.js';
 import {
   type AssistantCommandResult,
   assembleAssistantCommandRun,
@@ -3927,6 +3930,13 @@ export function createConversationService({
               findWorkspaceConfig(snapshot, workspaceId)?.config.workspace.assistant.resources
                 ?.skillIds ?? [],
           });
+          const invokeGenerative = createOperationInvocation({
+            coreDb,
+            store,
+            inflightCommands,
+            repositoryWorkspaceDb,
+            workspaceMutationAdmission,
+          });
           const assembly = assembleAssistantCommandRun({
             resources,
             messages: [
@@ -3951,6 +3961,44 @@ export function createConversationService({
                   },
                 })
               ),
+              ...createAssistantGenerativeTools(async (operationId, input, tool) => {
+                resources.assertCurrent({ actor, workspaceId, threadId, turnId: turn.id });
+                // The accepted loop ordinal identifies a command; provider call IDs only correlate Tool calls and results.
+                const identities = {
+                  workspaceId,
+                  threadId,
+                  turnId: turn.id,
+                  requestId: uuidv5(
+                    JSON.stringify([
+                      'assistant-generative',
+                      workspaceId,
+                      threadId,
+                      actor.userId,
+                      chatInput.requestId,
+                      tool.toolOccurrence,
+                    ])
+                  ),
+                };
+                const bound = Object.fromEntries(
+                  Object.entries(identities).filter(([field]) =>
+                    Object.hasOwn(OPERATION_DEFINITIONS[operationId].inputSchema.shape, field)
+                  )
+                );
+                const result = await invokeGenerative(
+                  operationId,
+                  { ...(input as Record<string, unknown>), ...bound },
+                  {
+                    kind: 'public',
+                    actor,
+                    queryContext: { threadId, turnId: turn.id },
+                    delivery: 'model',
+                    signal: AbortSignal.any([controller.signal, tool.signal]),
+                  }
+                );
+                // A committed owner effect stays retained if command audience is withdrawn in flight.
+                resources.assertCurrent({ actor, workspaceId, threadId, turnId: turn.id });
+                return result;
+              }),
             ],
           });
           result = await runAssistantCommand({
