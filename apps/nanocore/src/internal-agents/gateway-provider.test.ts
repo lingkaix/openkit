@@ -889,6 +889,7 @@ describe('internal Agent Gateway provider', () => {
     expect(createResponses).toHaveBeenCalledTimes(3);
     expect(execute).toHaveBeenCalledExactlyOnceWith(args, {
       callId: 'admitted_call',
+      toolOccurrence: 1,
       signal: expect.any(AbortSignal),
     });
     expect(createResponses.mock.calls[2]![1].input.slice(-2)).toEqual([

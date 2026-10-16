@@ -134,7 +134,7 @@ A dependency failure before an environment touch produces bounded feedback when 
 
 Acceptance requires deterministic Tool-call order, zero execution for truncated or incomplete calls, schema validation before every closure invocation, and no provider call after an exit condition is observed.
 
-Call IDs must be non-empty and unique within the run's correlated Tool calls; an invalid correlation batch fails before any closure executes. Unsupported content and malformed message-role combinations fail at the Gateway projection boundary. Invalid names and arguments do not consume an environment touch, but every correction request consumes a model round trip. Hitting a Tool fuse stops before the next closure, never halfway through an admitted operation.
+`toolOccurrence` is the one-based value of the existing accepted Tool touch counter supplied to each admitted closure. It is transient trusted context, independent of model call IDs or arguments, and adds no counter or replay authority. Call IDs must be non-empty and unique within the run's correlated Tool calls; an invalid correlation batch fails before any closure executes. Unsupported content and malformed message-role combinations fail at the Gateway projection boundary. Invalid names and arguments do not consume an environment touch, but every correction request consumes a model round trip. Hitting a Tool fuse stops before the next closure, never halfway through an admitted operation.
 
 The caller signal and loop deadline produce one cancellation signal passed to the Gateway and every closure. Trusted caller assembly may privately bind its own AbortController into a Tool closure so that an owner-required stop, such as a durable Approval Gate, cancels that same run. The controller is never a model argument or a new ToolExecutionContext field; the loop observes only cancellation and returns `aborted`, while the caller interprets the owned reason. Awaited model/Tool work is raced against that signal so an uncooperative asynchronous dependency cannot keep the loop waiting beyond its deadline; synchronous blocking work is forbidden on this path. The first observed caller cancellation yields `aborted`; the first observed deadline yields `limit_reached` with `deadline`. Clear timers/listeners at exit and observe any outstanding promise rejection. A late result cannot append messages, emit text or resume the loop. Tool owners retain independent responsibility for their already admitted effects and terminal evidence. In particular, returning `aborted` does not prove that an external effect stopped or never occurred; no abandoned call is automatically replayed.
 
@@ -158,6 +158,7 @@ interface AgentTool<TInput = unknown> {
 
 interface ToolExecutionContext {
   callId: string;
+  toolOccurrence: number;
   signal: AbortSignal;
 }
 

@@ -132,6 +132,17 @@ export const TurnReaderSchema = TurnSchema.safeExtend({
     .extend({ explanation: GitFailureExplanationReaderSchema.optional() })
     .nullable(),
 });
+/** One metadata validator preserves the writer's admitted feature set on direct canonical reads. */
+const TurnFileMetadataSchema = TurnReaderSchema.safeExtend({
+  captureCoverage: CaptureCoverageBindingSchema.optional(),
+  requiredFeatures: z
+    .array(
+      z.literal('openkit.work-observations.v1', {
+        error: ({ input }) => `Unsupported required Turn feature: ${JSON.stringify(input)}.`,
+      })
+    )
+    .optional(),
+});
 /** Imported-origin attribution is a historical fact, never current import authority. */
 const ArtifactReaderSchema = ArtifactSchema.safeExtend({
   origin: z.discriminatedUnion('kind', [
@@ -929,7 +940,8 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
         }
         const turnsRoot = join(threadsRoot, threadId, 'turns');
         for (const turnId of listDirectoryNames(turnsRoot)) {
-          readPublishedTurnRecord(turnsRoot, workspaceId, threadId, turnId);
+          if (!readPublishedTurnFileRecords(dataRoot, workspaceId, threadId, turnId))
+            return { status: 'unreadable' };
           turns.push({ threadId, turnId, workspaceId });
         }
       }
@@ -941,37 +953,45 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
 }
 
 /**
- * Validates one published Turn and its Item log without rewriting canonical files.
+ * Validates one published Turn and its complete Item history without rewriting canonical files.
  *
- * @param turnsRoot Thread turns directory.
+ * @param dataRoot Data root containing the exact owning Workspace.
  * @param workspaceId Owning Workspace id.
  * @param threadId Owning Thread id.
  * @param turnId Turn directory id.
+ * @returns Canonical Turn, complete Item revisions and immutable capture pair, or null when either required file is missing.
  * @throws Error when the Turn schema, lineage, or Item history cannot be read.
  */
-function readPublishedTurnRecord(
-  turnsRoot: string,
+export function readPublishedTurnFileRecords(
+  dataRoot: string,
   workspaceId: string,
   threadId: string,
   turnId: string
-): void {
-  const turnPath = join(turnsRoot, turnId, 'turn.json');
+): {
+  readonly turn: Turn;
+  readonly itemRevisions: readonly Item[];
+  readonly captureCoverage: CaptureCoverageBinding | null;
+} | null {
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+  assertSafeWorkspacePathSegment(threadId, 'Thread id');
+  assertSafeWorkspacePathSegment(turnId, 'Turn id');
+  let turnRoot = dataRoot;
+  assertCanonicalDirectory(turnRoot);
+  // Direct scoped reads must keep the parent checks that directory enumeration supplied.
+  for (const segment of ['workspaces', workspaceId, 'threads', threadId, 'turns', turnId]) {
+    turnRoot = join(turnRoot, segment);
+    if (!lstatSync(turnRoot, { throwIfNoEntry: false })) return null;
+    assertCanonicalDirectory(turnRoot);
+  }
+  const turnPath = join(turnRoot, 'turn.json');
   if (!existsSync(turnPath)) {
-    throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
+    return null;
   }
   const rawTurn = readJson(turnPath) as Record<string, unknown>;
   if (rawTurn.items !== undefined && (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)) {
     throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
   }
-  if (rawTurn.captureCoverage !== undefined) {
-    const parsedCoverage = CaptureCoverageBindingSchema.safeParse(rawTurn.captureCoverage);
-    if (!parsedCoverage.success) {
-      throw new Error(
-        `Canonical turn metadata has an invalid capture coverage binding: ${turnId}.`
-      );
-    }
-  }
-  const turnWithoutItems = TurnReaderSchema.parse({ ...rawTurn, items: [] });
+  const turnWithoutItems = TurnFileMetadataSchema.parse({ ...rawTurn, items: [] });
   if (
     turnWithoutItems.id !== turnId ||
     turnWithoutItems.workspaceId !== workspaceId ||
@@ -979,12 +999,16 @@ function readPublishedTurnRecord(
   ) {
     throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
   }
-  const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
+  const itemsPath = join(turnRoot, 'items.jsonl');
   if (!existsSync(itemsPath)) {
-    throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
+    return null;
   }
-  const items = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
-  TurnReaderSchema.parse({ ...turnWithoutItems, items });
+  const history = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
+  return {
+    turn: TurnReaderSchema.parse({ ...turnWithoutItems, items: history.items }),
+    itemRevisions: history.revisions,
+    captureCoverage: turnWithoutItems.captureCoverage ?? null,
+  };
 }
 
 /**
@@ -996,16 +1020,17 @@ function readPublishedTurnRecord(
  * @param workspaceId Owning Workspace id.
  * @param threadId Owning Thread id.
  * @param turnId Owning Turn id.
- * @returns Current Item projection in first-seen order.
+ * @returns Current Items in first-seen order and every validated append-order revision.
  */
 function readPublishedItemRevisions(
   path: string,
   workspaceId: string,
   threadId: string,
   turnId: string
-): Item[] {
+): { readonly items: Item[]; readonly revisions: Item[] } {
   const order: string[] = [];
   const items = new Map<string, Item>();
+  const revisions: Item[] = [];
   for (const value of readDurableCanonicalJsonLines(path)) {
     const item = ItemReaderSchema.parse(value);
     const previous = items.get(item.id);
@@ -1022,8 +1047,9 @@ function readPublishedItemRevisions(
       order.push(item.id);
     }
     items.set(item.id, item);
+    revisions.push(item);
   }
-  return order.map((itemId) => items.get(itemId) as Item);
+  return { items: order.map((itemId) => items.get(itemId) as Item), revisions };
 }
 
 /**
@@ -2371,10 +2397,7 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
       ...(captureCoverage ? { captureCoverage } : {}),
       ...(previousRaw?.requiredFeatures ? { requiredFeatures: previousRaw.requiredFeatures } : {}),
     },
-    TurnReaderSchema.safeExtend({
-      captureCoverage: CaptureCoverageBindingSchema.optional(),
-      requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
-    })
+    TurnFileMetadataSchema
   );
   const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
   const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
@@ -2548,7 +2571,6 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     const threadRoot = join(root, thread.id);
     const turnsRoot = join(threadRoot, 'turns');
     const threadTurns = records.turns.filter((turn) => turn.threadId === thread.id);
-    const expectedTurnIds = new Set(threadTurns.map((turn) => turn.id));
 
     if (!lstatSync(threadRoot, { throwIfNoEntry: false })) {
       publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
@@ -2563,7 +2585,7 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     const previousBytes = existsSync(threadPath) ? readCanonicalFile(threadPath) : undefined;
     const previous =
       previousBytes === undefined ? undefined : JSON.parse(previousBytes.toString('utf8'));
-    removeStaleDirectories(turnsRoot, expectedTurnIds);
+    // An absent cache candidate does not delete retained history. Thread or Workspace deletion owns it.
 
     for (const turn of threadTurns) {
       const turnRoot = join(turnsRoot, turn.id);

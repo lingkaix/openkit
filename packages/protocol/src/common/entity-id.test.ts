@@ -61,6 +61,14 @@ describe('canonical entity identifiers', () => {
       deriveEntityId('it', ['chat-user', turnId])
     );
   });
+  it('retains the declared recurring occurrence and fixed Turn names', () => {
+    const pair = ['auto_01890f3e-0000-7000-8000-000000000001', '2026-10-16T00:00:00.000Z'];
+    // Independent Python stdlib uuid.uuid5 vectors over the accepted namespaces and JSON names.
+    expect(deriveEntityId('occ', pair)).toBe('occ_704590bf-947f-5c92-897f-41a8bc16fa85');
+    expect(deriveEntityId('tu', ['recurring', ...pair])).toBe(
+      'tu_1326df3f-cb8b-5364-af47-4c767958f239'
+    );
+  });
   it('retains the deletion-request recovery export identity with its complete immutable input', () => {
     const requestId = '0190f4c8-0000-4000-8000-000000000001';
     const id = deriveEntityId('wsexp', ['delete', requestId]);
@@ -157,6 +165,7 @@ describe('canonical entity identifiers', () => {
           'krt',
           'wsexp',
           'tok',
+          'occ',
         ].includes(kind)
       );
     }
@@ -177,6 +186,7 @@ describe('canonical entity identifiers', () => {
 });
 
 const NAMESPACE_VECTORS = {
+  occ: '7e8907b8-d4e0-5ac3-b314-e6916f2d99a1',
   tok: 'd14e6a11-830c-5eef-83b9-7367b7b0fa1a',
   wsexp: 'e93015e7-103e-580a-aa06-af89abbd402e',
   ws: '2a8ccba5-18ce-5efd-bbe0-6c02d144bcab',
