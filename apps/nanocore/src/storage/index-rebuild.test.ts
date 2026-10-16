@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KnowledgeRetrievalTraceSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -63,7 +63,7 @@ function sourceReferencePage(knowledgePageId: string, reference: string): string
     '---',
     'type: KnowledgePage',
     'title: Registered source resolution',
-    `schema_version: ${DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION}`,
+    `schema_version: ${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}`,
     'openkit_status: active',
     'scope: workspace',
     `source_refs: ${JSON.stringify([reference])}`,
@@ -196,7 +196,7 @@ describe('workspace derived index rebuild', () => {
         validation.records.find((record: { conceptId: string }) => record.conceptId === entry.id),
         entry.id
       ).toMatchObject({
-        conformance: 'Workspace-schema-valid',
+        conformance: 'scope-schema-valid',
         indexed: false,
         errors: entry.resolved
           ? []
@@ -817,7 +817,7 @@ describe('workspace derived index rebuild', () => {
       records: expect.arrayContaining([
         expect.objectContaining({
           conceptId: 'valid',
-          conformance: 'Workspace-schema-valid',
+          conformance: 'scope-schema-valid',
           indexed: true,
           errors: [],
         }),
@@ -834,7 +834,7 @@ describe('workspace derived index rebuild', () => {
         }),
         expect.objectContaining({
           conceptId: 'missing-source',
-          conformance: 'Workspace-schema-valid',
+          conformance: 'scope-schema-valid',
           indexed: false,
           errors: expect.arrayContaining([
             expect.objectContaining({

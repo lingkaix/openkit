@@ -1562,7 +1562,7 @@ export class FsStore {
     knowledge: readonly KnowledgeEntry[],
     candidateContent = serializeUserAuthoredKnowledgePage(candidate)
   ): void {
-    let workspaceSchemaText: string | undefined;
+    let scopeSchemaText: string | undefined;
     let resolvedReferences: ReadonlySet<string> = new Set();
 
     try {
@@ -1575,7 +1575,7 @@ export class FsStore {
         );
 
         if (existsSync(schemaPath)) {
-          workspaceSchemaText = readCanonicalTextFile(schemaPath);
+          scopeSchemaText = readCanonicalTextFile(schemaPath);
         }
       }
       const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter((reference) =>
@@ -1595,7 +1595,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: `knowledge/pages/${candidate.id}.md`,
       content: candidateContent,
-      ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
+      ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
           .filter((source) => source.workspaceId === workspaceId)
@@ -1605,7 +1605,7 @@ export class FsStore {
       resolvedReferences,
     });
 
-    if (report.conformance !== 'Workspace-schema-valid' || report.errors.length > 0) {
+    if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
       throw new KnowledgePageValidationError();
     }
   }
@@ -1622,7 +1622,7 @@ export class FsStore {
     proposal: KnowledgeProposalRecord,
     verifiedExternalReferences: readonly string[]
   ): KnowledgeEntry {
-    let workspaceSchemaText: string | undefined;
+    let scopeSchemaText: string | undefined;
     try {
       KnowledgeProposalRecordSchema.parse(proposal);
       if (this.dataRoot) {
@@ -1633,7 +1633,7 @@ export class FsStore {
           'workspace-schema.yaml'
         );
         if (existsSync(schemaPath)) {
-          workspaceSchemaText = readCanonicalTextFile(schemaPath);
+          scopeSchemaText = readCanonicalTextFile(schemaPath);
         }
       }
     } catch {
@@ -1669,7 +1669,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: candidatePath,
       content: proposal.canonicalPageBytes,
-      ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
+      ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
           .filter((source) => source.workspaceId === proposal.workspaceId)
@@ -1678,7 +1678,7 @@ export class FsStore {
       knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
       resolvedReferences,
     });
-    if (report.conformance !== 'Workspace-schema-valid' || report.errors.length > 0) {
+    if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
       throw new KnowledgePageValidationError();
     }
 
@@ -3986,13 +3986,13 @@ export class FsStore {
     }
 
     let content: string | null;
-    let workspaceSchemaText: string | undefined;
+    let scopeSchemaText: string | undefined;
     try {
       const workspaceRoot = this.workspaceRootPath(workspaceId);
       content = readWorkspaceKnowledgePage(workspaceRoot, knowledgePageId);
       const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
       if (existsSync(schemaPath)) {
-        workspaceSchemaText = readCanonicalTextFile(schemaPath);
+        scopeSchemaText = readCanonicalTextFile(schemaPath);
       }
     } catch {
       throw new KnowledgePageValidationError();
@@ -4030,7 +4030,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path,
       content,
-      ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
+      ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
           .filter((source) => source.workspaceId === workspaceId)
@@ -4041,7 +4041,7 @@ export class FsStore {
       ),
       resolvedReferences,
     });
-    if (report.conformance !== 'Workspace-schema-valid' || report.errors.length > 0) {
+    if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
       throw new KnowledgePageValidationError();
     }
 

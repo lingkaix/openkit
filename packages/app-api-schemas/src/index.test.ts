@@ -1215,7 +1215,7 @@ describe('app api schemas', () => {
               conceptId: 'alpha',
               path: 'knowledge/pages/alpha.md',
               title: 'Alpha',
-              conformance: 'Workspace-schema-valid',
+              conformance: 'scope-schema-valid',
               active: true,
               indexed: true,
               errors: [],
@@ -1223,7 +1223,7 @@ describe('app api schemas', () => {
             {
               conceptId: 'missing-source',
               path: 'knowledge/pages/missing-source.md',
-              conformance: 'Workspace-schema-valid',
+              conformance: 'scope-schema-valid',
               active: true,
               indexed: false,
               errors: [
@@ -1465,7 +1465,7 @@ describe('app api schemas', () => {
         createdAt: timestamp,
       },
       validation: {
-        conformance: 'Workspace-schema-valid' as const,
+        conformance: 'scope-schema-valid' as const,
         generatedFromCompletedWorkHistory: false,
       },
     };

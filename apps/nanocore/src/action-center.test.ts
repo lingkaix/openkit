@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
-import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from './knowledge/okf.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION } from './knowledge/okf.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
@@ -134,7 +134,7 @@ function createKnowledgeProposalFixture(
     `title: ${JSON.stringify(`Review ${label}`)}`,
     'openkit_entry_kind: "project-context"',
     `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
-    `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+    `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
     'openkit_status: "active"',
     'status: "stable"',
     'scope: "workspace"',

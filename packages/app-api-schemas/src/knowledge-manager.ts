@@ -290,7 +290,7 @@ export const KnowledgeConformanceSchema = z.enum([
   'invalid',
   'OKF-compatible',
   'OpenKit-profile-valid',
-  'Workspace-schema-valid',
+  'scope-schema-valid',
 ]);
 
 /** Validation error returned for one file-backed Knowledge Store page. */
@@ -611,7 +611,7 @@ export const KnowledgeManagerDraftedProposalSchema = z
 /** Deterministic validation result for one Knowledge Manager proposal draft. */
 export const KnowledgeManagerProposalValidationSchema = z
   .object({
-    conformance: z.literal('Workspace-schema-valid'),
+    conformance: z.literal('scope-schema-valid'),
     generatedFromCompletedWorkHistory: z.boolean(),
   })
   .strict();

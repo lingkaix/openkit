@@ -431,7 +431,7 @@ function knowledgeIndexesFor(
       conceptId: string;
       path: string;
       title?: string;
-      conformance: 'Workspace-schema-valid';
+      conformance: 'scope-schema-valid';
       active: boolean;
       indexed: boolean;
       errors: unknown[];
@@ -479,7 +479,7 @@ const KNOWLEDGE_INDEXES = knowledgeIndexesFor(WORKSPACE_A.id, {
       conceptId: KNOWLEDGE_ENTRY.id,
       path: 'knowledge/pages/mem1.md',
       title: KNOWLEDGE_ENTRY.title,
-      conformance: 'Workspace-schema-valid',
+      conformance: 'scope-schema-valid',
       active: true,
       indexed: true,
       errors: [],
