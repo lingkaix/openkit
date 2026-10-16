@@ -15,7 +15,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
       ...WORKER_OPERATION_DEFINITIONS,
       ...CATALOG_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(24);
+    expect(Object.keys(definitions)).toHaveLength(25);
     const digest = `sha256:${'a'.repeat(64)}`;
     const tree = [{ kind: 'file', path: 'SKILL.md', contentBase64: 'cHJvb2Y=' }];
     const validModelInputs = {
@@ -27,6 +27,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
       'catalog.skill-list': {},
       'catalog.skill-version-list': { skillId: 'proof' },
       'catalog.skill-version-read': { skillId: 'proof', digest },
+      'catalog.skill-update-check': { skillId: 'proof', digest },
       'catalog.skill-content-read': { skillId: 'proof', digest, path: 'SKILL.md' },
       'catalog.skill-diff': { skillId: 'proof', baseDigest: digest, candidateDigest: digest },
       'catalog.skill-remove': { skillId: 'proof', expectedRevision: 1 },

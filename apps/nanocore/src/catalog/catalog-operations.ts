@@ -50,6 +50,8 @@ import {
   validateCatalogTree,
 } from './resource-catalog.js';
 import { createSkillManagementCommands } from './skill-management-commands.js';
+import { acquireRemoteEcosystemSkill, checkEcosystemSkillUpdate } from './skill-ecosystem-source.js';
+import { SkillSourceInputError } from './skill-source.js';
 import {
   diffWorkspaceSkillVersions,
   readWorkspaceSkillContent,
@@ -197,7 +199,8 @@ export function createCatalogOperationImplementations(
     operation:
       | 'catalog.skill-candidate-submit'
       | 'catalog.skill-candidate-decide'
-      | 'catalog.skill-candidate-withdraw',
+      | 'catalog.skill-candidate-withdraw'
+      | 'catalog.skill-update-check',
     context: AdmittedOperationContext
   ) => {
     if (
@@ -207,7 +210,7 @@ export function createCatalogOperationImplementations(
         publicOperationActor(context),
         workspaceId,
         {
-          mutating: true,
+          mutating: operation !== 'catalog.skill-update-check',
           policyOperation: CATALOG_OPERATION_DEFINITIONS[operation].policyOperation,
         }
       )
@@ -431,6 +434,20 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'skill_version_read_failed');
       }
     },
+    'catalog.skill-update-check': async (input, context) => {
+      try {
+        revalidate(input.workspaceId, 'catalog.skill-update-check', context);
+        const version = readWorkspaceSkillVersion({
+          dataRoot: root(), workspaceId: input.workspaceId,
+          entryId: input.skillId, digest: input.digest,
+        });
+        const result = await checkEcosystemSkillUpdate(version);
+        revalidate(input.workspaceId, 'catalog.skill-update-check', context);
+        return result;
+      } catch (error) {
+        catalogFailure(error, 'skill_update_check_failed');
+      }
+    },
     'catalog.skill-content-read': (input) => {
       try {
         return readWorkspaceSkillContent({
@@ -473,7 +490,13 @@ export function createCatalogOperationImplementations(
     },
     'catalog.skill-import': async (input, context) => {
       try {
-        const result = await management.importSkill(input, context, () => catalogTree(input.tree));
+        const result = await management.importSkill(input, context, () => input.source === undefined
+          ? { tree: catalogTree(input.tree!) }
+          : acquireRemoteEcosystemSkill({
+            source: input.source,
+            sourceSubpath: input.sourceSubpath,
+            sourceSkillName: input.sourceSkillName,
+          }));
         const entry = result.catalog.skills.entries.find(
           (item) => item.id === result.version.entryId
         )!;
@@ -885,6 +908,8 @@ function pluginEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatalog>)
 /** Classifies known native catalog refusals locally; unexpected exceptions keep their identity. */
 function catalogFailure(error: unknown, code: string): never {
   if (error instanceof OperationError) throw error;
+  if (error instanceof SkillSourceInputError)
+    throw new OperationError('invalid_request', error.message, 400, { cause: error });
   if (error instanceof IdempotencyKeyConflictError)
     throw new OperationError(error.code, error.message, error.status, { cause: error });
   if (error instanceof SkillCandidateArtifactError)

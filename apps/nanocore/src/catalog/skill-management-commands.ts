@@ -8,11 +8,11 @@ import { OperationError } from '../operation-error.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { CatalogOperationHooks } from './catalog-operations.js';
+import type { AcquiredSkillSupply } from './skill-ecosystem-source.js';
 import {
   CatalogConflictError,
   CatalogForbiddenError,
   CatalogIntegrityError,
-  type CatalogTreeFile,
   importWorkspaceSkill,
   loadWorkspaceResourceCatalog,
   purgeWorkspaceSkillVersion,
@@ -152,7 +152,7 @@ export function createSkillManagementCommands(
     importSkill(
       input: OperationInput<'catalog.skill-import'>,
       context: AdmittedOperationContext,
-      acquire: () => readonly CatalogTreeFile[] | Promise<readonly CatalogTreeFile[]>
+      acquire: () => AcquiredSkillSupply | Promise<AcquiredSkillSupply>
     ): Promise<ImportResult> {
       return command({
         operation: 'catalog.skill-import', input, context, responseKind: 'skill_version',
@@ -163,7 +163,8 @@ export function createSkillManagementCommands(
           return { catalog, version };
         },
         execute: async (workspaceDb, catalog) => {
-          const tree = await acquire();
+          const acquired = await acquire();
+          const { tree } = acquired;
           const digest = validateCatalogTree(tree).digest;
           authorize('catalog.skill-import', input, context);
           if (loadWorkspaceResourceCatalog(root(), input.workspaceId).revision !== input.expectedRevision)
@@ -180,6 +181,9 @@ export function createSkillManagementCommands(
             ...(input.id === undefined ? {} : { id: input.id }),
             producer: { kind: 'user', id: publicOperationActor(context).userId },
             uploadedSourceId: input.requestId,
+            ...(acquired.sourceLocator === undefined ? {} : { sourceLocator: acquired.sourceLocator }),
+            ...(acquired.sourceCommit === undefined ? {} : { sourceCommit: acquired.sourceCommit }),
+            ...(acquired.sourceSubpath === undefined ? {} : { sourceSubpath: acquired.sourceSubpath }),
             tree,
             workspaceId: input.workspaceId,
           });

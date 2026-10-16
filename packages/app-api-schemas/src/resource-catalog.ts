@@ -209,9 +209,19 @@ export const ImportSkillRequestSchema = z
     expectedRevision: z.number().int().nonnegative(),
     id: z.string().regex(CATALOG_ID).optional(),
     requestId: RequestIdSchema,
-    tree: z.array(CatalogTreeFileSchema).min(1),
+    tree: z.array(CatalogTreeFileSchema).min(1).optional(),
+    source: z.string().min(1).max(8192).optional(),
+    sourceSubpath: z.string().min(1).max(4096).optional(),
+    sourceSkillName: z.string().min(1).max(256).optional(),
   })
-  .strict();
+  .strict()
+  .refine((input) => (input.tree === undefined) !== (input.source === undefined), {
+    message: 'Supply exactly one uploaded tree or ecosystem source.',
+  })
+  .refine((input) => input.source !== undefined ||
+    input.sourceSubpath === undefined && input.sourceSkillName === undefined, {
+    message: 'Source selectors require an ecosystem source.',
+  });
 
 /** Skill import response. */
 export const ImportSkillResponseSchema = z
