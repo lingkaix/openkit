@@ -32,11 +32,11 @@ class MaintenanceRefusal(Exception):
 
 def _refuse():
     """Keep every failed observation unknown without exposing tool diagnostics."""
-    raise MaintenanceRefusal("NanoHost maintenance: current fencing and persistent inhibition are not proved; keep stopped and inhibited.")
+    raise MaintenanceRefusal("NanoHost maintenance: current fencing and persistent inhibition are not proved; keep stopped and inhibited.") from None
 
 
 def bounded_default(argv):
-    """Bound the two fixed read commands by time and bytes, including stderr."""
+    """Bound fixed manager commands by time and bytes, including stderr."""
     with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}) as child:
         output = {child.stdout: bytearray(), child.stderr: bytearray()}
@@ -147,8 +147,8 @@ class SystemdMaintenance:
             _refuse()
         return result.stdout.decode("utf-8", errors="strict")
 
-    def _service(self):
-        """Admit only named current service facts; refresh after kernel observations."""
+    def _service_facts(self):
+        """Read a complete closed service observation for stopped and running checks."""
         output = self._query(["/usr/bin/systemctl", "show", "--no-pager", "--all",
                               "--property=" + ",".join(_PROPERTIES), _UNIT])
         facts = {}
@@ -157,6 +157,13 @@ class SystemdMaintenance:
             if not separator or key not in _PROPERTIES or key in facts:
                 _refuse()
             facts[key] = value
+        if set(facts) != set(_PROPERTIES):
+            _refuse()
+        return facts
+
+    def _service(self):
+        """Admit only named stopped service facts; refresh after kernel observations."""
+        facts = self._service_facts()
         expected = {"MainPID": "0", "ActiveState": "inactive", "SubState": "dead",
                     "Slice": "openkit-nanohost.slice", "Restart": "no",
                     "DropInPaths": self.guard, "FragmentPath": _FRAGMENT, "LoadState": "loaded"}
@@ -166,19 +173,25 @@ class SystemdMaintenance:
             _refuse()
         return facts
 
+    def _guard_bytes(self):
+        """Bind persistent inhibition to a volatile permit consumed before execution."""
+        return ("[Unit]\nConditionPathExists=" + self.permit + "\n[Service]\nRestart=no\n"
+                "ExecStartPre=/usr/bin/rm -- " + self.permit + "\n").encode()
+
     def _guard(self):
         """Require loaded guard's persistent exact bytes and absent non-followed permit."""
         directory = _FRAGMENT + ".d"
         with self._directory(directory, config=True) as fd:
-            expected = ("[Unit]\nConditionPathExists=" + self.permit + "\n[Service]\nRestart=no\n").encode()
-            if self._read(fd, Path(self.guard).name, 4096, guard=True) != expected:
+            if self._read(fd, Path(self.guard).name, 4096, guard=True) != self._guard_bytes():
                 _refuse()
-            try:
-                os.stat(Path(self.permit).name, dir_fd=fd, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                _refuse()
+        with self._directory(str(Path(self.permit).parent), absent=True, config=True) as fd:
+            if fd is not None:
+                try:
+                    os.stat(Path(self.permit).name, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    _refuse()
         # These are counterexample checks, not a complete manager UnitPath
         # admission. The operator entry must inspect the actual full search path.
         for base in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system"):
@@ -248,14 +261,18 @@ class SystemdMaintenance:
         visit(_DOMAIN, 0)
         return observed
 
+    def _selectors(self):
+        """Admit canonical operation selectors before observing fixed host paths."""
+        if (type(self.identifier) is not str or str(uuid.UUID(self.identifier)) != self.identifier or
+                not self.root.is_absolute() or ".." in self.root.parts):
+            _refuse()
+        self.guard = _FRAGMENT + ".d/zz-openkit-replacement-" + self.identifier + ".conf"
+        self.permit = "/run/openkit-replacement-" + self.identifier + "/permit"
+
     def assert_fenced_and_inhibited(self):
         """Refresh guard, service and full-domain facts; any contradiction refuses."""
         try:
-            if (type(self.identifier) is not str or str(uuid.UUID(self.identifier)) != self.identifier or
-                    not self.root.is_absolute() or ".." in self.root.parts):
-                _refuse()
-            self.guard = _FRAGMENT + ".d/zz-openkit-replacement-" + self.identifier + ".conf"
-            self.permit = _FRAGMENT + ".d/.openkit-replacement-" + self.identifier + ".permit"
+            self._selectors()
             before = self._service()
             self._guard()
             domain = self._domain()
