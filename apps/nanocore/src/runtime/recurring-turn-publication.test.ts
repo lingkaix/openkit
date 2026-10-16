@@ -10,7 +10,7 @@ import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { readPublishedTurnRecord } from '../storage/workspace-file-records.js';
+import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -33,7 +33,9 @@ it.each([
       kind: 'user',
       id: 'user_local',
     });
-    expect(readPublishedTurnRecord(root, workspace.id, thread.id, turn.id)?.id).toBe(turn.id);
+    expect(readPublishedTurnFileRecords(root, workspace.id, thread.id, turn.id)?.turn.id).toBe(
+      turn.id
+    );
     const workspacePath = join(root, 'workspaces', workspace.id);
     const threadPath = join(workspacePath, 'threads', thread.id);
     const turnPath = join(threadPath, 'turns', turn.id);
@@ -42,7 +44,7 @@ it.each([
     const target = join(outside, 'retained');
     renameSync(source, target);
     symlinkSync(target, source, 'dir');
-    expect(() => readPublishedTurnRecord(root, workspace.id, thread.id, turn.id)).toThrow(
+    expect(() => readPublishedTurnFileRecords(root, workspace.id, thread.id, turn.id)).toThrow(
       /symbolic link/
     );
   } finally {

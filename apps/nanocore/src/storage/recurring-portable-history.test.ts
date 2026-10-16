@@ -19,7 +19,7 @@ import {
   validateRecurringPortableHistory,
 } from './recurring-portable-history.js';
 import { writeWorkspaceExportTree } from './workspace-export.js';
-import { readPublishedTurnRecord } from './workspace-file-records.js';
+import { readPublishedTurnFileRecords } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
 import { readWorkspacePortableFileState } from './workspace-portable-file-state.js';
 
@@ -90,7 +90,7 @@ describe('recurring portable history', () => {
         }
       );
       expect(
-        readPublishedTurnRecord(dataRoot, workspace.id, thread.id, entry.turnId)
+        readPublishedTurnFileRecords(dataRoot, workspace.id, thread.id, entry.turnId)
       ).not.toBeNull();
     }
     return { schedule, occurrence: accepted };
@@ -98,8 +98,8 @@ describe('recurring portable history', () => {
 
   function retainedTurns() {
     return files.listThreadTurns(workspace.id, thread.id).flatMap((turn) => {
-      const published = readPublishedTurnRecord(dataRoot, workspace.id, thread.id, turn.id);
-      return published ? [published] : [];
+      const published = readPublishedTurnFileRecords(dataRoot, workspace.id, thread.id, turn.id);
+      return published ? [published.turn] : [];
     });
   }
 
