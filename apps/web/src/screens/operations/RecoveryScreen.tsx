@@ -62,7 +62,7 @@ function inspectPanelId(checkpointId: string) {
   return `worker-inspect-${checkpointId}`;
 }
 
-/** Live Tier-A Recovery surface for interrupted workers and scheduler admissions. */
+/** Live Recovery surface whose current reads admit effects without replacing unsettled command owners. */
 export function RecoveryScreen() {
   const queryClient = useQueryClient();
   const workspaces = useWorkspaces();
@@ -195,6 +195,8 @@ export function RecoveryScreen() {
       const ok = await refetchExact(operationsKeys.workers);
       if (!matchesWorkerOrigin(originWorkspaceId, checkpointId)) return;
       if (!ok) return;
+      // A read cannot settle an unknown command result or replace its exact retry identity.
+      if (workerOwnersRef.current.get(originWorkspaceId)?.message) return;
       writeWorkerOwner(originWorkspaceId, null);
     } catch {
       // Keep the originating owner and stale rows until an authoritative read succeeds.
@@ -223,8 +225,11 @@ export function RecoveryScreen() {
     }
   }
 
+  const workersReadAvailable =
+    workersVerified && workersQuery.isSuccess && !workersQuery.isFetching;
+
   function workerReleaseLocked() {
-    if (disconnected || !workersVerified) return true;
+    if (disconnected || !workersReadAvailable) return true;
     if (!workspaceId) return false;
     const lock =
       (workerLock?.workspaceId === workspaceId ? workerLock : null) ??
@@ -237,6 +242,8 @@ export function RecoveryScreen() {
     disconnected ||
     !workspaceId ||
     !verifiedAdmissionWorkspaces.has(workspaceId) ||
+    !admissionsQuery.isSuccess ||
+    admissionsQuery.isFetching ||
     Boolean(
       workspaceId &&
         ((schedulerLock?.workspaceId === workspaceId ? schedulerLock : null) ??
@@ -263,7 +270,7 @@ export function RecoveryScreen() {
   }
 
   function retryInterrupted(row: RecoveryWorkerRow, command?: FrozenWorkerRelease) {
-    if (disconnected) return;
+    if (disconnected || !workersReadAvailable) return;
     if (workerReleaseLocked() && !command) return;
     if (row.workspaceId !== workspaceId || !row.canRetry) return;
     const next =
@@ -442,7 +449,10 @@ export function RecoveryScreen() {
           {workersAlert ? (
             <ErrorBanner message={workersAlert.message} onRetry={workersAlert.onRetry} />
           ) : null}
-          {!workersLoading && workers.length === 0 ? (
+          {!workersQuery.isError &&
+          !workersQuery.isFetching &&
+          !workersLoading &&
+          workers.length === 0 ? (
             <p className="text-sm text-fg-muted">No interrupted workers</p>
           ) : null}
           {workers.length > 0 ? (
@@ -518,7 +528,10 @@ export function RecoveryScreen() {
             <ErrorBanner message={schedulerAlert.message} onRetry={schedulerAlert.onRetry} />
           ) : null}
           {admissionsLoading ? <Skeleton lines={2} /> : null}
-          {!admissionsLoading && admissions.length === 0 ? (
+          {!admissionsQuery.isError &&
+          !admissionsQuery.isFetching &&
+          !admissionsLoading &&
+          admissions.length === 0 ? (
             <p className="text-sm text-fg-muted">No scheduler admissions</p>
           ) : null}
           {!admissionsLoading && admissions.length > 0 ? (
