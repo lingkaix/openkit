@@ -591,6 +591,8 @@ class WorkerInferenceRouteError extends Error {
   public readonly code: string;
   /** HTTP status for the worker-facing response. */
   public readonly status: number;
+  /** Existing OpenAI-compatible error category. */
+  public readonly type: 'invalid_request_error' | 'provider_error';
 
   /**
    * Creates one worker inference route error.
@@ -598,12 +600,19 @@ class WorkerInferenceRouteError extends Error {
    * @param code Stable machine-readable code.
    * @param message Product-safe error message.
    * @param status HTTP response status.
+   * @param type Existing public error category.
    */
-  public constructor(code: string, message: string, status: number) {
+  public constructor(
+    code: string,
+    message: string,
+    status: number,
+    type: 'invalid_request_error' | 'provider_error' = 'invalid_request_error'
+  ) {
     super(message);
     this.name = 'WorkerInferenceRouteError';
     this.code = code;
     this.status = status;
+    this.type = type;
   }
 }
 
@@ -1110,7 +1119,7 @@ function asWorkerInferenceError(error: unknown): Response {
         error: {
           code: error.code,
           message: error.message,
-          type: 'invalid_request_error',
+          type: error.type,
         },
       },
       { status: error.status }
@@ -2053,6 +2062,19 @@ export function registerWorkerInferenceRoutes({
             'Worker inference request was cancelled.',
             499
           );
+        if (
+          runtimeHint?.requestKind === 'compaction' &&
+          activeExecution !== undefined &&
+          !activeExecution.outputBegan &&
+          observedFailure?.kind !== 'cancelled'
+        ) {
+          throw new WorkerInferenceRouteError(
+            'context_compaction_unavailable',
+            'Context compaction is unavailable.',
+            503,
+            'provider_error'
+          );
+        }
         throw error;
       }
     } catch (error) {

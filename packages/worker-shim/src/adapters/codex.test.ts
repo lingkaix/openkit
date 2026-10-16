@@ -218,7 +218,8 @@ describe('Codex App Server adapter', () => {
       const headers = new Headers();
       for (const [key, value] of Object.entries(nativeRequest.headers))
         if (typeof value === 'string') headers.set(key, value);
-      codexInferenceRuntimeHintMapping.map(headers, parsed);
+      const hint = codexInferenceRuntimeHintMapping.map(headers, parsed);
+      expect(hint?.requestKind).toBe(metadata.request_kind);
       const admitted = { ...parsed };
       for (const field of codexInferenceRuntimeHintMapping.bodyFields) delete admitted[field];
       requests.push({ kind: metadata.request_kind, body: admitted });
