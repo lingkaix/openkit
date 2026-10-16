@@ -8216,14 +8216,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
-    const fixture = await createWorkerContextExecutorFixture('task-knowledge');
+    const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
+      maxContextTokens: 240_000,
+    });
     const knowledge = fixture.store.createKnowledgeEntry('ws_demo', {
       content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
       kind: 'project-context',
       title: 'Zygomorphic worker guidance',
     });
     const oversizedKnowledge = fixture.store.createKnowledgeEntry('ws_demo', {
-      content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(50_000)}`,
+      content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`,
       kind: 'project-context',
       title: 'Oversized zygomorphic worker guidance',
     });
