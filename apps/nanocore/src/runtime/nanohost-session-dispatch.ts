@@ -2498,7 +2498,8 @@ function sameFileResult(
 /**
  * Reads one canonical bounded byte length from an internal command.
  * @param value Candidate numeric length.
- * @returns Exact safe integer within the V1 file bound.
+ * @param maximum Selected import owner bound, or the existing export sentinel bound.
+ * @returns Exact safe integer within the selected V1 file bound.
  * @throws A 413 transport error when invalid or oversized.
  */
 function readCanonicalByteLength(value: unknown, maximum = FILE_DATA_MAX_BYTES): number {

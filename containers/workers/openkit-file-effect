@@ -111,7 +111,13 @@ function parseCommand(argv, slotRoots) {
             : replace
               ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
               : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
-    const length = parseBoundedDecimal(argv[6], slot === 'context' ? MAX_CONTEXT_SOURCE_BYTES : ['artifact-input', 'turn-inputs'].includes(slot) ? MAX_SOURCE_FILE_BYTES : MAX_FILE_BYTES);
+    const maximum =
+      slot === 'context'
+        ? MAX_CONTEXT_SOURCE_BYTES
+        : ['artifact-input', 'turn-inputs'].includes(slot)
+          ? MAX_SOURCE_FILE_BYTES
+          : MAX_FILE_BYTES;
+    const length = parseBoundedDecimal(argv[6], maximum);
     const digest = argv[8];
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error('invalid digest');

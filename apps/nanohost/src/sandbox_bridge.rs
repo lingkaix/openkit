@@ -665,7 +665,7 @@ impl FileEffectRequest {
     /// # Errors
     ///
     /// Rejects malformed identity, undeclared path shape, non-canonical digest,
-    /// and every file larger than 256 MiB.
+    /// and files above the selected import or export bound.
     pub fn validate(&self) -> Result<(), &'static str> {
         let request_id_invalid = self.request_id.len() != 64
             || !self
