@@ -332,11 +332,11 @@ mod tests {
             provider.force_flush().is_err(),
             "the actual stock exporter must observe the unavailable collector"
         );
-        let mut after =
-            match crate::execute_effect_command(&mut coordinator, &mut command).unwrap() {
-                crate::ExecutedEffectResult::Json(value) => value,
-                _ => panic!("inspection returns JSON"),
-            };
+        let mut after = match crate::execute_effect_command(&mut coordinator, &mut command).unwrap()
+        {
+            crate::ExecutedEffectResult::Json(value) => value,
+            _ => panic!("inspection returns JSON"),
+        };
         assert_eq!(before["state"], "attached");
         // Live host capacity changes independently of exporter and association state.
         before.as_object_mut().unwrap().remove("capacity");

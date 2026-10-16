@@ -2157,9 +2157,13 @@ mod tests {
         );
 
         let main = production
-            .split_once("if let Err(message) = runtime.block_on(run())")
-            .expect("Tokio runtime failure branch")
+            .split_once("let result = runtime.block_on(run());")
+            .expect("saved Tokio runtime result")
             .1;
+        let (shutdown, main) = main
+            .split_once("if let Err(message) = result")
+            .expect("Tokio runtime failure branch");
+        assert!(shutdown.contains("telemetry::shutdown(telemetry);"));
         assert!(main.contains("eprintln!(\"{message}\")"));
     }
 
@@ -2370,9 +2374,13 @@ mod tests {
         assert!(reconnect < terminal);
         assert!(!run[reconnect..terminal].contains("eprintln!"));
         let main = production
-            .split_once("if let Err(message) = runtime.block_on(run())")
-            .expect("one runtime failure exit path")
+            .split_once("let result = runtime.block_on(run());")
+            .expect("saved Tokio runtime result")
             .1;
+        let (shutdown, main) = main
+            .split_once("if let Err(message) = result")
+            .expect("one runtime failure exit path");
+        assert!(shutdown.contains("telemetry::shutdown(telemetry);"));
         assert_eq!(main.matches("eprintln!(").count(), 1);
         assert_eq!(main.matches("std::process::exit(").count(), 1);
         assert!(main.contains("std::process::exit(message.process_exit_status())"));
