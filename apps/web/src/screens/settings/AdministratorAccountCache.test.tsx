@@ -11,6 +11,7 @@ import {
   useAccountAdmission,
   useAccountMutation,
 } from '../account/session';
+import { operationsKeys } from '../operations/data';
 import { MyAdminAccessScreen } from './MyAdminAccessScreen';
 
 const OPERATIONS = ['signIn', 'signUp', 'signOut'] as const;
@@ -146,151 +147,156 @@ describe('administrator read cache at account transitions', () => {
     expect(screen.queryByText('previous-selection')).not.toBeInTheDocument();
   });
 
-  it.each(
-    OPERATIONS
-  )('%s removes fresh Settings reads before protected admission and preserves other state', async (operation) => {
-    let settingsAtAdmission: unknown;
-    const harness = accountHarness(() => {
-      settingsAtAdmission = harness.queryClient
+  describe.each([
+    { name: 'Settings', prefix: ['settings'], readKey: ADMIN_KEY },
+    { name: 'Operations', prefix: ['operations'], readKey: operationsKeys.search('private') },
+  ])('$name reads', ({ prefix, readKey }) => {
+    it.each(
+      OPERATIONS
+    )('%s removes fresh reads before protected admission and preserves other state', async (operation) => {
+      let settingsAtAdmission: unknown;
+      const harness = accountHarness(() => {
+        settingsAtAdmission = harness.queryClient
+          .getQueryCache()
+          .findAll({ queryKey: prefix })
+          .map((query) => ({ key: query.queryKey, data: query.state.data }));
+      });
+      const { queryClient, transition } = harness;
+      const oldRows = { items: [{ ownerUserId: 'previous-user' }] };
+      queryClient.setQueryData(readKey, oldRows);
+      queryClient.setQueryData([...prefix, 'nested', 'rows'], { items: ['previous-grant'] });
+      queryClient.setQueryData(prefix, { previous: true });
+
+      const settledKey = ['settings-adjacent', 'settled'] as const;
+      const pendingKey = ['unrelated', 'pending'] as const;
+      const settledRows = { retained: 'settled-query' };
+      queryClient.setQueryData(settledKey, settledRows);
+      const pendingRead = deferred<{ retained: string }>();
+      const pendingQueryPromise = queryClient.fetchQuery({
+        queryKey: pendingKey,
+        queryFn: () => pendingRead.promise,
+      });
+      const settledQuery = queryClient.getQueryCache().find({ queryKey: settledKey, exact: true });
+      const pendingQuery = queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true });
+      const pendingCommand = deferred<{ retained: string }>();
+      const pendingMutation = queryClient.getMutationCache().build(queryClient, {
+        mutationKey: [...prefix, 'command'],
+        mutationFn: () => pendingCommand.promise,
+      });
+      const pendingMutationPromise = pendingMutation.execute(undefined);
+      const settledMutation = queryClient.getMutationCache().build(queryClient, {
+        mutationKey: ['unrelated', 'settled-command'],
+        mutationFn: async () => ({ retained: 'settled-command' }),
+      });
+      await settledMutation.execute(undefined);
+      const states = {
+        pendingMutation: pendingMutation.state,
+        pendingQuery: pendingQuery?.state,
+        settledMutation: settledMutation.state,
+        settledQuery: settledQuery?.state,
+      };
+
+      await transition(operation);
+
+      expect(harness.auth[operation]).toHaveBeenCalledTimes(1);
+      expect(harness.admission).toHaveBeenCalledTimes(1);
+      expect(settingsAtAdmission).toEqual([]);
+      expect(queryClient.getQueryCache().findAll({ queryKey: prefix })).toEqual([]);
+      expect(queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true })).toBe(
+        pendingQuery
+      );
+      expect(queryClient.getQueryCache().find({ queryKey: settledKey, exact: true })).toBe(
+        settledQuery
+      );
+      expect(pendingQuery?.state).toBe(states.pendingQuery);
+      expect(settledQuery?.state).toBe(states.settledQuery);
+      expect(queryClient.getMutationCache().getAll()).toContain(pendingMutation);
+      expect(queryClient.getMutationCache().getAll()).toContain(settledMutation);
+      expect(pendingMutation.state).toBe(states.pendingMutation);
+      expect(settledMutation.state).toBe(states.settledMutation);
+
+      const newRows = { items: [{ ownerUserId: 'current-user' }] };
+      const freshRead = vi.fn().mockResolvedValue(newRows);
+      await expect(
+        queryClient.ensureQueryData({ queryKey: readKey, queryFn: freshRead })
+      ).resolves.toEqual(newRows);
+      expect(freshRead).toHaveBeenCalledTimes(1);
+      expect(queryClient.getQueryData(readKey)).toEqual(newRows);
+      pendingRead.resolve({ retained: 'pending-query' });
+      pendingCommand.resolve({ retained: 'pending-command' });
+      await Promise.all([pendingQueryPromise, pendingMutationPromise]);
+      expect(queryClient.getQueryData(pendingKey)).toEqual({ retained: 'pending-query' });
+      expect(pendingMutation.state.data).toEqual({ retained: 'pending-command' });
+    });
+
+    it.each(
+      OPERATIONS
+    )('%s disposes pending reads even when the transport ignores cancellation', async (operation) => {
+      const { queryClient, transition } = accountHarness();
+      const oldRead = deferred<{ items: string[] }>();
+      const oldPromise = queryClient
+        .fetchQuery({ queryKey: readKey, queryFn: () => oldRead.promise })
+        .catch((error: unknown) => error);
+      const oldQuery = queryClient.getQueryCache().find({ queryKey: readKey, exact: true });
+      expect(oldQuery?.state.fetchStatus).toBe('fetching');
+
+      await transition(operation);
+
+      const retainedAtTransition = queryClient
         .getQueryCache()
-        .findAll({ queryKey: ['settings'] })
-        .map((query) => ({ key: query.queryKey, data: query.state.data }));
+        .find({ queryKey: readKey, exact: true });
+      const currentRead = deferred<{ items: string[] }>();
+      const freshRead = vi.fn(() => currentRead.promise);
+      const currentPromise = queryClient.ensureQueryData({ queryKey: readKey, queryFn: freshRead });
+      const currentQuery = queryClient.getQueryCache().find({ queryKey: readKey, exact: true });
+      oldRead.resolve({ items: ['previous-user-private-row'] });
+      await oldPromise;
+      expect(queryClient.getQueryData(readKey)).toBeUndefined();
+      expect(retainedAtTransition).toBeUndefined();
+      expect(freshRead).toHaveBeenCalledTimes(1);
+      expect(currentQuery).not.toBe(oldQuery);
+      expect(queryClient.getQueryCache().find({ queryKey: readKey, exact: true })).toBe(
+        currentQuery
+      );
+      expect(currentQuery?.state.fetchStatus).toBe('fetching');
+      currentRead.resolve({ items: ['current-user-row'] });
+      await expect(currentPromise).resolves.toEqual({ items: ['current-user-row'] });
+      expect(queryClient.getQueryData(readKey)).toEqual({ items: ['current-user-row'] });
+      expect(oldQuery?.state.data).toBeUndefined();
     });
-    const { queryClient, transition } = harness;
-    const oldRows = { items: [{ ownerUserId: 'previous-user' }] };
-    queryClient.setQueryData(ADMIN_KEY, oldRows);
-    queryClient.setQueryData(['settings', 'vault-admin', 'grants'], { items: ['previous-grant'] });
-    queryClient.setQueryData(['settings'], { previous: true });
 
-    const settledKey = ['settings-adjacent', 'settled'] as const;
-    const pendingKey = ['unrelated', 'pending'] as const;
-    const settledRows = { retained: 'settled-query' };
-    queryClient.setQueryData(settledKey, settledRows);
-    const pendingRead = deferred<{ retained: string }>();
-    const pendingQueryPromise = queryClient.fetchQuery({
-      queryKey: pendingKey,
-      queryFn: () => pendingRead.promise,
+    it.each(
+      OPERATIONS
+    )('%s failure leaves settled and pending reads unchanged', async (operation) => {
+      const { admission, auth, queryClient, transition } = accountHarness();
+      auth[operation].mockRejectedValue(new Error('Account transport failed.'));
+      queryClient.setQueryData(readKey, { items: ['same-user-row'] });
+      const pendingKey = [...prefix, 'pending'] as const;
+      const pendingRead = deferred<{ items: string[] }>();
+      const pendingPromise = queryClient.fetchQuery({
+        queryKey: pendingKey,
+        queryFn: () => pendingRead.promise,
+      });
+      const settledQuery = queryClient.getQueryCache().find({ queryKey: readKey, exact: true });
+      const pendingQuery = queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true });
+      const settledState = settledQuery?.state;
+      const pendingState = pendingQuery?.state;
+
+      await expect(transition(operation)).rejects.toThrow('The account operation failed.');
+
+      await waitFor(() => expect(auth[operation]).toHaveBeenCalledTimes(1));
+      expect(admission).not.toHaveBeenCalled();
+      expect(queryClient.getQueryCache().find({ queryKey: readKey, exact: true })).toBe(
+        settledQuery
+      );
+      expect(queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true })).toBe(
+        pendingQuery
+      );
+      expect(settledQuery?.state).toBe(settledState);
+      expect(pendingQuery?.state).toBe(pendingState);
+      pendingRead.resolve({ items: ['same-user-late-row'] });
+      await pendingPromise;
+      expect(queryClient.getQueryData(pendingKey)).toEqual({ items: ['same-user-late-row'] });
     });
-    const settledQuery = queryClient.getQueryCache().find({ queryKey: settledKey, exact: true });
-    const pendingQuery = queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true });
-    const pendingCommand = deferred<{ retained: string }>();
-    const pendingMutation = queryClient.getMutationCache().build(queryClient, {
-      mutationKey: ['settings', 'runtime.reload'],
-      mutationFn: () => pendingCommand.promise,
-    });
-    const pendingMutationPromise = pendingMutation.execute(undefined);
-    const settledMutation = queryClient.getMutationCache().build(queryClient, {
-      mutationKey: ['unrelated', 'settled-command'],
-      mutationFn: async () => ({ retained: 'settled-command' }),
-    });
-    await settledMutation.execute(undefined);
-    const states = {
-      pendingMutation: pendingMutation.state,
-      pendingQuery: pendingQuery?.state,
-      settledMutation: settledMutation.state,
-      settledQuery: settledQuery?.state,
-    };
-
-    await transition(operation);
-
-    expect(harness.auth[operation]).toHaveBeenCalledTimes(1);
-    expect(harness.admission).toHaveBeenCalledTimes(1);
-    expect(settingsAtAdmission).toEqual([]);
-    expect(queryClient.getQueryCache().findAll({ queryKey: ['settings'] })).toEqual([]);
-    expect(queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true })).toBe(
-      pendingQuery
-    );
-    expect(queryClient.getQueryCache().find({ queryKey: settledKey, exact: true })).toBe(
-      settledQuery
-    );
-    expect(pendingQuery?.state).toBe(states.pendingQuery);
-    expect(settledQuery?.state).toBe(states.settledQuery);
-    expect(queryClient.getMutationCache().getAll()).toContain(pendingMutation);
-    expect(queryClient.getMutationCache().getAll()).toContain(settledMutation);
-    expect(pendingMutation.state).toBe(states.pendingMutation);
-    expect(settledMutation.state).toBe(states.settledMutation);
-
-    const newRows = { items: [{ ownerUserId: 'current-user' }] };
-    const freshRead = vi.fn().mockResolvedValue(newRows);
-    await expect(
-      queryClient.ensureQueryData({ queryKey: ADMIN_KEY, queryFn: freshRead })
-    ).resolves.toEqual(newRows);
-    expect(freshRead).toHaveBeenCalledTimes(1);
-    expect(queryClient.getQueryData(ADMIN_KEY)).toEqual(newRows);
-    pendingRead.resolve({ retained: 'pending-query' });
-    pendingCommand.resolve({ retained: 'pending-command' });
-    await Promise.all([pendingQueryPromise, pendingMutationPromise]);
-    expect(queryClient.getQueryData(pendingKey)).toEqual({ retained: 'pending-query' });
-    expect(pendingMutation.state.data).toEqual({ retained: 'pending-command' });
-  });
-
-  it.each(
-    OPERATIONS
-  )('%s disposes pending Settings reads even when the transport ignores cancellation', async (operation) => {
-    const { queryClient, transition } = accountHarness();
-    const oldRead = deferred<{ items: string[] }>();
-    const oldPromise = queryClient
-      .fetchQuery({ queryKey: ADMIN_KEY, queryFn: () => oldRead.promise })
-      .catch((error: unknown) => error);
-    const oldQuery = queryClient.getQueryCache().find({ queryKey: ADMIN_KEY, exact: true });
-    expect(oldQuery?.state.fetchStatus).toBe('fetching');
-
-    await transition(operation);
-
-    const retainedAtTransition = queryClient
-      .getQueryCache()
-      .find({ queryKey: ADMIN_KEY, exact: true });
-    const currentRead = deferred<{ items: string[] }>();
-    const freshRead = vi.fn(() => currentRead.promise);
-    const currentPromise = queryClient.ensureQueryData({ queryKey: ADMIN_KEY, queryFn: freshRead });
-    const currentQuery = queryClient.getQueryCache().find({ queryKey: ADMIN_KEY, exact: true });
-    oldRead.resolve({ items: ['previous-user-private-row'] });
-    await oldPromise;
-    expect(queryClient.getQueryData(ADMIN_KEY)).toBeUndefined();
-    expect(retainedAtTransition).toBeUndefined();
-    expect(freshRead).toHaveBeenCalledTimes(1);
-    expect(currentQuery).not.toBe(oldQuery);
-    expect(queryClient.getQueryCache().find({ queryKey: ADMIN_KEY, exact: true })).toBe(
-      currentQuery
-    );
-    expect(currentQuery?.state.fetchStatus).toBe('fetching');
-    currentRead.resolve({ items: ['current-user-row'] });
-    await expect(currentPromise).resolves.toEqual({ items: ['current-user-row'] });
-    expect(queryClient.getQueryData(ADMIN_KEY)).toEqual({ items: ['current-user-row'] });
-    expect(oldQuery?.state.data).toBeUndefined();
-  });
-
-  it.each(
-    OPERATIONS
-  )('%s failure leaves settled and pending Settings reads unchanged', async (operation) => {
-    const { admission, auth, queryClient, transition } = accountHarness();
-    auth[operation].mockRejectedValue(new Error('Account transport failed.'));
-    queryClient.setQueryData(ADMIN_KEY, { items: ['same-user-row'] });
-    const pendingKey = ['settings', 'vault-admin'] as const;
-    const pendingRead = deferred<{ items: string[] }>();
-    const pendingPromise = queryClient.fetchQuery({
-      queryKey: pendingKey,
-      queryFn: () => pendingRead.promise,
-    });
-    const settledQuery = queryClient.getQueryCache().find({ queryKey: ADMIN_KEY, exact: true });
-    const pendingQuery = queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true });
-    const settledState = settledQuery?.state;
-    const pendingState = pendingQuery?.state;
-
-    await expect(transition(operation)).rejects.toThrow('The account operation failed.');
-
-    await waitFor(() => expect(auth[operation]).toHaveBeenCalledTimes(1));
-    expect(admission).not.toHaveBeenCalled();
-    expect(queryClient.getQueryCache().find({ queryKey: ADMIN_KEY, exact: true })).toBe(
-      settledQuery
-    );
-    expect(queryClient.getQueryCache().find({ queryKey: pendingKey, exact: true })).toBe(
-      pendingQuery
-    );
-    expect(settledQuery?.state).toBe(settledState);
-    expect(pendingQuery?.state).toBe(pendingState);
-    pendingRead.resolve({ items: ['same-user-late-row'] });
-    await pendingPromise;
-    expect(queryClient.getQueryData(pendingKey)).toEqual({ items: ['same-user-late-row'] });
   });
 });

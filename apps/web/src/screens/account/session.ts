@@ -74,7 +74,7 @@ export function useAccountAdmission(options?: { readonly enabled?: boolean }) {
 /**
  * Runs one email-auth operation and replaces account admission after success.
  *
- * The request object is the TanStack mutation variable while the operation is in flight. Its credential fields are erased before settlement, and auth responses and credential-bearing server errors are deliberately not retained. Settings reads are disposed before admission resets so an earlier account's rows or pending response cannot satisfy the next account. The following protected read starts from a reset admission query, so the previous product, gate, or failure does not stay mounted while that read is in flight.
+ * The request object is the TanStack mutation variable while the operation is in flight. Its credential fields are erased before settlement, and auth responses and credential-bearing server errors are deliberately not retained. Settings and Operations reads are disposed before admission resets so an earlier account's rows or pending response cannot satisfy the next account. The following protected read starts from a reset admission query, so the previous product, gate, or failure does not stay mounted while that read is in flight.
  */
 export function useAccountMutation() {
   const client = useCoreClient();
@@ -116,6 +116,7 @@ export function useAccountMutation() {
       queryClient.removeQueries({ queryKey: ['account', 'session-user'], exact: true });
       queryClient.removeQueries({ queryKey: ['thread-dashboard'] });
       queryClient.removeQueries({ queryKey: ['settings'] });
+      queryClient.removeQueries({ queryKey: ['operations'] });
       useWorkspaceStore.getState().setCurrentWorkspaceId(null);
       void queryClient.resetQueries({ queryKey: accountAdmissionKey, exact: true });
     },

@@ -1,12 +1,12 @@
 import { ApiCallError, createRequestId } from '@openkit/core-client';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import { chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import { projectSafeValue } from '../settings/secret-safe';
 
 /** Stable TanStack Query keys for recovery reads and shell search. */
 export const operationsKeys = {
-  workers: ['operations', 'interrupted-workers'] as const,
+  workers: (workspaceId: string) => ['operations', 'interrupted-workers', workspaceId] as const,
   admissions: (workspaceId: string) => ['operations', 'scheduler-admissions', workspaceId] as const,
   search: (query: string) => ['operations', 'search', query] as const,
 };
@@ -171,78 +171,126 @@ export function pathForSearchHit(hit: AppSearchHit): string {
 }
 
 /**
- * Lists interrupted workers through `client.operations['recovery.worker-list']` and keeps only public fields.
+ * Reads selected-Workspace worker observations through `client.operations['recovery.worker-list']` and discards denied observations.
  *
  * @param workspaceId Validated selected Workspace, or null before discovery settles.
  * @returns TanStack query of product-safe worker rows.
  */
 export function useInterruptedWorkers(workspaceId: string | null) {
   const client = useCoreClient();
+  const queryClient = useQueryClient();
+  const queryKey = operationsKeys.workers(workspaceId ?? '');
   return useQuery({
-    queryKey: operationsKeys.workers,
-    queryFn: async (): Promise<RecoveryWorkerRow[]> => {
-      const payload = await client.operations['recovery.worker-list']({});
-      return payload.items.flatMap((item) => {
-        const checkpointId = safeText(item.checkpointId);
-        const rowWorkspaceId = safeText(item.workspaceId);
-        const threadId = safeText(item.threadId);
-        const turnId = safeText(item.turnId);
-        if (!checkpointId || !rowWorkspaceId || !threadId || !turnId) return [];
-        const choices = (item.choices ?? []).flatMap((choice) => {
-          const label = safeText(choice.label);
-          if (!label) return [];
-          return [{ kind: choice.kind, label }];
+    queryKey,
+    queryFn: async ({ signal }): Promise<RecoveryWorkerRow[]> => {
+      const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+      try {
+        const payload = await client.operations['recovery.worker-list']({});
+        signal.throwIfAborted();
+        return payload.items.flatMap((item) => {
+          const checkpointId = safeText(item.checkpointId);
+          const rowWorkspaceId = safeText(item.workspaceId);
+          const threadId = safeText(item.threadId);
+          const turnId = safeText(item.turnId);
+          if (!checkpointId || rowWorkspaceId !== workspaceId || !threadId || !turnId) return [];
+          const choices = (item.choices ?? []).flatMap((choice) => {
+            const label = safeText(choice.label);
+            if (!label) return [];
+            return [{ kind: choice.kind, label }];
+          });
+          return [
+            {
+              checkpointId,
+              workspaceId: rowWorkspaceId,
+              threadId,
+              turnId,
+              diagnosticsSummary: safeText(item.diagnosticsSummary),
+              stage: safeText(item.stage),
+              contextDigest: safeText(item.contextDigest),
+              stopReason: safeText(item.stopReason),
+              choices,
+              canInspect: choices.some((choice) => choice.kind === 'inspect'),
+              canRetry: choices.some((choice) => choice.kind === 'retry'),
+            },
+          ];
         });
-        return [
-          {
-            checkpointId,
-            workspaceId: rowWorkspaceId,
-            threadId,
-            turnId,
-            diagnosticsSummary: safeText(item.diagnosticsSummary),
-            stage: safeText(item.stage),
-            contextDigest: safeText(item.contextDigest),
-            stopReason: safeText(item.stopReason),
-            choices,
-            canInspect: choices.some((choice) => choice.kind === 'inspect'),
-            canRetry: choices.some((choice) => choice.kind === 'retry'),
-          },
-        ];
-      });
+      } catch (error) {
+        signal.throwIfAborted();
+        if (
+          error instanceof ApiCallError &&
+          (error.status === 401 || error.status === 403) &&
+          query &&
+          queryClient.getQueryCache().find({ queryKey, exact: true }) === query
+        ) {
+          // Discard denied observations without touching frozen command owners or replacement reads.
+          queryClient.setQueryData<RecoveryWorkerRow[]>(queryKey, []);
+        }
+        if (error instanceof ApiCallError) {
+          throw new ApiCallError(error.status, "Couldn't load interrupted workers.", {
+            code: error.code ?? undefined,
+          });
+        }
+        throw new Error("Couldn't load interrupted workers.");
+      }
     },
     enabled: Boolean(workspaceId),
     retry: false,
+    staleTime: 0,
   });
 }
 
 /**
- * Lists selected-Workspace scheduler admissions through `client.operations['scheduler.list']`.
+ * Reads current selected-Workspace admissions through `client.operations['scheduler.list']` and discards denied observations.
  *
  * @param workspaceId Validated selected Workspace, or null before discovery settles.
  * @returns TanStack query of product-safe admission rows.
  */
 export function useSchedulerAdmissions(workspaceId: string | null) {
   const client = useCoreClient();
+  const queryClient = useQueryClient();
+  const queryKey = operationsKeys.admissions(workspaceId ?? '');
   return useQuery({
-    queryKey: operationsKeys.admissions(workspaceId ?? ''),
-    queryFn: async (): Promise<RecoveryAdmissionRow[]> => {
-      const payload = await client.operations['scheduler.list']({
-        workspaceId: workspaceId as string,
-      });
-      return payload.items.flatMap((item) => {
-        if (item.status !== 'queued' && item.status !== 'denied') return [];
-        return [
-          {
-            queueEntryId: safeText(item.queueEntryId),
-            workspaceId: safeText(item.workspaceId),
-            requestedAgentId: safeText(item.requestedAgentId),
-            status: item.status,
-          },
-        ];
-      });
+    queryKey,
+    queryFn: async ({ signal }): Promise<RecoveryAdmissionRow[]> => {
+      const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+      try {
+        const payload = await client.operations['scheduler.list']({
+          workspaceId: workspaceId as string,
+        });
+        signal.throwIfAborted();
+        return payload.items.flatMap((item) => {
+          if (item.status !== 'queued' && item.status !== 'denied') return [];
+          return [
+            {
+              queueEntryId: safeText(item.queueEntryId),
+              workspaceId: safeText(item.workspaceId),
+              requestedAgentId: safeText(item.requestedAgentId),
+              status: item.status,
+            },
+          ];
+        });
+      } catch (error) {
+        signal.throwIfAborted();
+        if (
+          error instanceof ApiCallError &&
+          (error.status === 401 || error.status === 403) &&
+          query &&
+          queryClient.getQueryCache().find({ queryKey, exact: true }) === query
+        ) {
+          // Discard denied observations without touching frozen command owners or replacement reads.
+          queryClient.setQueryData<RecoveryAdmissionRow[]>(queryKey, []);
+        }
+        if (error instanceof ApiCallError) {
+          throw new ApiCallError(error.status, "Couldn't load scheduler admissions.", {
+            code: error.code ?? undefined,
+          });
+        }
+        throw new Error("Couldn't load scheduler admissions.");
+      }
     },
     enabled: Boolean(workspaceId),
     retry: false,
+    staleTime: 0,
   });
 }
 
@@ -292,7 +340,7 @@ export function useCancelSchedulerAdmission() {
 }
 
 /**
- * Searches admitted App read models through `client.operations['app.search']`.
+ * Rechecks selected App search reads through `client.operations['app.search']` without admitting departed responses.
  *
  * @param query Submitted search string; the query stays idle until non-empty.
  * @returns TanStack query of product-safe hits.
@@ -301,17 +349,29 @@ export function useAppSearch(query: string) {
   const client = useCoreClient();
   return useQuery({
     queryKey: operationsKeys.search(query),
-    queryFn: async (): Promise<AppSearchHit[]> => {
-      const payload = await client.operations['app.search']({ query });
-      return payload.items.map((item) => ({
-        kind: item.kind,
-        id: safeText(item.id),
-        title: safeText(item.title),
-        ...(item.workspaceId ? { workspaceId: safeText(item.workspaceId) } : {}),
-        ...(item.threadId ? { threadId: safeText(item.threadId) } : {}),
-      }));
+    queryFn: async ({ signal }): Promise<AppSearchHit[]> => {
+      try {
+        const payload = await client.operations['app.search']({ query });
+        signal.throwIfAborted();
+        return payload.items.map((item) => ({
+          kind: item.kind,
+          id: safeText(item.id),
+          title: safeText(item.title),
+          ...(item.workspaceId ? { workspaceId: safeText(item.workspaceId) } : {}),
+          ...(item.threadId ? { threadId: safeText(item.threadId) } : {}),
+        }));
+      } catch (error) {
+        signal.throwIfAborted();
+        if (error instanceof ApiCallError) {
+          throw new ApiCallError(error.status, "Couldn't search.", {
+            code: error.code ?? undefined,
+          });
+        }
+        throw new Error("Couldn't search.");
+      }
     },
     enabled: query.length > 0,
     retry: false,
+    staleTime: 0,
   });
 }
