@@ -204,55 +204,58 @@ function assertNotebookAuditScope(
  *
  * @param workspaceDb Workspace database that owns the events.
  * @param workspaceId Workspace id to export.
+ * @param coreDb Optional transactional home of Workspace-attributed lifecycle Audit.
  * @returns Protocol audit events in stable storage order.
  */
 export function listWorkspaceAuditEvents(
   workspaceDb: WorkspaceDb,
-  workspaceId: string
+  workspaceId: string,
+  coreDb?: CoreDb
 ): AuditEvent[] {
-  return workspaceDb.sqlite
-    .prepare(
-      `SELECT
-        audit_event_id,
-        workspace_id,
-        protocol_version,
-        thread_id,
-        turn_id,
-        item_id,
-        capability_call_id,
-        permission_decision_id,
-        vault_grant_id,
-        request_id,
-        actor_json,
-        subject_json,
-        agent_id,
-        agent_session_id,
-        category,
-        action,
-        resource,
-        resource_revision,
-        notebook_admission_json,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        created_at,
-        occurred_at
-      FROM audit_events
-      WHERE workspace_id = ?
-      ORDER BY created_at, audit_event_id`
-    )
-    .all(workspaceId)
-    .map(auditEventFromRow);
+  const events = listSqliteAuditEvents(workspaceDb.sqlite, workspaceId);
+  if (coreDb) events.push(...listSqliteAuditEvents(coreDb.sqlite, workspaceId));
+  return events.sort(
+    (left, right) =>
+      (left.createdAt ?? '').localeCompare(right.createdAt ?? '') || left.id.localeCompare(right.id)
+  );
+}
+
+/**
+ * Selects the accepted portable Workspace Audit sources without exporting deployment access history.
+ *
+ * @param workspaceDb Workspace-local Audit authority.
+ * @param workspaceId Exact selected Workspace.
+ * @param coreDb Optional home of the recurring transaction exception.
+ * @returns Portable Audit events in stable export order.
+ */
+export function listPortableWorkspaceAuditEvents(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  coreDb?: CoreDb
+): AuditEvent[] {
+  const events = listSqliteAuditEvents(workspaceDb.sqlite, workspaceId);
+  if (coreDb) events.push(...listSqliteAuditEvents(coreDb.sqlite, workspaceId, true));
+  return events.sort(
+    (left, right) =>
+      (left.createdAt ?? '').localeCompare(right.createdAt ?? '') || left.id.localeCompare(right.id)
+  );
 }
 
 /**
  * Lists every audit event stored in one SQLite handle.
  *
  * @param sqlite Core, User, Workspace, or App database handle.
+ * @param workspaceId Selects one Workspace in SQL before decoding any event content.
+ * @param portableRecurringOnly Restricts Core rows to accepted recurring actions and retained subject identity before decoding.
  * @returns Protocol audit events in stable storage order.
  */
-export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
+export function listSqliteAuditEvents(
+  sqlite: CoreDb['sqlite'],
+  workspaceId?: string,
+  portableRecurringOnly = false
+): AuditEvent[] {
+  if (portableRecurringOnly && workspaceId === undefined)
+    throw new Error('Portable recurring Audit requires a Workspace selector.');
   return sqlite
     .prepare(
       `SELECT
@@ -281,10 +284,27 @@ export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
         error_code,
         created_at,
         occurred_at
-      FROM audit_events
+      FROM audit_events event
+      ${workspaceId === undefined ? '' : 'WHERE workspace_id = ?'}
+      ${
+        portableRecurringOnly
+          ? `AND (
+        (action IN ('recurring.schedule.create', 'recurring.schedule.edit',
+          'recurring.schedule.pause', 'recurring.schedule.resume', 'recurring.schedule.delete')
+          AND EXISTS (SELECT 1 FROM recurring_schedules source
+            WHERE source.workspace_id = event.workspace_id AND source.id = event.resource))
+        OR (action = 'recurring.occurrence.terminal'
+          AND EXISTS (SELECT 1 FROM recurring_occurrences source
+            WHERE source.workspace_id = event.workspace_id AND source.id = event.resource))
+        OR (action = 'recurring.expired-range.record'
+          AND EXISTS (SELECT 1 FROM recurring_expired_ranges source
+            WHERE source.workspace_id = event.workspace_id AND source.id = event.resource))
+      )`
+          : ''
+      }
       ORDER BY created_at, audit_event_id`
     )
-    .all()
+    .all(...(workspaceId === undefined ? [] : [workspaceId]))
     .map(auditEventFromRow);
 }
 

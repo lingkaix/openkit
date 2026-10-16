@@ -6,27 +6,15 @@ import {
 import { type AssistantHandoff, AssistantHandoffSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { uuidv5 } from '../generative-kernel/uuid.js';
+import { createAssistantGenerativeTools } from '../generative-ui/internal-tools.js';
 import { OperationError } from '../operation-error.js';
 import type { AgentTool, AgentToolResult } from './internal-agent-loop.js';
 import { redactInternalAgentText } from './redaction.js';
 
-/** Finite Core identities retain their native owner until that internal family is cut over. */
-const NATIVE_TOOLS = [
-  ['kernel.apps.search', 'kernel.apps.list'],
-  ['kernel.apps.create', 'kernel.apps.create'],
-  ['kernel.apps.read', 'kernel.apps.get'],
-  ['kernel.schema.update', 'kernel.schema.update'],
-  ['kernel.apps.delete', 'kernel.apps.retire'],
-  ['kernel.records.search', 'kernel.records.list'],
-  ['kernel.records.read', 'kernel.records.get'],
-  ['kernel.records.create', 'kernel.records.create'],
-  ['kernel.records.update', 'kernel.records.update'],
-  ['kernel.records.dispatch', 'kernel.records.batch'],
-  ['generative.ui.create', 'generative-ui.publish'],
-] as const;
-
 /** Creates the complete fixed Assistant set; proposed work has no downstream effect before human selection. */
 export function createAssistantTools(input: {
+  readonly actorUserId: string;
+  readonly commandRequestId: string;
   readonly workspaceId: string;
   readonly threadId: string;
   readonly turnId: string;
@@ -177,7 +165,37 @@ export function createAssistantTools(input: {
         'memory.page.propose',
       ].map(memory),
       input.skill,
-      ...NATIVE_TOOLS.map(([name, id]) => native(name, id)),
+      ...createAssistantGenerativeTools(async (id, value, context) => {
+        input.assertCurrent();
+        const definition = OPERATION_DEFINITIONS[id];
+        const identities = {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          requestId: uuidv5(
+            JSON.stringify([
+              'assistant-generative',
+              input.workspaceId,
+              input.threadId,
+              input.actorUserId,
+              input.commandRequestId,
+              context.toolOccurrence,
+            ])
+          ),
+        };
+        const bound = Object.fromEntries(
+          Object.entries(identities).filter(([field]) =>
+            Object.hasOwn(definition.inputSchema.shape, field)
+          )
+        );
+        const result = await input.invoke(
+          id,
+          { ...(value as Record<string, unknown>), ...bound },
+          context.signal
+        );
+        input.assertCurrent();
+        return result;
+      }),
     ],
     /** Reads only the transient proposal; its pending owner is published after successful model completion. */
     proposedHandoff: () => handoff,

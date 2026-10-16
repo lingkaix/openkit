@@ -38,7 +38,6 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -1065,7 +1064,10 @@ describe('SimulatedTurnExecutor', () => {
         });
       }
       expect(store.getTurnById(workerTurn.id).status).toBe('completed');
-      expect(store.getTurnById(deliveringTurn.id), JSON.stringify(store.getTurnById(deliveringTurn.id))).toMatchObject({ status: 'completed' });
+      expect(
+        store.getTurnById(deliveringTurn.id),
+        JSON.stringify(store.getTurnById(deliveringTurn.id))
+      ).toMatchObject({ status: 'completed' });
       expect(
         store.getArtifact(
           'ws_00000000-0000-7000-8000-000000000001',

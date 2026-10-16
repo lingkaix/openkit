@@ -45,7 +45,11 @@ function refusal(result: AgentToolResult, code = 'resource_unavailable') {
 }
 
 function execution() {
-  return { callId: 'model-call-correlation', signal: new AbortController().signal };
+  return {
+    callId: 'model-call-correlation',
+    toolOccurrence: 1,
+    signal: new AbortController().signal,
+  };
 }
 
 describe('private Skill read declaration', () => {
@@ -235,6 +239,7 @@ describe('definition-derived Skill model projection', () => {
     await expect(
       createAssistantSkillReadTool(invoke).execute(rawInput, {
         callId: 'aborted',
+        toolOccurrence: 1,
         signal: controller.signal,
       })
     ).rejects.toBe(reason);
@@ -253,6 +258,7 @@ describe('definition-derived Skill model projection', () => {
     );
     const running = createAssistantSkillReadTool(invoke).execute(rawInput, {
       callId: 'late',
+      toolOccurrence: 1,
       signal: controller.signal,
     });
     controller.abort(reason);

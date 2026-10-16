@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAssistantTools } from './assistant-tools.js';
 import type { AgentTool } from './internal-agent-loop.js';
 
+const actorUserId = allocateEntityId('usr');
 const workspaceId = allocateEntityId('ws');
 const threadId = allocateEntityId('th');
 const turnId = allocateEntityId('tu');
@@ -17,6 +18,7 @@ const placeholder = (name: string): AgentTool => ({
 const execution = () => ({
   callId: 'model-correlation-only',
   signal: new AbortController().signal,
+  toolOccurrence: 1,
 });
 function fixture(privateEntry = true) {
   const invoke = vi.fn(async () => ({ ok: true }));
@@ -25,6 +27,8 @@ function fixture(privateEntry = true) {
     invoke,
     assertCurrent,
     ...createAssistantTools({
+      actorUserId,
+      commandRequestId: 'same-command',
       workspaceId,
       threadId,
       turnId,
@@ -53,17 +57,17 @@ const names = [
   'memory.page.delete',
   'memory.page.propose',
   'skill.read',
-  'kernel.apps.search',
+  'kernel.apps.list',
   'kernel.apps.create',
-  'kernel.apps.read',
+  'kernel.apps.get',
   'kernel.schema.update',
-  'kernel.apps.delete',
-  'kernel.records.search',
-  'kernel.records.read',
+  'kernel.apps.retire',
+  'kernel.records.list',
+  'kernel.records.get',
   'kernel.records.create',
   'kernel.records.update',
-  'kernel.records.dispatch',
-  'generative.ui.create',
+  'kernel.records.batch',
+  'generative-ui.publish',
 ];
 
 describe('ordinary Assistant fixed Tools', () => {
@@ -84,7 +88,7 @@ describe('ordinary Assistant fixed Tools', () => {
 
   it('binds querying authority and server command occurrences while model call ids remain correlation', async () => {
     const run = fixture();
-    const tool = run.tools.find((tool) => tool.name === 'kernel.apps.delete')!;
+    const tool = run.tools.find((tool) => tool.name === 'kernel.apps.retire')!;
     const value = { appId: '334b2546-f7a2-49e2-b50a-00f4f94343f4', expectedAppRevision: 1 };
     const forged = await tool.execute(
       { ...value, workspaceId: 'other', requestId: 'model-owned' },
@@ -96,7 +100,7 @@ describe('ordinary Assistant fixed Tools', () => {
     expect(properties).not.toHaveProperty('workspaceId');
     expect(properties).not.toHaveProperty('requestId');
     await tool.execute(value, execution());
-    await tool.execute(value, execution());
+    await tool.execute(value, { ...execution(), toolOccurrence: 2 });
     expect(run.invoke).toHaveBeenCalledTimes(2);
     const first = run.invoke.mock.calls[0] as unknown as [
       string,
@@ -114,7 +118,7 @@ describe('ordinary Assistant fixed Tools', () => {
     expect(first[1].requestId).not.toBe(second[1].requestId);
     const repeatedAssembly = fixture();
     await repeatedAssembly.tools
-      .find((tool) => tool.name === 'kernel.apps.delete')!
+      .find((tool) => tool.name === 'kernel.apps.retire')!
       .execute(value, execution());
     expect(
       (repeatedAssembly.invoke.mock.calls[0] as unknown as [string, Record<string, unknown>])[1]

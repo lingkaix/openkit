@@ -20,6 +20,7 @@ import {
 import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
+import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
   appendCanonicalTextFile,
@@ -59,6 +60,8 @@ function serializeRetainedLedgerRow(row: unknown): string {
 
 /** Authoritative file-backed workspace state that is portable but not owned by canonical protocol records. */
 export interface WorkspacePortableFileState {
+  /** Immutable imported source history; never interpreted as target schedule authority. */
+  readonly recurringHistory?: string | null;
   /** Observation rows grouped by canonical ledger month in append order. */
   readonly observations: ReadonlyMap<string, readonly z.infer<typeof ObservationRowSchema>[]>;
   /** Claim rows grouped by canonical ledger month in append order. */
@@ -227,7 +230,10 @@ export function readWorkspacePortableFileState(
   const root = resolve(workspaceRoot);
 
   assertCanonicalDirectory(root);
+  const recurringHistory = readOptionalText(root, 'imports/recurrence-history.json');
+  if (recurringHistory !== null) validateRecurringPortableHistory(recurringHistory);
   return {
+    recurringHistory,
     observations: readWorkspaceKnowledgeObservationLedger(root),
     claims: readWorkspaceKnowledgeClaimLedger(root),
     conflicts: readWorkspaceKnowledgeConflictLedger(root),
@@ -253,6 +259,10 @@ export function writeWorkspacePortableFileState(
   const root = resolve(workspaceRoot);
 
   assertCanonicalDirectory(root);
+  if (state.recurringHistory != null) {
+    validateRecurringPortableHistory(state.recurringHistory);
+    writeText(root, 'imports/recurrence-history.json', state.recurringHistory, false);
+  }
   writeMonthlyLedger(
     root,
     'knowledge/observations',

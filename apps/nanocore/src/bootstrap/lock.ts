@@ -1,16 +1,18 @@
+import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
+import { dirname } from 'node:path';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 
 const LOCK_FILE_NAME = 'nanocore.lock';
 const HEARTBEAT_MS = 5_000;
-const heldLockPaths = new Set<string>();
+const LOCK_CONFLICT_EXIT_CODE = 75;
 
 /** Input for acquiring the data-root instance lock. */
 export interface DataRootLockInput {
   /** Boot id for the process that owns the lock. */
   bootId: string;
-  /** Optional process id override for tests. */
+  /** Optional process id override for diagnostic metadata in tests. */
   pid?: number;
   /** Optional clock override for tests. */
   now?: () => string;
@@ -20,9 +22,9 @@ export interface DataRootLockInput {
 export interface DataRootLock {
   /** Summary of how the lock was acquired. */
   acquisition: DataRootLockAcquisition;
-  /** Absolute lockfile path. */
+  /** Absolute lockfile path, also used for diagnostic metadata. */
   path: string;
-  /** Releases the lock when the current process still owns it. */
+  /** Removes diagnostic metadata and releases kernel ownership. */
   release(): void;
 }
 
@@ -30,9 +32,9 @@ export interface DataRootLock {
 export interface DataRootLockAcquisition {
   /** Lock acquisition outcome. */
   status: 'acquired' | 'stale_broken';
-  /** Absolute lockfile path. */
+  /** Absolute lockfile path, also used for diagnostic metadata. */
   lockPath: string;
-  /** Previous stale holder when a stale lock was broken. */
+  /** Previous stale metadata replaced after kernel ownership was acquired. */
   staleHolder: unknown | null;
 }
 
@@ -53,7 +55,7 @@ export class DataRootLockError extends Error {
   /**
    * Creates a data-root lock error.
    *
-   * @param lockPath Lockfile path that could not be acquired.
+   * @param lockPath Holder-metadata path for the unavailable data-root lock.
    * @param holder Existing holder metadata.
    */
   public constructor(lockPath: string, holder: unknown) {
@@ -64,92 +66,89 @@ export class DataRootLockError extends Error {
 }
 
 /**
- * Returns the lockfile path for one data root.
+ * Returns the diagnostic holder-metadata path for one data root.
  *
  * @param dataRoot NanoCore data root.
- * @returns Absolute or relative lockfile path.
+ * @returns Absolute or relative holder-metadata path.
  */
 export function dataRootLockPath(dataRoot: string): string {
   return resolveDataRootPath(dataRoot, 'server', 'runtime', LOCK_FILE_NAME);
 }
 
 /**
- * Acquires the exclusive NanoCore data-root lock.
+ * Holds the kernel-backed whole-data-root lock until release or process death.
  *
  * @param dataRoot NanoCore data root.
  * @param input Lock owner input.
- * @returns Lock handle that must be released on orderly shutdown.
+ * @returns Lock handle retained until orderly shutdown.
  */
 export function acquireDataRootLock(dataRoot: string, input: DataRootLockInput): DataRootLock {
   const lockPath = dataRootLockPath(dataRoot);
-  const now = input.now ?? (() => new Date().toISOString());
-  const record: DataRootLockRecord = {
-    schemaVersion: 1,
-    bootId: input.bootId,
-    pid: input.pid ?? process.pid,
-    hostname: hostname(),
-    createdAt: now(),
-    updatedAt: now(),
-  };
-
-  let fd: number;
-  let acquisition: DataRootLockAcquisition = {
-    status: 'acquired',
-    lockPath,
-    staleHolder: null,
-  };
+  const fd = openSync(dirname(lockPath), 'r');
   try {
-    fd = openSync(lockPath, 'wx');
-  } catch (error) {
-    if (isExistingLockError(error)) {
-      const holder = readLockRecord(lockPath);
-
-      if (canBreakDeadLocalLock(holder, lockPath)) {
-        unlinkSync(lockPath);
-        fd = openSync(lockPath, 'wx');
-        acquisition = {
-          status: 'stale_broken',
-          lockPath,
-          staleHolder: holder,
-        };
-      } else {
-        throw new DataRootLockError(lockPath, holder);
-      }
-    } else {
-      throw error;
+    // Lock the existing runtime directory; metadata can keep its stopped-server lifecycle.
+    // flock locks the inherited open file description; Node retains it after this utility exits.
+    // Unlike process-owned fcntl locks, unrelated metadata reads cannot release this ownership.
+    const attempt = spawnSync(
+      'flock',
+      ['--exclusive', '--nonblock', '--conflict-exit-code', String(LOCK_CONFLICT_EXIT_CODE), '3'],
+      { stdio: ['ignore', 'ignore', 'pipe', fd], env: { PATH: process.env.PATH } }
+    );
+    if (attempt.error) throw attempt.error;
+    if (attempt.status === LOCK_CONFLICT_EXIT_CODE) {
+      throw new DataRootLockError(lockPath, readLockRecord(lockPath));
     }
-  }
+    if (attempt.status !== 0) {
+      throw new Error(`NanoCore data-root kernel locking failed (flock exit ${attempt.status}).`);
+    }
+    const stale = existsSync(lockPath);
+    const staleHolder = stale ? readLockRecord(lockPath) : null;
+    const now = input.now ?? (() => new Date().toISOString());
+    const record: DataRootLockRecord = {
+      schemaVersion: 1,
+      bootId: input.bootId,
+      pid: input.pid ?? process.pid,
+      hostname: hostname(),
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    writeLockRecord(lockPath, record);
 
-  writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`);
-  closeSync(fd);
-  heldLockPaths.add(lockPath);
+    const heartbeat = setInterval(() => {
+      writeLockRecord(lockPath, { ...record, updatedAt: now() });
+    }, HEARTBEAT_MS);
+    heartbeat.unref();
+    let released = false;
 
-  const heartbeat = setInterval(() => {
-    writeLockRecord(lockPath, { ...record, updatedAt: now() });
-  }, HEARTBEAT_MS);
-  heartbeat.unref();
-
-  return {
-    acquisition,
-    path: lockPath,
-    release() {
-      clearInterval(heartbeat);
-
-      try {
-        if (lockStillOwned(lockPath, record.bootId)) {
+    return {
+      acquisition: {
+        status: stale ? 'stale_broken' : 'acquired',
+        lockPath,
+        staleHolder,
+      },
+      path: lockPath,
+      release() {
+        if (released) return;
+        released = true;
+        clearInterval(heartbeat);
+        try {
+          // The runtime directory inode stays fixed; only diagnostic metadata is removed.
           unlinkSync(lockPath);
+        } finally {
+          closeSync(fd);
         }
-      } finally {
-        heldLockPaths.delete(lockPath);
-      }
-    },
-  };
+      },
+    };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
 }
 
 /**
- * Writes a lock record to disk.
+ * Updates diagnostic holder metadata while directory ownership is held.
  *
- * @param lockPath Lockfile path.
+ * @param lockPath Holder-metadata path.
  * @param record Lock record to write.
  */
 function writeLockRecord(lockPath: string, record: DataRootLockRecord): void {
@@ -157,9 +156,9 @@ function writeLockRecord(lockPath: string, record: DataRootLockRecord): void {
 }
 
 /**
- * Reads a lock record, returning null when it is unreadable.
+ * Reads holder metadata, returning null when it is unreadable.
  *
- * @param lockPath Lockfile path.
+ * @param lockPath Holder-metadata path.
  * @returns Parsed lock record or null.
  */
 function readLockRecord(lockPath: string): unknown {
@@ -168,107 +167,4 @@ function readLockRecord(lockPath: string): unknown {
   } catch {
     return null;
   }
-}
-
-/**
- * Checks whether an existing lock belongs to a dead local process.
- *
- * @param holder Existing lock holder metadata.
- * @param lockPath Existing lockfile path.
- * @returns True when the holder is local and confirmed dead.
- */
-function canBreakDeadLocalLock(holder: unknown, lockPath: string): boolean {
-  if (
-    !isDataRootLockRecord(holder) ||
-    holder.hostname !== hostname() ||
-    heldLockPaths.has(lockPath)
-  ) {
-    return false;
-  }
-
-  return holder.pid === process.pid || !processIsAlive(holder.pid);
-}
-
-/**
- * Checks whether a value is a parseable data-root lock record.
- *
- * @param value Parsed lockfile value.
- * @returns True when the value has the fields needed for safe stale-lock probing.
- */
-function isDataRootLockRecord(value: unknown): value is DataRootLockRecord {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'schemaVersion' in value &&
-    value.schemaVersion === 1 &&
-    'bootId' in value &&
-    typeof value.bootId === 'string' &&
-    'pid' in value &&
-    Number.isInteger(value.pid) &&
-    'hostname' in value &&
-    typeof value.hostname === 'string' &&
-    'createdAt' in value &&
-    typeof value.createdAt === 'string' &&
-    'updatedAt' in value &&
-    typeof value.updatedAt === 'string'
-  );
-}
-
-/**
- * Checks whether a local process id identifies a live process leader.
- *
- * @param pid Process id from the lock holder.
- * @returns True when the process leader is alive or liveness is indeterminate.
- */
-function processIsAlive(pid: number): boolean {
-  try {
-    const status = readFileSync(`/proc/${pid}/status`, 'utf8');
-    const threadGroupId = /^Tgid:\s+(\d+)$/m.exec(status)?.[1];
-    if (threadGroupId && Number(threadGroupId) !== pid) return false;
-  } catch {
-    // Non-Linux hosts and short-lived processes fall back to the portable probe below.
-  }
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !isNoSuchProcessError(error);
-  }
-}
-
-/**
- * Checks whether a caught error means the lockfile already exists.
- *
- * @param error Unknown thrown value.
- * @returns True when the error is an existing-file failure.
- */
-function isExistingLockError(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'EEXIST';
-}
-
-/**
- * Checks whether a caught process signal error means the process is absent.
- *
- * @param error Unknown thrown value.
- * @returns True when the process does not exist.
- */
-function isNoSuchProcessError(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'ESRCH';
-}
-
-/**
- * Checks whether the lockfile still belongs to a boot id.
- *
- * @param lockPath Lockfile path.
- * @param bootId Boot id expected in the record.
- * @returns True when the lockfile still belongs to the boot id.
- */
-function lockStillOwned(lockPath: string, bootId: string): boolean {
-  if (!existsSync(lockPath)) {
-    return false;
-  }
-
-  const record = readLockRecord(lockPath) as { bootId?: unknown } | null;
-  return record?.bootId === bootId;
 }
