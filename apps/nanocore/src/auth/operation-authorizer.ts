@@ -596,7 +596,7 @@ export function hasWorkspaceDeletionRetryAuthority(
   }
   return (
     deletion.originalOwnerUserId === row.ownerUserId &&
-    (deletion.initiatingUserId ?? deletion.originalOwnerUserId) === actor.userId
+    deletion.initiatingUserId === actor.userId
   );
 }
 

@@ -533,7 +533,7 @@ function selectDeletionRequest(input: {
   if (existing) {
     if (
       (!input.administratorEligible &&
-        (existing.initiatingUserId ?? existing.originalOwnerUserId) !== input.actorId) ||
+        existing.initiatingUserId !== input.actorId) ||
       existing.expectedRegistryRevision !== input.request.expectedRegistryRevision ||
       existing.confirmation !== input.request.confirmation
     ) {

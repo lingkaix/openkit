@@ -1176,6 +1176,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
       requestId,
       workspaceId: workspace.id,
     });
@@ -1240,6 +1241,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
       requestId: deletingRequestId,
       workspaceId: deletingWorkspace.id,
     });
@@ -1270,6 +1272,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
       requestId,
       workspaceId: workspace.id,
     });
@@ -1335,6 +1338,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
         createdAt: new Date().toISOString(),
         expectedRegistryRevision: 1,
         originalOwnerUserId: 'user_local',
+        initiatingUserId: 'user_local',
         requestId,
         workspaceId: workspace.id,
       });
@@ -1402,6 +1406,7 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
       requestId,
       workspaceId: deletedWorkspace.id,
     });
@@ -1469,6 +1474,7 @@ it.each([
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
       requestId,
       workspaceId: workspace.id,
     });

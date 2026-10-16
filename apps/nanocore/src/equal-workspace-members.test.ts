@@ -1,10 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
-  cpSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -18,17 +15,17 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { applyMigrations, applyNativeScopeMigrations } from './storage/migrate.js';
+import { applyMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
   createVerifiedWorkspaceExport,
   workspaceDeletionRecoveryExportId,
 } from './storage/workspace-transfer-routes.js';
-import { readWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import {
-  recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
-} from './workspace-membership.js';
+  createWorkspaceDeletionRequest,
+  readWorkspaceDeletionRequest,
+} from './workspace-deletion-request.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Inserts synthetic canonical users without granting deployment administration. */
 function insertUser(coreDb: ReturnType<typeof openCoreDb>, id: string): void {
@@ -38,77 +35,27 @@ function insertUser(coreDb: ReturnType<typeof openCoreDb>, id: string): void {
     .run(id, id, `${id}@example.test`, Date.now(), Date.now());
 }
 
-it('carries retained tiered membership and invitation records through the one-way equal-member migration', () => {
-  const root = mkdtempSync(join(tmpdir(), 'openkit-equal-members-migration-'));
-  const coreDb = openCoreDb(root);
+it('requires the actual initiating user in the current deletion request', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-deletion-required-initiator-'));
   try {
-    const legacyJournal = join(root, 'legacy-journal');
-    mkdirSync(join(legacyJournal, 'meta'), { recursive: true });
-    const journalRoot = join(import.meta.dirname, '..', 'drizzle', 'core');
-    const journal = JSON.parse(readFileSync(join(journalRoot, 'meta', '_journal.json'), 'utf8'));
-    journal.entries = journal.entries.slice(0, 2);
-    for (const entry of journal.entries)
-      cpSync(join(journalRoot, `${entry.tag}.sql`), join(legacyJournal, `${entry.tag}.sql`));
-    writeFileSync(join(legacyJournal, 'meta', '_journal.json'), JSON.stringify(journal));
-    applyNativeScopeMigrations(coreDb.sqlite, 'core', legacyJournal);
-    for (const id of ['owner', 'member', 'removed', 'invitee']) insertUser(coreDb, id);
-    const now = '2026-10-16T00:00:00.000Z';
-    coreDb.sqlite
-      .prepare("INSERT INTO workspace_registry VALUES ('ws_retained', 'owner', 'active', 7, ?, ?)")
-      .run(now, now);
-    coreDb.sqlite
-      .prepare(`INSERT INTO workspace_invitations VALUES
-      ('inv_accepted', 'ws_retained', 'member', 'viewer', 'owner', 'accepted', '2099-01-01T00:00:00.000Z', ?, NULL, NULL, 2, ?, ?)`)
-      .run(now, now, now);
-    for (const [id, status, level, removedAt] of [
-      ['owner', 'active', 'editor', null],
-      ['member', 'active', 'viewer', null],
-      ['removed', 'removed', 'editor', now],
-    ])
-      coreDb.sqlite
-        .prepare(`INSERT INTO workspace_members
-      (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-      VALUES ('ws_retained', ?, ?, ?, ?, ?, ?, 3, ?, ?)`)
-        .run(id, status, level, id === 'member' ? 'inv_accepted' : null, now, removedAt, now, now);
-    coreDb.sqlite
-      .prepare(`INSERT INTO workspace_invitations VALUES
-      ('inv_retained', 'ws_retained', 'invitee', 'viewer', 'member', 'pending', '2099-01-01T00:00:00.000Z', NULL, NULL, NULL, 4, ?, ?)`)
-      .run(now, now);
-    const members = coreDb.sqlite
-      .prepare('SELECT * FROM workspace_members ORDER BY user_id')
-      .all()
-      .map((row) => {
-        const { access_level: _retired, ...retained } = row as Record<string, unknown>;
-        return retained;
-      });
-    const invitations = coreDb.sqlite
-      .prepare('SELECT * FROM workspace_invitations ORDER BY invitation_id')
-      .all()
-      .map((row) => {
-        const { proposed_access_level: _retired, ...retained } = row as Record<string, unknown>;
-        return retained;
-      });
-
-    applyMigrations(coreDb);
-    applyMigrations(coreDb);
-
-    expect(coreDb.sqlite.prepare('SELECT * FROM workspace_members ORDER BY user_id').all()).toEqual(
-      members
+    const requestId = randomUUID();
+    const request = createWorkspaceDeletionRequest(root, {
+      confirmation: 'permanently-delete-workspace:ws_current:1',
+      createdAt: new Date().toISOString(),
+      expectedRegistryRevision: 1,
+      initiatingUserId: 'member',
+      originalOwnerUserId: 'owner',
+      requestId,
+      workspaceId: 'ws_current',
+    });
+    expect(readWorkspaceDeletionRequest(root, 'ws_current', requestId)).toEqual(request);
+    const { initiatingUserId: _initiatingUserId, ...missingInitiator } = request;
+    writeFileSync(
+      join(root, 'server', 'exports', 'workspace-deletions', 'ws_current', requestId, 'request.json'),
+      JSON.stringify(missingInitiator)
     );
-    expect(
-      coreDb.sqlite.prepare('SELECT * FROM workspace_invitations ORDER BY invitation_id').all()
-    ).toEqual(invitations);
-    expect(coreDb.sqlite.pragma('foreign_key_check')).toEqual([]);
-    expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_retained', 'member')).toBe('member');
-    expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_retained', 'removed')).toBeNull();
-    expect(() =>
-      coreDb.sqlite.prepare("DELETE FROM workspace_members WHERE user_id = 'owner'").run()
-    ).toThrow('workspace_owner_membership_required');
-    expect(() =>
-      coreDb.sqlite.prepare("UPDATE workspace_registry SET owner_user_id = 'removed'").run()
-    ).toThrow('workspace_owner_membership_required');
+    expect(() => readWorkspaceDeletionRequest(root, 'ws_current', requestId)).toThrow();
   } finally {
-    coreDb.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

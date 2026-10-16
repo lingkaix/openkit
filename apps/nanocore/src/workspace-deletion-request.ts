@@ -45,8 +45,8 @@ export const WorkspaceDeletionRequestRecordSchema = z
     workspaceId: WorkspaceIdSchema,
     requestId: RequestIdSchema,
     originalOwnerUserId: z.string().min(1),
-    // Absent retained records keep their original-owner retry authority without guessing an initiator.
-    initiatingUserId: z.string().min(1).optional(),
+    // The actual initiator is required; recovery ownership never supplies it.
+    initiatingUserId: z.string().min(1),
     expectedRegistryRevision: z.number().int().positive(),
     confirmation: z.string().min(1),
     createdAt: TimestampSchema,

@@ -126,6 +126,7 @@ function deletion(f: ReturnType<typeof fixture>, requestId = REQUEST) {
     workspaceId: 'ws_demo',
     requestId,
     originalOwnerUserId: 'user_local',
+    initiatingUserId: 'user_local',
     confirmation: 'permanently-delete-workspace:ws_demo:1',
     expectedRegistryRevision: 1,
     createdAt: CREATED,

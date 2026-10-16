@@ -1324,6 +1324,7 @@ describe('central Workspace operation authorizer', () => {
     const record = createWorkspaceDeletionRequest(fixture.dataRoot, {
       workspaceId: fixture.workspace.id,
       originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
       expectedRegistryRevision: 2,
       confirmation: `permanently-delete-workspace:${fixture.workspace.id}:2`,
       requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
@@ -1349,6 +1350,7 @@ describe('central Workspace operation authorizer', () => {
     const record = createWorkspaceDeletionRequest(fixture.dataRoot, {
       workspaceId: fixture.workspace.id,
       originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
       expectedRegistryRevision: 2,
       confirmation: `permanently-delete-workspace:${fixture.workspace.id}:2`,
       requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
