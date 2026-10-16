@@ -1609,25 +1609,38 @@ describe('Usage and audit settings (board 17)', () => {
               category: 'command',
               action: 'turn.interrupt',
               summary: 'The Stop request was accepted.',
-              actor: { kind: 'user', id: 'usr_019a0000-0000-7000-8000-000000000015', displayName: POISON_SECRET },
+              actor: {
+                kind: 'user',
+                id: 'usr_019a0000-0000-7000-8000-000000000015',
+                displayName: POISON_SECRET,
+              },
               triggerActor: { kind: 'user', id: 'usr_019a0000-0000-7000-8000-000000000016' },
               threadId,
               turnId,
               requestId,
             },
-            { ...WORKSPACE_AUDIT_EVENTS.auditEvents[0], id: 'aud_019a0000-0000-7000-8000-000000000018', threadId: null },
+            {
+              ...WORKSPACE_AUDIT_EVENTS.auditEvents[0],
+              id: 'aud_019a0000-0000-7000-8000-000000000018',
+              threadId: null,
+            },
           ],
         }),
       },
     });
     renderApp('/workspace/usage', client);
-    expect(await screen.findByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')).toBeVisible();
+    expect(
+      await screen.findByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
+    ).toBeVisible();
     expect(screen.getByText('Actor not recorded')).toBeVisible();
-    expect(screen.getByRole('link', { name: `Open Thread ${threadId} in Workspace ${WORKSPACE.id}` }))
-      .toHaveAttribute('href', `/chat/${WORKSPACE.id}/${threadId}`);
+    expect(
+      screen.getByRole('link', { name: `Open Thread ${threadId} in Workspace ${WORKSPACE.id}` })
+    ).toHaveAttribute('href', `/chat/${WORKSPACE.id}/${threadId}`);
     expect(screen.getByText(`Turn: ${turnId}`)).toBeVisible();
     expect(screen.getByText(`Request: ${requestId}`)).toBeVisible();
-    expect(screen.getByText('Stop request accepted. Runtime cleanup is not confirmed by this event.')).toBeVisible();
+    expect(
+      screen.getByText('Stop request accepted. Runtime cleanup is not confirmed by this event.')
+    ).toBeVisible();
     expect(screen.getAllByRole('link', { name: /^Open Thread / })).toHaveLength(1);
     expect(document.body.textContent).not.toContain('usr_019a0000-0000-7000-8000-000000000016');
     expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
