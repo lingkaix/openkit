@@ -183,6 +183,7 @@ This table names prefixes for independent generation paths. Workspace, Thread, a
 | Turn | `tu` |
 | AgentSession | `as` |
 | AutomationIdentity | `auto` |
+| Recurring expired range | `range` |
 | AuthSession | `auth` |
 | Authentication account | `acct` |
 | Authentication verification record | `verif` |
@@ -217,6 +218,7 @@ These kinds retain their owning derivations and use the same text form as any in
 
 | Entity kind | Prefix | Fixed namespace UUID |
 | --- | --- | --- |
+| Recurring occurrence | `occ` | `fc01b827-9017-53dc-b41b-387a2110d905` |
 | Workspace | `ws` | `41710f31-94f8-5e51-9589-1744ce75680d` |
 | Thread | `th` | `1ea1147f-0d1a-5ae4-ba03-7ba2cd6a0eea` |
 | Turn | `tu` | `946f39c9-520d-5df2-985f-afaf05790c9d` |

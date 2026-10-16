@@ -12,6 +12,8 @@ export const ENTITY_KINDS = [
   'kr',
   'as',
   'auto',
+  'occ',
+  'range',
   'auth',
   'acct',
   'verif',
@@ -48,6 +50,7 @@ export type EntityId<Kind extends EntityKind = EntityKind> = `${Kind}_${string}`
 
 // Fixed UUIDv5(URL namespace, UTF-8 "openkit:entity-kind:<prefix>") from Core Protocol.
 const DERIVED_NAMESPACES = {
+  occ: 'fc01b827-9017-53dc-b41b-387a2110d905',
   tok: 'e87fb49e-00c1-53f3-adbd-a5cf0de72bcc',
   ws: '41710f31-94f8-5e51-9589-1744ce75680d',
   th: '1ea1147f-0d1a-5ae4-ba03-7ba2cd6a0eea',

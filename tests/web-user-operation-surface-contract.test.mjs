@@ -8,24 +8,20 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 241;
+const EXPECTED_CATALOG_SIZE = 247;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 181;
+const EXPECTED_INCLUDED_SIZE = 187;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
-  ['automation.create', 'R092'],
-  ['automation.delete', 'R092'],
   ['workspace.delete', 'R049'],
   ['workspace.archive-download', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
   ['workspace.archive-import-dry-run', 'R008'],
   ['workspace.archive-import', 'R008'],
-  ['automation.list', 'R092'],
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
-  ['automation.update', 'R092'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -86,10 +82,11 @@ const WEB_OPERATION_GROUPS = {
     'scheduler.cancel': { disposition: 'live', surface: 'Recovery' },
   },
   automation: {
-    'automation.create': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.delete': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.list': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.update': { disposition: 'roadmap', roadmap: 'R092' },
+    'automation.create': { disposition: 'live', surface: 'Automations' },
+    'automation.delete': { disposition: 'live', surface: 'Automations' },
+    'automation.list': { disposition: 'live', surface: 'Automations' },
+    'automation.history': { disposition: 'live', surface: 'Automations' },
+    'automation.update': { disposition: 'live', surface: 'Automations' },
   },
   Catalog: {
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },
@@ -228,6 +225,13 @@ const WEB_OPERATION_GROUPS = {
     'workspace.deleted-recover': { disposition: 'roadmap', roadmap: 'R049' },
     'workspace.invitation-revoke': { disposition: 'live', surface: 'Account' },
     'workspace.ownership-transfer': { disposition: 'live', surface: 'Account' },
+  },
+  Channels: {
+    'channel.discord.status': { disposition: 'live', surface: 'Channels' },
+    'channel.discord.pair': { disposition: 'live', surface: 'Channels' },
+    'channel.discord.revoke': { disposition: 'live', surface: 'Channels' },
+    'notification.list': { disposition: 'live', surface: 'Channels' },
+    'notification.send': { disposition: 'workflow', surface: 'Channels' },
   },
   'My admin access': {
     'token.my-admin-list': { disposition: 'live', surface: 'My admin access' },

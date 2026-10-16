@@ -1,6 +1,8 @@
 import { AutomationIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  AutomationHistoryRequestSchema,
+  AutomationHistoryResponseSchema,
   AutomationRecordSchema,
   CreateAutomationRequestSchema,
   ListAutomationsResponseSchema,
@@ -18,10 +20,10 @@ const child = {
   credentials,
   scope: { kind: 'opaque-child-workspace', childOwner: 'automation', childField: 'automationId' },
   target: { kind: 'automation' },
-  policyOperation: 'workspace.write',
+  policyOperation: 'workspace.configure',
   mutating: true,
 } as const;
-/** Definition-derived public projection of the existing user-private automation store. */
+/** Definition-derived public projection of durable Workspace schedules. */
 export const AUTOMATION_OPERATION_DEFINITIONS = {
   'automation.list': {
     binding: 'json',
@@ -36,6 +38,17 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     policyOperation: 'workspace.read',
     mutating: false,
   },
+  'automation.history': {
+    ...child,
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Read bounded occurrence history and exact expired ranges.',
+    inputSchema: AutomationHistoryRequestSchema.strict(),
+    outputSchema: AutomationHistoryResponseSchema,
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
   'automation.create': {
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -45,7 +58,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
-    policyOperation: 'workspace.write',
+    policyOperation: 'workspace.configure',
     mutating: true,
     successStatus: 201,
   },
@@ -55,7 +68,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     successStatus: 200,
     ...child,
     description: 'Update one automation definition.',
-    inputSchema: UpdateAutomationRequestSchema.extend({
+    inputSchema: UpdateAutomationRequestSchema.safeExtend({
       automationId: AutomationIdSchema,
     }).strict(),
     outputSchema: AutomationRecordSchema,

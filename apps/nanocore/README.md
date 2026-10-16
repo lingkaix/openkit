@@ -556,7 +556,7 @@ All NanoCore Vitest unit and e2e configurations use the shared [temporary-direct
 
 ## Discord And Notification Delivery
 
-`src/channel-services.ts` composes the Discord adapter and shared notification lifecycle with the existing Pending Request owners. The private signed entry is `/api/channels/discord/interactions`; account settings and delivery observations use the definition-driven channel family. Startup reads optional `channels.discord` configuration. Pairing retains no credential privilege, sends carry App links only, and grants return to the App. Core migration `0002_channel_notifications` adds deployment-local transport records without changing existing records. Focused checks cover `src/channels`, `src/notifications`, and the channel-to-Pending Request seam. No real vendor operation is part of deterministic tests.
+`src/channel-services.ts` composes the Discord adapter and shared notification lifecycle with the existing Pending Request owners. The private signed entry is `/api/channels/discord/interactions`; account settings and delivery observations use the definition-driven channel family. Startup reads optional `channels.discord` configuration. Pairing retains no credential privilege, sends carry App links only, and grants return to the App. Core migration `0003_channel_notifications` adds deployment-local transport records without changing existing records. Focused checks cover `src/channels`, `src/notifications`, and the channel-to-Pending Request seam. No real vendor operation is part of deterministic tests.
 
 ## Identifier Boundaries
 

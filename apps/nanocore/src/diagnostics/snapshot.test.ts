@@ -59,7 +59,8 @@ describe('createDiagnosticsSnapshot', () => {
           applied: [
             'core_0000_setup',
             'core_0001_concurrent_turn_capacity',
-            'core_0002_channel_notifications',
+            'core_0002_durable_recurring_schedules',
+            'core_0003_channel_notifications',
           ],
         },
         mode: 'local',

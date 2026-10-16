@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { AutomationStore } from '../lib/automation-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
@@ -21,21 +22,26 @@ import {
 import * as schedulerRecords from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
-import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
+import {
+  isCurrentAgentSessionStatus,
+  readPublishedTurnFileRecords,
+} from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createApp } from '../test-support/app.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import * as attemptRecords from './execution-attempt-records.js';
 import {
@@ -44,8 +50,11 @@ import {
 } from './nanohost-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn as executeProductTurn } from './product-turn-start.js';
+import { startRecurringScheduleService } from './recurring-schedule-service.js';
+import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { getSchedulerPreparationClaims, runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service.js';
+import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -363,7 +372,7 @@ async function admitTestProductTurn(input: Parameters<typeof executeProductTurn>
         (
           input.coreDb.sqlite
             .prepare(
-              'SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?'
+              `SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?`
             )
             .get(turn.id) as { id: string }
         ).id
@@ -487,6 +496,459 @@ describe('route B durable intent before effects', () => {
 });
 
 describe('scheduler dispatch loop', () => {
+  it('dispatches one monthly UTC occurrence in its existing Thread through the ordinary modeled Worker port', async () => {
+    const coreDb = createMigratedCoreDb();
+    const root = coreDb.dataRoot;
+    const store = createDemoStore({ dataRoot: root });
+    const manifest = agentManifest();
+    const executor = new RecordingTurnExecutor(coreDb);
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
+    const instant = '2026-10-28T09:30:00.000Z';
+    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      name: 'Monthly instruction',
+      prompt: 'Exact monthly input',
+      monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 },
+    });
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const service = startRecurringScheduleService({
+      schedules,
+      store,
+      prepare: async () => ({
+        kind: 'ready',
+        payload: {
+          backendId: executor.executionBackend.id,
+          requestedAgentId: manifest.id,
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+          workspaceRoots: [],
+          workspaceCwd: null,
+        },
+      }),
+      now: () => instant,
+      setInterval: () => 'timer',
+      clearInterval: () => {},
+    });
+    try {
+      await service.runOnce();
+      await service.runOnce();
+      const occurrences = schedules
+        .listHistory(schedule.id)
+        .items.filter((entry) => entry.kind === 'occurrence');
+      expect(occurrences).toHaveLength(1);
+      const accepted = occurrences[0]!.record;
+      expect(accepted).toMatchObject({
+        state: 'admission-accepted',
+        scheduledAt: instant,
+        attempts: [{ number: 1 }],
+        snapshot: { threadId: thread.id, monthlyUtc: schedule.monthlyUtc },
+      });
+      expect(executor.prepareCalls).toEqual([]);
+      expect(executor.calls).toEqual([]);
+      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+      expect(entry).toMatchObject({
+        threadId: thread.id,
+        turnId: accepted.turnId,
+        turnInput: 'Exact monthly input',
+      });
+      const dispatched = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+      });
+      expect(
+        dispatched.startedTurns.map(({ dispatch, handle }) => ({
+          queueEntryId: dispatch.entry.queueEntryId,
+          threadId: handle.turn.threadId,
+          turnId: handle.turn.id,
+        }))
+      ).toEqual([{ queueEntryId: entry.queueEntryId, threadId: thread.id, turnId: entry.turnId }]);
+      expect(executor.prepareCalls).toEqual([{ threadId: thread.id, turnId: accepted.turnId }]);
+      expect(executor.calls).toEqual([
+        expect.objectContaining({ input: 'Exact monthly input', turnId: accepted.turnId }),
+      ]);
+      expect(store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toHaveLength(1);
+      expect(store.getTurnById(entry.turnId).threadId).toBe(thread.id);
+      expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+    } finally {
+      service.stop();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'dispatch-then-cancel',
+    'cancel-only',
+  ] as const)('refuses a same-Store cached recurring Turn contradiction after failed persistence: %s', async (consumer) => {
+    const coreDb = createMigratedCoreDb();
+    const root = coreDb.dataRoot;
+    const store = createDemoStore({ dataRoot: root });
+    const manifest = agentManifest();
+    const executor = new RecordingTurnExecutor(coreDb);
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
+    const instant = '2026-10-16T00:00:00.000Z';
+    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      name: 'Inspect cache disagreement',
+      prompt: 'Exact recurring input',
+      intervalSeconds: 5,
+    });
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const service = startRecurringScheduleService({
+      schedules,
+      store,
+      prepare: async () => ({
+        kind: 'ready',
+        payload: {
+          backendId: executor.executionBackend.id,
+          requestedAgentId: manifest.id,
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+          workspaceRoots: [],
+          workspaceCwd: null,
+        },
+      }),
+      now: () => instant,
+      setInterval: () => 'timer',
+      clearInterval: () => {},
+    });
+    try {
+      await service.runOnce();
+      service.stop();
+      const accepted = schedules
+        .listHistory(schedule.id)
+        .items.find((entry) => entry.kind === 'occurrence')!.record;
+      expect(accepted.state).toBe('admission-accepted');
+      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+      // Assemble HTTP before the fault: no later ordinary Workspace write may publish the stale cache.
+      const app = createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
+      const published = readPublishedTurnFileRecords(
+        root,
+        DEMO_WORKSPACE_ID,
+        thread.id,
+        entry.turnId
+      );
+      expect(published?.turn).toMatchObject({ agentId: manifest.id, status: 'pending' });
+      const turnRoot = join(
+        root,
+        'workspaces',
+        DEMO_WORKSPACE_ID,
+        'threads',
+        thread.id,
+        'turns',
+        entry.turnId
+      );
+      const originalBytes = ['turn.json', 'items.jsonl'].map((file) =>
+        readFileSync(join(turnRoot, file))
+      );
+      const fault = vi
+        .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
+        .mockImplementationOnce(() => {
+          throw new Error('Turn persistence interrupted');
+        });
+      try {
+        expect(() => store.updateTurn(entry.turnId, { agentId: 'other-worker' })).toThrow(
+          'Turn persistence interrupted'
+        );
+      } finally {
+        fault.mockRestore();
+      }
+      expect(store.getTurnById(entry.turnId)).toMatchObject({
+        agentId: 'other-worker',
+        status: 'pending',
+      });
+      expect(
+        readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
+      ).toEqual(published);
+      const update = vi.spyOn(store, 'updateTurn');
+      if (consumer === 'dispatch-then-cancel') {
+        expect(
+          await runSchedulerDispatchLoop({
+            coreDb,
+            store,
+            turnExecutor: executor,
+            executionBackend: executor.executionBackend,
+            agentManifests: [manifest],
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: localProviderRegistry(),
+          })
+        ).toMatchObject({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'recovery-required' },
+        });
+        expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+      }
+      const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, queueEntryId: entry.queueEntryId }),
+      });
+      expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+      expect(update).not.toHaveBeenCalled();
+      expect(executor.prepareCalls).toEqual([]);
+      expect(executor.calls).toEqual([]);
+      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
+      expect(
+        readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
+      ).toEqual(published);
+      expect(
+        ['turn.json', 'items.jsonl'].map((file) => readFileSync(join(turnRoot, file)))
+      ).toEqual(originalBytes);
+      expect(
+        schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+      ).toBe('cancelled');
+      expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+      // Only the series waiting slot was released. The original pending Turn still holds its Thread.
+      expect(store.getTurnById(entry.turnId)).toMatchObject({
+        agentId: 'other-worker',
+        status: 'pending',
+      });
+    } finally {
+      service.stop();
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'before-publication',
+    'after-publication',
+    'cached-only',
+    'contradictory',
+  ] as const)('inspects initial recurring publication without repairing it after restart: %s', async (fault) => {
+    let coreDb = createMigratedCoreDb();
+    const root = coreDb.dataRoot;
+    const store = createDemoStore({ dataRoot: root });
+    const manifest = agentManifest();
+    const initialExecutor = new RecordingTurnExecutor(coreDb);
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
+    const mutationAdmission = new WorkspaceMutationAdmission();
+    let instant = '2026-10-16T00:00:00.000Z';
+    const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      name: 'Inspect',
+      prompt: 'Exact recurring input',
+      intervalSeconds: 5,
+    });
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const originalCreate = store.createTurn.bind(store);
+    const initialCreate = vi.spyOn(store, 'createTurn').mockImplementationOnce((...args) => {
+      if (fault === 'before-publication') throw new Error('Interrupted initial publication');
+      const turn = originalCreate(...args);
+      const path = join(
+        root,
+        'workspaces',
+        DEMO_WORKSPACE_ID,
+        'threads',
+        thread.id,
+        'turns',
+        turn.id
+      );
+      if (fault === 'cached-only') rmSync(path, { recursive: true, force: true });
+      if (fault === 'contradictory') {
+        const metadata = JSON.parse(readFileSync(join(path, 'turn.json'), 'utf8'));
+        writeFileSync(
+          join(path, 'turn.json'),
+          JSON.stringify({ ...metadata, agentId: 'other-worker' })
+        );
+      }
+      throw new Error('Interrupted initial publication');
+    });
+    const prepare = async () => ({
+      kind: 'ready' as const,
+      payload: {
+        backendId: initialExecutor.executionBackend.id,
+        requestedAgentId: manifest.id,
+        profileRef: 'default',
+        modelId: 'openai/gpt-5.2',
+        workspaceRoots: [],
+        workspaceCwd: null,
+      },
+    });
+    const service = startRecurringScheduleService({
+      schedules,
+      store,
+      prepare,
+      now: () => instant,
+      setInterval: () => 'timer',
+      clearInterval: () => {},
+    });
+    try {
+      await service.runOnce();
+      expect(initialCreate).toHaveBeenCalledTimes(1);
+      await service.runOnce();
+      expect(initialCreate).toHaveBeenCalledTimes(1);
+      const accepted = schedules
+        .listHistory(schedule.id)
+        .items.find((entry) => entry.kind === 'occurrence')!.record;
+      expect(accepted).toMatchObject({ state: 'admission-accepted', attempts: [{ number: 1 }] });
+      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+      const expectedIssue =
+        fault === 'after-publication'
+          ? null
+          : fault === 'contradictory'
+            ? 'turn_contradictory'
+            : 'turn_missing';
+      // A cache entry created before a failed file write is not durable publication proof.
+      expect(recurringTurnPublicationIssue(store, entry)).toBe(expectedIssue);
+      service.stop();
+      initialCreate.mockRestore();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(root);
+      const reopened = createDemoStore({ dataRoot: root });
+      const executor = new RecordingTurnExecutor(coreDb);
+      const restored = new AutomationStore(coreDb, mutationAdmission, () => instant);
+      const create = vi.spyOn(reopened, 'createTurn');
+      const update = vi.spyOn(reopened, 'updateTurn');
+      const projectRecoveredTurn = vi.fn();
+      await runSchedulerRestartRecovery(coreDb, {
+        store: reopened,
+        executionBackend: executor.executionBackend,
+        projectRecoveredTurn,
+      });
+      expect(projectRecoveredTurn).not.toHaveBeenCalled();
+      expect(restored.getOccurrence(accepted.id)).toEqual(accepted);
+      const dispatch = {
+        coreDb,
+        store: reopened,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+      };
+      if (expectedIssue) {
+        expect(await runSchedulerDispatchLoop(dispatch)).toMatchObject({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'recovery-required' },
+        });
+        expect(create).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        expect(executor.calls).toEqual([]);
+        expect(executor.prepareCalls).toEqual([]);
+        instant = '2026-10-16T00:00:05.000Z';
+        const held = restored.collectScanCandidates(instant)[0]!;
+        expect(restored.commitAttempt(held.id, 2, await prepare())).toMatchObject({
+          state: 'pending',
+          attempts: [{ code: 'queue_backlog_full' }],
+        });
+        const app = createApp({
+          coreDb,
+          dataRoot: root,
+          store: reopened,
+          automationStore: restored,
+        });
+        const invoke = (operation: string, input: unknown) =>
+          app.request(`/api/app/operations/${operation}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(input),
+          });
+        const history = await invoke('automation.history', { automationId: schedule.id });
+        expect(history.status).toBe(200);
+        expect((await history.json()).items).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'occurrence',
+              record: expect.objectContaining({
+                id: accepted.id,
+                state: 'admission-accepted',
+                turnId: null,
+                publicationIssue: expectedIssue,
+                schedulerStatus: 'queued',
+              }),
+            }),
+          ])
+        );
+        const cancelled = await invoke('scheduler.cancel', {
+          workspaceId: DEMO_WORKSPACE_ID,
+          queueEntryId: entry.queueEntryId,
+        });
+        expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+        // Use an authorized paused target edit after cancellation; contradictory old history cannot authorize a repair.
+        if (fault === 'contradictory') {
+          const nextThread = reopened.createThread(DEMO_WORKSPACE_ID, 'Next target');
+          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+            expectedRevision: 2,
+            status: 'paused',
+          });
+          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+            expectedRevision: 3,
+            threadId: nextThread.id,
+          });
+          instant = '2026-10-16T00:00:10.000Z';
+          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+            expectedRevision: 4,
+            status: 'active',
+            scheduledAt: instant,
+          });
+        }
+        create.mockRestore();
+        update.mockRestore();
+        const later = startRecurringScheduleService({
+          schedules: restored,
+          store: reopened,
+          prepare,
+          now: () => instant,
+          setInterval: () => 'later',
+          clearInterval: () => {},
+        });
+        await later.runOnce();
+        later.stop();
+        expect(
+          restored
+            .listHistory(schedule.id)
+            .items.some(
+              ({ record }) =>
+                record.scheduledAt === instant &&
+                'state' in record &&
+                record.state === 'admission-accepted'
+            )
+        ).toBe(true);
+        await runSchedulerDispatchLoop(dispatch);
+        expect(executor.calls).toHaveLength(1);
+        expect(executor.calls[0]?.input).toBe('Exact recurring input');
+      } else {
+        await runSchedulerDispatchLoop(dispatch);
+        expect(executor.calls).toHaveLength(1);
+        expect(executor.calls[0]).toMatchObject({
+          input: 'Exact recurring input',
+          turnId: accepted.turnId,
+        });
+        expect(create).not.toHaveBeenCalled();
+      }
+    } finally {
+      service.stop();
+      vi.restoreAllMocks();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(
     [true, false].flatMap((separateHandle) =>
       (
@@ -2543,7 +3005,10 @@ describe('scheduler dispatch loop', () => {
       expect(result.startedTurns[0]?.dispatch.entry.queueEntryId).toBe('queue_later_dispatchable');
       expect(result.startedTurns[0]?.dispatch.entry.threadId).toBe(laterThread.id);
       expect(turnExecutor.prepareCalls).toEqual([
-        { threadId: laterThread.id, turnId: testEntityId('tu', 'turn_later_dispatchable') },
+        {
+          threadId: laterThread.id,
+          turnId: testEntityId('tu', 'turn_later_dispatchable'),
+        },
       ]);
       expect(turnExecutor.calls).toEqual([
         expect.objectContaining({
@@ -2719,7 +3184,9 @@ describe('scheduler dispatch loop', () => {
         executionAttempts(coreDb).find(
           (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32'
         )
-      ).toMatchObject({ agent_session_id: testEntityId('as', 'as_live_continuity') });
+      ).toMatchObject({
+        agent_session_id: testEntityId('as', 'as_live_continuity'),
+      });
       expect(
         store.getAgentSession(testEntityId('as', 'as_live_continuity')).sessionCompatibilityKey
       ).toBe(sessionCompatibilityKey);
@@ -2814,7 +3281,7 @@ describe('scheduler dispatch loop', () => {
         turnExecutor,
       });
       const firstLease = coreDb.sqlite
-        .prepare('SELECT attempt_id AS leaseId FROM scheduler_execution_attempts WHERE turn_id = ?')
+        .prepare(`SELECT attempt_id AS leaseId FROM scheduler_execution_attempts WHERE turn_id = ?`)
         .get(first.turn.id) as { leaseId: string };
       await closeOwnedExecutionAttempt(coreDb, store, {
         attemptId: firstLease.leaseId,
@@ -3104,7 +3571,7 @@ describe('scheduler dispatch loop', () => {
         identity: {
           agentSessionId: context.agentSessionId,
           backendKind: 'openshell',
-          backendSessionId: 'openkit-as_cleanup_pending',
+          backendSessionId: `openkit-${testEntityId('as', 'as_cleanup_pending')}`,
           deploymentId: target.deploymentId,
           packageSnapshotId: lease.inputRef,
           runtimeTargetId: target.targetId,
