@@ -7,11 +7,7 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
-import {
-  CONVERSATION_FILE_MEDIA_TYPE,
-  ConversationFileBody,
-  MAX_CONVERSATION_FILE_METADATA_BYTES,
-} from './conversation-file-body.js';
+import { CONVERSATION_FILE_MEDIA_TYPE, ConversationFileBody } from './conversation-file-body.js';
 import type { FsStore } from './lib/store.js';
 import type { createConversationService } from './mode-entry-routes.js';
 import { OperationError, projectOperationError } from './operation-error.js';
@@ -126,6 +122,7 @@ export function registerConversationFileRoutes(
         metadata,
         context.get('actor'),
         {
+          fileAdmission: dependencies.fileAdmission,
           prepare: async () => {
             try {
               assertAuthorized();
@@ -137,10 +134,8 @@ export function registerConversationFileRoutes(
                 stagingBytes: BigInt(totalBytes),
                 extractionBytes: 0n,
                 derivativeBytes: 0n,
-                // Bound new Turn metadata, user Item, Thread preview, their temporary publication overlap, and per-input directories, including empty originals.
-                publicationBytes:
-                  4n * BigInt(MAX_CONVERSATION_FILE_METADATA_BYTES) +
-                  BigInt(metadata.fileInputs!.length) * 65_536n,
+                // Directory forecast includes empty originals. The synchronous canonical writer separately reserves exact serialized metadata, including retained additive fields.
+                publicationBytes: BigInt(metadata.fileInputs!.length) * 65_536n,
               });
               const submission = new FileByteAdmission();
               for (const input of metadata.fileInputs!) {

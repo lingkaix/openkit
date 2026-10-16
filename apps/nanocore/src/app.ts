@@ -1223,6 +1223,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
     readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
     readonly filePayloadPaths?: readonly string[];
+    /** Shared runtime disk owner; never persisted or projected. */
+    readonly fileWriteAdmission?: FileStorageAdmission;
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
@@ -1245,7 +1247,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
       ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
       ...(input.fileInputs?.length
-        ? { fileInputs: input.fileInputs, filePayloadPaths: input.filePayloadPaths }
+        ? {
+            fileInputs: input.fileInputs,
+            filePayloadPaths: input.filePayloadPaths,
+            fileWriteAdmission: input.fileWriteAdmission,
+          }
         : {}),
       ...(input.requestActor ? { requestActor: input.requestActor } : {}),
       snapshot,

@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-
 import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { computeReadiness } from '../agents/readiness.js';
@@ -20,6 +19,7 @@ import {
   SchedulerAdmissionTransitionError,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
@@ -64,6 +64,8 @@ interface StartProductTurnInput
   readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
   /** Private sources consumed by the first canonical Turn publication. */
   readonly filePayloadPaths?: readonly string[];
+  /** Shared runtime disk owner; never persisted or projected. */
+  readonly fileWriteAdmission?: FileStorageAdmission;
   /**
    * Optional callback once this admission's Turn and resolved setup are durable, carrying its nullable AgentSession while queued acceptance remains independent of execution.
    *
@@ -260,7 +262,11 @@ export async function startProductTurn(input: StartProductTurnInput) {
         agentId: requestedAgentId,
         executorKind: 'worker',
         ...(input.fileInputs?.length
-          ? { fileInputs: input.fileInputs, filePayloadPaths: input.filePayloadPaths }
+          ? {
+              fileInputs: input.fileInputs,
+              filePayloadPaths: input.filePayloadPaths,
+              fileWriteAdmission: input.fileWriteAdmission,
+            }
           : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       }

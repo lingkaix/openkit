@@ -153,6 +153,10 @@ import {
   type SchedulerWorkerStorageChoice,
   schedulerAdmissionInputHash,
 } from './scheduler-records.js';
+import {
+  FileAdmissionError,
+  type FileStorageAdmission,
+} from './storage/artifacts/file-admission.js';
 import { readArtifactFileText } from './storage/artifacts/file-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
@@ -2338,6 +2342,7 @@ export function createConversationService({
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
     readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
     readonly filePayloadPaths?: readonly string[];
+    readonly fileWriteAdmission?: FileStorageAdmission;
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
@@ -2858,7 +2863,10 @@ export function createConversationService({
       threadId: string;
     },
     actor: Actor,
-    files?: { readonly prepare: () => Promise<readonly string[]> }
+    files?: {
+      readonly fileAdmission: FileStorageAdmission;
+      readonly prepare: () => Promise<readonly string[]>;
+    }
   ): Promise<{ body: z.infer<typeof SubmitConversationResponseSchema>; status: 200 | 202 }> {
     const { workspaceId, threadId } = chatInput;
     try {
@@ -3003,7 +3011,11 @@ export function createConversationService({
       // Capture all originals before any branch can create work or invoke a model.
       const filePayloadPaths = chatInput.fileInputs?.length ? await files!.prepare() : undefined;
       const fileOptions = filePayloadPaths
-        ? { fileInputs: chatInput.fileInputs, filePayloadPaths }
+        ? {
+            fileInputs: chatInput.fileInputs,
+            filePayloadPaths,
+            fileWriteAdmission: files!.fileAdmission,
+          }
         : {};
       if (filePayloadPaths) {
         const currentTarget = conversationTargetCatalog(
@@ -4333,6 +4345,9 @@ export function createConversationService({
           error.status
         );
       }
+
+      if (chatInput.fileInputs?.length && error instanceof FileAdmissionError)
+        throw new TurnStartValidationError(error.code, error.message, 507);
 
       console.error(
         'chat_mode_failed',

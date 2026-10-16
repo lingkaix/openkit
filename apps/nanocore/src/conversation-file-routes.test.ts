@@ -18,6 +18,7 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -36,7 +37,7 @@ afterEach(() => {
 });
 
 /** Uses the real public operation, local authority, command receipts, and canonical Turn tree. */
-function fixture() {
+function fixture(availableBytes?: () => bigint) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'conversation-files-'));
   cleanups.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -49,7 +50,14 @@ function fixture() {
   const thread = store.createThread(workspaceId, 'File input', undefined, 'conversation', {
     visibility: 'workspace',
   });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = createApp({
+    coreDb,
+    dataRoot,
+    store,
+    ...(availableBytes
+      ? { fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n, availableBytes) }
+      : {}),
+  });
   return { dataRoot, coreDb, store, workspaceId, thread, app };
 }
 
@@ -72,6 +80,49 @@ function frame(input: unknown, bytes: readonly Uint8Array[]): Blob {
 }
 
 describe('Turn-owned conversation originals', () => {
+  it('refuses a retained Thread rewrite that exceeds shared publication capacity before Assistant execution', async () => {
+    const state = fixture(() => 7_000_000n);
+    const threadPath = join(
+      state.dataRoot,
+      'workspaces',
+      state.workspaceId,
+      'threads',
+      state.thread.id,
+      'thread.json'
+    );
+    const retained = JSON.parse(readFileSync(threadPath, 'utf8'));
+    retained.futureMetadata = 'x'.repeat(8_000_000);
+    writeFileSync(threadPath, JSON.stringify(retained));
+    const before = readFileSync(threadPath);
+    const bytes = new Uint8Array([1]);
+    const input = {
+      workspaceId: state.workspaceId,
+      threadId: state.thread.id,
+      requestId: randomUUID(),
+      input: 'Explain why the sky appears blue.',
+      targetRef: 'internal-role:assistant',
+      artifactRefs: [],
+      fileInputs: [metadata(bytes)],
+    };
+    const run = vi
+      .spyOn(assistantCommandOwners, 'runAssistantCommand')
+      .mockResolvedValue({ id: 'answer', content: 'Must not execute.', providerId: 'fixture' });
+    const response = await state.app.request('/api/app/operations/conversation.submit', {
+      method: 'POST',
+      headers: {
+        'content-type': CONVERSATION_FILE_MEDIA_TYPE,
+        'x-openkit-request-id': input.requestId,
+      },
+      body: frame(input, [bytes]),
+    });
+    expect(response.status, await response.clone().text()).toBe(507);
+    expect(readFileSync(threadPath)).toEqual(before);
+    expect(run).not.toHaveBeenCalled();
+    expect(
+      state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
+    ).toBe(false);
+  });
+
   it('exposes no input inventory after a proved unpublished Turn failure and permits the exact retry', async () => {
     const state = fixture();
     const before = state.store.getThread(state.workspaceId, state.thread.id);

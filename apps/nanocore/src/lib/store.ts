@@ -60,8 +60,10 @@ import { ensureTurnFeedback } from '../runtime/feedback.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js';
+import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import {
   getCommandRequestRecord,
   getCommandRequestRecordFromDb,
@@ -560,6 +562,8 @@ interface CreateTurnOptions {
   fileInputs?: Turn['fileInputs'];
   /** Private same-filesystem sources; never serialized into protocol records. */
   filePayloadPaths?: readonly string[];
+  /** Shared runtime disk owner for exact serialized writes of a fresh file Turn. */
+  fileWriteAdmission?: FileStorageAdmission;
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
@@ -2753,12 +2757,18 @@ export class FsStore {
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
     try {
-      this.persist(
-        workspaceId,
-        false,
-        new Map(),
-        options.filePayloadPaths ? new Map([[turn.id, options.filePayloadPaths]]) : undefined
-      );
+      const publish = () =>
+        this.persist(
+          workspaceId,
+          false,
+          new Map(),
+          options.filePayloadPaths ? new Map([[turn.id, options.filePayloadPaths]]) : undefined
+        );
+      if (options.fileInputs?.length) {
+        if (!options.fileWriteAdmission)
+          throw new Error('File Turn publication admission is unavailable.');
+        withCanonicalFileWriteAdmission(options.fileWriteAdmission, publish);
+      } else publish();
     } catch (error) {
       if (options.fileInputs?.length && this.dataRoot) {
         let unpublished = false;
