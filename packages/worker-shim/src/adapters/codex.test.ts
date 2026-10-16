@@ -1242,11 +1242,11 @@ describe('Codex App Server adapter', () => {
     );
     sessions.push(session);
     const lineage = {
-      agentSessionId: 'as_codex',
+      agentSessionId: 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
       packageSnapshotId: 'pkg_codex',
-      threadId: 'th_codex',
-      turnId: 'turn_codex',
-      workspaceId: 'ws_codex',
+      threadId: 'th_00000000-0000-73d3-bcd1-416c0245cba5',
+      turnId: 'tu_00000000-0000-7e9f-8e6f-02b73d71a9bb',
+      workspaceId: 'ws_00000000-0000-7276-a6bd-b7156d05fdfd',
     };
     const packagePath = join(roots.control, 'warning-package.json');
     await writeFile(
