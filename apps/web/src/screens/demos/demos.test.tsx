@@ -53,9 +53,9 @@ describe('WP-8 Tier-B surface catalog', () => {
     expect(TIER_B_SURFACE_IDS).toEqual(['automations', 'channels']);
   });
 
-  it('publishes durable automations as a live primary surface', () => {
+  it('publishes durable automations as a live Workspace surface', () => {
     const surface = surfaceById('automations');
-    expect(surface).toMatchObject({ tier: 'A', nav: 'primary' });
+    expect(surface).toMatchObject({ tier: 'A', nav: 'workspace-compact' });
     expect(isSurfaceLive(surface!)).toBe(true);
   });
 
