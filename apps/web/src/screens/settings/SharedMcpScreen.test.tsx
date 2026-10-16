@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -27,6 +27,13 @@ const entry = {
 /** Supply exact administrative read models without a Workspace or secret transport. */
 function setup() {
   const operations = {
+    'administration.mcp-discovery-preview': vi.fn().mockResolvedValue({
+      mcpId: entry.id,
+      versionDigest: digest,
+      observedAt: '2026-10-16T14:00:00Z',
+      serverVersion: null,
+      tools: [{ name: 'read', description: 'Observed tool metadata.', inputSchema: {} }],
+    }),
     'administration.server-mcp-list': vi.fn().mockResolvedValue({ entries: [entry], revision: 7 }),
     'administration.server-mcp-read': vi.fn().mockResolvedValue({
       entry,
@@ -96,6 +103,110 @@ describe('Shared MCP administration', () => {
         requestId: expect.any(String),
       })
     );
+  });
+  it('allows an explicit empty allowlist for inactive discovery configuration', async () => {
+    const operations = setup();
+    await screen.findByText('Shared example');
+    await userEvent.type(screen.getByLabelText('New MCP id'), 'discover-example');
+    await userEvent.type(screen.getByLabelText('New display name'), 'Discover example');
+    await userEvent.type(screen.getByLabelText('New HTTP endpoint'), 'https://new.invalid/mcp');
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add inactive shared configuration' })
+    );
+    await waitFor(() =>
+      expect(operations['administration.server-mcp-create']).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedTools: [] })
+      )
+    );
+  });
+  it('mounts deliberate discovery without selecting, enabling or automatically connecting', async () => {
+    const operations = setup();
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Shared example' }));
+    await screen.findByRole('button', { name: 'Preview tools once' });
+    expect(operations['administration.mcp-discovery-preview']).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
+    await screen.findByText('Observed tool metadata.');
+    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledExactlyOnceWith({
+      catalogScope: { kind: 'server' },
+      mcpId: entry.id,
+      versionDigest: digest,
+      expectedRevision: 7,
+      expectedBindingRevision: 3,
+      credentialBindings: [],
+      timeoutMs: 10000,
+    });
+    expect(operations['administration.server-mcp-select-version']).not.toHaveBeenCalled();
+    expect(operations['administration.server-mcp-update-binding']).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Reload current configuration' }));
+    await waitFor(() =>
+      expect(screen.queryByText('Observed tool metadata.')).not.toBeInTheDocument()
+    );
+    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
+  });
+  it('excludes configuration writes and repeat discovery while a preview is pending', async () => {
+    const operations = setup();
+    let finish!: (value: {
+      mcpId: string;
+      versionDigest: string;
+      observedAt: string;
+      serverVersion: null;
+      tools: never[];
+    }) => void;
+    operations['administration.mcp-discovery-preview'].mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Shared example' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Preview tools once' }));
+    expect(screen.getByRole('button', { name: 'Observing tools…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Enable shared supply' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reload current configuration' })).toBeDisabled();
+    await act(async () =>
+      finish({
+        mcpId: entry.id,
+        versionDigest: digest,
+        observedAt: '2026-10-16T14:00:00Z',
+        serverVersion: null,
+        tools: [],
+      })
+    );
+    await screen.findByText(/Observed at/);
+    expect(screen.getByRole('button', { name: 'Enable shared supply' })).toBeEnabled();
+    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
+    expect(operations['administration.server-mcp-update-binding']).not.toHaveBeenCalled();
+  });
+  it.each([
+    403, 409, 503,
+  ])('requires successful reread after discovery failure %i without replay', async (status) => {
+    const operations = setup();
+    operations['administration.mcp-discovery-preview'].mockRejectedValueOnce(
+      new ApiCallError(status, 'ghp_fake_preview_error')
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Shared example' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Preview tools once' }));
+    if (status === 403) {
+      await screen.findByText('Shared MCP administration access denied');
+      expect(screen.queryByLabelText('Allowed tools')).not.toBeInTheDocument();
+      expect(screen.queryByText('Shared example')).not.toBeInTheDocument();
+    } else {
+      await screen.findByText(
+        status === 409 ? /Discovery used stale configuration/ : /Discovery failed or its connection/
+      );
+      expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Enable shared supply' })).toBeDisabled();
+    }
+    expect(document.body.textContent).not.toContain('ghp_fake_preview_error');
+    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Reload current configuration' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeEnabled()
+    );
+    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
+    await screen.findByText('Observed tool metadata.');
+    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(2);
   });
   it('edits exact observed binding without silently replacing credential references', async () => {
     const operations = setup();

@@ -16,6 +16,7 @@ import {
   Skeleton,
   TextField,
 } from '../../primitives';
+import { McpDiscoveryPreview } from './McpDiscoveryPreview';
 import { redactSecretShapedText } from './secret-safe';
 
 type Definitions = typeof SERVER_MCP_OPERATION_DEFINITIONS;
@@ -58,6 +59,8 @@ export function SharedMcpScreen() {
   const [newTools, setNewTools] = useState('');
   const [kind, setKind] = useState('http');
   const [validationError, setValidationError] = useState(false);
+  const [previewPending, setPreviewPending] = useState(false);
+  const [previewFailure, setPreviewFailure] = useState<number | null>(null);
   const supply = useQuery({
     queryKey: ['settings', 'shared-mcp'],
     queryFn: async () => {
@@ -69,6 +72,7 @@ export function SharedMcpScreen() {
     },
     retry: false,
     refetchOnWindowFocus: false,
+    refetchOnMount: 'always',
   });
   const detail = useQuery({
     queryKey: ['settings', 'shared-mcp', selected],
@@ -82,6 +86,7 @@ export function SharedMcpScreen() {
     },
     retry: false,
     refetchOnWindowFocus: false,
+    refetchOnMount: 'always',
   });
   const action = useMutation({
     mutationFn: async (write: Mutation) => {
@@ -118,8 +123,13 @@ export function SharedMcpScreen() {
     supply.isFetching ||
     detail.isFetching ||
     action.isPending;
-  const blocked = busy || supply.isError || detail.isError || action.isError;
-  const accessDenied = [supply.error, detail.error, action.error].some(denied);
+  const previewBlocked =
+    busy || supply.isError || detail.isError || action.isError || previewFailure !== null;
+  const blocked = previewBlocked || previewPending;
+  const accessDenied =
+    [supply.error, detail.error, action.error].some(denied) ||
+    previewFailure === 401 ||
+    previewFailure === 403;
   /** Explicit read after an uncertain write; this never repeats the write. */
   async function refresh() {
     const currentSupply = await supply.refetch();
@@ -129,6 +139,7 @@ export function SharedMcpScreen() {
       if (!currentDetail.isSuccess) return;
     }
     action.reset();
+    setPreviewFailure(null);
   }
   return (
     <Page>
@@ -140,7 +151,7 @@ export function SharedMcpScreen() {
       {connection.failed ? (
         <ErrorBanner message="Disconnected. Changes are unavailable." onRetry={connection.retry} />
       ) : null}
-      <Button isDisabled={busy} onPress={() => void refresh()}>
+      <Button isDisabled={busy || previewPending} onPress={() => void refresh()}>
         Reload current configuration
       </Button>
       {accessDenied ? (
@@ -157,6 +168,15 @@ export function SharedMcpScreen() {
         <div className="flex flex-col gap-6">
           {validationError ? (
             <ErrorBanner message="Check configuration fields. No change was sent. Use Vault for credential material." />
+          ) : null}
+          {previewFailure !== null ? (
+            <ErrorBanner
+              message={
+                previewFailure === 409
+                  ? 'Discovery used stale configuration. Reload current configuration before a new deliberate preview.'
+                  : 'Discovery failed or its connection or cleanup outcome is unknown. Inspect current state and Reload current configuration before a new deliberate request. It will contact upstream again.'
+              }
+            />
           ) : null}
           {action.isError ? (
             <ErrorBanner message="The change failed or its outcome is unknown. Your draft is kept. Inspect current state with Reload current configuration before another change." />
@@ -184,7 +204,7 @@ export function SharedMcpScreen() {
                   </div>
                   <Button
                     size="sm"
-                    isDisabled={busy || action.isError}
+                    isDisabled={busy || previewPending || action.isError || previewFailure !== null}
                     onPress={() => {
                       action.reset();
                       setSelected(entry.id);
@@ -205,6 +225,15 @@ export function SharedMcpScreen() {
           {selected && detail.isLoading ? <Skeleton lines={5} /> : null}
           {selected && detail.isError ? (
             <ErrorBanner message="Couldn't read the selected configuration. Reload before changing it." />
+          ) : null}
+          {selected && detail.data && !detail.isError ? (
+            <McpDiscoveryPreview
+              key={`preview:${selected}:${detail.dataUpdatedAt}`}
+              data={detail.data}
+              blocked={previewBlocked}
+              onFailure={setPreviewFailure}
+              onBusyChange={setPreviewPending}
+            />
           ) : null}
           {selected && detail.data && !detail.isError ? (
             <McpEditor
@@ -259,7 +288,7 @@ export function SharedMcpScreen() {
             )}
             <TextField
               label="New allowed tools"
-              description="Comma-separated exact tool names. Configuration does not discover or call tools."
+              description="Comma-separated exact tool names, or leave empty for inactive discovery with no binding. Configuration does not discover or call tools."
               value={newTools}
               onChange={setNewTools}
               isDisabled={blocked}
@@ -269,7 +298,6 @@ export function SharedMcpScreen() {
                 blocked ||
                 !newId.trim() ||
                 !newName.trim() ||
-                !tools(newTools).length ||
                 !(kind === 'http' ? newEndpoint : newCommand).trim()
               }
               onPress={() =>
