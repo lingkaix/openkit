@@ -4229,66 +4229,6 @@
         }
       }
     },
-    "/api/app/operations/workspace.member-access-change": {
-      "post": {
-        "operationId": "workspace.member-access-change",
-        "tags": [
-          "workspace"
-        ],
-        "summary": "Change an existing member's Workspace access level.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/workspace.member-access-change.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Change an existing member's Workspace access level.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/workspace.member-access-change.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/operations/workspace.member-remove": {
       "post": {
         "operationId": "workspace.member-remove",
@@ -27881,20 +27821,8 @@
                   ],
                   "additionalProperties": false
                 },
-                "effectiveRole": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "enum": [
-                        "owner",
-                        "editor",
-                        "viewer"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                "isOwner": {
+                  "type": "boolean"
                 },
                 "registryRevision": {
                   "type": "integer",
@@ -27919,7 +27847,7 @@
                 "membershipStatus",
                 "accessCause",
                 "workspace",
-                "effectiveRole",
+                "isOwner",
                 "registryRevision",
                 "membershipRevision"
               ],
@@ -29255,13 +29183,8 @@
                       "type": "string",
                       "const": "active"
                     },
-                    "accessLevel": {
-                      "type": "string",
-                      "const": "editor"
-                    },
-                    "effectiveRole": {
-                      "type": "string",
-                      "const": "owner"
+                    "isOwner": {
+                      "type": "boolean"
                     },
                     "removedAt": {
                       "type": "null"
@@ -29276,148 +29199,7 @@
                     "createdAt",
                     "updatedAt",
                     "status",
-                    "accessLevel",
-                    "effectiveRole",
-                    "removedAt"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "workspaceId": {
-                      "type": "string",
-                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "userId": {
-                      "type": "string",
-                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "invitationId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "joinedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "revision": {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    "createdAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "updatedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "status": {
-                      "type": "string",
-                      "const": "active"
-                    },
-                    "accessLevel": {
-                      "type": "string",
-                      "const": "editor"
-                    },
-                    "effectiveRole": {
-                      "type": "string",
-                      "const": "editor"
-                    },
-                    "removedAt": {
-                      "type": "null"
-                    }
-                  },
-                  "required": [
-                    "workspaceId",
-                    "userId",
-                    "invitationId",
-                    "joinedAt",
-                    "revision",
-                    "createdAt",
-                    "updatedAt",
-                    "status",
-                    "accessLevel",
-                    "effectiveRole",
-                    "removedAt"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "workspaceId": {
-                      "type": "string",
-                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "userId": {
-                      "type": "string",
-                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "invitationId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "joinedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "revision": {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    "createdAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "updatedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "status": {
-                      "type": "string",
-                      "const": "active"
-                    },
-                    "accessLevel": {
-                      "type": "string",
-                      "const": "viewer"
-                    },
-                    "effectiveRole": {
-                      "type": "string",
-                      "const": "viewer"
-                    },
-                    "removedAt": {
-                      "type": "null"
-                    }
-                  },
-                  "required": [
-                    "workspaceId",
-                    "userId",
-                    "invitationId",
-                    "joinedAt",
-                    "revision",
-                    "createdAt",
-                    "updatedAt",
-                    "status",
-                    "accessLevel",
-                    "effectiveRole",
+                    "isOwner",
                     "removedAt"
                   ],
                   "additionalProperties": false
@@ -29465,15 +29247,9 @@
                       "type": "string",
                       "const": "removed"
                     },
-                    "accessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
-                    },
-                    "effectiveRole": {
-                      "type": "null"
+                    "isOwner": {
+                      "type": "boolean",
+                      "const": false
                     },
                     "removedAt": {
                       "type": "string",
@@ -29489,8 +29265,7 @@
                     "createdAt",
                     "updatedAt",
                     "status",
-                    "accessLevel",
-                    "effectiveRole",
+                    "isOwner",
                     "removedAt"
                   ],
                   "additionalProperties": false
@@ -29541,13 +29316,6 @@
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
-                    },
                     "inviterUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -29587,7 +29355,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -29614,13 +29381,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -29661,7 +29421,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -29688,13 +29447,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -29736,7 +29488,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -29763,13 +29514,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -29811,7 +29555,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -29838,13 +29581,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -29886,7 +29622,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -29917,13 +29652,6 @@
             "format": "email",
             "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
           },
-          "proposedAccessLevel": {
-            "type": "string",
-            "enum": [
-              "editor",
-              "viewer"
-            ]
-          },
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -29931,7 +29659,6 @@
         },
         "required": [
           "inviteeEmail",
-          "proposedAccessLevel",
           "workspaceId"
         ],
         "additionalProperties": false
@@ -29956,13 +29683,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -30003,7 +29723,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30030,13 +29749,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -30077,7 +29789,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30104,13 +29815,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -30152,7 +29856,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30179,13 +29882,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -30227,7 +29923,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30254,13 +29949,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -30302,7 +29990,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30352,13 +30039,6 @@
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
-                    },
                     "inviterUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -30398,7 +30078,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -30425,13 +30104,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -30472,7 +30144,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -30499,13 +30170,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -30547,7 +30211,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -30574,13 +30237,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -30622,7 +30278,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -30649,13 +30304,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -30697,7 +30345,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -30760,13 +30407,6 @@
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                   },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
                   "inviterUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -30806,7 +30446,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30833,13 +30472,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -30880,7 +30512,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30907,13 +30538,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -30955,7 +30579,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -30982,13 +30605,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31030,7 +30646,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31057,13 +30672,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31105,7 +30713,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31167,13 +30774,6 @@
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                   },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
                   "inviterUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -31213,7 +30813,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31240,13 +30839,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31287,7 +30879,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31314,13 +30905,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31362,7 +30946,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31389,13 +30972,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31437,7 +31013,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31464,13 +31039,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31512,7 +31080,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31579,13 +31146,6 @@
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                   },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
                   "inviterUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -31625,7 +31185,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31652,13 +31211,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31699,7 +31251,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31726,13 +31277,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31774,7 +31318,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31801,13 +31344,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31849,7 +31385,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31876,13 +31411,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -31924,7 +31452,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -31942,336 +31469,6 @@
         },
         "required": [
           "invitation"
-        ],
-        "additionalProperties": false
-      },
-      "workspace.member-access-change.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "expectedRevision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "accessLevel": {
-            "type": "string",
-            "enum": [
-              "editor",
-              "viewer"
-            ]
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          },
-          "targetUserId": {
-            "type": "string",
-            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "expectedRevision",
-          "accessLevel",
-          "workspaceId",
-          "targetUserId"
-        ],
-        "additionalProperties": false
-      },
-      "workspace.member-access-change.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "member": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "owner"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "removed"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
-                  "effectiveRole": {
-                    "type": "null"
-                  },
-                  "removedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              }
-            ]
-          }
-        },
-        "required": [
-          "member"
         ],
         "additionalProperties": false
       },
@@ -32349,13 +31546,8 @@
                     "type": "string",
                     "const": "active"
                   },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "owner"
+                  "isOwner": {
+                    "type": "boolean"
                   },
                   "removedAt": {
                     "type": "null"
@@ -32370,148 +31562,7 @@
                   "createdAt",
                   "updatedAt",
                   "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
+                  "isOwner",
                   "removedAt"
                 ],
                 "additionalProperties": false
@@ -32559,15 +31610,9 @@
                     "type": "string",
                     "const": "removed"
                   },
-                  "accessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
-                  "effectiveRole": {
-                    "type": "null"
+                  "isOwner": {
+                    "type": "boolean",
+                    "const": false
                   },
                   "removedAt": {
                     "type": "string",
@@ -32583,8 +31628,7 @@
                   "createdAt",
                   "updatedAt",
                   "status",
-                  "accessLevel",
-                  "effectiveRole",
+                  "isOwner",
                   "removedAt"
                 ],
                 "additionalProperties": false
@@ -32666,13 +31710,8 @@
                     "type": "string",
                     "const": "active"
                   },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "owner"
+                  "isOwner": {
+                    "type": "boolean"
                   },
                   "removedAt": {
                     "type": "null"
@@ -32687,148 +31726,7 @@
                   "createdAt",
                   "updatedAt",
                   "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
+                  "isOwner",
                   "removedAt"
                 ],
                 "additionalProperties": false
@@ -32876,15 +31774,9 @@
                     "type": "string",
                     "const": "removed"
                   },
-                  "accessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
-                  "effectiveRole": {
-                    "type": "null"
+                  "isOwner": {
+                    "type": "boolean",
+                    "const": false
                   },
                   "removedAt": {
                     "type": "string",
@@ -32900,8 +31792,7 @@
                   "createdAt",
                   "updatedAt",
                   "status",
-                  "accessLevel",
-                  "effectiveRole",
+                  "isOwner",
                   "removedAt"
                 ],
                 "additionalProperties": false
@@ -33075,20 +31966,8 @@
                 ],
                 "additionalProperties": false
               },
-              "effectiveRole": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "enum": [
-                      "owner",
-                      "editor",
-                      "viewer"
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "isOwner": {
+                "type": "boolean"
               },
               "registryRevision": {
                 "type": "integer",
@@ -33113,7 +31992,7 @@
               "membershipStatus",
               "accessCause",
               "workspace",
-              "effectiveRole",
+              "isOwner",
               "registryRevision",
               "membershipRevision"
             ],
@@ -33154,14 +32033,13 @@
                 "type": "string",
                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
-              "administratorRole": {
+              "administratorMembershipStatus": {
                 "anyOf": [
                   {
                     "type": "string",
                     "enum": [
-                      "owner",
-                      "editor",
-                      "viewer"
+                      "active",
+                      "removed"
                     ]
                   },
                   {
@@ -33178,7 +32056,7 @@
             "required": [
               "workspaceId",
               "ownerUserId",
-              "administratorRole",
+              "administratorMembershipStatus",
               "registryRevision"
             ],
             "additionalProperties": false
@@ -33196,7 +32074,7 @@
           "action": {
             "type": "string",
             "enum": [
-              "add-self-as-editor",
+              "add-self-as-member",
               "transfer-ownership-to-self"
             ]
           },
@@ -33232,14 +32110,13 @@
                 "type": "string",
                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
-              "administratorRole": {
+              "administratorMembershipStatus": {
                 "anyOf": [
                   {
                     "type": "string",
                     "enum": [
-                      "owner",
-                      "editor",
-                      "viewer"
+                      "active",
+                      "removed"
                     ]
                   },
                   {
@@ -33256,7 +32133,7 @@
             "required": [
               "workspaceId",
               "ownerUserId",
-              "administratorRole",
+              "administratorMembershipStatus",
               "registryRevision"
             ],
             "additionalProperties": false
@@ -95465,35 +94342,6 @@
         ],
         "additionalProperties": false
       },
-      "ChangeWorkspaceMemberAccessRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-          },
-          "expectedRevision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "accessLevel": {
-            "type": "string",
-            "enum": [
-              "editor",
-              "viewer"
-            ]
-          }
-        },
-        "required": [
-          "requestId",
-          "expectedRevision",
-          "accessLevel"
-        ],
-        "additionalProperties": false
-      },
       "CreateWorkspaceInvitationRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -95507,19 +94355,11 @@
             "type": "string",
             "format": "email",
             "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
-          },
-          "proposedAccessLevel": {
-            "type": "string",
-            "enum": [
-              "editor",
-              "viewer"
-            ]
           }
         },
         "required": [
           "requestId",
-          "inviteeEmail",
-          "proposedAccessLevel"
+          "inviteeEmail"
         ],
         "additionalProperties": false
       },
@@ -95662,13 +94502,6 @@
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
-                    },
                     "inviterUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -95708,7 +94541,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -95735,13 +94567,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -95782,7 +94607,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -95809,13 +94633,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -95857,7 +94674,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -95884,13 +94700,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -95932,7 +94741,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -95959,13 +94767,6 @@
                     "inviteeUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "proposedAccessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
                     },
                     "inviterUserId": {
                       "type": "string",
@@ -96007,7 +94808,6 @@
                     "invitationId",
                     "workspaceId",
                     "inviteeUserId",
-                    "proposedAccessLevel",
                     "inviterUserId",
                     "expiresAt",
                     "revision",
@@ -96080,13 +94880,8 @@
                       "type": "string",
                       "const": "active"
                     },
-                    "accessLevel": {
-                      "type": "string",
-                      "const": "editor"
-                    },
-                    "effectiveRole": {
-                      "type": "string",
-                      "const": "owner"
+                    "isOwner": {
+                      "type": "boolean"
                     },
                     "removedAt": {
                       "type": "null"
@@ -96101,148 +94896,7 @@
                     "createdAt",
                     "updatedAt",
                     "status",
-                    "accessLevel",
-                    "effectiveRole",
-                    "removedAt"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "workspaceId": {
-                      "type": "string",
-                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "userId": {
-                      "type": "string",
-                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "invitationId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "joinedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "revision": {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    "createdAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "updatedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "status": {
-                      "type": "string",
-                      "const": "active"
-                    },
-                    "accessLevel": {
-                      "type": "string",
-                      "const": "editor"
-                    },
-                    "effectiveRole": {
-                      "type": "string",
-                      "const": "editor"
-                    },
-                    "removedAt": {
-                      "type": "null"
-                    }
-                  },
-                  "required": [
-                    "workspaceId",
-                    "userId",
-                    "invitationId",
-                    "joinedAt",
-                    "revision",
-                    "createdAt",
-                    "updatedAt",
-                    "status",
-                    "accessLevel",
-                    "effectiveRole",
-                    "removedAt"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "workspaceId": {
-                      "type": "string",
-                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "userId": {
-                      "type": "string",
-                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "invitationId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "joinedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "revision": {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    "createdAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "updatedAt": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "status": {
-                      "type": "string",
-                      "const": "active"
-                    },
-                    "accessLevel": {
-                      "type": "string",
-                      "const": "viewer"
-                    },
-                    "effectiveRole": {
-                      "type": "string",
-                      "const": "viewer"
-                    },
-                    "removedAt": {
-                      "type": "null"
-                    }
-                  },
-                  "required": [
-                    "workspaceId",
-                    "userId",
-                    "invitationId",
-                    "joinedAt",
-                    "revision",
-                    "createdAt",
-                    "updatedAt",
-                    "status",
-                    "accessLevel",
-                    "effectiveRole",
+                    "isOwner",
                     "removedAt"
                   ],
                   "additionalProperties": false
@@ -96290,15 +94944,9 @@
                       "type": "string",
                       "const": "removed"
                     },
-                    "accessLevel": {
-                      "type": "string",
-                      "enum": [
-                        "editor",
-                        "viewer"
-                      ]
-                    },
-                    "effectiveRole": {
-                      "type": "null"
+                    "isOwner": {
+                      "type": "boolean",
+                      "const": false
                     },
                     "removedAt": {
                       "type": "string",
@@ -96314,8 +94962,7 @@
                     "createdAt",
                     "updatedAt",
                     "status",
-                    "accessLevel",
-                    "effectiveRole",
+                    "isOwner",
                     "removedAt"
                   ],
                   "additionalProperties": false
@@ -96336,7 +94983,7 @@
           "action": {
             "type": "string",
             "enum": [
-              "add-self-as-editor",
+              "add-self-as-member",
               "transfer-ownership-to-self"
             ]
           },
@@ -96871,14 +95518,13 @@
                 "type": "string",
                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
-              "administratorRole": {
+              "administratorMembershipStatus": {
                 "anyOf": [
                   {
                     "type": "string",
                     "enum": [
-                      "owner",
-                      "editor",
-                      "viewer"
+                      "active",
+                      "removed"
                     ]
                   },
                   {
@@ -96895,7 +95541,7 @@
             "required": [
               "workspaceId",
               "ownerUserId",
-              "administratorRole",
+              "administratorMembershipStatus",
               "registryRevision"
             ],
             "additionalProperties": false
@@ -97124,13 +95770,6 @@
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                   },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
                   "inviterUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -97170,7 +95809,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -97197,13 +95835,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -97244,7 +95875,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -97271,13 +95901,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -97319,7 +95942,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -97346,13 +95968,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -97394,7 +96009,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -97421,13 +96035,6 @@
                   "inviteeUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "proposedAccessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
                   },
                   "inviterUserId": {
                     "type": "string",
@@ -97469,7 +96076,6 @@
                   "invitationId",
                   "workspaceId",
                   "inviteeUserId",
-                  "proposedAccessLevel",
                   "inviterUserId",
                   "expiresAt",
                   "revision",
@@ -97539,13 +96145,8 @@
                     "type": "string",
                     "const": "active"
                   },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "owner"
+                  "isOwner": {
+                    "type": "boolean"
                   },
                   "removedAt": {
                     "type": "null"
@@ -97560,148 +96161,7 @@
                   "createdAt",
                   "updatedAt",
                   "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "editor"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
-                  "removedAt"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "userId": {
-                    "type": "string",
-                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "invitationId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^inv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "joinedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "revision": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "createdAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "updatedAt": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "status": {
-                    "type": "string",
-                    "const": "active"
-                  },
-                  "accessLevel": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "effectiveRole": {
-                    "type": "string",
-                    "const": "viewer"
-                  },
-                  "removedAt": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "userId",
-                  "invitationId",
-                  "joinedAt",
-                  "revision",
-                  "createdAt",
-                  "updatedAt",
-                  "status",
-                  "accessLevel",
-                  "effectiveRole",
+                  "isOwner",
                   "removedAt"
                 ],
                 "additionalProperties": false
@@ -97749,15 +96209,9 @@
                     "type": "string",
                     "const": "removed"
                   },
-                  "accessLevel": {
-                    "type": "string",
-                    "enum": [
-                      "editor",
-                      "viewer"
-                    ]
-                  },
-                  "effectiveRole": {
-                    "type": "null"
+                  "isOwner": {
+                    "type": "boolean",
+                    "const": false
                   },
                   "removedAt": {
                     "type": "string",
@@ -97773,8 +96227,7 @@
                   "createdAt",
                   "updatedAt",
                   "status",
-                  "accessLevel",
-                  "effectiveRole",
+                  "isOwner",
                   "removedAt"
                 ],
                 "additionalProperties": false
@@ -97923,20 +96376,8 @@
                 ],
                 "additionalProperties": false
               },
-              "effectiveRole": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "enum": [
-                      "owner",
-                      "editor",
-                      "viewer"
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "isOwner": {
+                "type": "boolean"
               },
               "registryRevision": {
                 "type": "integer",
@@ -97961,7 +96402,7 @@
               "membershipStatus",
               "accessCause",
               "workspace",
-              "effectiveRole",
+              "isOwner",
               "registryRevision",
               "membershipRevision"
             ],
@@ -99635,5 +98076,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:0e3566a513175669c3f07ef465e20cc7e7e035de8967a6186c396305d672354f"
+  "x-openkit-source-digest": "sha256:b2f69d76080149a7d9fc1b50a026cc64d8bbfb04926d9beb9feae29ea662d29b"
 }

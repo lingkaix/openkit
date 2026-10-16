@@ -1005,21 +1005,6 @@ export function createVerifiedWorkspaceExport({
   readonly store: FsStore;
   readonly workspaceId: string;
 }) {
-  const deletionRecoveryContext =
-    deletionRecoveryRequestId !== undefined
-      ? {
-          authorityUserId,
-          coreDb,
-          dataRoot,
-          exportId,
-          requestId: deletionRecoveryRequestId,
-          workspaceId,
-        }
-      : undefined;
-  const deletionRecoveryAuthorized = deletionRecoveryContext
-    ? assertWorkspaceDeletionRecoveryExportAuthority(deletionRecoveryContext)
-    : false;
-
   if (!isEntityId('wsexp', exportId))
     throw new Error('Workspace export requires a canonical wsexp identity.');
   const deletionRecoveryContext =
