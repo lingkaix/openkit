@@ -15,3 +15,5 @@ Shared release retention and effect helpers are owned by `scripts/release-safety
 Preparation retains story-owned browser preflight under `--purpose browser-story`; Worker-only qualification omits it. Both paths retain the same source, checklist and instrument binding.
 
 Demo seeding uses explicit canonical fixture identities. The authority helper records its fixture User through NanoCore test support and then records Workspace membership; it never imports a production default User constant.
+
+The authority helper initializes each fresh demo Notebook through the native Git initializer under its explicit fixture User. It uses the current governed page serializer and initializes the service's personal Notebook with an empty index. It never writes or converts a predecessor knowledge/pages tree.

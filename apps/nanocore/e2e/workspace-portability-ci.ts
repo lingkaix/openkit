@@ -72,7 +72,15 @@ async function runSource(outputDir: string): Promise<void> {
     });
     assert.equal(readPath(sourceReferences.data, 'items', 0, 'status'), 'active');
 
+    const sourceNotebook = await runCli(harness.baseUrl, 'knowledge.list', {
+      workspaceId: WORKSPACE_ID,
+    });
     await runCli(harness.baseUrl, 'knowledge.create', {
+      baseRevision: requiredString(
+        sourceNotebook.data.notebookRevision,
+        'Source Notebook revision'
+      ),
+      knowledgePageId: 'ci-portability',
       content: 'The fixed two-job artifact transfer preserves authoritative knowledge.',
       kind: 'project-context',
       requestId: randomUUID(),
@@ -168,7 +176,15 @@ async function runTarget(inputDir: string): Promise<void> {
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('base64')));
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('utf8')));
 
+    const targetNotebook = await runCli(harness.baseUrl, 'knowledge.list', {
+      workspaceId: importedWorkspaceId,
+    });
     await runCli(harness.baseUrl, 'knowledge.create', {
+      baseRevision: requiredString(
+        targetNotebook.data.notebookRevision,
+        'Target Notebook revision'
+      ),
+      knowledgePageId: 'target-portability',
       content: 'Target behavior remains writable after explicit local resource re-binding.',
       kind: 'task-summary',
       requestId: randomUUID(),
