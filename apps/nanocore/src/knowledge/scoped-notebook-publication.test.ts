@@ -10,6 +10,7 @@ import {
   verifyOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb, type UserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -248,7 +249,7 @@ describe('internal direct User and Server Notebook publication', () => {
     await publishScopedNotebook(f.server, serverRequest);
     const beforeUser = counts(f.userDb);
     const beforeServer = counts(f.coreDb);
-    f.coreDb.sqlite.prepare('UPDATE users SET disabled_at = ? WHERE id = ?').run(Date.now(), alice);
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, alice))();
     revokeOpenKitAccessTokenRecord(f.coreDb, f.administrator.tokenId!);
     for (const [input, request] of [
       [f.user, userRequest],
