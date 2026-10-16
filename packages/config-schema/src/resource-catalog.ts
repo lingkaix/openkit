@@ -55,6 +55,7 @@ export const SkillVersionRecordSchema = z
         pluginMemberKey: z.string().min(1).nullable().default(null),
         pluginVersionDigest: ResourceDigestSchema.nullable().default(null),
         sourceCommit: z.string().min(1).nullable().default(null),
+        sourceLocator: z.string().min(1).max(8192).optional(),
         sourceSubpath: z.string().min(1).nullable().default(null),
         uploadedSourceId: z.string().min(1).nullable().default(null),
       })

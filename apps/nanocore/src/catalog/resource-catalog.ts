@@ -189,6 +189,8 @@ export function importWorkspaceSkill(input: {
   readonly pluginMemberKey?: string | null;
   readonly pluginVersionDigest?: string | null;
   readonly producer: CatalogProducer;
+  readonly sourceCommit?: string | null;
+  readonly sourceLocator?: string;
   readonly sourceSubpath?: string | null;
   readonly uploadedSourceId?: string | null;
   readonly tree: readonly CatalogTreeFile[];
@@ -227,7 +229,8 @@ export function importWorkspaceSkill(input: {
           baseDigest: input.baseDigest ?? null,
           pluginMemberKey: input.pluginMemberKey ?? null,
           pluginVersionDigest: input.pluginVersionDigest ?? null,
-          sourceCommit: null,
+          sourceCommit: input.sourceCommit ?? null,
+          ...(input.sourceLocator === undefined ? {} : { sourceLocator: input.sourceLocator }),
           sourceSubpath: input.sourceSubpath ?? null,
           uploadedSourceId: input.uploadedSourceId ?? null,
         },

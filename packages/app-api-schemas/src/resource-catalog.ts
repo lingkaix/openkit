@@ -17,6 +17,7 @@ export const SkillCatalogProvenanceSchema = z
     pluginMemberKey: z.string().min(1).nullable(),
     pluginVersionDigest: z.string().regex(SHA256).nullable(),
     sourceCommit: z.string().min(1).nullable(),
+    sourceLocator: z.string().min(1).max(8192).optional(),
     sourceSubpath: z.string().min(1).nullable(),
     uploadedSourceId: z.string().min(1).nullable(),
   })
