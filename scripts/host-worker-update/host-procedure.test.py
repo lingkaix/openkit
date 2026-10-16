@@ -1,6 +1,7 @@
 """Fixed procedure admission and real bounded subprocesses; no live host effects."""
 
 import hashlib
+from contextlib import ExitStack
 import importlib.util
 import json
 from pathlib import Path
@@ -119,6 +120,166 @@ class InputTests(unittest.TestCase):
         with mock.patch.object(MODULE, "_regular", return_value=(b"KEY=$(synthetic command)\n", ())):
             with self.assertRaises(MODULE.ProcedureRefusal):
                 MODULE._inputs()
+
+
+class ProcedureTests(unittest.TestCase):
+    """Command doubles prove step routing only, never real systemd qualification."""
+
+    def scenario(self, action):
+        """Replace all host boundaries before the root-only entry can observe them."""
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        value = request(action)
+        archive = b"synthetic verified archive bytes"
+        machine = b"00000000000000000000000000000001\n"
+        value["target"]["archiveSha256"] = hashlib.sha256(archive).hexdigest()
+        digest = hashlib.sha256(machine).hexdigest()
+        events = []
+        checks = 0
+        class Manager:
+            """Explicit external manager facts; no production filesystem is reached."""
+            def __init__(self, identifier):
+                self.identifier = identifier
+                self.attempt = "synthetic fixed attempted-start artifact"
+            def _admit(self): pass
+            def _unit_roots(self, guarded): events.append(("roots", guarded))
+            def _activation(self): pass
+            def _guard(self): pass
+            def _conditions(self): pass
+            def _owned(self, *_args): pass
+            def _attempt_bytes(self): return b"synthetic attempt"
+            def _old_unit(self, selected): self.selected = selected
+            def _bus(self, *_args): return []
+            def _incarnation(self, _guarded): return dict(STAMP)
+            def _payloads(self, selected): events.append(("payloads", selected))
+            def assert_fenced_and_inhibited(self): events.append(("fence",))
+            def begin(self, selected): events.append(("begin", selected))
+            def start_once(self, selected): events.append(("start", selected)); return dict(STAMP)
+            def finalize(self, process, selected): events.append(("finalize", process, selected))
+        def read(path, **_options):
+            if path == Path("/etc/machine-id"):
+                return machine, ()
+            self.assertEqual(path, Path("/usr/lib/openkit/.openkit-operator-input-" + IDENTIFIER) /
+                "openkit-nanohost-v0.1.0-rc.8-linux-arm64.tar.gz")
+            return archive, ()
+        def run(argv, **options):
+            nonlocal checks
+            events.append(("command", argv))
+            if argv[-1] == "--check-host":
+                return json.dumps(dict(hardVerdict="requirements-met", archiveSha256=value["target"]["archiveSha256"],
+                    productCommit=value["target"]["sourceCommit"], machineIdentityDigest=digest)).encode()
+            if argv[-1] == "--check":
+                checks += 1
+                return b"destination=resumable\n" if checks == 1 else b"destination=already-installed\n"
+            if argv[-1].endswith("/install.sh"):
+                return b"installation=complete\nremaining=configuration,enrollment,service-start\n"
+            if argv[-1] == "inspect":
+                selected = value["old"] if action == "preflight" else value["target"]
+                return json.dumps(dict(outcome="observed", nonce=json.loads(options["input_bytes"])["nonce"],
+                    coordinator=STAMP, replacementDuringMeasurement=False,
+                    executables=dict(nanohost=dict(sha256=selected["payloads"]["nanohostSha256"]),
+                                     gateway=dict(sha256=selected["payloads"]["gatewaySha256"])),
+                    unit=dict(fileSha256=selected["payloads"]["unitFileSha256"], effectiveStateDigest="f"*64))).encode()
+            return b""
+        stack.enter_context(mock.patch.object(MODULE.os, "geteuid", return_value=0))
+        stack.enter_context(mock.patch.object(MODULE.os, "getegid", return_value=0))
+        stack.enter_context(mock.patch.object(MODULE, "_regular", side_effect=read))
+        stack.enter_context(mock.patch.object(MODULE, "_inputs", return_value=("0"*64, [("private",)])))
+        stack.enter_context(mock.patch.object(MODULE, "_volatile_run"))
+        stack.enter_context(mock.patch.object(MODULE, "_run", side_effect=run))
+        stack.enter_context(mock.patch.object(MODULE._maintenance, "Maintenance", Manager))
+        custody = stack.enter_context(mock.patch.object(MODULE._replacement, "vacate_verified_payloads"))
+        return value, digest, events, custody
+
+    def invoke(self, value, digest):
+        """Use the production root selector while all actual host effects are doubled."""
+        return MODULE.run_step(value, Path("/usr/lib/openkit/.openkit-operator-input-" + IDENTIFIER), digest)
+
+    def test_six_steps_dispatch_only_their_owned_effects(self):
+        """No step hides a service start, payload restoration or dependent action."""
+        for action in ("preflight", "begin", "vacate", "install", "start", "finalize"):
+            with self.subTest(action=action):
+                value, digest, events, custody = self.scenario(action)
+                result = self.invoke(value, digest)
+                self.assertEqual((result["action"], result["outcome"]), (action, "passed"))
+                self.assertEqual(sum(event[0] == "start" for event in events), int(action == "start"))
+                self.assertEqual(sum(event[0] == "finalize" for event in events), int(action == "finalize"))
+                if action == "start":
+                    self.assertNotIn("controlledEffectiveStateDigest", result)
+                if action == "install":
+                    commands = [event[1] for event in events if event[0] == "command"]
+                    self.assertEqual(len(commands), 3)
+                    self.assertEqual([len(command) for command in commands], [2, 1, 2])
+                    self.assertEqual(commands[0][-1], "--check")
+                    self.assertEqual(commands[2][-1], "--check")
+                if action == "vacate":
+                    self.assertEqual(custody.call_args.args[0], {"replacementId": IDENTIFIER,
+                        "old": MODULE._payloads(value["old"]), "target": MODULE._payloads(value["target"])})
+                else:
+                    custody.assert_not_called()
+
+    def test_changed_retained_inputs_refuse_after_install_without_restore_or_start(self):
+        """A completed installer cannot turn a failed preservation check into success."""
+        value, digest, events, _ = self.scenario("install")
+        with mock.patch.object(MODULE, "_inputs", side_effect=[("0"*64, ["before"]), ("1"*64, ["after"])]):
+            with self.assertRaises(MODULE.ProcedureRefusal):
+                self.invoke(value, digest)
+        self.assertEqual(sum(event[0] == "command" for event in events), 3)
+        self.assertFalse(any(event[0] in ("start", "finalize") for event in events))
+
+    def test_unknown_start_is_not_reissued_or_finalized(self):
+        """Losing the controlled start stops this root procedure once."""
+        value, digest, events, _ = self.scenario("start")
+        def unknown(_self, _selected):
+            events.append(("start",)); raise OSError("PRIVATE_REMOTE_ERROR")
+        with mock.patch.object(MODULE._maintenance.Maintenance, "start_once", unknown):
+            with self.assertRaises(MODULE.ProcedureRefusal) as caught:
+                self.invoke(value, digest)
+        self.assertNotIn("PRIVATE", str(caught.exception))
+        self.assertEqual(caught.exception.reason, "controlled-start")
+        self.assertEqual(sum(event[0] == "start" for event in events), 1)
+        self.assertFalse(any(event[0] == "finalize" for event in events))
+
+    def test_controlled_observation_never_reissues_start(self):
+        """Only the external public-readiness bridge can reach this read-only phase."""
+        value, digest, events, _ = self.scenario("start")
+        result = MODULE.run_step(value, Path("/usr/lib/openkit/.openkit-operator-input-" + IDENTIFIER),
+                                 digest, controlled_process=STAMP)
+        self.assertEqual(result["controlledEffectiveStateDigest"], "f" * 64)
+        self.assertFalse(any(event[0] == "start" for event in events))
+
+    def test_runtime_prerequisite_refusal_has_only_a_closed_local_cause(self):
+        """A failed volatile-runtime check identifies its phase without host text."""
+        value, digest, events, _ = self.scenario("preflight")
+        with mock.patch.object(MODULE, "_volatile_run", side_effect=OSError("PRIVATE_HOST_PATH")):
+            with self.assertRaises(MODULE.ProcedureRefusal) as caught:
+                self.invoke(value, digest)
+        self.assertEqual(caught.exception.reason, "runtime-directory")
+        self.assertNotIn("PRIVATE", str(caught.exception))
+        self.assertEqual(events, [])
+
+    def test_pre_install_check_refusal_prevents_installer(self):
+        """A zero-exit conflicting disposition is still an owned refusal."""
+        value, digest, events, _ = self.scenario("install")
+        with mock.patch.object(MODULE, "_run", return_value=b"destination=destination-conflict\n") as called:
+            with self.assertRaises(MODULE.ProcedureRefusal):
+                self.invoke(value, digest)
+        self.assertEqual(called.call_count, 1)
+        self.assertEqual(called.call_args.args[0][-1], "--check")
+        self.assertFalse(any(event[0] in ("start", "finalize") for event in events))
+
+    def test_unavailable_native_observation_is_not_refreshed(self):
+        """A closed unavailable P02 sample ends the attempt after exactly one read."""
+        value, digest, events, _ = self.scenario("start")
+        def unavailable(_argv, **options):
+            return json.dumps(dict(nonce=json.loads(options["input_bytes"])["nonce"],
+                                   outcome="unavailable", reason="connection-unavailable")).encode()
+        with mock.patch.object(MODULE, "_run", side_effect=unavailable) as invoked:
+            with self.assertRaises(MODULE.ProcedureRefusal):
+                MODULE.run_step(value, Path("/usr/lib/openkit/.openkit-operator-input-" + IDENTIFIER),
+                                digest, controlled_process=STAMP)
+        self.assertEqual(invoked.call_count, 1)
+        self.assertFalse(any(event[0] == "start" for event in events))
 
 
 if __name__ == "__main__":

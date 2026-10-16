@@ -4,7 +4,7 @@ import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createReleaseManifest } from './release-record.mjs';
-import { canonical, noSecrets, once, save } from './release-safety.mjs';
+import { canonical, noSecrets, once, save, sha } from './release-safety.mjs';
 
 const predicates = [
   'imageMatch',
@@ -193,11 +193,15 @@ export async function updateApp(target, p, dir, io) {
   };
   const call = async (operation, input) => {
     const data = await io.call(operation, input);
-    await save(path.join(dir, `${operation}-${result.observations.length}.json`), {
-      at: now(),
-      input,
-      data,
-    });
+    const selectedRead = ['thread.read', 'turn.read', 'thread.items', 'artifact.read'].includes(
+      operation
+    );
+    await save(
+      path.join(dir, `${operation}-${result.observations.length}.json`),
+      selectedRead
+        ? { at: now(), inputSha256: sha(canonical(input)), responseSha256: sha(canonical(data)) }
+        : { at: now(), input, data }
+    );
     result.observations.push(operation);
     return data;
   };

@@ -186,10 +186,12 @@ class SystemdMaintenance:
     def _service(self):
         """Admit only named stopped service facts; refresh after kernel observations."""
         facts = self._service_facts()
-        expected = {"MainPID": "0", "ActiveState": "inactive", "SubState": "dead",
-                    "Slice": "openkit-nanohost.slice", "Restart": "no",
+        expected = {"MainPID": "0", "Slice": "openkit-nanohost.slice", "Restart": "no",
                     "DropInPaths": self.guard, "FragmentPath": _FRAGMENT, "LoadState": "loaded"}
-        if any(facts[key] != value for key, value in expected.items()):
+        # The stock ExecStop kills its complete slice and can leave failed/failed.
+        # Neither stopped state replaces the full kernel-domain checks below.
+        if (any(facts[key] != value for key, value in expected.items()) or
+                (facts["ActiveState"], facts["SubState"]) not in (("inactive", "dead"), ("failed", "failed"))):
             _refuse()
         if facts["ControlGroup"] not in ("", _GROUP) or facts["NeedDaemonReload"] not in ("yes", "no"):
             _refuse()

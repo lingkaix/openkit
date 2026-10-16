@@ -46,6 +46,24 @@ function requireFact(condition, reason) {
   if (!condition) throw new ComponentUpdateStop(`Component update: ${reason}`);
 }
 
+/** Admit invocation data before either caller constructs a tool or credential adapter. */
+export function admitComponentParameters(params) {
+  try {
+    const input = structuredClone(params);
+    noSecrets(input);
+    const parsed = parameters.safeParse(input);
+    requireFact(parsed.success, 'closed release and component inputs required');
+    requireFact(
+      parsed.data.worker.prepare.requestId !== parsed.data.worker.activationRequestId,
+      'distinct Worker request IDs required'
+    );
+    return parsed.data;
+  } catch (error) {
+    if (error instanceof ComponentUpdateStop) throw error;
+    throw new ComponentUpdateStop('Component update: closed release and component inputs required');
+  }
+}
+
 /**
  * Run the actual App, NanoHost and Worker stages once, in that fixed order.
  * Protected current authority and independently verified old/target archives admit the App-first pair before App effects.
@@ -70,15 +88,7 @@ export async function updateComponents(target, params, evidenceDir, io) {
     },
   };
   try {
-    const input = structuredClone(params);
-    noSecrets(input);
-    const parsed = parameters.safeParse(input);
-    requireFact(parsed.success, 'closed release and component inputs required');
-    const p = parsed.data;
-    requireFact(
-      p.worker.prepare.requestId !== p.worker.activationRequestId,
-      'distinct Worker request IDs required'
-    );
+    const p = admitComponentParameters(params);
     requireFact(
       [
         'deploymentRecord',
@@ -166,6 +176,18 @@ export async function updateComponents(target, params, evidenceDir, io) {
             return await componentIO[key](...args);
           } catch (error) {
             if (error instanceof ComponentUpdateStop) throw error;
+            if (
+              error?.code === 'operator-identity-unavailable' &&
+              [
+                'machine-binding',
+                'app-helper-identity',
+                'canonical-docker-posture',
+                'app-web-attribution',
+              ].includes(error.operatorReason)
+            )
+              throw new ComponentUpdateStop(
+                `Component update: App prerequisite unavailable (${error.operatorReason}); inspect the protected deployment and installed helper before any new effect.`
+              );
             throw new ComponentUpdateStop(
               'Component update: App observation or effect unavailable; inspect its saved request before any new effect.'
             );

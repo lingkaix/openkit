@@ -383,6 +383,19 @@ async function run(f) {
   return updateComponents(target, f.p, f.evidence, f.io);
 }
 
+test('shared parameter admission is effect-free and rejects unknown instructions', async (t) => {
+  const f = await fixture(t);
+  const { admitComponentParameters } = await import('./update-components.mjs');
+  const admitted = admitComponentParameters(f.p);
+  assert.deepEqual(admitted, f.p);
+  assert.notEqual(admitted, f.p);
+  assert.throws(
+    () => admitComponentParameters({ ...f.p, restore: true }),
+    /closed release and component inputs/
+  );
+  assert.deepEqual(f.calls, []);
+});
+
 test('runs actual App, restored NanoHost and Worker stages in their mandatory order', async (t) => {
   const f = await fixture(t);
   const out = await run(f);
@@ -623,3 +636,30 @@ test('a used parent directory prevents all independent reads and component effec
   await assert.rejects(run(f), { code: 'EEXIST' });
   assert.deepEqual(f.calls, []);
 });
+
+for (const reason of [
+  'machine-binding',
+  'app-helper-identity',
+  'canonical-docker-posture',
+  'app-web-attribution',
+  'invented-private-marker',
+]) {
+  test(`App prerequisite retains only a closed identity reason: ${reason}`, async (t) => {
+    const f = await fixture(t);
+    f.io.identities = async () => {
+      throw Object.assign(Error('invented-private-marker'), {
+        code: 'operator-identity-unavailable',
+        operatorReason: reason,
+      });
+    };
+    await assert.rejects(run(f), (error) =>
+      reason === 'invented-private-marker'
+        ? error.message.includes('App observation or effect unavailable')
+        : error.message.includes(`App prerequisite unavailable (${reason})`)
+    );
+    assert.ok(!f.calls.includes('app-update.prepare'));
+    assert.ok(!f.calls.includes('app-update.start'));
+    const saved = await fs.readFile(path.join(f.evidence, 'components-result.json'), 'utf8');
+    assert.doesNotMatch(saved, /invented-private-marker/);
+  });
+}

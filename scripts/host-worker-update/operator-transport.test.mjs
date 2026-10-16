@@ -97,6 +97,7 @@ test('operator inspection uses the fixed command and independently read staging 
     'sudo -n /usr/lib/openkit/nanohost inspect',
   ]);
   assert.ok(invocation.args.includes('-T'));
+  assert.ok(invocation.args.includes('-x'));
   for (const setting of [
     'BatchMode=yes',
     'StrictHostKeyChecking=yes',

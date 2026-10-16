@@ -31,6 +31,25 @@ test('App evidence retains image attribution without the raw installation identi
   const retained = JSON.parse(await fs.readFile(path.join(dir, 'app-result.json'), 'utf8'));
   assert.equal(Object.hasOwn(retained.identities, 'machineId'), false);
 });
+
+test('selected retained content is compared in memory and only its digest enters evidence', async (t) => {
+  const { p, dir, io } = await setup(t);
+  const original = io.call;
+  io.call = async (operation, input) =>
+    operation === 'thread.read'
+      ? { content: 'invented-private-retained-content' }
+      : original(operation, input);
+  assert.equal((await updateApp(target, p, dir, io)).outcome, 'passed');
+  for (const file of await fs.readdir(dir)) {
+    const text = await fs.readFile(path.join(dir, file), 'utf8');
+    assert.equal(text.includes('invented-private-retained-content'), false);
+    if (file.startsWith('thread.read-')) {
+      const observation = JSON.parse(text);
+      assert.match(observation.responseSha256, /^[a-f0-9]{64}$/);
+      assert.match(observation.inputSha256, /^[a-f0-9]{64}$/);
+    }
+  }
+});
 /** Synthetic admitted inputs with exact reviewed assessment and public retained-record selector. */
 function params() {
   const manifest = createReleaseManifest({

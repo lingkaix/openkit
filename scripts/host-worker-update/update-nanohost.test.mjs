@@ -697,3 +697,26 @@ test('strips inert annotations before retaining component or private host eviden
     );
   }
 });
+
+for (const reason of ['canonical-systemd-posture', 'invented-private-marker']) {
+  test(`operator prerequisite retains only a known closed reason: ${reason === 'canonical-systemd-posture'}`, async (t) => {
+    const f = await fixture(t);
+    f.controls.step = () => {
+      const error = Error('invented-private-marker');
+      error.code = 'operator-step-unavailable';
+      error.operatorReason = reason;
+      throw error;
+    };
+    await assert.rejects(run(f), /NanoHost update:/);
+    const retained = await fs.readFile(path.join(f.evidence, 'nanohost-result.json'), 'utf8');
+    assert.equal(retained.includes('invented-private-marker'), false);
+    assert.equal(
+      retained.includes('canonical-systemd-posture'),
+      reason === 'canonical-systemd-posture'
+    );
+    assert.deepEqual(
+      f.calls.filter((call) => actions.includes(call)),
+      ['preflight']
+    );
+  });
+}

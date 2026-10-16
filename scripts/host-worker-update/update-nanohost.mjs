@@ -11,6 +11,22 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const sourceCommit = z.string().regex(/^[a-f0-9]{40}$/);
 const imageDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const reference = z.string().min(1).max(128);
+const operatorReasons = new Set([
+  'request',
+  'machine-binding',
+  'runtime-directory',
+  'verified-archive',
+  'retained-inputs',
+  'canonical-systemd-posture',
+  'target-host-check',
+  'maintenance-inhibition',
+  'old-payload-custody',
+  'target-installation',
+  'controlled-start',
+  'controlled-inspection',
+  'supervision-restoration',
+  'native-inspection',
+]);
 const processStamp = z.object({
   bootId: z.string().uuid(),
   pid: z.number().int().positive().max(2_147_483_647),
@@ -421,6 +437,14 @@ export async function updateNanoHost(target, params, evidenceDir, io) {
           );
         } catch (error) {
           if (error instanceof NanoHostUpdateStop) throw error;
+          if (
+            error?.code === 'operator-step-unavailable' &&
+            operatorReasons.has(error.operatorReason)
+          ) {
+            throw new NanoHostUpdateStop(
+              `NanoHost update: ${action} unavailable (${error.operatorReason}); inspect retained attempt without retry`
+            );
+          }
           throw new NanoHostUpdateStop(
             `NanoHost update: ${action} outcome unknown; inspect retained attempt without retry`
           );

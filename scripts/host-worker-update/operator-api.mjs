@@ -7,9 +7,18 @@ import {
 
 const unavailable = 'Operator API unavailable; inspect before any new effect.';
 const operations = new Set([
-  'app-update.prepare', 'app-update.preflight', 'app-update.start', 'app-update.status',
-  'nanohost.runtime-target', 'worker-environment.prepare', 'worker-environment.activate',
-  'thread.read', 'turn.read', 'thread.items', 'artifact.read',
+  'app-update.prepare',
+  'app-update.preflight',
+  'app-update.start',
+  'app-update.status',
+  'nanohost.runtime-target',
+  'diagnostics.app',
+  'worker-environment.prepare',
+  'worker-environment.activate',
+  'thread.read',
+  'turn.read',
+  'thread.items',
+  'artifact.read',
 ]);
 
 /**
@@ -22,14 +31,23 @@ const operations = new Set([
  */
 export function createOperatorApi(target, adapters = {}) {
   const url = new URL(target);
-  if (url.protocol !== 'https:' || url.origin !== target || url.username || url.password ||
-    url.hostname === 'a2') throw Error(unavailable);
+  if (
+    url.protocol !== 'https:' ||
+    url.origin !== target ||
+    url.username ||
+    url.password ||
+    url.hostname === 'a2'
+  )
+    throw Error(unavailable);
   const fetcher = adapters.fetch ?? globalThis.fetch;
-  const resolve = adapters.resolve ?? (() => resolveCredential({
-    endpoint: target,
-    env: process.env,
-    store: createDefaultOpenKitCredentialStore(),
-  }));
+  const resolve =
+    adapters.resolve ??
+    (() =>
+      resolveCredential({
+        endpoint: target,
+        env: process.env,
+        store: createDefaultOpenKitCredentialStore(),
+      }));
   return {
     async call(operation, input) {
       try {
@@ -50,7 +68,9 @@ export function createOperatorApi(target, adapters = {}) {
             let timer;
             const request = (async () => {
               const response = await fetcher(destination, {
-                ...options, redirect: 'error', signal: controller.signal,
+                ...options,
+                redirect: 'error',
+                signal: controller.signal,
               });
               if (controller.signal.aborted) {
                 void response.body?.cancel().catch(() => {});
@@ -73,12 +93,15 @@ export function createOperatorApi(target, adapters = {}) {
               });
             })();
             try {
-              return await Promise.race([request, new Promise((_, reject) => {
-                timer = setTimeout(() => {
-                  controller.abort();
-                  reject(Error(unavailable));
-                }, 30_000);
-              })]);
+              return await Promise.race([
+                request,
+                new Promise((_, reject) => {
+                  timer = setTimeout(() => {
+                    controller.abort();
+                    reject(Error(unavailable));
+                  }, 30_000);
+                }),
+              ]);
             } catch {
               controller.abort();
               // Cancellation is best effort. Do not wait on a remote reader after the bound.
