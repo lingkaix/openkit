@@ -1412,6 +1412,140 @@ it.each([
   }
 });
 
+it('preserves private Thread ownership only through the exact current deletion recovery export', () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-private-deletion-export-'));
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const ownerUserId = 'usr_00000000-0000-7000-8000-000000000001';
+    const privateOwnerUserId = testEntityId('usr', 'deletion-private-history-owner');
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(`INSERT INTO users (
+      id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
+    ) VALUES (?, 'Private owner', 'private-owner@example.test', false, ?, ?, 'human', 'active', NULL)`)
+      .run(privateOwnerUserId, now, now);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Private deletion export');
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
+    const privateThread = store.createThread(
+      workspace.id,
+      'Private history',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId,
+      }
+    );
+    const repositoryWorkspaceDb = (workspaceId: string) => {
+      const db = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(db);
+      return db;
+    };
+    const ordinaryExportId = testEntityId('wsexp', 'ordinary-private-export');
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: ownerUserId,
+        coreDb,
+        dataRoot,
+        exportId: ordinaryExportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Private Thread history requires a separately authorized export.');
+    expect(
+      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, ordinaryExportId))
+    ).toBe(false);
+
+    const requestId = '00000000-0000-4000-8000-000000000974';
+    const request = createWorkspaceDeletionRequest(dataRoot, {
+      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+      createdAt: new Date().toISOString(),
+      expectedRegistryRevision: 1,
+      originalOwnerUserId: ownerUserId,
+      requestId,
+      workspaceId: workspace.id,
+    });
+    coreDb.sqlite.transaction(() =>
+      beginWorkspaceDeletion({
+        coreDb,
+        expectedRegistryRevision: 1,
+        originalOwnerUserId: ownerUserId,
+        workspaceId: workspace.id,
+      })
+    )();
+    writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'deleting' });
+    const exportId = workspaceDeletionRecoveryExportId(requestId);
+    const exported = createVerifiedWorkspaceExport({
+      authorityUserId: ownerUserId,
+      coreDb,
+      dataRoot,
+      deletionRecoveryRequestId: requestId,
+      exportId,
+      repositoryWorkspaceDb,
+      store,
+      workspaceId: workspace.id,
+    }).verified;
+    const threads = exported.fileContents
+      .get('records/threads.jsonl')!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(threads).toContainEqual(
+      expect.objectContaining({
+        id: privateThread.id,
+        visibility: 'private',
+        privateOwnerUserId,
+      })
+    );
+    const wrongExportId = workspaceDeletionRecoveryExportId('00000000-0000-4000-8000-000000000975');
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: ownerUserId,
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: requestId,
+        exportId: wrongExportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    expect(
+      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, wrongExportId))
+    ).toBe(false);
+    writeWorkspaceDeletionRequest(dataRoot, {
+      ...request,
+      phase: 'exported',
+      recoveryExportId: exportId,
+      recoveryExportManifestDigest: exported.manifestDigest,
+    });
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: ownerUserId,
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: requestId,
+        exportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    expect(
+      verifyWorkspaceExportTree({
+        exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, exportId),
+      }).manifestDigest
+    ).toBe(exported.manifestDigest);
+  } finally {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 it('retains a Thread-owned retrieval trace in the verified deletion recovery export', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-retrieval-trace-'));
   const coreDb = openCoreDb(dataRoot);
