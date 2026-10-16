@@ -209,15 +209,21 @@ export function resolveAgentSetup(
   }
 
   const skillReferences = [
-    ...(config.skills ?? []), ...(profile?.skills ?? []), ...(workspaceBinding?.skills ?? []),
+    ...(config.skills ?? []),
+    ...(profile?.skills ?? []),
+    ...(workspaceBinding?.skills ?? []),
   ];
   const exactSkillVersions = new Map<string, string>();
   for (const skill of skillReferences) {
     if (skill.digest === undefined) continue;
     const existing = exactSkillVersions.get(skill.id);
     if (existing !== undefined && existing !== skill.digest) {
-      diagnostics.push({ agentId: config.id, code: 'agent_setup.conflicting_skill_versions',
-        message: `Agent ${config.id} has conflicting exact versions for Skill ${skill.id}.`, severity: 'error' });
+      diagnostics.push({
+        agentId: config.id,
+        code: 'agent_setup.conflicting_skill_versions',
+        message: `Agent ${config.id} has conflicting exact versions for Skill ${skill.id}.`,
+        severity: 'error',
+      });
     }
     exactSkillVersions.set(skill.id, skill.digest);
   }
@@ -243,7 +249,7 @@ export function resolveAgentSetup(
     allowed,
     credentialDeclarations
   );
-  manifest.skills = (manifest.skills ?? []).map(skill => {
+  manifest.skills = (manifest.skills ?? []).map((skill) => {
     const digest = exactSkillVersions.get(skill.id);
     return digest === undefined ? skill : { ...skill, digest };
   });

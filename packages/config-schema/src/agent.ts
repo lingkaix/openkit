@@ -191,10 +191,12 @@ export const AuthoredAgentMcpEntrySchema = z
   .strict();
 
 /** One included Skill, optionally fixed to a retained exact version by composed setup. */
-export const AuthoredAgentSkillEntrySchema = z.object({
-  id: z.string().min(1),
-  digest: ResourceDigestSchema.optional(),
-}).strict();
+export const AuthoredAgentSkillEntrySchema = z
+  .object({
+    id: z.string().min(1),
+    digest: ResourceDigestSchema.optional(),
+  })
+  .strict();
 
 /** One authored Agent profile that may refine the base manifest. */
 export const AuthoredAgentProfileSchema = z

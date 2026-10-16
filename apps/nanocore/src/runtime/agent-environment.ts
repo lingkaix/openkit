@@ -1084,7 +1084,16 @@ function resolveWorkerSkillSupply(
       entryId: skillId,
       workspaceId,
     });
-    return { digest, entry, version, selectionSource: skill.digest ? 'setup' as const : pin?.digest ? 'pin' as const : 'current' as const };
+    return {
+      digest,
+      entry,
+      version,
+      selectionSource: skill.digest
+        ? ('setup' as const)
+        : pin?.digest
+          ? ('pin' as const)
+          : ('current' as const),
+    };
   });
   // Recheck the complete selection after collection; a later Skill read can revoke an earlier entry.
   const current = loadWorkspaceResourceCatalog(dataRoot, workspaceId);

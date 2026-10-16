@@ -2,7 +2,11 @@ import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { z } from 'zod';
-import { AuthoredAgentMcpEntrySchema, AuthoredAgentSandboxSchema, AuthoredAgentSkillEntrySchema } from './agent.js';
+import {
+  AuthoredAgentMcpEntrySchema,
+  AuthoredAgentSandboxSchema,
+  AuthoredAgentSkillEntrySchema,
+} from './agent.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Workspace grant bound to one reusable Agent credential requirement. */
