@@ -7,6 +7,7 @@ fixture is not proof of real systemd inhibition across reload or manager restart
 
 from contextlib import contextmanager, ExitStack
 import json
+import math
 import os
 from pathlib import Path
 import selectors
@@ -35,16 +36,37 @@ def _refuse():
     raise MaintenanceRefusal("NanoHost maintenance: current fencing and persistent inhibition are not proved; keep stopped and inhibited.") from None
 
 
-def bounded_default(argv):
-    """Bound fixed manager commands by time and bytes, including stderr."""
-    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}) as child:
+def bounded_default(argv, *, input_bytes=None, timeout_seconds=10,
+                    max_stdout_bytes=16384, max_stderr_bytes=256):
+    """Bound fixed operator commands, including small nonce input and both output streams.
+
+    The existing manager calls retain their defaults. The unchanged installer needs a 180-second deadline and larger output bounds; P02 inspection needs at most 128 bytes of nonce input. Prefilling an owned empty pipe below its minimum capacity avoids a blocking parent write while the child is running, and closing its writer before spawn supplies definite EOF.
+    """
+    if (input_bytes is not None and (type(input_bytes) is not bytes or len(input_bytes) > 128) or
+            type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 180 or
+            not math.isfinite(timeout_seconds) or type(max_stdout_bytes) is not int or
+            not 0 <= max_stdout_bytes <= 65536 or type(max_stderr_bytes) is not int or
+            not 0 <= max_stderr_bytes <= 4096):
+        _refuse()
+    with ExitStack() as handles:
+        stdin = subprocess.DEVNULL
+        if input_bytes is not None:
+            stdin, writer = os.pipe2(os.O_CLOEXEC)
+            handles.callback(os.close, stdin)
+            try:
+                if os.write(writer, input_bytes) != len(input_bytes):
+                    _refuse()
+            finally:
+                os.close(writer)
+        child = handles.enter_context(subprocess.Popen(
+            argv, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}))
         output = {child.stdout: bytearray(), child.stderr: bytearray()}
         try:
             with selectors.DefaultSelector() as poll:
                 for stream in output:
                     poll.register(stream, selectors.EVENT_READ)
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + timeout_seconds
                 while poll.get_map():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -56,7 +78,7 @@ def bounded_default(argv):
                             poll.unregister(stream)
                             continue
                         output[stream].extend(block)
-                        if len(output[stream]) > (16384 if stream is child.stdout else 256):
+                        if len(output[stream]) > (max_stdout_bytes if stream is child.stdout else max_stderr_bytes):
                             _refuse()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
