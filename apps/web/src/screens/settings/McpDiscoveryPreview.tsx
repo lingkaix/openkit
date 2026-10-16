@@ -211,7 +211,7 @@ function Preview({ data, blocked, onFailure, onBusyChange }: Props) {
       />
       <TextField
         label="Preview timeout in milliseconds"
-        description="100 to 30000 milliseconds for the whole observation, including cleanup."
+        description="100 to 30000 milliseconds for discovery. Cleanup is awaited before returning."
         value={timeout}
         onChange={(value) => {
           action.reset();

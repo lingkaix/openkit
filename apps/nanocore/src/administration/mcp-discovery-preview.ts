@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import type { OperationInput, OperationOutput } from '@openkit/app-api-schemas';
 import { digestOpenKitTree } from '@openkit/config-schema';
 import { recordServerAuditEvent } from '../audit-events.js';
-import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import { authorizeWorkspace, requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import { loadResourceCatalog, mcpTransportFromDeclaration } from '../catalog/resource-catalog.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type AdmittedOperationContext, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import {
   createDefaultWorkerMcpGateway,
+  MCP_RESULT_MAX_BYTES,
   WorkerMcpGatewayCallError,
   type WorkerMcpGatewayCredentials,
   type WorkerMcpGatewayServerInput,
@@ -55,7 +56,14 @@ export async function previewMcpDiscovery(
       currentAdmin();
       if (workspaceId) {
         const workspace = dependencies.store?.getWorkspace(workspaceId);
-        if (!workspace || workspace.status !== 'active')
+        if (
+          !workspace ||
+          workspace.status !== 'active' ||
+          !authorizeWorkspace(coreDb, actor, workspaceId, {
+            policyOperation: 'workspace.read',
+            mutating: false,
+          })
+        )
           throw new OperationError('not_found', 'MCP preview Workspace is unavailable.', 404);
       }
       const catalog = loadResourceCatalog(dataRoot, scope);
@@ -115,6 +123,12 @@ export async function previewMcpDiscovery(
             expiry <= Date.now() ||
             new Date(expiry).toISOString() !== grant.expiresAt)) ||
         grant.ownerScope !== scope.kind ||
+        grant.lifetime !== scope.kind ||
+        (workspaceId !== null &&
+          !authorizeWorkspace(coreDb, actor, workspaceId, {
+            policyOperation: 'vault.use',
+            mutating: true,
+          })) ||
         reference.ownerScope !== scope.kind ||
         grant.workspaceId !== workspaceId ||
         reference.workspaceId !== workspaceId ||
@@ -126,8 +140,7 @@ export async function previewMcpDiscovery(
         grant.allowedInjectionPaths.length !== 1 ||
         grant.allowedInjectionPaths[0] !== 'gateway-only' ||
         reference.backendKind !== backend.kind ||
-        (scope.kind === 'server' &&
-          (grant.lifetime !== 'server' || !isCurrentServerMcpMaterial(backend, reference)))
+        (scope.kind === 'server' && !isCurrentServerMcpMaterial(backend, reference))
       )
         throw new OperationError(
           'forbidden',
@@ -369,6 +382,12 @@ export async function previewMcpDiscovery(
         serverVersion: live.serverVersion,
         tools,
       };
+      if (Buffer.byteLength(JSON.stringify(observation), 'utf8') > MCP_RESULT_MAX_BYTES)
+        throw new OperationError(
+          'mcp_preview_unavailable',
+          'MCP preview observation exceeds the response limit.',
+          503
+        );
     } catch (error) {
       if (error instanceof WorkerMcpGatewayCallError && error.credentialsMaterialized)
         delivered = true;

@@ -22,7 +22,8 @@ import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
-const MCP_RESULT_MAX_BYTES = 512 * 1024;
+/** Maximum complete MCP result or explicit discovery observation, including metadata. */
+export const MCP_RESULT_MAX_BYTES = 512 * 1024;
 /** Worker-facing oversized-result refusal shared by upstream and built-in MCP tools. */
 export const MCP_RESULT_TOO_LARGE_MESSAGE =
   'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.';

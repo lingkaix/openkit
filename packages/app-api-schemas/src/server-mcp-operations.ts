@@ -128,10 +128,10 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
               description: z.string().max(4096).optional(),
               inputSchema: z.record(z.string(), z.unknown()),
             })
-            .strict()
+            .strip()
         ),
       })
-      .strict(),
+      .strip(),
     false
   ),
   'administration.server-mcp-list': serverOperation(
