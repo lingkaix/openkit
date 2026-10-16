@@ -164,7 +164,7 @@ export async function processVisionView(input: ProcessVisionViewInput): Promise<
       const match = /^Version: ImageMagick ([^\r\n]{1,256})\r?\n/.exec(
         version.stdout.toString('utf8')
       );
-      if (version.code !== 0 || version.stderr.length || !match) return unavailable('unavailable');
+      if (version.code !== 0 || unexpectedImageDiagnostics(version.stderr, executable) || !match) return unavailable('unavailable');
       versions.push(match[1]!);
     }
     let pdfRasterizerVersion: string | null = null;
@@ -279,7 +279,7 @@ export async function processVisionView(input: ProcessVisionViewInput): Promise<
             limits.maxOutputBytes,
             environment
           );
-          if (output.code !== 0 || output.stderr.length) return unavailable('invalid_image');
+          if (output.code !== 0 || unexpectedImageDiagnostics(output.stderr, '/usr/bin/convert')) return unavailable('invalid_image');
           const deliveredDimensions = jpegDimensions(output.stdout);
           if (
             !deliveredDimensions ||
@@ -396,6 +396,12 @@ export async function processVisionView(input: ProcessVisionViewInput): Promise<
       return unavailable('resource_limited');
     return unavailable('unavailable');
   }
+}
+
+/** ImageMagick 7 prints this fixed CLI notice even for a successful conversion. Any other diagnostic remains a processing failure. */
+function unexpectedImageDiagnostics(stderr: Buffer, executable: '/usr/bin/identify' | '/usr/bin/convert'): boolean {
+  const notice = 'WARNING: The convert command is deprecated in IMv7, use "magick" instead of "convert" or "magick convert"\n\n\n';
+  return stderr.length > 0 && !(executable === '/usr/bin/convert' && stderr.equals(Buffer.from(notice)));
 }
 
 /** Hashes delivered bytes and actual processor configuration without introducing another identity owner. */
