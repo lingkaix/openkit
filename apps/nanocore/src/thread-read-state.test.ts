@@ -114,7 +114,8 @@ describe('User-owned Thread read receipts', () => {
     });
     expect(
       (await request('thread.mark-read', { ...owner, userId: OTHER_USER, itemIds: [FIRST] })).status
-    ).toBe(400);
+    ).toBe(403);
+    expect(await state()).toEqual({ readItemIds: [SECOND], unreadItemIds: [FIRST] });
 
     const privateThread = store.createThread(
       workspace.id,

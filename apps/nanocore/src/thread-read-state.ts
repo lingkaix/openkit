@@ -52,7 +52,9 @@ export function readThreadReadState(owner: ThreadReadOwner) {
 }
 
 /** Unions actual displayed identities; omitted identities mean the caller explicitly selected Mark read. */
-export function markThreadRead(owner: ThreadReadOwner & { itemIds?: readonly string[] }) {
+export function markThreadRead(
+  owner: ThreadReadOwner & { itemIds?: readonly string[] | undefined }
+) {
   const eligible = receiptMessageItemIds(
     owner.store.listThreadItems(owner.workspaceId, owner.threadId),
     owner.userId
