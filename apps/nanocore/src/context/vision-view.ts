@@ -13,10 +13,10 @@ export interface VisionViewLimits extends MediaProcessLimits {
   maxOutputBytes: number;
   maxOutputDimension: number;
 }
-/** Release-authored defaults; callers may only lower limits. Frames are fixed at one. */
+/** Release-authored defaults; callers may only lower limits. Frames are fixed at one. The 256 KiB encoded ceiling leaves room for base64 and metadata in the existing 512 KiB MCP result. */
 export const VISION_VIEW_LIMITS: Readonly<VisionViewLimits> = Object.freeze({
   maxInputBytes: 67_108_864, maxPixels: 33_554_432, maxDimension: 16_384,
-  maxOutputBytes: 2_097_152, maxOutputDimension: 1536,
+  maxOutputBytes: 262_144, maxOutputDimension: 1536,
   addressSpaceBytes: 536_870_912, cpuSeconds: 5, wallTimeMs: 20_000,
 });
 /** Original-image pixel coordinates; crop never describes coordinates in resized output. */
