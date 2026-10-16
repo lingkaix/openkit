@@ -150,17 +150,13 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     candidateInput?.workspaceId === workspaceId &&
     candidateInput?.threadId === threadId &&
     typeof candidateInput?.artifactId === 'string';
+  const unfinishedSubmission = submission?.status === 'pending' || submission?.status === 'error';
   const candidate = useArtifact(
     workspaceId,
-    candidateContextMatches ? candidateInput.artifactId : ''
+    candidateContextMatches && !unfinishedSubmission ? candidateInput.artifactId : ''
   );
-  const unfinishedSubmission =
-    submission?.status === 'pending' || submission?.status === 'error';
   const candidateLoading =
-    hasCandidateInput &&
-    !unfinishedSubmission &&
-    candidateContextMatches &&
-    candidate.isPending;
+    hasCandidateInput && !unfinishedSubmission && candidateContextMatches && candidate.isPending;
   const candidateUnavailable =
     hasCandidateInput &&
     !unfinishedSubmission &&
@@ -174,7 +170,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
       candidate.data?.contentDigest !== candidateInput.contentDigest);
   const candidateDraft =
     hasCandidateInput && candidateContextMatches && !unfinishedSubmission
-      ? { artifactRefs: [{ artifactId: candidateInput.artifactId, artifactVersion: candidateInput.artifactVersion }] }
+      ? {
+          artifactRefs: [
+            {
+              artifactId: candidateInput.artifactId,
+              artifactVersion: candidateInput.artifactVersion,
+            },
+          ],
+        }
       : undefined;
   const cancelledRequestId =
     submission?.status === 'error' &&
@@ -558,7 +561,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             ) : null}
             {hasCandidateInput && unfinishedSubmission ? (
               <p role="status" className="mb-2 text-sm text-fg-muted">
-                The candidate was not added. Finish the existing message, then select Use in next Turn again.
+                The candidate was not added. Finish the existing message, then select Use in next
+                Turn again.
               </p>
             ) : null}
             {candidateUnavailable ? (
@@ -568,56 +572,67 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               />
             ) : null}
             {candidateLoading ? (
-              <p role="status" className="text-sm text-fg-muted">Checking the selected candidate.</p>
-            ) : <Composer
-              fileWorkspaceLabel={
-                workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
-              }
-              key={JSON.stringify([workspaceId, threadId])}
-              initialDraft={
-                submission?.status === 'success'
-                  ? {
-                      targetRef: submission.variables?.draft.targetRef,
-                      logicalModelId: submission.variables?.draft.logicalModelId,
-                      ...candidateDraft,
-                    }
-                  : (submission?.variables?.draft ?? candidateDraft)
-              }
-              isSubmitting={submission?.status === 'pending'}
-              lastAdmittedEffort={
-                dashboard.data?.turns.findLast((turn) => turn.reasoningEffort !== undefined)
-                  ?.reasoningEffort
-              }
-              cancelledRequestId={cancelledRequestId}
-              completedRequestId={
-                submission?.status === 'success' ? submission.variables?.draft.requestId : undefined
-              }
-              targetCatalog={
-                taskDefaultTarget && targets.data
-                  ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
-                  : (targets.data ?? null)
-              }
-              artifacts={(hasCandidateInput && !unfinishedSubmission
-                ? (candidateUnavailable ? [] : candidate.data ? [candidate.data] : [])
-                : (workspaceArtifacts.data ?? [])).map((artifact) => ({
-                id: artifact.id,
-                version: artifact.version,
-                label: artifact.title,
-              }))}
-              workerEnvironments={workerEnvironments}
-              disabledReason={
-                disconnected
-                  ? "Couldn't reach the local runtime."
-                  : targets.isError
-                    ? "Couldn't load conversation agents."
-                    : candidateUnavailable
-                      ? 'The selected candidate is unavailable or has changed.'
-                      : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
-                        ? 'Checking the selected candidate.'
-                        : undefined
-              }
-              onSubmit={submitConversation}
-            />}
+              <p role="status" className="text-sm text-fg-muted">
+                Checking the selected candidate.
+              </p>
+            ) : (
+              <Composer
+                fileWorkspaceLabel={
+                  workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
+                }
+                key={JSON.stringify([workspaceId, threadId])}
+                initialDraft={
+                  submission?.status === 'success'
+                    ? {
+                        targetRef: submission.variables?.draft.targetRef,
+                        logicalModelId: submission.variables?.draft.logicalModelId,
+                        ...candidateDraft,
+                      }
+                    : (submission?.variables?.draft ?? candidateDraft)
+                }
+                isSubmitting={submission?.status === 'pending'}
+                lastAdmittedEffort={
+                  dashboard.data?.turns.findLast((turn) => turn.reasoningEffort !== undefined)
+                    ?.reasoningEffort
+                }
+                cancelledRequestId={cancelledRequestId}
+                completedRequestId={
+                  submission?.status === 'success'
+                    ? submission.variables?.draft.requestId
+                    : undefined
+                }
+                targetCatalog={
+                  taskDefaultTarget && targets.data
+                    ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
+                    : (targets.data ?? null)
+                }
+                artifacts={(hasCandidateInput && !unfinishedSubmission
+                  ? candidateUnavailable
+                    ? []
+                    : candidate.data
+                      ? [candidate.data]
+                      : []
+                  : (workspaceArtifacts.data ?? [])
+                ).map((artifact) => ({
+                  id: artifact.id,
+                  version: artifact.version,
+                  label: artifact.title,
+                }))}
+                workerEnvironments={workerEnvironments}
+                disabledReason={
+                  disconnected
+                    ? "Couldn't reach the local runtime."
+                    : targets.isError
+                      ? "Couldn't load conversation agents."
+                      : candidateUnavailable
+                        ? 'The selected candidate is unavailable or has changed.'
+                        : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
+                          ? 'Checking the selected candidate.'
+                          : undefined
+                }
+                onSubmit={submitConversation}
+              />
+            )}
           </div>
         </div>
       </div>

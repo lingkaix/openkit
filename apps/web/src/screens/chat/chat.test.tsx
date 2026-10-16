@@ -437,7 +437,13 @@ function renderApp(
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter initialEntries={initialState === undefined ? [path] : [{ pathname: path, state: initialState }]}>{children}</MemoryRouter>
+        <MemoryRouter
+          initialEntries={
+            initialState === undefined ? [path] : [{ pathname: path, state: initialState }]
+          }
+        >
+          {children}
+        </MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -7028,7 +7034,6 @@ describe('Worker environment Advanced choice', () => {
   });
 });
 
-
 describe('exact Review candidate draft handoff', () => {
   const path = `/chat/${THREAD.workspaceId}/${THREAD.id}`;
   const candidate = {
@@ -7051,13 +7056,21 @@ describe('exact Review candidate draft handoff', () => {
     const user = userEvent.setup();
     const read = vi.fn().mockResolvedValue(artifact);
     const submit = vi.fn().mockRejectedValue(new Error('Response unavailable'));
-    renderApp(path, makeClient({
-      'artifact.read': read,
-      'artifact.list': vi.fn().mockResolvedValue({ items: [artifact] }),
-      'conversation.submit': submit,
-    }), undefined, { candidateInput: candidate });
+    renderApp(
+      path,
+      makeClient({
+        'artifact.read': read,
+        'artifact.list': vi.fn().mockResolvedValue({ items: [artifact] }),
+        'conversation.submit': submit,
+      }),
+      undefined,
+      { candidateInput: candidate }
+    );
     await screen.findByRole('button', { name: 'Remove Reviewed candidate' });
-    expect(read).toHaveBeenCalledWith({ workspaceId: candidate.workspaceId, artifactId: candidate.artifactId });
+    expect(read).toHaveBeenCalledWith({
+      workspaceId: candidate.workspaceId,
+      artifactId: candidate.artifactId,
+    });
     expect(submit).not.toHaveBeenCalled();
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Use this candidate.');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -7066,7 +7079,9 @@ describe('exact Review candidate draft handoff', () => {
     expect(first).toMatchObject({
       workspaceId: candidate.workspaceId,
       threadId: candidate.threadId,
-      artifactRefs: [{ artifactId: candidate.artifactId, artifactVersion: candidate.artifactVersion }],
+      artifactRefs: [
+        { artifactId: candidate.artifactId, artifactVersion: candidate.artifactVersion },
+      ],
       input: 'Use this candidate.',
     });
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -7074,14 +7089,127 @@ describe('exact Review candidate draft handoff', () => {
     expect(submit.mock.calls[1]?.[0]).toEqual(first);
   });
 
+  it('keeps a new candidate draft after completed work and through a current-read refresh', async () => {
+    const user = userEvent.setup();
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(artifact)
+      .mockResolvedValue({ ...artifact, version: 3 });
+    const submit = vi.fn();
+    const cache = renderApp(
+      path,
+      makeClient({
+        'artifact.read': read,
+        'artifact.list': vi.fn().mockResolvedValue({ items: [artifact] }),
+        'conversation.submit': submit,
+      }),
+      (queryClient) => {
+        queryClient.getMutationCache().build(
+          queryClient,
+          { mutationKey: chatKeys.submitMutation },
+          {
+            status: 'success',
+            data: CHAT_MODE_RESPONSE,
+            error: null,
+            failureCount: 0,
+            failureReason: null,
+            isPaused: false,
+            context: undefined,
+            submittedAt: 1,
+            variables: {
+              workspaceId: THREAD.workspaceId,
+              threadId: THREAD.id,
+              draft: {
+                input: 'Previous sent message',
+                targetRef: 'internal-role:assistant',
+                artifactRefs: [],
+                requestId: '00000000-0000-4000-8000-000000000001',
+              },
+            },
+          }
+        );
+      },
+      { candidateInput: candidate }
+    );
+    await screen.findByRole('button', { name: 'Remove Reviewed candidate' });
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    expect(input).toHaveValue('');
+    await user.type(input, 'Keep my next instruction.');
+    await act(async () => {
+      await cache.invalidateQueries({
+        queryKey: ['artifact', candidate.workspaceId, candidate.artifactId],
+        exact: true,
+      });
+    });
+    await screen.findByText(
+      'The selected candidate is unavailable or has changed. Return to its review and select an available candidate.'
+    );
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(
+      'Keep my next instruction.'
+    );
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('preserves an unfinished submission instead of changing its exact retry input', async () => {
+    const user = userEvent.setup();
+    const original = {
+      input: 'Original unfinished message',
+      targetRef: 'internal-role:assistant',
+      artifactRefs: [],
+      requestId: '00000000-0000-4000-8000-000000000001',
+    };
+    const submit = vi.fn().mockRejectedValue(new Error('Still unavailable'));
+    renderApp(
+      path,
+      makeClient({ 'conversation.submit': submit }),
+      (queryClient) => {
+        queryClient.getMutationCache().build(
+          queryClient,
+          { mutationKey: chatKeys.submitMutation },
+          {
+            status: 'error',
+            data: undefined,
+            error: new Error('Response unavailable'),
+            failureCount: 1,
+            failureReason: new Error('Response unavailable'),
+            isPaused: false,
+            context: undefined,
+            submittedAt: 1,
+            variables: { workspaceId: THREAD.workspaceId, threadId: THREAD.id, draft: original },
+          }
+        );
+      },
+      { candidateInput: candidate }
+    );
+    await screen.findByText(
+      'The candidate was not added. Finish the existing message, then select Use in next Turn again.'
+    );
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(original.input);
+    expect(
+      screen.queryByRole('button', { name: 'Remove Reviewed candidate' })
+    ).not.toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit.mock.calls[0]?.[0]).toMatchObject(original);
+  });
+
   it('refuses a newer candidate instead of silently adding its version', async () => {
     const submit = vi.fn();
-    renderApp(path, makeClient({
-      'artifact.read': vi.fn().mockResolvedValue({ ...artifact, version: 3 }),
-      'artifact.list': vi.fn().mockResolvedValue({ items: [{ ...artifact, version: 3 }] }),
-      'conversation.submit': submit,
-    }), undefined, { candidateInput: candidate });
-    await screen.findByText('The selected candidate is unavailable or has changed. Return to its review and select an available candidate.');
+    renderApp(
+      path,
+      makeClient({
+        'artifact.read': vi.fn().mockResolvedValue({ ...artifact, version: 3 }),
+        'artifact.list': vi.fn().mockResolvedValue({ items: [{ ...artifact, version: 3 }] }),
+        'conversation.submit': submit,
+      }),
+      undefined,
+      { candidateInput: candidate }
+    );
+    await screen.findByText(
+      'The selected candidate is unavailable or has changed. Return to its review and select an available candidate.'
+    );
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
     expect(submit).not.toHaveBeenCalled();
