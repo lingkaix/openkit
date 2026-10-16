@@ -15,7 +15,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
-import { importComposerFile, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
+import { useArtifacts } from '../artifacts/data';
 import {
   chatKeys,
   type ThreadItem,
@@ -140,7 +140,6 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const targets = useConversationTargets(workspaceId, threadId);
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
   const workspaceArtifacts = useArtifacts(workspaceId);
-  const importArtifact = useImportWorkspaceArtifact();
   const send = useSendTurn();
   const submission = useConversationSubmission(workspaceId, threadId);
   const cancelledRequestId =
@@ -261,13 +260,6 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           (target) => target.kind === 'new-task-worker' && target.availability === 'available'
         ))
       : undefined;
-
-  /** Imports an attachment and starts this Thread's list refresh without delaying selection. */
-  async function importFile(file: File) {
-    const attachment = await importComposerFile(workspaceId, file, importArtifact);
-    void workspaceArtifacts.refetch();
-    return attachment;
-  }
 
   async function submitConversation(draft: ComposerDraft) {
     const result = send.mutateAsync({ workspaceId: workspaceId ?? '', threadId, draft });
@@ -560,7 +552,6 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 label: artifact.title,
               }))}
               workerEnvironments={workerEnvironments}
-              onImportFile={importFile}
               disabledReason={
                 disconnected
                   ? "Couldn't reach the local runtime."

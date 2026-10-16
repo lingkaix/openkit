@@ -9,7 +9,7 @@ import {
   ListRow,
   Skeleton,
 } from '../../primitives';
-import { importComposerFile, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
+import { useArtifacts } from '../artifacts/data';
 import {
   chatThreadPath,
   conversationThreadPath,
@@ -39,7 +39,6 @@ export function ChatStarter() {
   const navigation = useConversationNavigation(workspaceId);
   const targets = useConversationTargets(workspaceId);
   const artifacts = useArtifacts(workspaceId);
-  const importArtifact = useImportWorkspaceArtifact();
   const create = useCreateThread();
   const send = useSendTurn();
   const currentWorkspace = useRef(workspaceId);
@@ -78,13 +77,6 @@ export function ChatStarter() {
     await submission;
   }
 
-  /** Imports an attachment and starts this starter's list refresh without delaying selection. */
-  async function importFile(file: File) {
-    const attachment = await importComposerFile(workspaceId, file, importArtifact);
-    void artifacts.refetch();
-    return attachment;
-  }
-
   return (
     <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 px-6 py-10">
       <div>
@@ -109,7 +101,6 @@ export function ChatStarter() {
           label: artifact.title,
         }))}
         workerEnvironments={workerEnvironments}
-        onImportFile={importFile}
         disabledReason={
           disconnected
             ? "Couldn't reach the local runtime."
