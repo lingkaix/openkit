@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-16"
 branch: lane/web
 ---
@@ -24,13 +24,13 @@ An independent Consultant inspected accepted owners, source intent, actual sourc
 
 Builder `recovery_controls` owns Recovery, Portability, their regressions, Operations data hooks and the existing shared Vault read hook only, in its own worktree and branch. Builder `update_admission` owns only the backup and update screens and their regression files in a separate worktree and branch. The primary owns account read disposal, AppSearch rendering and its separate regressions, owner criteria, guides and browser evidence. Merge helper branches without cherry-pick. A separate independent reviewer inspects the final actual diff and exact head.
 
-## Checkpoint and next observation
+## Implementation and current evidence
 
-The first P28 feature is landed at `0f0673ba188e7cf7fec5cad99b66a27a1ce94abc` with green main CI. All second-increment production changes are integrated locally. Root account/search baselines and both helper baselines reached their expected failures. Backup/update corrected suites passed; final Recovery suites are queued after the observed first-candidate failures were corrected. Independent review and integrated checks remain open.
+The first P28 feature is landed at `0f0673ba188e7cf7fec5cad99b66a27a1ce94abc` with green main CI. This second increment is implemented and integrated. The primary inspected actual source and merged each helper branch without cherry-pick. The final focused head `522b17079a5418800aee093d5b411b8b536b9c11` passed all seven affected test files, 215 cases in 104.67 seconds, Web typecheck, and Web lint. The lint result includes one pre-existing informational fragment diagnostic in Overview; it is not a failing check. Named external evidence is `evidence/L-WEB/recovery-final-focused-corrected.log` in the coordinator backlog. Main `8cf3158dfce3b88ad9ce53d352974a1410aa0cbb` was then merged cleanly; it changes no Web source or public App operation. Regeneration, final independent review, exact-head Express gate and landing remain open.
 
-The primary inspected the actual source and merged each helper branch without cherry-pick. Abandoned UI reads cancel, while a dispatched command retains its own settlement read on the same query. Each existing ephemeral owner records whether its exact transport promise has settled; this is not proof of effect outcome. A read started before that fact cannot settle the command. Current UI reads remain scoped to the selected Workspace and require idle successful completion before another effect.
+Abandoned UI reads cancel, while a dispatched command retains its own settlement read on the same query. Each existing ephemeral owner records whether its exact transport promise has settled; this is not proof of effect outcome. A read started before that fact cannot settle the command. Current UI reads remain scoped to the selected Workspace and require idle successful completion before another effect. Current backup and update admission preserve exact prepared source, explicit maintenance consent and known or unknown request ownership. A browser regression checks denied remount admission without invoking a backup or update effect.
 
-Next, run the integrated account/search regressions, generation and typecheck, then inspect the final Recovery suite and independent review. Expected observations are current cache disposal and admission, preserved frozen command ownership, complete affected-suite success and zero generated-byte drift. A setup or collection failure decides none of these predicates.
+Next, regenerate OpenAPI and CLI on the merged committed head and require zero byte drift, obtain independent approval, and run the exact-head gate with every Web unit file and the local Web browser suite. A setup or collection failure decides none of the behavior predicates. Final gate, review and landing receipts stay external so the proof head is stable.
 
 ## Verification and landing
 
@@ -39,3 +39,13 @@ The original affected-slice run passed 180 cases and failed six. It exposed a sc
 The account baseline failed six Operations-cache cases and passed the other 13. After correcting an early error-banner observation race, the search baseline failed all six intended cases on retained hits, paused reads or missing new reads. The earlier three pre-render assertion failures are not behavior proof. Backup/update baseline failed 11 cases and passed 26; its complete corrected suites passed 38 cases, Web typecheck and focused Biome. The primary inspected the source and formatter delta before merging. These focused results precede final integration and are not exact-head gate evidence.
 
 Preserve and run existing generic stale observation, frozen command, secret handling, source identity and unknown-result regressions with the new cases. Focused unit checks precede all Web unit suites and the local Web browser suite. Generate OpenAPI and CLI and require no unexpected byte drift. The engineer-approved Express method requires independent exact-head approval, push and `bin/local-gate.sh` on the committed head, with all changed-module tests and `pnpm run test:e2e:web`, then the landing window and `bin/land-express.sh`. Watch the containing main-push CI and fix or revert owned failures immediately. Do not dispatch branch full CI. Local simulator evidence does not prove deployed-host acceptance, which stays with L-OPS.
+
+## Final integration corrections and scope
+
+The first integrated generation and CLI build passed with zero generated-path drift, and 25 account/search cases passed; typecheck then found an optional QueryObserver query key. The correction explicitly supplies the captured Query's own key. The subsequent complete affected run passed 214 cases and failed one previously short-circuited Workspace-switch assertion: scheduler request invocation did not prove the separate Worker read had rendered. The correction awaits the same exact B Worker row, then checks both A rows absent at that completed state; strict API calls, unresolved scheduler controls, zero effects and exact B command lineage remain unchanged. Independent review inspected the raw failed output and this synchronization change. Normal formatting then passed. The final 215-case run above includes those later assertions and closes both failures; the failed and canceled attempts remain non-pass evidence.
+
+The owned diff changes 21 files, including one owning specification. Five existing contracts govern the behavior: Web product projection, Permissions, Vault, Workspace backup and App update delivery. No closed registry, public operation, durable record or effect owner is added. The only consequential path outside the Settings, Operations and Portability screen areas is `apps/web/src/screens/account/session.ts`, which removes the Operations read prefix at the existing successful account-transition boundary. The next private Administration candidate correction remains on separate branches and is excluded from this landing.
+
+## Browser gate corrections
+
+The first exact-head gate passed all 1,327 Web unit tests and failed two of 25 browser cases. The local-mode stack correctly rejects server-only token administration, so the admission browser fixture now supplies that read explicitly and preserves the delayed denial on each remount. The existing Material sequence matched the previous answer before the second canonical Item refresh; it now waits for the answer count to increase within the existing 15-second budget. All proposal and prompt assertions remain. Raw failed output and browser traces remain in external lane evidence. These changes correct browser setup and observation; they add no production behavior or deployed-authentication claim.

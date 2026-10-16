@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Route, test } from '@playwright/test';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 let stack: IsolatedWebStack | null = null;
@@ -74,6 +74,9 @@ test('rechecks backup and update access before offering effects', async ({ page 
       effects.push(operation);
     }
   });
+  // The local stack has no server token administration; supply only that admission read.
+  const tokenListUrl = '**/api/app/operations/token.list';
+  await page.route(tokenListUrl, (route) => route.fulfill({ json: { items: [] } }));
   await page.goto(`${stack.webUrl}/settings/server-operations`);
 
   for (const surface of [
@@ -106,11 +109,12 @@ test('rechecks backup and update access before offering effects', async ({ page 
     const pending = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await page.route('**/api/app/operations/token.list', async (route) => {
+    const denyCurrentAccess = async (route: Route) => {
       requested = true;
       await pending;
       await route.fulfill({ status: 403, json: { error: 'forbidden', message: 'Access denied.' } });
-    });
+    };
+    await page.route(tokenListUrl, denyCurrentAccess);
     try {
       await page.getByRole('link', { name: surface.link, exact: true }).click();
       await expect.poll(() => requested).toBe(true);
@@ -129,7 +133,7 @@ test('rechecks backup and update access before offering effects', async ({ page 
       expect(effects).toEqual([]);
     } finally {
       release();
-      await page.unroute('**/api/app/operations/token.list');
+      await page.unroute(tokenListUrl, denyCurrentAccess);
     }
     await page.getByRole('button', { name: 'Server operations', exact: true }).click();
   }
