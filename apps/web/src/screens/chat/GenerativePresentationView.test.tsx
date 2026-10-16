@@ -1,5 +1,5 @@
 import type { CoreClient } from '@openkit/core-client';
-import { GenerativeUiReferenceItemSchema } from '@openkit/protocol';
+import { GenerativeUiReferenceItemSchema, ToolCallItemSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -112,7 +112,13 @@ describe('GenerativePresentationView', () => {
               updateComponents: {
                 surfaceId: 'surface',
                 components: [
-                  { id: 'root', component: 'Column', children: ['refresh', 'save'] },
+                  { id: 'root', component: 'Column', children: ['note', 'refresh', 'save'] },
+                  {
+                    id: 'note',
+                    component: 'TextField',
+                    label: 'Draft note',
+                    value: { path: '/records/0/data/note' },
+                  },
                   {
                     id: 'refresh',
                     component: 'Button',
@@ -154,8 +160,13 @@ describe('GenerativePresentationView', () => {
         <GenerativePresentationView item={ITEM} />
       </Providers>
     );
+    const note = await screen.findByRole('textbox', { name: 'Draft note' });
+    fireEvent.change(note, { target: { value: 'Unsaved draft' } });
+    expect(modelMessage.updateDataModel.value.records[0]!.data.note).toBe('Saved');
     fireEvent.click(await screen.findByRole('button', { name: 'Refresh proof' }));
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('textbox', { name: 'Draft note' })).toHaveValue('Unsaved draft');
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
     expect(refresh.mock.calls[0][0]).toMatchObject({
       workspaceId: 'ws1',
       presentationId: ITEM.presentationId,
@@ -180,11 +191,35 @@ describe('GenerativePresentationView', () => {
         name: 'save',
         surfaceId: 'surface',
         sourceComponentId: 'save',
-        context: { expectedRecordRevision: 1, values: { note: 'Saved' } },
+        context: { expectedRecordRevision: 1, values: { note: 'Unsaved draft' } },
       },
     });
     expect(action.mock.calls[1][0].requestId).toBe(action.mock.calls[0][0].requestId);
     await waitFor(() => expect(screen.queryByText('Retry this write')).not.toBeInTheDocument());
+  });
+
+  it('keeps exact grouped Tool text visible when native rendering fails', async () => {
+    const source = ToolCallItemSchema.parse({
+      ...ITEM,
+      id: 'tool-source',
+      type: 'tool-call',
+      tool: 'query',
+      server: null,
+      arguments: {},
+      result: 'Exact retained Tool observation.',
+      error: null,
+      durationMs: 1,
+    });
+    const client = {
+      operations: { 'generative-ui.get': vi.fn().mockResolvedValue({ messages: [], actions: [] }) },
+    } as unknown as CoreClient;
+    render(
+      <Providers client={client}>
+        <GenerativePresentationView item={ITEM} source={source} />
+      </Providers>
+    );
+    expect(await screen.findByText('Exact retained Tool observation.')).toBeInTheDocument();
+    expect(screen.queryByText(ITEM.fallbackText)).not.toBeInTheDocument();
   });
 
   it('falls back to plain content when the presentation cannot load', async () => {
