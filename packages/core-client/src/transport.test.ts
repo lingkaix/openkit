@@ -48,7 +48,7 @@ describe('JSON mutation transport', () => {
     );
     fetcher.mockResolvedValueOnce(
       Response.json(
-        { protocolVersion: '0.5.0', code: 'command_conflict', message: 'Conflict.' },
+        { protocolVersion: '0.6.0', code: 'command_conflict', message: 'Conflict.' },
         { status: 409 }
       )
     );

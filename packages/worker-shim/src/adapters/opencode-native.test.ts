@@ -102,7 +102,7 @@ async function fixture(
     capabilityCredential: 'synthetic-capability-credential',
   };
   const session = await adapter.openSession({
-    agentSessionId: 'as-native',
+    agentSessionId: 'as_00000000-0000-7470-a067-62abbd7e1d59',
     stateRoot: state,
     controlRoot: control,
     environment: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: join(root, 'wrong-image') },
@@ -122,7 +122,7 @@ async function fixture(
     },
   };
   const turn = (skills: string[] = [], ids: string[] = []): WorkerResidentTurnInput => ({
-    turnId: 'turn-native',
+    turnId: 'tu_00000000-0000-78d4-ab1b-f933af68c251',
     turnInput: 'native-user',
     workingDirectory: work,
     turnDirectory: join(root, 'turn'),

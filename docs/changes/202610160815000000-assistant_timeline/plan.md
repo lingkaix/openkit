@@ -28,7 +28,7 @@ The first seam joins public thread.create to canonical Thread storage and restar
 
 ## Next Action
 
-Keep the completed P19 source ready while separate P20 increments continue on their own branches. After P14 lands, merge main, apply only the P19 identifier and source-proof corrections from the private preparation combination, regenerate every affected projection, refresh the out-of-area inventory and obtain independent exact-head approval. Express landing requires a pushed clean committed head, repository/lint/typecheck and complete affected-module suites plus Web e2e through the local gate before acquiring the landing window. Land and release promptly, then watch the containing main-push CI and repair or revert an owned failure immediately. Do not dispatch branch full CI for this express feature. No host acceptance or release publication is authorized.
+P14 landed on main553ea24b at2026-10-16T20:10Z. The real main merge retains only the P19 identifier and source-proof corrections from the private preparation; the codec is inherited from main. All non-generated merged bytes match that prepared combination after inspected conflict resolution. Regenerate affected projections, refresh the out-of-area inventory and obtain the final independent exact-head delta approval while separate P20 increments continue on their own branches. Express landing requires a pushed clean committed head, repository/lint/typecheck and complete affected-module suites plus Web e2e through the local gate before acquiring the landing window. Land and release promptly, then watch the containing main-push CI and repair or revert an owned failure immediately. Do not dispatch branch full CI for this express feature. No host acceptance or release publication is authorized.
 
 ## Intent Revision 2
 
@@ -45,6 +45,11 @@ The engineer approved a source-bound canonical summary Item on 2026-10-16 throug
 ## Intent Revision 5
 
 The coordinator selected the approved P14 reset boundary for predecessor receipt-free Assistant Tasks on2026-10-16. Any retained bytes stay inspect-only as recovery_required, with no automatic resumption, fabricated confirmation, compatibility reader, separate P19 reset or carry-forward migration. The pre-stable continuity obligation has not started, and the already approved clean-candidate P14 reset owns this prerelease disposition. Add a no-resumption regression. The next prerelease notes must state this disposition as well as removal of chat.quick. P19 landing waits for the shared P14 identifier allocator; no parallel formatter or relaxed validator is authorized.
+
+
+## Outcome Task Package Closure
+
+The independent P19 outcome-context investigation found that the existing command-only null-Knowledge classifier refused the accepted confirmed-outcome tuple at both native package preparation and strict S39 verification. Three regressions reached those exact refusals before correction. Both seams now consume the existing Assistant source-proof reader for the outcome case, including exact objective, without another query, receipt, runner or identifier rule. The native authority reader supplies that proof; its absence fails closed. Package and source-proof suites must pass together before express landing. The landing follows the engineer-approved express local-gate path since2026-10-16T12:55Z; no branch full CI is dispatched. Main-push verification and immediate reviewed repair/revert remain mandatory.
 
 ## Personal Work Admission Correction
 

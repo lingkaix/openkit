@@ -33,13 +33,13 @@ describe('filesystem workspace staging roots', () => {
     mkdirSync(targetRoot);
     symlinkSync(stagingRoot, stagingRootAlias, 'dir');
     symlinkSync(targetRoot, targetRootAlias, 'dir');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const before = {
       contentDigest: 'sha256:before',
       createdAt: '2026-07-05T00:00:00.000Z',
       entries: [],
       resourceId: 'fs_default',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     } satisfies FilesystemSnapshotManifest;
     const baseline = {
       before,
@@ -48,7 +48,7 @@ describe('filesystem workspace staging roots', () => {
       reviewId: 'swr_fs_1',
       stagingRootPath: stagingRootAlias,
       targetRootPath: targetRootAlias,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     } satisfies RecordFilesystemWorkspaceStagingRootInput;
 
     try {

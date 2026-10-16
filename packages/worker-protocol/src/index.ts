@@ -1,3 +1,12 @@
+import {
+  AgentSessionIdSchema,
+  CapabilityCallIdSchema,
+  isEntityId,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
+
 export { type GitFailureExplanation, GitFailureExplanationSchema } from '@openkit/protocol';
 export * from './adapter-supply.js';
 export * from './harness-control.js';
@@ -34,10 +43,10 @@ export const WorkerOpaqueIdSchema = z.string().min(1);
  */
 export const WorkerLineageSchema = z
   .object({
-    workspaceId: WorkerOpaqueIdSchema,
-    threadId: WorkerOpaqueIdSchema,
-    turnId: WorkerOpaqueIdSchema,
-    agentSessionId: WorkerOpaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    agentSessionId: AgentSessionIdSchema,
     packageSnapshotId: WorkerOpaqueIdSchema,
     requestId: WorkerOpaqueIdSchema.nullable().optional(),
   })
@@ -761,7 +770,7 @@ export const WorkerCapabilityCallSummarySchema = z
     schemaVersion: WorkerProtocolSchemaVersionSchema,
     lineage: WorkerLineageSchema,
     sequence: WorkerSequenceSchema,
-    capabilityCallId: WorkerOpaqueIdSchema,
+    capabilityCallId: CapabilityCallIdSchema,
     family: WorkerCapabilityFamilySchema,
     status: WorkerCapabilityStatusSchema,
     inputSummary: z.string().min(1),
@@ -931,7 +940,7 @@ export type WorkerErrorEnvelope = z.infer<typeof WorkerErrorEnvelopeSchema>;
  * @throws Error when the identity is missing or is not a canonical path segment.
  */
 export function workerSessionInputPaths(agentSessionId: string | undefined) {
-  if (typeof agentSessionId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(agentSessionId)) {
+  if (!isEntityId('as', agentSessionId)) {
     throw new Error('Worker inputs require a canonical AgentSession identity.');
   }
   const root = `/openkit/sessions/${agentSessionId}`;
@@ -946,7 +955,7 @@ export function workerSessionInputPaths(agentSessionId: string | undefined) {
   };
 }
 
-/** Preserves Core hash-qualified ids: a colon is literal POSIX segment data, not URI authority. */
+/** Validates an opaque authored adapter segment without URI decoding. */
 function runtimePathSegment(value: string): string {
   if (!/^[A-Za-z0-9_:-]+$/.test(value))
     throw new Error('Runtime data requires canonical identity segments.');
@@ -955,7 +964,7 @@ function runtimePathSegment(value: string): string {
 
 /** Returns the Thread/runtime root; the runtime segment is its stable adapter id, not a process id. */
 export function workerThreadRuntimeRoot(threadId: string, harness: string): string {
-  return `/openkit/threads/${runtimePathSegment(threadId)}/${runtimePathSegment(harness)}`;
+  return `/openkit/threads/${ThreadIdSchema.parse(threadId)}/${runtimePathSegment(harness)}`;
 }
 
 /**
@@ -966,7 +975,7 @@ export function workerThreadRuntimeRoot(threadId: string, harness: string): stri
  * @returns Paths under the existing collector's runtime subdirectory within the Turn capture.
  */
 export function workerTurnCapturePaths(threadId: string, harness: string, turnId: string) {
-  const root = `${workerThreadRuntimeRoot(threadId, harness)}/capture/${runtimePathSegment(turnId)}`;
+  const root = `${workerThreadRuntimeRoot(threadId, harness)}/capture/${TurnIdSchema.parse(turnId)}`;
   return {
     root,
     eventsPath: `${root}/events.jsonl`,

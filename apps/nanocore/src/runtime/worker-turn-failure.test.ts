@@ -12,19 +12,19 @@ function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-turn-failure-'));
   const store = createDemoStore({ dataRoot });
   const turn = store.createTurn(
-    'ws_demo',
-    'th_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
     'Run governed worker',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     {
-      turnId: 'turn_worker_failure',
+      turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
     }
   );
   store.createAgentSession({
     agentId: 'agent_codex_host',
     createdAt: turn.startedAt ?? '2026-07-15T00:00:00.000Z',
-    id: 'as_worker_failure',
+    id: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
     message: null,
     status: 'busy',
     threadId: turn.threadId,
@@ -37,28 +37,28 @@ function createFixture() {
 /** Runs the shared governed-worker failure projection. */
 function projectFailure(store: FsStore) {
   return terminalizeGovernedWorkerTurn({
-    agentSessionId: 'as_worker_failure',
+    agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
     completedAt: '2026-07-15T00:01:00.000Z',
     errorCode: 'worker_governance_restart_recovery',
     message: 'Worker execution stopped during NanoCore restart recovery.',
     outcome: 'failed',
     requestId: null,
     store,
-    turnId: 'turn_worker_failure',
+    turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
   });
 }
 
 /** Runs the shared governed-worker interruption projection. */
 function projectInterruption(store: FsStore) {
   return terminalizeGovernedWorkerTurn({
-    agentSessionId: 'as_worker_failure',
+    agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
     completedAt: '2026-07-15T00:01:00.000Z',
     errorCode: 'worker_governance_restart_recovery',
     message: 'Worker execution was interrupted during NanoCore restart recovery.',
     outcome: 'interrupted',
     requestId: null,
     store,
-    turnId: 'turn_worker_failure',
+    turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
   });
 }
 
@@ -75,7 +75,7 @@ describe('governed worker turn failure projection', () => {
     projectFailure(restarted);
     projectFailure(restarted);
     expect(restarted.getTurnById(turn.id)).toEqual(decided);
-    expect(restarted.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(restarted.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       status: 'failed',
       message: decided.error!.message,
     });
@@ -103,7 +103,7 @@ describe('governed worker turn failure projection', () => {
       evidence: { availability: 'partial', outputTruncated: false },
     } as const;
     terminalizeGovernedWorkerTurn({
-      agentSessionId: 'as_worker_failure',
+      agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
       completedAt: '2026-09-22T00:00:01.000Z',
       errorCode: 'worker_governance_turn_failed',
       message: 'Repository HTTP refusal; attribution unavailable.',
@@ -140,21 +140,23 @@ describe('governed worker turn failure projection', () => {
   it('fails an existing turn when its AgentSession was not durably created', () => {
     const store = createDemoStore();
     store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Crash before session write',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'turn_worker_failure',
+        turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
       }
     );
 
     expect(projectFailure(store)).toMatchObject({ status: 'failed' });
-    expect(store.getTurnById('turn_worker_failure')).toMatchObject({ status: 'failed' });
+    expect(store.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
+      status: 'failed',
+    });
     expect(
       store
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter(
           (event) =>
             event.event === 'turn.completed' &&
@@ -173,20 +175,20 @@ describe('governed worker turn failure projection', () => {
     });
 
     const reloaded = new FsStore({ dataRoot });
-    expect(reloaded.getTurnById('turn_worker_failure')).toMatchObject({
+    expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       error: {
         code: 'worker_governance_restart_recovery',
         message: 'Worker execution was interrupted during NanoCore restart recovery.',
       },
       status: 'interrupted',
     });
-    expect(reloaded.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       message: 'Worker execution was interrupted during NanoCore restart recovery.',
       status: 'interrupted',
     });
     expect(
       reloaded
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter(
           (event) =>
             event.event === 'turn.completed' &&
@@ -256,20 +258,20 @@ describe('governed worker turn failure projection', () => {
     expect(projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'failed' });
 
     const reloaded = new FsStore({ dataRoot });
-    expect(reloaded.getTurnById('turn_worker_failure')).toMatchObject({
+    expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       error: {
         code: 'worker_governance_restart_recovery',
         message: 'Worker execution stopped during NanoCore restart recovery.',
       },
       status: 'failed',
     });
-    expect(reloaded.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       message: 'Worker execution stopped during NanoCore restart recovery.',
       status: 'failed',
     });
     expect(
       reloaded
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter(
           (event) =>
             event.event === 'turn.completed' &&
@@ -281,12 +283,12 @@ describe('governed worker turn failure projection', () => {
 
   it('preserves a completed turn and does not fail its session', () => {
     const { dataRoot, store } = createFixture();
-    const completed = store.updateTurn('turn_worker_failure', {
+    const completed = store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:30.000Z',
       error: null,
       status: 'completed',
     });
-    store.updateAgentSession('as_worker_failure', {
+    store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
       message: null,
       status: 'idle',
       updatedAt: '2026-07-15T00:00:30.000Z',
@@ -303,17 +305,17 @@ describe('governed worker turn failure projection', () => {
     expect(projectFailure(store)).toMatchObject({ status: 'completed' });
 
     const reloaded = new FsStore({ dataRoot });
-    expect(reloaded.getTurnById('turn_worker_failure')).toMatchObject({
+    expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       error: null,
       status: 'completed',
     });
-    expect(reloaded.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       message: null,
       status: 'idle',
     });
     expect(
       reloaded
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter(
           (event) =>
             event.event === 'turn.completed' &&
@@ -325,12 +327,12 @@ describe('governed worker turn failure projection', () => {
 
   it('repairs missing success events for an already completed turn exactly once', () => {
     const { dataRoot, store } = createFixture();
-    store.updateAgentSession('as_worker_failure', {
+    store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
       message: null,
       status: 'idle',
       updatedAt: '2026-07-15T00:00:30.000Z',
     });
-    store.updateTurn('turn_worker_failure', {
+    store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:30.000Z',
       error: null,
       status: 'completed',
@@ -339,7 +341,9 @@ describe('governed worker turn failure projection', () => {
     expect(projectFailure(store)).toMatchObject({ status: 'completed' });
     expect(projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'completed' });
 
-    const events = new FsStore({ dataRoot }).getTurnEvents('turn_worker_failure');
+    const events = new FsStore({ dataRoot }).getTurnEvents(
+      'tu_00000000-0000-7cfa-813c-d5549b2b9ef9'
+    );
     expect(
       events.filter(
         (event) =>
@@ -378,12 +382,12 @@ describe('governed worker turn failure projection', () => {
         ? { code: 'original_product_failure', message: 'Preserve the original failure.' }
         : null;
 
-    store.updateTurn('turn_worker_failure', {
+    store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:30.000Z',
       error: originalError,
       status,
     });
-    store.updateAgentSession('as_worker_failure', {
+    store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
       message: 'Authoritative terminal session state.',
       status: 'idle',
       updatedAt: '2026-07-15T00:00:30.000Z',
@@ -392,17 +396,17 @@ describe('governed worker turn failure projection', () => {
     expect(projectFailure(store)).toMatchObject({ status });
 
     const reloaded = new FsStore({ dataRoot });
-    expect(reloaded.getTurnById('turn_worker_failure')).toMatchObject({
+    expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       error: originalError,
       status,
     });
-    expect(reloaded.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       message: 'Authoritative terminal session state.',
       status: 'idle',
     });
     expect(
       reloaded
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter(
           (event) =>
             event.event === 'turn.completed' &&
@@ -420,7 +424,9 @@ describe('governed worker turn failure projection', () => {
 
     expect(() => projectFailure(store)).toThrow(AggregateError);
     sessionWrite.mockRestore();
-    expect(new FsStore({ dataRoot }).getTurnById('turn_worker_failure')).toMatchObject({
+    expect(
+      new FsStore({ dataRoot }).getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
+    ).toMatchObject({
       error: { code: 'worker_governance_restart_recovery' },
       status: 'failed',
     });
@@ -428,13 +434,13 @@ describe('governed worker turn failure projection', () => {
     expect(projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'failed' });
 
     const reloaded = new FsStore({ dataRoot });
-    expect(reloaded.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       message: 'Worker execution stopped during NanoCore restart recovery.',
       status: 'failed',
     });
     expect(
       reloaded
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter(
           (event) =>
             event.event === 'turn.completed' &&
@@ -469,44 +475,46 @@ describe('governed worker turn failure projection', () => {
 
     expect(() =>
       terminalizeGovernedWorkerTurn({
-        agentSessionId: 'as_worker_failure',
+        agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
         completedAt,
         errorCode,
         message: originalError.message,
         outcome: 'failed',
         requestId: null,
         store,
-        turnId: 'turn_worker_failure',
+        turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
       })
     ).toThrow(AggregateError);
     terminalEventWrite.mockRestore();
 
     const partial = new FsStore({ dataRoot });
-    expect(partial.getTurnById('turn_worker_failure')).toMatchObject({
+    expect(partial.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       completedAt,
       error: originalError,
       status: 'failed',
     });
-    expect(partial.getAgentSession('as_worker_failure')).toMatchObject({ status: 'failed' });
+    expect(partial.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
+      status: 'failed',
+    });
     expect(
       partial
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter((event) => event.event === 'turn.completed')
     ).toEqual([]);
 
     expect(projectFailure(partial)).toMatchObject({ status: 'failed' });
     const repaired = new FsStore({ dataRoot });
-    expect(repaired.getTurnById('turn_worker_failure')).toMatchObject({
+    expect(repaired.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       completedAt,
       error: originalError,
       status: 'failed',
     });
-    expect(repaired.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(repaired.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       message: originalError.message,
       status: 'failed',
     });
     const terminalEvents = repaired
-      .getTurnEvents('turn_worker_failure')
+      .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
       .filter((event) => event.event === 'turn.completed');
     expect(terminalEvents).toHaveLength(1);
     expect(SseEventEnvelopeSchema.parse(terminalEvents[0])).toMatchObject({
@@ -519,14 +527,14 @@ describe('governed worker turn failure projection', () => {
     projectFailure(repaired);
     expect(
       new FsStore({ dataRoot })
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter((event) => event.event === 'turn.completed')
     ).toEqual(terminalEvents);
   });
 
   it('repairs a partial normal worker failure during restart without replacing its error', () => {
     const { dataRoot, store } = createFixture();
-    store.updateTurn('turn_worker_failure', {
+    store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:45.000Z',
       error: {
         code: 'worker_governance_turn_failed',
@@ -544,13 +552,13 @@ describe('governed worker turn failure projection', () => {
     });
 
     const reloaded = new FsStore({ dataRoot });
-    expect(reloaded.getAgentSession('as_worker_failure')).toMatchObject({
+    expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       message: 'The original worker execution failed.',
       status: 'failed',
     });
     expect(
       reloaded
-        .getTurnEvents('turn_worker_failure')
+        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
         .filter(
           (event) =>
             event.event === 'turn.completed' &&

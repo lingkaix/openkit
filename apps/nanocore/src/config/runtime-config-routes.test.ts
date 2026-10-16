@@ -25,7 +25,7 @@ describe('canonical runtime configuration registration', () => {
       agentId: 'agent_codex_host',
       configVersion: 1,
       createdAt: '2026-07-19T00:00:00.000Z',
-      id: 'as_foreign_runtime_config',
+      id: 'as_00000000-0000-74d0-b1a2-1989a12cdcb5',
       message: null,
       status: 'busy',
       threadId: foreignThread.id,
@@ -36,12 +36,12 @@ describe('canonical runtime configuration registration', () => {
     const updateAgentSession = vi.spyOn(store, 'updateAgentSession');
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
         effectiveRole: 'owner',
         kind: 'workspace',
         policyOperation: 'turn.run',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await next();
     });
@@ -62,11 +62,11 @@ describe('canonical runtime configuration registration', () => {
     });
 
     const foreign = await app.request(
-      `/api/app/workspaces/ws_demo/runtime-config/stale-sessions/${foreignSession.id}/restart`,
+      `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/runtime-config/stale-sessions/${foreignSession.id}/restart`,
       { method: 'POST' }
     );
     const missing = await app.request(
-      '/api/app/workspaces/ws_demo/runtime-config/stale-sessions/as_missing/restart',
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/runtime-config/stale-sessions/as_00000000-0000-7fdd-8f71-4a23eb7a922b/restart',
       { method: 'POST' }
     );
 

@@ -144,7 +144,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'user_admin',
+        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       deliverNanoHostTransportTokenToNamedSlot({
         deploymentId: DEPLOYMENT,
@@ -209,7 +209,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'user_admin',
+        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       const revoked = revokeNanoHostTransportTokenAndFence(coreDb, authority, {
         now: new Date('2026-08-08T02:00:00.000Z'),
@@ -246,7 +246,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         expiresAt: '2026-08-08T01:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'user_admin',
+        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       const fenced = fenceNanoHostTransportOnTokenUnusable(coreDb, authority, {
         identityId: IDENTITY,
@@ -280,14 +280,14 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'user_admin',
+        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       const second = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:30:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'user_admin',
+        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       const revoked = decommissionNanoHostTransportAndFence(coreDb, authority, {
         deploymentId: DEPLOYMENT,

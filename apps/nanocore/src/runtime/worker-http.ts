@@ -1,4 +1,10 @@
 import { Buffer } from 'node:buffer';
+import {
+  AgentSessionIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 
 import type { Context } from 'hono';
 import { z } from 'zod';
@@ -7,10 +13,10 @@ import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
 export const WorkerControlLineageRequestSchema = z.object({
-  workspaceId: z.string().min(1),
-  threadId: z.string().min(1),
-  turnId: z.string().min(1),
-  agentSessionId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  agentSessionId: AgentSessionIdSchema,
   packageSnapshotId: z.string().min(1),
   requestId: z.string().min(1).nullable().optional(),
 });

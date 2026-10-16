@@ -92,7 +92,7 @@ A missing, invalid, or wrong key leaves Vault locked and readiness degraded with
 
 ### Local Mode
 
-Local mode uses the implicit local user `user_local` and does not require server-mode session cookies for product APIs.
+Local mode reuses the recorded canonical local User. Product APIs use that identity without a server-mode session cookie.
 
 ```bash
 OPENKIT_CORE_MODE=local \

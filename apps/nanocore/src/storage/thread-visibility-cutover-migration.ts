@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { ThreadSchema, TurnSchema } from '@openkit/protocol';
+import { deriveEntityId, isEntityId, ThreadSchema, TurnSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
-import { coreDbPath, LOCAL_USER_ID } from './fs-layout.js';
+import { coreDbPath } from './fs-layout.js';
 import { WorkspaceSystemRecordSchema, writeFileAtomic } from './workspace-file-records.js';
 
 const THREAD_ENTRY_REQUIRED_FEATURE = 'openkit.thread-entry.v1' as const;
@@ -378,7 +378,7 @@ function classifyThreadVisibilityCutover(
 ): Pick<Thread, 'visibility' | 'privateOwnerUserId'> {
   if (kind === 'personal') {
     const workspaceId = basename(workspaceRoot);
-    const candidates = new Set([LOCAL_USER_ID, ...listDirectoryNames(join(dataRoot, 'users'))]);
+    const candidates = new Set(listDirectoryNames(join(dataRoot, 'users')));
     if (existsSync(coreDbPath(dataRoot))) {
       const database = new Database(coreDbPath(dataRoot), { readonly: true, fileMustExist: true });
       try {
@@ -390,11 +390,10 @@ function classifyThreadVisibilityCutover(
       }
     }
     for (const userId of candidates) {
-      const namespace =
-        userId === LOCAL_USER_ID
-          ? ''
-          : `u_${createHash('sha256').update(userId).digest('hex').slice(0, 12)}_`;
-      if (workspaceId === `ws_${namespace}quick_chat`) {
+      if (
+        isEntityId('usr', userId) &&
+        workspaceId === deriveEntityId('ws', ['quick_chat', userId])
+      ) {
         return { visibility: 'private', privateOwnerUserId: userId };
       }
     }

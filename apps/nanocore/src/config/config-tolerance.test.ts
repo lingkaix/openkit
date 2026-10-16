@@ -44,7 +44,7 @@ describe('authored configuration tolerance', () => {
     const manager = createRuntimeConfigManager({ dataRoot });
     const files = new RuntimeConfigFileService({
       dataRoot,
-      userId: 'user_demo',
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       workspaceIds: [],
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
@@ -118,7 +118,7 @@ describe('authored configuration tolerance', () => {
     );
     const files = new RuntimeConfigFileService({
       dataRoot,
-      userId: 'user_demo',
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       workspaceIds: [],
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
@@ -172,7 +172,7 @@ describe('authored configuration tolerance', () => {
     );
     const files = new RuntimeConfigFileService({
       dataRoot,
-      userId: 'user_demo',
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       workspaceIds: [],
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
@@ -228,19 +228,22 @@ describe('authored configuration tolerance', () => {
 
   it('loads unknown personal and Workspace preference keys with located warnings', () => {
     const { dataRoot } = authoredFile(
-      'users/user_demo/config/user.jsonc',
+      'users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc',
       JSON.stringify({
         schemaVersion: 1,
         workspaces: [
           {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             futurePreference: 'quiet',
             internalRoles: [{ roleId: 'assistant', futureRolePreference: 'quiet' }],
           },
         ],
       })
     );
-    const workspacePath = join(dataRoot, 'workspaces/ws_demo/config/workspace.jsonc');
+    const workspacePath = join(
+      dataRoot,
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
+    );
     mkdirSync(join(workspacePath, '..'), { recursive: true });
     writeFileSync(
       workspacePath,
@@ -254,12 +257,26 @@ describe('authored configuration tolerance', () => {
     );
 
     const snapshot = loadRuntimeConfig(dataRoot);
-    expect(snapshot.userConfigs[0]?.config.workspaces[0]?.workspaceId).toBe('ws_demo');
+    expect(snapshot.userConfigs[0]?.config.workspaces[0]?.workspaceId).toBe(
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     expect(snapshot.workspaceConfigs[0]?.config.workspace.name).toBe('Demo');
     for (const [source, key, location] of [
-      ['DATA_ROOT/users/user_demo/config/user.jsonc', 'futurePreference', 'workspaces'],
-      ['DATA_ROOT/users/user_demo/config/user.jsonc', 'futureRolePreference', 'internalRoles'],
-      ['DATA_ROOT/workspaces/ws_demo/config/workspace.jsonc', 'futureRoleHint', 'internalRoles'],
+      [
+        'DATA_ROOT/users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc',
+        'futurePreference',
+        'workspaces',
+      ],
+      [
+        'DATA_ROOT/users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc',
+        'futureRolePreference',
+        'internalRoles',
+      ],
+      [
+        'DATA_ROOT/workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc',
+        'futureRoleHint',
+        'internalRoles',
+      ],
     ]) {
       const warning = snapshot.diagnostics.find(
         (diagnostic) => diagnostic.source === source && diagnostic.message.includes(key)
@@ -271,7 +288,7 @@ describe('authored configuration tolerance', () => {
 
   it('reports unknown optional data-source keys already accepted by the catalog reader', () => {
     const { dataRoot } = authoredFile(
-      'workspaces/ws_demo/config/data-sources.jsonc',
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
       JSON.stringify({
         schemaVersion: 1,
         reviewBatch: 'batch-1',
@@ -303,7 +320,8 @@ describe('authored configuration tolerance', () => {
       const warning = snapshot.diagnostics.find((diagnostic) => diagnostic.message.includes(key));
       expect(warning).toMatchObject({
         severity: 'warning',
-        source: 'DATA_ROOT/workspaces/ws_demo/config/data-sources.jsonc',
+        source:
+          'DATA_ROOT/workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
       });
       expect(warning?.message).toContain(location);
     }
@@ -312,18 +330,18 @@ describe('authored configuration tolerance', () => {
   it('blocks an editor write that declares a registered but unsupported data-source feature', () => {
     const original = JSON.stringify({ schemaVersion: 1, sources: [] });
     const { dataRoot, path } = authoredFile(
-      'workspaces/ws_demo/config/data-sources.jsonc',
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
       original
     );
     const manager = createRuntimeConfigManager({ dataRoot });
     const files = new RuntimeConfigFileService({
       dataRoot,
-      userId: 'user_demo',
-      workspaceIds: ['ws_demo'],
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
     });
-    const id = 'workspaces/ws_demo/data-sources.jsonc';
+    const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
     const content = JSON.stringify({
       schemaVersion: 1,
       requiredFeatures: ['workspace.mount.fuse'],
@@ -354,15 +372,20 @@ describe('authored configuration tolerance', () => {
 
   it.each([
     {
-      path: 'users/user_demo/config/user.jsonc',
-      id: 'users/user_demo/user.jsonc',
+      path: 'users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc',
+      id: 'users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/user.jsonc',
       original: { schemaVersion: 1 },
-      draft: { schemaVersion: 1, workspaces: [{ workspaceId: 'ws_demo', futurePreference: true }] },
+      draft: {
+        schemaVersion: 1,
+        workspaces: [
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', futurePreference: true },
+        ],
+      },
       key: 'futurePreference',
     },
     {
-      path: 'workspaces/ws_demo/config/workspace.jsonc',
-      id: 'workspaces/ws_demo/workspace.jsonc',
+      path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc',
+      id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc',
       original: { schemaVersion: 1, workspace: { name: 'Demo' } },
       draft: {
         schemaVersion: 1,
@@ -371,8 +394,8 @@ describe('authored configuration tolerance', () => {
       key: 'futureRoleHint',
     },
     {
-      path: 'workspaces/ws_demo/config/data-sources.jsonc',
-      id: 'workspaces/ws_demo/data-sources.jsonc',
+      path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
+      id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
       original: { schemaVersion: 1, sources: [] },
       draft: { schemaVersion: 1, sources: [], reviewBatch: 'batch-1' },
       key: 'reviewBatch',
@@ -382,8 +405,8 @@ describe('authored configuration tolerance', () => {
     const manager = createRuntimeConfigManager({ dataRoot });
     const files = new RuntimeConfigFileService({
       dataRoot,
-      userId: 'user_demo',
-      workspaceIds: ['ws_demo'],
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
     });
@@ -399,9 +422,9 @@ describe('authored configuration tolerance', () => {
   });
 
   it.each([
-    ['users/user_demo/config/user.jsonc', { schemaVersion: 1 }],
+    ['users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc', { schemaVersion: 1 }],
     [
-      'workspaces/ws_demo/config/workspace.jsonc',
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc',
       { schemaVersion: 1, workspace: { name: 'Demo' } },
     ],
   ])('rejects unsupported required features in %s', (relativePath, base) => {
@@ -612,7 +635,7 @@ describe('descriptive configuration extension loading', () => {
     expect(effectiveConfig(manager.current(), kind)).toEqual(effectiveConfig(before, kind));
     const files = new RuntimeConfigFileService({
       dataRoot,
-      userId: 'user_demo',
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       workspaceIds: [],
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
@@ -770,7 +793,7 @@ describe('descriptive configuration extension loading', () => {
     expect(manager.current()).toBe(before);
     const files = new RuntimeConfigFileService({
       dataRoot,
-      userId: 'user_demo',
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       workspaceIds: [],
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),

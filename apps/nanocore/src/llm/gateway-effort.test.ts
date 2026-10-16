@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
@@ -53,7 +53,7 @@ function fixture(
     workspace.id,
     thread.id,
     'Request',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     {
       captureCoverage: { scope: 'server', value: 'off' },
@@ -66,14 +66,18 @@ function fixture(
   if (options.customStock) {
     // Availability uses non-secret metadata; the injected resolver supplies dispatch material.
     createVaultReference(coreDb, {
-      referenceId: 'provider_openai_compatible_custom',
+      referenceId: 'vault_00000000-0000-7b1d-88cb-f75d3058afdf',
       ownerScope: 'server',
       displayName: 'Custom stock Gateway fixture',
       secretKind: 'provider-api-key',
       backendKind: 'encrypted-file',
     });
   }
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: workspace.id });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: workspace.id,
+  });
   cleanup.push(() => {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -90,7 +94,7 @@ function fixture(
           ? {
               kind: 'custom',
               baseUrl: 'https://example.invalid/v1',
-              secretRef: 'vault://provider_openai_compatible_custom',
+              secretRef: 'vault://vault_00000000-0000-7b1d-88cb-f75d3058afdf',
             }
           : {
               kind: id === 'p' && options.nativeResponses ? 'oauth' : 'local',

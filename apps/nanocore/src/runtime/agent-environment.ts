@@ -1214,7 +1214,7 @@ function resolveWorkerCredentialDeclarations(
       assertCredentialSinkAvailable(input, declaration);
     }
     const effectAuthority =
-      isTargetIssuedEffectAuthority(grant.grantId) &&
+      grant.issuance === 'target' &&
       (grant.approvalId === null ||
         (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
     const injection = declarationInjectionTarget(declaration);

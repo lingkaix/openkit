@@ -621,11 +621,11 @@ describe('primitive tier — behavior', () => {
   it('keeps selected and uploaded artifacts when the attachment dialog closes', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    const uploaded = { id: 'uploaded', version: 1, label: 'Notes' };
+    const uploaded = { id: 'ar_00000000-0000-718a-b50b-9500f6ded18a', version: 1, label: 'Notes' };
     const onImportFile = vi.fn().mockResolvedValue(uploaded);
     render(
       <Composer
-        artifacts={[{ id: 'existing', version: 2, label: 'Brief' }]}
+        artifacts={[{ id: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', version: 2, label: 'Brief' }]}
         onImportFile={onImportFile}
         onSubmit={onSubmit}
       />
@@ -640,8 +640,8 @@ describe('primitive tier — behavior', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         artifactRefs: [
-          { artifactId: 'existing', artifactVersion: 2 },
-          { artifactId: 'uploaded', artifactVersion: 1 },
+          { artifactId: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', artifactVersion: 2 },
+          { artifactId: 'ar_00000000-0000-718a-b50b-9500f6ded18a', artifactVersion: 1 },
         ],
       })
     );
@@ -668,8 +668,8 @@ describe('primitive tier — behavior', () => {
     render(
       <Composer
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'worker',
           targets: [
             {
@@ -679,7 +679,7 @@ describe('primitive tier — behavior', () => {
               description: 'Continue work in this conversation.',
               availability: 'available',
               unavailableReason: null,
-              threadId: 'th_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               profileId: 'default',
               logicalModels: [],
               defaultLogicalModelId: null,
@@ -717,7 +717,7 @@ describe('primitive tier — behavior', () => {
         onSubmit={onSubmit}
         workerEnvironments={{ status: 'idle', items: [], onBrowse }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: null,
           defaultTargetRef: 'internal-role:assistant',
           targets: [
@@ -805,11 +805,11 @@ describe('primitive tier — behavior', () => {
           onBrowse: vi.fn(),
           onCheck,
           status: 'ready',
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
         }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'new-task-worker',
           targets: [
             {
@@ -916,11 +916,11 @@ describe('primitive tier — behavior', () => {
             storageRef,
           },
           status: 'ready',
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
         }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'new-task-worker',
           targets: [
             {
@@ -966,7 +966,7 @@ describe('primitive tier — behavior', () => {
           threadId: null,
         }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: null,
           defaultTargetRef: 'new-task-worker',
           targets: [
@@ -1010,8 +1010,8 @@ describe('primitive tier — behavior', () => {
       storageRef: otherRef,
     };
     const catalog = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       defaultTargetRef: 'new-task-worker',
       targets: [
         {
@@ -1087,8 +1087,8 @@ describe('primitive tier — behavior', () => {
       <Composer
         workerEnvironments={{ items: [earlier, later], onBrowse: vi.fn(), status: 'ready' }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'new-task-worker',
           targets: [
             {
@@ -1278,7 +1278,7 @@ describe('primitive tier — ownership', () => {
 
 it('keeps complete long context and menu labels available when their compact display is bounded', async () => {
   const user = userEvent.setup();
-  const label = 'workspace_0123456789'.repeat(20);
+  const label = 'ws_00000000-0000-7ffe-85b0-17809b0b4db8'.repeat(20);
   render(
     <>
       <P.ContextChip>{label}</P.ContextChip>

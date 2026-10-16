@@ -29,7 +29,7 @@ describe('automation app API', () => {
           method: 'POST',
           body: JSON.stringify({
             name: 'Morning status',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             cron: '0 9 * * *',
             prompt: 'Summarize active threads',
           }),
@@ -61,7 +61,7 @@ describe('automation app API', () => {
           method: 'POST',
           body: JSON.stringify({
             name: 'Morning status',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             cron: '0 9 * * *',
             prompt: 'Summarize active threads',
           }),
@@ -116,20 +116,23 @@ describe('automation app API', () => {
       store,
       automationStore,
     });
-    const first = { kind: 'user', id: 'user_first' } as const;
-    const second = { kind: 'user', id: 'user_second' } as const;
+    const first = { kind: 'user', id: 'usr_00000000-0000-7036-b7d6-6d53799d5d56' } as const;
+    const second = { kind: 'user', id: 'usr_00000000-0000-750e-951f-bebbf278d045' } as const;
     const context = {
       kind: 'public',
-      actor: { kind: 'session', userId: 'user_first' },
+      actor: { kind: 'session', userId: 'usr_00000000-0000-7036-b7d6-6d53799d5d56' },
       actorRef: first,
-      scope: { kind: 'authorized-workspace-set', workspaceIds: ['ws_demo'] },
+      scope: {
+        kind: 'authorized-workspace-set',
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+      },
     } as const;
     const created = await operations['automation.create'](
       {
         cron: '0 9 * * *',
         name: 'Morning status',
         prompt: 'Summarize active threads',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       context
     );
@@ -166,7 +169,7 @@ describe('automation app API', () => {
             updated_at,
             kind
           )
-          VALUES ('user_owner', 'Owner', 'owner@example.com', false, ?, ?, 'human')`
+          VALUES ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, ?, ?, 'human')`
         )
         .run(now, now);
       const store = new FsStore({ dataRoot });
@@ -176,7 +179,7 @@ describe('automation app API', () => {
       for (const workspace of [allowedWorkspace, deniedWorkspace]) {
         recordWorkspaceOwnerMembership({
           coreDb,
-          ownerUserId: 'user_owner',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           workspaceId: workspace.id,
         });
       }
@@ -195,7 +198,7 @@ describe('automation app API', () => {
       });
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace',
         workspaceIds: [allowedWorkspace.id],
       });
@@ -221,15 +224,18 @@ describe('automation app API', () => {
 
       expect(create.status).toBe(201);
       const allowedAutomation = (await create.json()) as { id: string; workspaceId: string };
-      const deniedAutomation = automationStore.createAutomation('user_owner', {
-        cron: '0 9 * * *',
-        name: 'Denied automation',
-        prompt: 'Summarize active threads',
-        workspaceId: deniedWorkspace.id,
-      });
+      const deniedAutomation = automationStore.createAutomation(
+        'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        {
+          cron: '0 9 * * *',
+          name: 'Denied automation',
+          prompt: 'Summarize active threads',
+          workspaceId: deniedWorkspace.id,
+        }
+      );
       const readonlyToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace-readonly',
         workspaceIds: [allowedWorkspace.id],
       });
@@ -275,9 +281,12 @@ describe('automation app API', () => {
 
       expect(deniedUpdate.status).toBe(403);
       expect(deniedDelete.status).toBe(403);
-      expect(automationStore.getAutomation('user_owner', deniedAutomation.id).status).toBe(
-        'paused'
-      );
+      expect(
+        automationStore.getAutomation(
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          deniedAutomation.id
+        ).status
+      ).toBe('paused');
 
       const transferredAt = new Date().toISOString();
       coreDb.sqlite.transaction(() => {
@@ -285,7 +294,7 @@ describe('automation app API', () => {
           .prepare(
             `INSERT INTO users
               (id, display_name, email, email_verified, created_at, updated_at, kind)
-             VALUES ('user_replacement_owner', 'Replacement Owner',
+             VALUES ('usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'Replacement Owner',
                      'automation-replacement@example.com', false, ?, ?, 'human')`
           )
           .run(Date.now(), Date.now());
@@ -294,13 +303,13 @@ describe('automation app API', () => {
             `INSERT INTO workspace_members (
               workspace_id, user_id, status, access_level, invitation_id,
               joined_at, removed_at, revision, created_at, updated_at
-            ) VALUES (?, 'user_replacement_owner', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ) VALUES (?, 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
           )
           .run(allowedWorkspace.id, transferredAt, transferredAt, transferredAt);
         coreDb.sqlite
           .prepare(
             `UPDATE workspace_registry
-             SET owner_user_id = 'user_replacement_owner', revision = revision + 1, updated_at = ?
+             SET owner_user_id = 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', revision = revision + 1, updated_at = ?
              WHERE workspace_id = ?`
           )
           .run(transferredAt, allowedWorkspace.id);
@@ -310,7 +319,12 @@ describe('automation app API', () => {
              SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
              WHERE workspace_id = ? AND user_id = ?`
           )
-          .run(transferredAt, transferredAt, allowedWorkspace.id, 'user_owner');
+          .run(
+            transferredAt,
+            transferredAt,
+            allowedWorkspace.id,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f'
+          );
       })();
       const removed = await app.request(
         ...operationRequest(

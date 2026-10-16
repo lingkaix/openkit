@@ -442,3 +442,9 @@ App update administration displays separate operational readiness observations a
 The conversation Item projection renders source-bound continuation summaries with their text, covered Item count and inspectable exact source endpoints. The history remains available through its existing Thread. A summary is a view of model continuity and does not remove original Items.
 
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
+
+New API-key Provider profiles allocate one canonical Vault reference through the browser-safe Protocol codec. The form retains that candidate across a failed create retry and stores it in the authored Provider file; reads and key rotation use the recorded reference.
+
+The Web end-to-end suite runs with one worker to keep the shared development machine within its test resource bound. The root test:e2e:web command builds and runs the complete suite.
+
+The local Web E2E simulator image fixture reuses its recorded Artifact identity for the same request and allocates canonical ar UUIDv7 only for a new settlement.

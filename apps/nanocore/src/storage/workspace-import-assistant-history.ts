@@ -49,9 +49,14 @@ export function remintAssistantThreadParents(
   threads: Thread[],
   threadIds: ReadonlyMap<string, string>
 ): void {
+  const targets = new Set(threadIds.values());
   for (const thread of threads) {
-    if (thread.parentThreadId && threadIds.has(thread.parentThreadId))
-      thread.parentThreadId = threadIds.get(thread.parentThreadId)!;
+    const parent = thread.parentThreadId;
+    if (!parent) continue;
+    const mapped = threadIds.get(parent);
+    if (mapped) thread.parentThreadId = mapped;
+    else if (targets.has(parent))
+      throw new Error('Unresolved source Thread parent collides with a target Thread.');
   }
 }
 

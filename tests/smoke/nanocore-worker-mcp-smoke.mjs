@@ -85,8 +85,8 @@ async function main() {
 
     let taskFailure = null;
     const taskInput = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       input: 'Implement the MCP verification by calling the echo tool.',
       requestId: smokeRequestId,
     };
@@ -473,7 +473,7 @@ async function main() {
     assert.equal(task.turn?.status, 'completed');
     assert.equal(Object.hasOwn(task.turn, 'humanGate'), false);
     const attentionResponse = await fetch(`${baseUrl}/api/app/operations/attention.list`, {
-      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
       headers: { 'content-type': 'application/json' },
       method: 'POST',
     });
@@ -642,12 +642,25 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
     pullPolicy: 'if-not-present',
     ref: 'openkit/worker-codex:dev',
   };
-  const { FsStore, createDemoWorkspaceForUser } = await import(
-    '../../apps/nanocore/dist/lib/store.js'
+  const { FsStore } = await import('../../apps/nanocore/dist/lib/store.js');
+  const { createDemoWorkspaceForUser } = await import(
+    '../../apps/nanocore/dist/test-support/demo-store.js'
   );
+  const { ensureLocalUser: ensureFixtureLocalUser } = await import(
+    '../../apps/nanocore/dist/test-support/local-user.js'
+  );
+  const { openCoreDb: openFixtureCoreDb } = await import('../../apps/nanocore/dist/storage/db.js');
+  const { applyMigrations } = await import('../../apps/nanocore/dist/storage/migrate.js');
+  const fixtureDb = openFixtureCoreDb(dataRoot);
+  try {
+    applyMigrations(fixtureDb);
+    ensureFixtureLocalUser(fixtureDb);
+  } finally {
+    fixtureDb.sqlite.close();
+  }
   const store = new FsStore({ dataRoot });
-  store.ensureQuickChatWorkspace('user_local');
-  const demo = createDemoWorkspaceForUser('user_local');
+  store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
+  const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   store.importWorkspaceSnapshot({
     workspace: demo.workspace,
     threads: [demo.thread],
@@ -749,7 +762,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
   );
   replaceWorkspaceEffectiveMcpCatalog({
     dataRoot,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     catalog: {
       schemaVersion: 1,
       servers: [
@@ -831,7 +844,7 @@ async function issueNanoHostToken(dataRoot) {
       deploymentId: 'deployment-worker-mcp-smoke',
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerNanoHostIdentityId: 'nanohost-worker-mcp-smoke',
-      responsibleServerAdminActorId: 'user_local',
+      responsibleServerAdminActorId: 'usr_00000000-0000-7000-8000-000000000001',
     }).secret;
   } finally {
     coreDb.sqlite.close();
@@ -866,7 +879,7 @@ async function readDurableOutcome(dataRoot, turnId) {
   } finally {
     coreDb.sqlite.close();
   }
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   let audit = [];
   let call = null;
   let permission = [];
