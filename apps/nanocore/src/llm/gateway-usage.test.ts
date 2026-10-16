@@ -6,6 +6,7 @@ import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { GatewayUsageTracker, parseUsage, recordInternalLlmGatewayUsage } from './gateway-usage.js';
 
 /**
@@ -54,21 +55,21 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
     },
   ])('$name after a usage write failure', ({ requestId, auditLineage, expectedRequestId }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-failure-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_usage' },
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
         redactionClass: 'metadata-only',
         requestId,
-        threadId: 'th_usage',
-        turnId: 'turn_usage',
+        threadId: testEntityId('th', 'th_usage'),
+        turnId: testEntityId('tu', 'turn_usage'),
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER reject_internal_usage_write
@@ -96,9 +97,9 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         error_code: 'usage_record_failed',
         request_id: requestId,
         status: 'failed',
-        thread_id: 'th_usage',
-        turn_id: 'turn_usage',
-        workspace_id: 'ws_demo',
+        thread_id: testEntityId('th', 'th_usage'),
+        turn_id: testEntityId('tu', 'turn_usage'),
+        workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(
         workspaceDb.sqlite
@@ -117,9 +118,9 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           outcome: 'failed',
           request_id: expectedRequestId,
           severity: 'error',
-          thread_id: 'th_usage',
-          turn_id: 'turn_usage',
-          workspace_id: 'ws_demo',
+          thread_id: testEntityId('th', 'th_usage'),
+          turn_id: testEntityId('tu', 'turn_usage'),
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
     } finally {
@@ -130,21 +131,21 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
 
   it('keeps command lineage out of normal usage and the call request', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-success-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_usage' },
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
         redactionClass: 'metadata-only',
         requestId: null,
-        threadId: 'th_usage',
-        turnId: 'turn_usage',
+        threadId: testEntityId('th', 'th_usage'),
+        turnId: testEntityId('tu', 'turn_usage'),
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const before = workspaceDb.sqlite
         .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
@@ -175,11 +176,11 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           quantity: 12,
           request_id: null,
           source: 'gateway-reported',
-          thread_id: 'th_usage',
-          turn_id: 'turn_usage',
+          thread_id: testEntityId('th', 'th_usage'),
+          turn_id: testEntityId('tu', 'turn_usage'),
           unit: 'tokens',
           usage_id: usageIds[0],
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
       expect(

@@ -29,8 +29,8 @@ describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')('nanocore e2e real C
   it('drives one minimal turn through the real Codex agent', async () => {
     harness = await startNanoCoreHarness({ useSimulator: false });
 
-    const workspaceId = 'ws_demo';
-    const threadId = 'th_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
     const turn = await startTurn(
       harness.baseUrl,
       workspaceId,

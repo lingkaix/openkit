@@ -9,7 +9,6 @@ import {
 } from '@earendil-works/pi-ai';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { createAuthMiddleware } from './auth/middleware.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import type { ProviderProfile } from './config/providers-loader.js';
@@ -29,6 +28,8 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -87,7 +88,11 @@ function recordLocalGatewayAuthority(
   workspaceId: string
 ): void {
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId,
+  });
 }
 
 /** Creates the runtime Ollama fixture used by Gateway tests. */
@@ -216,7 +221,12 @@ function createDirectGatewayApp(input: {
     providerRegistry,
   });
   const app = new Hono();
-  app.use('*', createAuthMiddleware('local'));
+  app.use(
+    '*',
+    createAuthMiddleware('local', undefined, {
+      localUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    })
+  );
   (registerLlmGatewayRoutes as unknown as (dependencies: Record<string, unknown>) => void)({
     app,
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
@@ -1089,7 +1099,7 @@ describe('OpenAI-compatible agent gateway', () => {
           if (revokeOnNextConfigRead) {
             revokeOnNextConfigRead = false;
             coreDb.sqlite.transaction(() => {
-              disableCanonicalUser(coreDb, 'user_local');
+              disableCanonicalUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001');
             })();
           }
           return baseRuntimeConfigManager.current();
@@ -1158,11 +1168,11 @@ describe('OpenAI-compatible agent gateway', () => {
     const workspace = store.createWorkspace('Private capture');
     const thread = store.createThread(workspace.id, 'Private', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_other',
+      privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     });
     const turn = store.createTurn(workspace.id, thread.id, 'Private prompt', {
       kind: 'user',
-      id: 'user_other',
+      id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     });
     const upstream = vi.fn();
     try {
@@ -1202,14 +1212,14 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const store = createDemoStore({ dataRoot });
     const workspace = store.createWorkspace('Gateway usage');
-    store.createThread(workspace.id, 'Gateway usage', 'thread_1');
+    store.createThread(workspace.id, 'Gateway usage', testEntityId('th', 'thread_1'));
     store.createTurn(
       workspace.id,
-      'thread_1',
+      testEntityId('th', 'thread_1'),
       'Gateway usage',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
-      { turnId: 'turn_1' }
+      { turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' }
     );
     const piAiClient: Pick<PiAiGatewayClient, 'createChatCompletion'> = {
       createChatCompletion: async (_provider, request, onUsage) => {
@@ -1263,12 +1273,12 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               agentId: 'assistant',
-              agentSessionId: 'session_1',
-              itemId: 'item_1',
+              agentSessionId: testEntityId('as', 'session_1'),
+              itemId: testEntityId('it', 'item_1'),
               requestId: '11111111-1111-4111-8111-111111111111',
               sourceIds: ['repo_default'],
-              threadId: 'thread_1',
-              turnId: 'turn_1',
+              threadId: testEntityId('th', 'thread_1'),
+              turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
               workspaceId: workspace.id,
             },
           },
@@ -1306,10 +1316,10 @@ describe('OpenAI-compatible agent gateway', () => {
 
         expect(call).toMatchObject({
           agent_id: 'assistant',
-          agent_session_id: 'session_1',
+          agent_session_id: testEntityId('as', 'session_1'),
           capability_id: 'llm.chat_completions',
           family: 'llm',
-          item_id: 'item_1',
+          item_id: testEntityId('it', 'item_1'),
           operation: 'chat_completions',
           provider_ref: null,
           redaction_class: 'metadata-only',
@@ -1317,8 +1327,8 @@ describe('OpenAI-compatible agent gateway', () => {
           service_ref: 'llm-gateway',
           source_ids_json: '["repo_default"]',
           status: 'succeeded',
-          thread_id: 'thread_1',
-          turn_id: 'turn_1',
+          thread_id: testEntityId('th', 'thread_1'),
+          turn_id: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
           workspace_id: workspace.id,
         });
         expect(
@@ -1553,7 +1563,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const store = createDemoStore({ dataRoot });
     const workspace = store.createWorkspace('Native OpenAI usage');
-    store.createThread(workspace.id, 'Native OpenAI usage', 'thread_openai');
+    store.createThread(workspace.id, 'Native OpenAI usage', testEntityId('th', 'thread_openai'));
 
     try {
       applyMigrations(coreDb);
@@ -1608,7 +1618,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '22222222-2222-4222-8222-222222222222',
-              threadId: 'thread_openai',
+              threadId: testEntityId('th', 'thread_openai'),
               workspaceId: workspace.id,
             },
           },
@@ -1632,7 +1642,7 @@ describe('OpenAI-compatible agent gateway', () => {
             operation: 'chat_completions',
             providerRef: null,
             status: 'succeeded',
-            threadId: 'thread_openai',
+            threadId: testEntityId('th', 'thread_openai'),
           }),
         ],
         usageRecords: expect.arrayContaining([
@@ -1680,7 +1690,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_chat_failed_usage');
+      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-76a4-a1a2-51cea225d649');
 
       const app = createApp({
         coreDb,
@@ -1699,7 +1709,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '66666666-6666-4666-8666-666666666666',
-              workspaceId: 'ws_chat_failed_usage',
+              workspaceId: 'ws_00000000-0000-76a4-a1a2-51cea225d649',
             },
           },
         }),
@@ -1712,7 +1722,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('"code":"provider_error"');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_chat_failed_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-76a4-a1a2-51cea225d649');
       try {
         expect(
           workspaceDb.sqlite
@@ -1751,7 +1761,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_responses_usage');
+      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-7a46-8fac-cc6ea3e31976');
 
       const app = createApp({
         coreDb,
@@ -1770,8 +1780,8 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '22222222-2222-4222-8222-222222222222',
-              threadId: 'thread_2',
-              workspaceId: 'ws_responses_usage',
+              threadId: testEntityId('th', 'thread_2'),
+              workspaceId: 'ws_00000000-0000-7a46-8fac-cc6ea3e31976',
             },
           },
         }),
@@ -1781,7 +1791,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
       expect(res.status, responseText).toBe(200);
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_responses_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7a46-8fac-cc6ea3e31976');
       try {
         expect(
           workspaceDb.sqlite
@@ -1796,7 +1806,7 @@ describe('OpenAI-compatible agent gateway', () => {
           provider_ref: null,
           request_id: '22222222-2222-4222-8222-222222222222',
           status: 'succeeded',
-          thread_id: 'thread_2',
+          thread_id: testEntityId('th', 'thread_2'),
         });
         const usageCount = workspaceDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM usage_records')
@@ -1830,7 +1840,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_responses_failed_usage');
+      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-70f3-916e-08bf980b7d98');
 
       const app = createApp({
         coreDb,
@@ -1849,7 +1859,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '77777777-7777-4777-8777-777777777777',
-              workspaceId: 'ws_responses_failed_usage',
+              workspaceId: 'ws_00000000-0000-70f3-916e-08bf980b7d98',
             },
           },
         }),
@@ -1862,7 +1872,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('"code":"provider_error"');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_responses_failed_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-70f3-916e-08bf980b7d98');
       try {
         expect(
           workspaceDb.sqlite
@@ -1933,14 +1943,14 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '33333333-3333-4333-8333-333333333333',
-              workspaceId: 'ws_chat_stream_usage',
+              workspaceId: 'ws_00000000-0000-7d5b-8db6-f688b0c89ad5',
             },
           },
         },
         capabilityId: 'llm.chat_completions',
         operation: 'chat_completions',
         path: '/v1/chat/completions',
-        workspaceId: 'ws_chat_stream_usage',
+        workspaceId: 'ws_00000000-0000-7d5b-8db6-f688b0c89ad5',
       },
       {
         body: {
@@ -1950,14 +1960,14 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '44444444-4444-4444-8444-444444444444',
-              workspaceId: 'ws_responses_stream_usage',
+              workspaceId: 'ws_00000000-0000-7521-a0a0-01c9b4b6137f',
             },
           },
         },
         capabilityId: 'llm.responses',
         operation: 'responses',
         path: '/v1/responses',
-        workspaceId: 'ws_responses_stream_usage',
+        workspaceId: 'ws_00000000-0000-7521-a0a0-01c9b4b6137f',
       },
     ]) {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-stream-usage-'));
@@ -2037,7 +2047,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_chat_stream_failed_usage');
+      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-710a-b9be-85d5d38a9121');
 
       const app = createApp({
         coreDb,
@@ -2057,7 +2067,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '55555555-5555-4555-8555-555555555555',
-              workspaceId: 'ws_chat_stream_failed_usage',
+              workspaceId: 'ws_00000000-0000-710a-b9be-85d5d38a9121',
             },
           },
         }),
@@ -2073,7 +2083,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('data: [DONE]');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_chat_stream_failed_usage');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-710a-b9be-85d5d38a9121');
       try {
         expect(
           workspaceDb.sqlite
@@ -2107,7 +2117,7 @@ describe('OpenAI-compatible agent gateway', () => {
         requestId: '88888888-8888-4888-8888-888888888888',
         ledgerStatus: 'failed',
         stopReason: 'aborted' as const,
-        workspaceId: 'ws_chat_stream_aborted_usage',
+        workspaceId: 'ws_00000000-0000-7008-bcfa-f009836d7280',
       },
       {
         code: 'gateway_provider_unavailable',
@@ -2116,7 +2126,7 @@ describe('OpenAI-compatible agent gateway', () => {
         requestId: '99999999-9999-4999-8999-999999999999',
         ledgerStatus: 'failed',
         stopReason: 'error' as const,
-        workspaceId: 'ws_chat_stream_timeout_usage',
+        workspaceId: 'ws_00000000-0000-7c64-bedb-4d8fe949a394',
       },
     ]) {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-stream-terminal-'));
@@ -2205,7 +2215,7 @@ describe('OpenAI-compatible agent gateway', () => {
         ledgerCode: 'llm_gateway_failed',
         requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         responseStatus: 400,
-        workspaceId: 'ws_provider_abort_failed',
+        workspaceId: 'ws_00000000-0000-7dbd-a1e0-a5646c84023b',
       },
       {
         error: attachPiAiFailure(
@@ -2218,7 +2228,7 @@ describe('OpenAI-compatible agent gateway', () => {
         ledgerCode: 'gateway_logical_model_unavailable',
         requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         responseStatus: 503,
-        workspaceId: 'ws_typed_provider_timeout',
+        workspaceId: 'ws_00000000-0000-7d22-9fa8-e3b7f1834fe8',
       },
     ]) {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-terminal-proof-'));
@@ -2282,7 +2292,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_caller_cancelled');
+      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-7b62-8774-b2367fdb4577');
       const app = createApp({
         coreDb,
         dataRoot,
@@ -2310,7 +2320,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-              workspaceId: 'ws_caller_cancelled',
+              workspaceId: 'ws_00000000-0000-7b62-8774-b2367fdb4577',
             },
           },
         }),
@@ -2326,7 +2336,7 @@ describe('OpenAI-compatible agent gateway', () => {
       await expect(res.json()).resolves.toMatchObject({
         error: { code: 'gateway_request_cancelled' },
       });
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_caller_cancelled');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7b62-8774-b2367fdb4577');
       try {
         expect(
           workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
@@ -2354,10 +2364,10 @@ describe('OpenAI-compatible agent gateway', () => {
       vaultUnlockState.backend().store({
         material: 'sk-vault-gateway',
         metadata: { ownerScope: 'server' },
-        referenceId: 'vault_gateway',
+        referenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
       });
       createVaultReference(coreDb, {
-        referenceId: 'vault_gateway',
+        referenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
         ownerScope: 'server',
         displayName: 'Test key',
         secretKind: 'provider-api-key',
@@ -2370,7 +2380,7 @@ describe('OpenAI-compatible agent gateway', () => {
         id: 'vault-backed',
         kind: 'direct' as const,
         models: ['gpt-5.1'],
-        secretRef: 'vault://vault_gateway',
+        secretRef: 'vault://vault_00000000-0000-74a5-95fb-e62d2749a997',
         vendor: 'openai',
       };
       const app = createApp({
@@ -2432,7 +2442,7 @@ describe('OpenAI-compatible agent gateway', () => {
         expect.objectContaining({
           outcome: 'succeeded',
           resolvingPath: 'provider',
-          vaultReferenceId: 'vault_gateway',
+          vaultReferenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
         }),
       ]);
       expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-gateway');
@@ -2452,7 +2462,7 @@ describe('OpenAI-compatible agent gateway', () => {
     try {
       applyMigrations(coreDb);
       createVaultReference(coreDb, {
-        referenceId: 'vault_locked_gateway',
+        referenceId: 'vault_00000000-0000-79a9-ad82-3f4a5baeac82',
         ownerScope: 'server',
         displayName: 'Test key',
         secretKind: 'provider-api-key',
@@ -2464,7 +2474,7 @@ describe('OpenAI-compatible agent gateway', () => {
         id: 'vault-locked',
         kind: 'direct' as const,
         models: ['gpt-5.1'],
-        secretRef: 'vault://vault_locked_gateway',
+        secretRef: 'vault://vault_00000000-0000-79a9-ad82-3f4a5baeac82',
         vendor: 'openai',
       };
       const app = createApp({
@@ -2507,7 +2517,7 @@ describe('OpenAI-compatible agent gateway', () => {
             failureCode: 'vault-locked',
             outcome: 'failed',
             resolvingPath: 'provider',
-            vaultReferenceId: 'vault_locked_gateway',
+            vaultReferenceId: 'vault_00000000-0000-79a9-ad82-3f4a5baeac82',
           })
         )
       );
@@ -2565,7 +2575,7 @@ describe('OpenAI-compatible agent gateway', () => {
   ])('admits public native Codex Responses metadata without forwarding it to Provider options; stream=%s', async (stream) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-responses-metadata-'));
     const coreDb = openCoreDb(dataRoot);
-    const workspaceId = 'ws_codex_metadata';
+    const workspaceId = 'ws_00000000-0000-70a9-8c0d-fb925c73d5e5';
     const requestId = '55555555-5555-4555-8555-555555555555';
     const profile: ProviderProfile = {
       defaultModel: 'openai-codex/gpt-5.6-sol',
@@ -2758,17 +2768,17 @@ describe('OpenAI-compatible agent gateway', () => {
       {
         code: 'provider_stream_truncated',
         durableErrorCode: 'provider_stream_truncated',
-        workspaceId: 'ws_chat_stream_inner_truncated',
+        workspaceId: 'ws_00000000-0000-78ed-aad6-edbc6caa9239',
       },
       {
         code: 'provider_stream_failed',
         durableErrorCode: 'provider_stream_failed',
-        workspaceId: 'ws_chat_stream_inner_failed',
+        workspaceId: 'ws_00000000-0000-754e-8727-581fcd9a20bf',
       },
       {
         code: 'provider_transport_failure',
         durableErrorCode: 'llm_gateway_stream_failed',
-        workspaceId: 'ws_chat_stream_inner_unlisted',
+        workspaceId: 'ws_00000000-0000-7df1-af53-7120f1f78f20',
       },
     ]) {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-inner-stream-'));
@@ -3307,7 +3317,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               sessionId: 'session_demo',
-              threadId: 'th_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
             },
           },
         }),
@@ -3347,7 +3357,7 @@ describe('OpenAI-compatible agent gateway', () => {
           input: 'Hello',
           metadata: {
             openkit: {
-              threadId: 'th_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
             },
           },
         }),
@@ -3541,7 +3551,12 @@ const publicCauseCases = [
     text: '503 Service Unavailable',
     attempts: 4,
   },
-  { name: 'auth final', kind: 'auth_rejected', text: 'invalid_api_key', attempts: 1 },
+  {
+    name: 'auth final',
+    kind: 'auth_rejected',
+    text: 'invalid_api_key',
+    attempts: 1,
+  },
   {
     name: 'quota final',
     kind: 'quota_exhausted',
@@ -3746,7 +3761,7 @@ describe('API key member availability', () => {
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
     });
-    const referenceId = 'availability_key';
+    const referenceId = testEntityId('vault', 'availability_key');
     if (kind === 'active-vault' || kind === 'revoked-vault') {
       createVaultReference(coreDb, {
         referenceId,
@@ -3830,7 +3845,9 @@ describe('API key member availability', () => {
     const app = createApp({
       ...options,
       providerRegistry: new ProviderRegistry(
-        options.providerRegistry.list().map((p) => ({ ...p, secretRef: 'vault://missing_key' }))
+        options.providerRegistry
+          .list()
+          .map((p) => ({ ...p, secretRef: 'vault://vault_00000000-0000-73a7-8709-04172ea26d0d' }))
       ),
       providerCredentialResolver: () => null,
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
@@ -3861,7 +3878,7 @@ it('the API-key path restores the same member on next resolve without reload', a
   });
   const profile = {
     ...createOpenAIProviderOptions().providerRegistry.list()[0]!,
-    secretRef: 'vault://provider_activation',
+    secretRef: 'vault://vault_00000000-0000-70e0-9db7-7919c87f7a5c',
     id: 'activation-profile',
   } as ProviderProfile & { defaultModel: string };
   mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });

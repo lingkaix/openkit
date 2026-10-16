@@ -130,10 +130,10 @@ describe('normalized Turn failure cause', () => {
     const root = mkdtempSync(join(tmpdir(), 'worker-turn-cause-'));
     const packagePath = join(root, 'package.json');
     const lineage = {
-      workspaceId: 'ws-cause',
-      threadId: 'th-cause',
-      turnId: 'turn-cause',
-      agentSessionId: 'as-cause',
+      workspaceId: 'ws_00000000-0000-78c8-b187-86e7b47012bf',
+      threadId: 'th_00000000-0000-7a09-9d23-e6a0be04b0de',
+      turnId: 'tu_00000000-0000-7285-81af-9881e8673872',
+      agentSessionId: 'as_00000000-0000-7cdd-bdd1-9b4637990c65',
       packageSnapshotId: 'package-cause',
     };
     writeFileSync(
@@ -423,7 +423,7 @@ describe('normalized Turn failure cause', () => {
         await expect(
           runResidentTurn({
             ...turnOptions,
-            lineage: { ...lineage, turnId: 'turn-later' },
+            lineage: { ...lineage, turnId: 'tu_00000000-0000-757a-90ed-9c78aace6916' },
             signal: nextSignal.signal,
             onStarted() {
               settleNative({ ...result, interruptRequested: false });

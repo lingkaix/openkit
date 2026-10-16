@@ -1,3 +1,4 @@
+import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentType, Key, ReactElement, ReactNode } from 'react';
@@ -604,6 +605,103 @@ describe('primitive tier — behavior', () => {
     expect(onChange).toHaveBeenCalledWith(true);
   });
 
+  const availableComposerCatalog: ConversationTargetCatalog = {
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    defaultTargetRef: 'internal-role:assistant',
+    targets: [
+      {
+        targetRef: 'internal-role:assistant',
+        kind: 'assistant',
+        label: 'Assistant',
+        description: null,
+        availability: 'available',
+        unavailableReason: null,
+        threadId: null,
+        profileId: null,
+        logicalModels: [{ id: 'reasoning', label: 'Reasoning', capabilities: ['chat'] }],
+        defaultLogicalModelId: 'reasoning',
+      },
+    ],
+  };
+
+  it('waits for the delayed target catalog before click or Enter can submit the retained draft', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockRejectedValue(new Error('Uncertain result'));
+    const initialDraft = {
+      input: 'Keep this draft',
+      targetRef: '',
+      requestId: '00000000-0000-4000-8000-000000000217',
+    };
+    const { rerender } = render(
+      <Composer targetCatalog={null} initialDraft={initialDraft} onSubmit={onSubmit} />
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    const send = screen.getByRole('button', { name: 'Send message' });
+    expect(send).toBeDisabled();
+    await user.click(send);
+    await user.click(input);
+    await user.keyboard('{Enter}');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue(initialDraft.input);
+
+    rerender(
+      <Composer
+        targetCatalog={availableComposerCatalog}
+        initialDraft={initialDraft}
+        onSubmit={onSubmit}
+      />
+    );
+    await waitFor(() => expect(send).toBeEnabled());
+    await user.click(send);
+    const acceptedDraft = {
+      ...initialDraft,
+      targetRef: 'internal-role:assistant',
+      logicalModelId: 'reasoning',
+      artifactRefs: [],
+    };
+    expect(onSubmit).toHaveBeenCalledWith(acceptedDraft);
+    expect(input).toHaveValue(initialDraft.input);
+
+    for (const targetCatalog of [
+      null,
+      { ...availableComposerCatalog, targets: [] },
+      {
+        ...availableComposerCatalog,
+        targets: [
+          {
+            ...availableComposerCatalog.targets[0]!,
+            availability: 'unavailable' as const,
+            unavailableReason: 'Temporarily unavailable.',
+          },
+        ],
+      },
+      {
+        ...availableComposerCatalog,
+        targets: [{ ...availableComposerCatalog.targets[0]!, logicalModels: [] }],
+      },
+    ]) {
+      rerender(
+        <Composer targetCatalog={targetCatalog} initialDraft={initialDraft} onSubmit={onSubmit} />
+      );
+      expect(send).toBeDisabled();
+      await user.click(input);
+      await user.keyboard('{Enter}');
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(input).toHaveValue(initialDraft.input);
+    }
+    rerender(
+      <Composer
+        targetCatalog={availableComposerCatalog}
+        initialDraft={initialDraft}
+        onSubmit={onSubmit}
+      />
+    );
+    await user.click(send);
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(onSubmit).toHaveBeenLastCalledWith(acceptedDraft);
+  });
+
   it('dismisses Composer attachments with Escape and outside interaction and restores focus', async () => {
     const user = userEvent.setup();
     render(<Composer />);
@@ -621,11 +719,12 @@ describe('primitive tier — behavior', () => {
   it('keeps selected and uploaded artifacts when the attachment dialog closes', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    const uploaded = { id: 'uploaded', version: 1, label: 'Notes' };
+    const uploaded = { id: 'ar_00000000-0000-718a-b50b-9500f6ded18a', version: 1, label: 'Notes' };
     const onImportFile = vi.fn().mockResolvedValue(uploaded);
     render(
       <Composer
-        artifacts={[{ id: 'existing', version: 2, label: 'Brief' }]}
+        targetCatalog={availableComposerCatalog}
+        artifacts={[{ id: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', version: 2, label: 'Brief' }]}
         onImportFile={onImportFile}
         onSubmit={onSubmit}
       />
@@ -640,8 +739,8 @@ describe('primitive tier — behavior', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         artifactRefs: [
-          { artifactId: 'existing', artifactVersion: 2 },
-          { artifactId: 'uploaded', artifactVersion: 1 },
+          { artifactId: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', artifactVersion: 2 },
+          { artifactId: 'ar_00000000-0000-718a-b50b-9500f6ded18a', artifactVersion: 1 },
         ],
       })
     );
@@ -650,7 +749,7 @@ describe('primitive tier — behavior', () => {
   it('Composer submits the structured draft and clears', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<Composer onSubmit={onSubmit} />);
+    render(<Composer targetCatalog={availableComposerCatalog} onSubmit={onSubmit} />);
     const input = screen.getByRole('textbox', { name: 'Message' });
     await user.type(input, '  hello  ');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -658,7 +757,8 @@ describe('primitive tier — behavior', () => {
       artifactRefs: [],
       input: '  hello  ',
       requestId: expect.any(String),
-      targetRef: '',
+      targetRef: 'internal-role:assistant',
+      logicalModelId: 'reasoning',
     });
     expect(input).toHaveValue('');
   });
@@ -668,8 +768,8 @@ describe('primitive tier — behavior', () => {
     render(
       <Composer
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'worker',
           targets: [
             {
@@ -679,7 +779,7 @@ describe('primitive tier — behavior', () => {
               description: 'Continue work in this conversation.',
               availability: 'available',
               unavailableReason: null,
-              threadId: 'th_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               profileId: 'default',
               logicalModels: [],
               defaultLogicalModelId: null,
@@ -717,7 +817,7 @@ describe('primitive tier — behavior', () => {
         onSubmit={onSubmit}
         workerEnvironments={{ status: 'idle', items: [], onBrowse }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: null,
           defaultTargetRef: 'internal-role:assistant',
           targets: [
@@ -805,11 +905,11 @@ describe('primitive tier — behavior', () => {
           onBrowse: vi.fn(),
           onCheck,
           status: 'ready',
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
         }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'new-task-worker',
           targets: [
             {
@@ -916,11 +1016,11 @@ describe('primitive tier — behavior', () => {
             storageRef,
           },
           status: 'ready',
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
         }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'new-task-worker',
           targets: [
             {
@@ -966,7 +1066,7 @@ describe('primitive tier — behavior', () => {
           threadId: null,
         }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: null,
           defaultTargetRef: 'new-task-worker',
           targets: [
@@ -1010,8 +1110,8 @@ describe('primitive tier — behavior', () => {
       storageRef: otherRef,
     };
     const catalog = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       defaultTargetRef: 'new-task-worker',
       targets: [
         {
@@ -1087,8 +1187,8 @@ describe('primitive tier — behavior', () => {
       <Composer
         workerEnvironments={{ items: [earlier, later], onBrowse: vi.fn(), status: 'ready' }}
         targetCatalog={{
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           defaultTargetRef: 'new-task-worker',
           targets: [
             {
@@ -1278,7 +1378,7 @@ describe('primitive tier — ownership', () => {
 
 it('keeps complete long context and menu labels available when their compact display is bounded', async () => {
   const user = userEvent.setup();
-  const label = 'workspace_0123456789'.repeat(20);
+  const label = 'ws_00000000-0000-7ffe-85b0-17809b0b4db8'.repeat(20);
   render(
     <>
       <P.ContextChip>{label}</P.ContextChip>

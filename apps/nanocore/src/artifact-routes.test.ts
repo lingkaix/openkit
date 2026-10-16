@@ -15,7 +15,6 @@ import {
   deriveArtifactReviewFollowUpTurnId,
   getArtifactReview,
 } from './artifact-reviews.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
@@ -36,6 +35,7 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -51,7 +51,11 @@ function recordLocalWorkspaceAccess(
   workspaceId: string
 ): void {
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId,
+  });
 }
 
 /**
@@ -147,16 +151,24 @@ function createReviewFixture(
 describe('Core artifact routes', () => {
   it('lists and reads exact markdown inline Artifact content', async () => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Artifact content thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Create artifact', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Artifact content thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Create artifact',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const requestId = 'artifact-read-markdown-1';
     const body = '# Output';
     store.createArtifact({
-      id: 'ar_markdown',
-      workspaceId: 'ws_demo',
+      id: 'ar_00000000-0000-76a7-971b-3c2e3b40da06',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       kind: 'summary',
@@ -174,40 +186,55 @@ describe('Core artifact routes', () => {
     const app = createApp({ store });
 
     const listRes = await app.request(
-      ...operationRequest('artifact.list', { workspaceId: 'ws_demo' })
+      ...operationRequest('artifact.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     const getRes = await app.request(
       ...operationRequest('artifact.read', {
-        workspaceId: 'ws_demo',
-        artifactId: 'ar_markdown',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-76a7-971b-3c2e3b40da06',
       })
     );
 
     expect(listRes.status).toBe(200);
     expect(ListArtifactsResponseSchema.parse(await listRes.json())).toMatchObject({
-      items: [{ id: 'ar_markdown', workspaceId: 'ws_demo' }],
+      items: [
+        {
+          id: 'ar_00000000-0000-76a7-971b-3c2e3b40da06',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
+      ],
     });
     expect(getRes.status).toBe(200);
     expect(GetArtifactResponseSchema.parse(await getRes.json())).toMatchObject({
-      id: 'ar_markdown',
-      workspaceId: 'ws_demo',
+      id: 'ar_00000000-0000-76a7-971b-3c2e3b40da06',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       content: { format: 'markdown', body: '# Output' },
     });
   });
 
   it('reads exact text and JSON inline Artifact content with their recorded formats', async () => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Artifact format thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Create formatted artifacts', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Artifact format thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Create formatted artifacts',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const textRequestId = 'artifact-read-text-1';
     const textBody = 'Plain output';
     store.createArtifact({
-      id: 'ar_text',
-      workspaceId: 'ws_demo',
+      id: 'ar_00000000-0000-70b0-925c-a9f002bae163',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       kind: 'summary',
@@ -230,8 +257,8 @@ describe('Core artifact routes', () => {
     const jsonRequestId = 'artifact-read-json-1';
     const jsonBody = '{"ok":true}';
     store.createArtifact({
-      id: 'ar_json',
-      workspaceId: 'ws_demo',
+      id: 'ar_00000000-0000-73de-845a-af433639db48',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       kind: 'summary',
@@ -255,14 +282,14 @@ describe('Core artifact routes', () => {
 
     const textRes = await app.request(
       ...operationRequest('artifact.read', {
-        workspaceId: 'ws_demo',
-        artifactId: 'ar_text',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-70b0-925c-a9f002bae163',
       })
     );
     const jsonRes = await app.request(
       ...operationRequest('artifact.read', {
-        workspaceId: 'ws_demo',
-        artifactId: 'ar_json',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-73de-845a-af433639db48',
       })
     );
 
@@ -328,7 +355,7 @@ describe('Core artifact routes', () => {
           sourceKind: 'direct-import',
           sourceId: importBody.requestId,
           sourceDigest: contentDigest,
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           requestId: importBody.requestId,
         },
       });
@@ -419,7 +446,11 @@ describe('Core artifact routes', () => {
       const changedArtifactRes = await app.request(
         ...operationRequest(
           'artifact.introduce',
-          { workspaceId: workspace.id, threadId: thread.id, artifactId: 'ar_other' },
+          {
+            workspaceId: workspace.id,
+            threadId: thread.id,
+            artifactId: 'ar_00000000-0000-7dcf-9e49-194b732024ae',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -434,7 +465,7 @@ describe('Core artifact routes', () => {
 
       store.createTurn(workspace.id, thread.id, 'Keep the Thread active after introduction', {
         kind: 'user',
-        id: 'user_local',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
       });
       const introductionReplayRes = await app.request(
         ...operationRequest(
@@ -499,26 +530,37 @@ describe('Core artifact routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordLocalWorkspaceAccess(coreDb, 'ws_demo');
-    const thread = store.createThread('ws_demo', 'Artifact Review route thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Produce reviewed Artifacts', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Artifact Review route thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Produce reviewed Artifacts',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const completedAt = new Date().toISOString();
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     const reviews = (
       [
-        ['ar_review_first', 'Review the first Artifact.'],
-        ['ar_review_second', 'Review the second Artifact.'],
+        ['ar_00000000-0000-71cf-a641-bd9c6acde17b', 'Review the first Artifact.'],
+        ['ar_00000000-0000-7c49-98d1-47c5d31a3268', 'Review the second Artifact.'],
       ] as const
     ).map(([artifactId, content]) =>
       createReviewFixture(store, workspaceDb, artifactId, content, turn.id)
     );
-    const backing = store.getArtifact('ws_demo', 'ar_review_first');
-    store.createArtifact({ ...backing, id: 'ar_deliverable_same_title' });
+    const backing = store.getArtifact(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'ar_00000000-0000-71cf-a641-bd9c6acde17b'
+    );
+    store.createArtifact({ ...backing, id: 'ar_00000000-0000-7f70-84f9-64a58b07cc9f' });
     store.updateTurn(turn.id, {
       status: 'completed',
       completedAt,
@@ -528,11 +570,19 @@ describe('Core artifact routes', () => {
     const app = createApp({ coreDb, dataRoot, store });
     const decisionPath = [
       'artifact.review.decide',
-      { workspaceId: 'ws_demo', artifactId: 'ar_review_first', artifactVersion: 1 },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-71cf-a641-bd9c6acde17b',
+        artifactVersion: 1,
+      },
     ] as const;
     const secondDecisionPath = [
       'artifact.review.decide',
-      { workspaceId: 'ws_demo', artifactId: 'ar_review_second', artifactVersion: 1 },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-7c49-98d1-47c5d31a3268',
+        artifactVersion: 1,
+      },
     ] as const;
     const request = {
       requestId: 'artifact-review-reject-1',
@@ -543,8 +593,8 @@ describe('Core artifact routes', () => {
     try {
       const listRes = await app.request(
         ...operationRequest('artifact.review-list', {
-          workspaceId: 'ws_demo',
-          artifactId: 'ar_review_first',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          artifactId: 'ar_00000000-0000-71cf-a641-bd9c6acde17b',
         })
       );
       expect(listRes.status).toBe(200);
@@ -589,7 +639,10 @@ describe('Core artifact routes', () => {
         requestId: 'artifact-review-second-1',
         decision: 'rejected',
       } as const;
-      const secondArtifact = store.getArtifact('ws_demo', 'ar_review_second');
+      const secondArtifact = store.getArtifact(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'ar_00000000-0000-7c49-98d1-47c5d31a3268'
+      );
       const secondContent = secondArtifact.content.body;
       secondArtifact.content.body = `${secondContent}!`;
       const corruptArtifactRes = await postJson(app, secondDecisionPath, secondRequest);
@@ -603,11 +656,11 @@ describe('Core artifact routes', () => {
         /is terminal and does not admit this write/
       );
 
-      const syncDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const syncDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         for (const [suffix, artifactId] of [
-          ['first', 'ar_review_first'],
-          ['second', 'ar_review_second'],
+          ['first', 'ar_00000000-0000-71cf-a641-bd9c6acde17b'],
+          ['second', 'ar_00000000-0000-7c49-98d1-47c5d31a3268'],
         ] as const) {
           const item = {
             artifactId,
@@ -626,7 +679,7 @@ describe('Core artifact routes', () => {
               redaction: { notes: [], status: 'no-sensitive-content-found' },
               resourceId: `repo_artifact_route_${suffix}`,
               strategy: 'git',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             },
             patchPayload: null,
             review: {
@@ -643,14 +696,14 @@ describe('Core artifact routes', () => {
               status: 'pending',
               updatedAt: completedAt,
               validation: [],
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             },
           } satisfies Parameters<typeof recordWorkspaceSyncReview>[1]['item'];
           recordTestWorkspaceReviewMaterialization(syncDb, item);
           recordWorkspaceSyncReview(syncDb, { item });
           if (suffix === 'first')
             updateWorkspaceSyncReviewDecision(syncDb, {
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               reviewId: item.review.id,
               status: 'rejected',
               requestId: 'reject-workspace-review-evidence',
@@ -660,26 +713,32 @@ describe('Core artifact routes', () => {
 
         // An explicitly submitted output with the same presentation remains a deliverable.
         const catalog = await app.request(
-          ...operationRequest('artifact.list', { workspaceId: 'ws_demo' })
+          ...operationRequest('artifact.list', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
         );
         expect(catalog.status).toBe(200);
         expect(
           ListArtifactsResponseSchema.parse(await catalog.json()).items.map((item) => item.id)
-        ).toEqual(['ar_deliverable_same_title']);
+        ).toEqual(['ar_00000000-0000-7f70-84f9-64a58b07cc9f']);
         const historical = await app.request(
           ...operationRequest('artifact.read', {
-            workspaceId: 'ws_demo',
-            artifactId: 'ar_review_first',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: 'ar_00000000-0000-71cf-a641-bd9c6acde17b',
           })
         );
         expect(historical.status).toBe(200);
         const dashboard = await app.request(
-          ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+          ...operationRequest('workspace.dashboard', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
         );
         expect(dashboard.status).toBe(200);
         expect(await dashboard.json()).toMatchObject({ counts: { artifactCount: 1 } });
         const workspace = await app.request(
-          ...operationRequest('workspace.read', { workspaceId: 'ws_demo' })
+          ...operationRequest('workspace.read', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
         );
         expect(await workspace.json()).toMatchObject({ counts: { artifactCount: 1 } });
         const workspaces = await app.request('/api/app/operations/workspace.list', {
@@ -689,14 +748,15 @@ describe('Core artifact routes', () => {
         });
         expect(
           (await workspaces.json()).items.find(
-            (item: { workspace: { id: string } }) => item.workspace.id === 'ws_demo'
+            (item: { workspace: { id: string } }) =>
+              item.workspace.id === 'ws_00000000-0000-7000-8000-000000000001'
           )?.workspace
-        ).toEqual(store.getWorkspace('ws_demo'));
+        ).toEqual(store.getWorkspace('ws_00000000-0000-7000-8000-000000000001'));
         for (let attempt = 0; attempt < 2; attempt++) {
           const renamed = await app.request(
             ...operationRequest(
               'workspace.update',
-              { workspaceId: 'ws_demo' },
+              { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
               {
                 method: 'PATCH',
                 headers: { 'content-type': 'application/json' },
@@ -711,20 +771,26 @@ describe('Core artifact routes', () => {
           expect(await renamed.json()).toMatchObject({ counts: { artifactCount: 1 } });
         }
         const search = await app.request(
-          ...operationRequest('app.search', { query: 'ar_review' }, {})
+          ...operationRequest('app.search', { query: backing.title }, {})
         );
         expect(search.status).toBe(200);
         expect(
           (await search.json()).items
             .filter((item: { kind: string }) => item.kind === 'artifact')
             .map((item: { id: string }) => item.id)
-        ).toEqual(['ar_deliverable_same_title']);
+        ).toEqual(['ar_00000000-0000-7f70-84f9-64a58b07cc9f']);
 
-        const receivingThread = store.createThread('ws_demo', 'Reference internal evidence');
+        const receivingThread = store.createThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'Reference internal evidence'
+        );
         const attached = await app.request(
           ...operationRequest(
             'conversation.submit',
-            { workspaceId: 'ws_demo', threadId: receivingThread.id },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: receivingThread.id,
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -732,30 +798,37 @@ describe('Core artifact routes', () => {
                 requestId: 'reject-review-evidence-attachment',
                 input: 'Use this output',
                 targetRef: 'internal-role:assistant',
-                artifactRefs: [{ artifactId: 'ar_review_second', artifactVersion: 1 }],
+                artifactRefs: [
+                  { artifactId: 'ar_00000000-0000-7c49-98d1-47c5d31a3268', artifactVersion: 1 },
+                ],
               }),
             }
           )
         );
         expect(attached.status).toBe(409);
         expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
-        expect(store.listThreadTurns('ws_demo', receivingThread.id)).toHaveLength(0);
+        expect(
+          store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', receivingThread.id)
+        ).toHaveLength(0);
         const threads = await app.request('/api/app/operations/thread.dashboard', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+          body: JSON.stringify({
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+          }),
         });
         expect(threads.status).toBe(200);
         const threadDashboard = await threads.json();
         expect(threadDashboard.artifacts.map((item: { id: string }) => item.id)).toEqual([
-          'ar_deliverable_same_title',
+          'ar_00000000-0000-7f70-84f9-64a58b07cc9f',
         ]);
         expect(
           threadDashboard.turns
             .flatMap((item: { items: { type: string; artifactId?: string }[] }) => item.items)
             .filter((item: { type: string }) => item.type === 'artifact-reference')
             .map((item: { artifactId: string }) => item.artifactId)
-        ).toContain('ar_review_second');
+        ).toContain('ar_00000000-0000-7c49-98d1-47c5d31a3268');
 
         const excludedReplayRes = await postJson(app, decisionPath, request);
         expect(excludedReplayRes.status).toBe(409);
@@ -772,9 +845,11 @@ describe('Core artifact routes', () => {
         syncDb.sqlite.close();
       }
 
-      const verificationDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const verificationDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(getArtifactReview(verificationDb, 'ar_review_second', 1).decision).toBeNull();
+        expect(
+          getArtifactReview(verificationDb, 'ar_00000000-0000-7c49-98d1-47c5d31a3268', 1).decision
+        ).toBeNull();
       } finally {
         verificationDb.sqlite.close();
       }
@@ -788,20 +863,28 @@ describe('Core artifact routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordLocalWorkspaceAccess(coreDb, 'ws_demo');
-    const thread = store.createThread('ws_demo', 'Artifact Review rollback thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Produce rollback Artifact', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Artifact Review rollback thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Produce rollback Artifact',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const completedAt = new Date().toISOString();
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     createReviewFixture(
       store,
       workspaceDb,
-      'ar_review_rollback',
+      'ar_00000000-0000-7292-84b1-02fe24f37662',
       'Keep this Review pending after receipt failure.',
       turn.id
     );
@@ -821,7 +904,11 @@ describe('Core artifact routes', () => {
         app,
         [
           'artifact.review.decide',
-          { workspaceId: 'ws_demo', artifactId: 'ar_review_rollback', artifactVersion: 1 },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: 'ar_00000000-0000-7292-84b1-02fe24f37662',
+            artifactVersion: 1,
+          },
         ],
         {
           requestId: 'artifact-review-rollback-1',
@@ -829,14 +916,20 @@ describe('Core artifact routes', () => {
         }
       );
       expect(response.status).toBe(500);
-      const verificationDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const verificationDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(getArtifactReview(verificationDb, 'ar_review_rollback', 1).decision).toBeNull();
+        expect(
+          getArtifactReview(verificationDb, 'ar_00000000-0000-7292-84b1-02fe24f37662', 1).decision
+        ).toBeNull();
         expect(
           store.getCommandRequest(
             'artifact.review.decide',
             'artifact-review-rollback-1',
-            { workspaceId: 'ws_demo', artifactId: 'ar_review_rollback', artifactVersion: '1' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              artifactId: 'ar_00000000-0000-7292-84b1-02fe24f37662',
+              artifactVersion: '1',
+            },
             verificationDb
           )
         ).toBeNull();
@@ -867,7 +960,7 @@ describe('Core artifact routes', () => {
       ready: true,
     });
     const store = createDemoStore({ dataRoot });
-    recordLocalWorkspaceAccess(coreDb, 'ws_demo');
+    recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const setup = createTestAgentSetup();
     const runtimeAgent = {
       id: setup.manifest.id,
@@ -882,20 +975,28 @@ describe('Core artifact routes', () => {
       sandboxSummary: null,
       health: { status: 'ready', message: null, checkedAt: new Date().toISOString() },
     } as const;
-    store.upsertAgent('ws_demo', runtimeAgent);
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', runtimeAgent);
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread('ws_demo', 'Artifact Review redo thread');
-    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Produce redo Artifact', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Artifact Review redo thread'
+    );
+    const sourceTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Produce redo Artifact',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const completedAt = new Date().toISOString();
     store.updateTurn(sourceTurn.id, { agentId: setup.manifest.id });
     createReviewFixture(
       store,
       workspaceDb,
-      'ar_review_redo',
+      'ar_00000000-0000-7431-9ff1-49c2a2686f52',
       'Redo this exact output.',
       sourceTurn.id
     );
@@ -903,18 +1004,21 @@ describe('Core artifact routes', () => {
       status: 'completed',
       completedAt,
     });
-    const partialThread = store.createThread('ws_demo', 'Artifact Review partial thread');
+    const partialThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Artifact Review partial thread'
+    );
     const partialSourceTurn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       partialThread.id,
       'Produce partial Artifact',
-      { kind: 'user', id: 'user_local' }
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     store.updateTurn(partialSourceTurn.id, { agentId: setup.manifest.id });
     createReviewFixture(
       store,
       workspaceDb,
-      'ar_review_partial',
+      'ar_00000000-0000-7c8a-afc3-6af1d0f39c53',
       'Do not resume partial proof.',
       partialSourceTurn.id
     );
@@ -924,16 +1028,16 @@ describe('Core artifact routes', () => {
     });
     const partialRequestId = 'artifact-review-partial-1';
     const partialFollowUpTurnId = deriveArtifactReviewFollowUpTurnId(
-      'ws_demo',
-      'ar_review_partial',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'ar_00000000-0000-7c8a-afc3-6af1d0f39c53',
       1,
       partialRequestId
     );
     const orphanTurn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       partialThread.id,
       'Contradictory partial proof',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
         turnId: partialFollowUpTurnId,
@@ -962,7 +1066,11 @@ describe('Core artifact routes', () => {
     seedWritableGitRepository(repositoryPath);
     const decisionPath = [
       'artifact.review.decide',
-      { workspaceId: 'ws_demo', artifactId: 'ar_review_redo', artifactVersion: 1 },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-7431-9ff1-49c2a2686f52',
+        artifactVersion: 1,
+      },
     ] as const;
     const request = {
       requestId: '0190f4c8-0000-7000-8000-000000000401',
@@ -999,7 +1107,7 @@ describe('Core artifact routes', () => {
           'artifact_redo_admission_observation',
           JSON.stringify(
             listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               statuses: ['queued', 'admitted', 'denied', 'cancelled'],
             })
           )
@@ -1011,23 +1119,27 @@ describe('Core artifact routes', () => {
       expect(response.status, JSON.stringify(responseBody)).toBe(200);
       const decided = SubmitArtifactReviewDecisionResponseSchema.parse(responseBody);
       const followUpTurnId = deriveArtifactReviewFollowUpTurnId(
-        'ws_demo',
-        'ar_review_redo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'ar_00000000-0000-7431-9ff1-49c2a2686f52',
         1,
         request.requestId
       );
       expect(decided).toMatchObject({ decision: 'redo', followUpTurnId });
       await vi.waitFor(() =>
-        expect(store.getTurn('ws_demo', thread.id, followUpTurnId).status).toBe('completed')
+        expect(
+          store.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, followUpTurnId).status
+        ).toBe('completed')
       );
-      expect(store.getTurn('ws_demo', thread.id, followUpTurnId)).toMatchObject({
+      expect(
+        store.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, followUpTurnId)
+      ).toMatchObject({
         id: followUpTurnId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         agentId: setup.manifest.id,
       });
       const admissions = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['admitted'],
       }).filter((entry) => entry.turnId === followUpTurnId);
       expect(admissions).toEqual([
@@ -1041,10 +1153,15 @@ describe('Core artifact routes', () => {
       expect(JSON.parse(admissions[0]?.turnInput ?? '{}')).toMatchObject({
         artifactMediaType: 'text/plain',
       });
-      const checkpointDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const checkpointDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(
-          getWorkerCheckpoint(checkpointDb, 'ws_demo', thread.id, followUpTurnId)
+          getWorkerCheckpoint(
+            checkpointDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            thread.id,
+            followUpTurnId
+          )
         ).toMatchObject({
           stage: 'completed',
           workerSessionId: expect.any(String),
@@ -1070,7 +1187,7 @@ describe('Core artifact routes', () => {
       expect(corruptReplayRes.status).toBe(409);
       await expect(corruptReplayRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
-      const receiptDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const receiptDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       receiptDb.sqlite
         .prepare(
           "DELETE FROM idempotency_requests WHERE command_name = 'artifact.review.decide' AND request_id = ?"
@@ -1086,7 +1203,10 @@ describe('Core artifact routes', () => {
         code: 'idempotency_key_conflict',
       });
 
-      store.upsertAgent('ws_demo', { ...runtimeAgent, status: 'disabled' });
+      store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
+        ...runtimeAgent,
+        status: 'disabled',
+      });
       const disabledGapRes = await postJson(app, decisionPath, request);
       expect(disabledGapRes.status).toBe(409);
       await expect(disabledGapRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
@@ -1095,7 +1215,11 @@ describe('Core artifact routes', () => {
         app,
         [
           'artifact.review.decide',
-          { workspaceId: 'ws_demo', artifactId: 'ar_review_partial', artifactVersion: 1 },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: 'ar_00000000-0000-7c8a-afc3-6af1d0f39c53',
+            artifactVersion: 1,
+          },
         ],
         {
           requestId: partialRequestId,
@@ -1105,9 +1229,11 @@ describe('Core artifact routes', () => {
       );
       expect(partialRes.status).toBe(409);
       await expect(partialRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      const verificationDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const verificationDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(getArtifactReview(verificationDb, 'ar_review_partial', 1).decision).toBeNull();
+        expect(
+          getArtifactReview(verificationDb, 'ar_00000000-0000-7c8a-afc3-6af1d0f39c53', 1).decision
+        ).toBeNull();
       } finally {
         verificationDb.sqlite.close();
       }

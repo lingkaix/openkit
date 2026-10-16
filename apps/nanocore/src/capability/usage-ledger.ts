@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
 import {
   type ActorRef,
+  allocateEntityId,
   type CapabilityCall,
   CapabilityCallExtensionsSchema,
   CapabilityCallSchema,
@@ -231,7 +231,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
   assertNoUnsafeLedgerValue(safeInput);
 
   const startedAt = (input.now ?? new Date()).toISOString();
-  const callId = input.callId ?? `cap_${randomUUID()}`;
+  const callId = input.callId ?? allocateEntityId('cap');
   const protocolCall = CapabilityCallSchema.parse({
     id: callId,
     workspaceId: input.workspaceId,
@@ -356,7 +356,7 @@ export function recordUsage(input: RecordUsageInput): string[] {
       assertNoUnsafeLedgerValue(record);
 
       const usage = UsageRecordSchema.parse({
-        id: record.usageId ?? `use_${randomUUID()}`,
+        id: record.usageId ?? allocateEntityId('use'),
         workspaceId: input.call.context.workspaceId,
         responsibleUserId: input.call.context.authorityActor
           ? responsibleUserIdForActor(input.call.context.authorityActor)

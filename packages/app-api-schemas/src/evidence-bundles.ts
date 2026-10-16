@@ -1,3 +1,9 @@
+import {
+  AgentSessionIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Product-safe reference to evidence material included in an evidence bundle. */
@@ -12,11 +18,11 @@ export const EvidenceBundleRefSchema = z
 export const EvidenceBundleRecordSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1).nullable(),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema.nullable(),
     goalId: z.string().min(1).nullable(),
-    turnId: z.string().min(1).nullable(),
-    agentSessionId: z.string().min(1).nullable(),
+    turnId: TurnIdSchema.nullable(),
+    agentSessionId: AgentSessionIdSchema.nullable(),
     backendType: z.string().min(1).nullable(),
     sourceKind: z.string().min(1),
     summary: z.string().min(1),
@@ -47,7 +53,7 @@ export const EvidenceBundleRecordSchema = z
 /** Read-only workspace evidence bundle list response. */
 export const ListWorkspaceEvidenceBundlesResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     evidenceBundles: z.array(EvidenceBundleRecordSchema),
   })
   .strict();

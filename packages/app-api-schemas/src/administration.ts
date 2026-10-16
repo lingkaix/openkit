@@ -1,4 +1,11 @@
-import { RequestIdSchema } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  ArtifactIdSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 import { SubmitConversationResponseSchema } from './chat-mode.js';
@@ -9,7 +16,7 @@ export const SubmitAdministrationConversationRequestSchema = z
     input: z.string().min(1),
     logicalModelId: z.string().min(1).optional(),
     requestId: RequestIdSchema,
-    threadId: z.string().min(1).optional(),
+    threadId: ThreadIdSchema.optional(),
   })
   .strict();
 
@@ -28,7 +35,7 @@ export type SubmitAdministrationConversationResponse = z.infer<
 /** Exact immutable catalog candidate identity, never a mutable latest pointer. */
 export const ConfigurationCandidateRefSchema = z
   .object({
-    artifactId: z.string().min(1),
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.literal(1),
     contentDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
@@ -47,9 +54,9 @@ const CatalogConfigurationProposalSchema = z
 /** Exact retained terminal Turn; NanoCore verifies its audience and immutable AEP lineage. */
 export const ConfigurationGitFailureRefSchema = z
   .object({
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
   })
   .strict();
 
@@ -100,7 +107,7 @@ export const ConfigurationCandidateArtifactSchema = z.discriminatedUnion('target
     ...CandidateFields,
     failureEvidence: z
       .object({
-        agentSessionId: z.string().min(1),
+        agentSessionId: AgentSessionIdSchema,
         snapshotId: z.string().min(1),
         snapshotDigest: z.string().regex(/^[0-9a-f]{64}$/),
         repositoryInputId: z.string().min(1),

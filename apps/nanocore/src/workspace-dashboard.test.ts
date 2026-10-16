@@ -4,12 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -17,13 +18,15 @@ describe('workspace dashboard app API', () => {
   it('returns aggregate workspace status and default execution context', async () => {
     const app = createApp({ store: createDemoStore() });
     const res = await app.request(
-      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+      ...operationRequest('workspace.dashboard', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       workspace: {
-        id: 'ws_demo',
+        id: 'ws_00000000-0000-7000-8000-000000000001',
         name: 'Demo Workspace',
       },
       counts: {
@@ -38,7 +41,7 @@ describe('workspace dashboard app API', () => {
       agentHealth: [],
       recentThreads: [
         {
-          id: 'th_demo',
+          id: 'th_00000000-0000-7000-8000-000000000001',
         },
       ],
     });
@@ -59,7 +62,9 @@ describe('workspace dashboard app API', () => {
       store: createDemoStore(),
     });
     const res = await app.request(
-      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+      ...operationRequest('workspace.dashboard', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     const body = await res.json();
 
@@ -69,21 +74,45 @@ describe('workspace dashboard app API', () => {
 
   it('summarizes active work, completions, and attention-needed items', async () => {
     const store = createDemoStore();
-    const activeThread = store.createThread('ws_demo', 'Active worker turn');
-    const activeTurn = store.createTurn('ws_demo', activeThread.id, 'Run active worker turn', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const attentionThread = store.createThread('ws_demo', 'Approval handoff');
-    const attentionTurn = store.createTurn('ws_demo', attentionThread.id, 'Ask before writing', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const completedThread = store.createThread('ws_demo', 'Completed review');
-    const completedTurn = store.createTurn('ws_demo', completedThread.id, 'Finish review', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const activeThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Active worker turn'
+    );
+    const activeTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      activeThread.id,
+      'Run active worker turn',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const attentionThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Approval handoff'
+    );
+    const attentionTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      attentionThread.id,
+      'Ask before writing',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const completedThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Completed review'
+    );
+    const completedTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      completedThread.id,
+      'Finish review',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const completedAt = new Date().toISOString();
     const artifactRequestId = 'artifact-create-workspace-completion';
     const artifactBody = 'Review is complete.';
@@ -92,7 +121,7 @@ describe('workspace dashboard app API', () => {
 
     const approval = store.createApproval({
       id: 'ap_workspace_attention',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: attentionThread.id,
       turnId: attentionTurn.id,
       kind: 'permission',
@@ -103,8 +132,8 @@ describe('workspace dashboard app API', () => {
       resolvedAt: null,
     });
     store.createItem({
-      id: 'it_workspace_attention',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-7820-915a-25ba0ed16670',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: attentionThread.id,
       turnId: attentionTurn.id,
       type: 'approval-request',
@@ -117,8 +146,8 @@ describe('workspace dashboard app API', () => {
       completedAt: attentionTurn.startedAt ?? completedAt,
     });
     store.createArtifact({
-      id: 'ar_workspace_completion',
-      workspaceId: 'ws_demo',
+      id: 'ar_00000000-0000-7857-9177-e94eebaad31f',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: completedThread.id,
       turnId: completedTurn.id,
       kind: 'summary',
@@ -140,9 +169,9 @@ describe('workspace dashboard app API', () => {
     });
     store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
     store.createAgentSession({
-      id: `session_${activeThread.id}`,
+      id: testEntityId('as', `session_${activeThread.id}`),
       agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: activeThread.id,
       status: 'busy',
       message: null,
@@ -151,7 +180,9 @@ describe('workspace dashboard app API', () => {
     });
     const app = createApp({ store });
     const res = await app.request(
-      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+      ...operationRequest('workspace.dashboard', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
 
     expect(res.status).toBe(200);
@@ -187,7 +218,7 @@ describe('workspace dashboard app API', () => {
           threadId: attentionThread.id,
           turnId: attentionTurn.id,
           kind: 'approval',
-          itemId: 'it_workspace_attention',
+          itemId: 'it_00000000-0000-7820-915a-25ba0ed16670',
           summary: 'Approve file edit',
         },
       ],
@@ -198,10 +229,10 @@ describe('workspace dashboard app API', () => {
     {
       name: 'first newest exact-Turn output ahead of a newer Thread output',
       artifacts: [
-        ['ar_exact_old', 'exact', 0, 'Old exact summary'],
-        ['ar_exact_first', 'exact', 2, 'First newest exact summary'],
-        ['ar_exact_tie', 'exact', 2, 'Second newest exact summary'],
-        ['ar_other_newer', 'other', 3, 'Newer Thread summary'],
+        ['ar_00000000-0000-7b23-9848-63d3724f90d8', 'exact', 0, 'Old exact summary'],
+        ['ar_00000000-0000-72bf-b345-fe18766828bb', 'exact', 2, 'First newest exact summary'],
+        ['ar_00000000-0000-7712-9c75-5be99f3b4575', 'exact', 2, 'Second newest exact summary'],
+        ['ar_00000000-0000-76d7-aef5-ff5634adaa8b', 'other', 3, 'Newer Thread summary'],
       ],
       summary: 'First newest exact summary',
       count: 3,
@@ -209,9 +240,9 @@ describe('workspace dashboard app API', () => {
     {
       name: 'first newest Thread output when the completed Turn has none',
       artifacts: [
-        ['ar_other_old', 'other', 0, 'Old Thread summary'],
-        ['ar_other_first', 'other', 2, 'First newest Thread summary'],
-        ['ar_other_tie', 'other', 2, 'Second newest Thread summary'],
+        ['ar_00000000-0000-79d3-a354-4465791ffe5f', 'other', 0, 'Old Thread summary'],
+        ['ar_00000000-0000-7a7a-bc25-bdab6591bcb1', 'other', 2, 'First newest Thread summary'],
+        ['ar_00000000-0000-7c6d-bb47-5eae545b3a52', 'other', 2, 'Second newest Thread summary'],
       ],
       summary: 'First newest Thread summary',
       count: 0,
@@ -225,8 +256,8 @@ describe('workspace dashboard app API', () => {
     {
       name: 'Thread preview for a null exact summary rather than another Artifact',
       artifacts: [
-        ['ar_exact_null', 'exact', 0, null],
-        ['ar_other_summary', 'other', 3, 'Do not use this summary'],
+        ['ar_00000000-0000-738f-a8f0-275edcf7e48b', 'exact', 0, null],
+        ['ar_00000000-0000-7232-95be-4bb6040144c3', 'other', 3, 'Do not use this summary'],
       ],
       summary: 'Thread preview',
       count: 1,
@@ -234,8 +265,8 @@ describe('workspace dashboard app API', () => {
     {
       name: 'empty exact summary without falling back to Thread output or preview',
       artifacts: [
-        ['ar_exact_empty', 'exact', 0, ''],
-        ['ar_other_summary', 'other', 3, 'Do not use this summary'],
+        ['ar_00000000-0000-78d5-8978-dba0fe6d4350', 'exact', 0, ''],
+        ['ar_00000000-0000-7232-95be-4bb6040144c3', 'other', 3, 'Do not use this summary'],
       ],
       summary: '',
       count: 1,
@@ -243,28 +274,41 @@ describe('workspace dashboard app API', () => {
     {
       name: 'Thread preview for the newest null Thread summary rather than older output',
       artifacts: [
-        ['ar_other_old', 'other', 0, 'Do not use this summary'],
-        ['ar_other_null', 'other', 3, null],
+        ['ar_00000000-0000-79d3-a354-4465791ffe5f', 'other', 0, 'Do not use this summary'],
+        ['ar_00000000-0000-704f-bdd3-e1428984a4ac', 'other', 3, null],
       ],
       summary: 'Thread preview',
       count: 0,
     },
   ] as const)('preserves completion selection: $name', async ({ artifacts, summary, count }) => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Completion selection');
-    const completedTurn = store.createTurn('ws_demo', thread.id, 'Thread preview', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const otherTurn = store.createTurn('ws_demo', thread.id, 'Thread preview', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Completion selection'
+    );
+    const completedTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Thread preview',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const otherTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Thread preview',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     for (const [id, scope, minute, artifactSummary] of artifacts) {
       const turnId = scope === 'exact' ? completedTurn.id : otherTurn.id;
       store.createArtifact({
         id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         turnId,
         kind: 'summary',
@@ -284,7 +328,9 @@ describe('workspace dashboard app API', () => {
     store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
     const app = createApp({ store });
     const res = await app.request(
-      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+      ...operationRequest('workspace.dashboard', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
 
     expect(res.status).toBe(200);
@@ -303,20 +349,28 @@ describe('workspace dashboard app API', () => {
 
   it('does not surface secret pending decision items as actionable', async () => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Invalid dashboard attention');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Invalid dashboard attention'
+    );
     const timestamp = '2026-07-19T00:00:00.000Z';
-    const secretTurn = store.createTurn('ws_demo', thread.id, 'Secret question', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const secretTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Secret question',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createItem({
-      id: 'it_workspace_secret',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-7aa3-b54b-e32a25a56598',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: secretTurn.id,
       type: 'user-input-request',
       status: 'completed',
-      responsibleUserId: 'user_local',
+      responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       userInputRequestId: 'ui_workspace_secret',
       prompt: 'Enter a secret.',
       questions: [
@@ -335,7 +389,9 @@ describe('workspace dashboard app API', () => {
     const app = createApp({ store });
 
     const response = await app.request(
-      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+      ...operationRequest('workspace.dashboard', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
 
     expect(response.status).toBe(200);
@@ -349,19 +405,27 @@ describe('workspace dashboard app API', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Readonly attention');
-    const approvalTurn = store.createTurn('ws_demo', thread.id, 'Request approval', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Readonly attention'
+    );
+    const approvalTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Request approval',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const timestamp = '2026-07-19T00:00:00.000Z';
     const approval = store.createApproval({
       id: 'ap_workspace_readonly',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: approvalTurn.id,
       kind: 'permission',
@@ -372,8 +436,8 @@ describe('workspace dashboard app API', () => {
       resolvedAt: null,
     });
     store.createItem({
-      id: 'it_workspace_readonly',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-73b2-97a8-ad8ddcd0adb2',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
@@ -385,10 +449,15 @@ describe('workspace dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const failedTurn = store.createTurn('ws_demo', thread.id, 'Shared failure', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const failedTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Shared failure',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.updateTurn(failedTurn.id, {
       completedAt: timestamp,
       error: { code: 'worker_failed', message: 'Shared worker failure.' },
@@ -396,9 +465,9 @@ describe('workspace dashboard app API', () => {
     });
     const readonlyToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const app = createApp({
       auth: {
@@ -415,7 +484,7 @@ describe('workspace dashboard app API', () => {
       const response = await app.request(
         ...operationRequest(
           'workspace.dashboard',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             headers: { authorization: `Bearer ${readonlyToken.secret}` },
           }

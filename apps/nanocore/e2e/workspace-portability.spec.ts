@@ -45,7 +45,7 @@ describe('nanocore e2e workspace portability', () => {
             'x-openkit-request-id': randomUUID(),
           },
           body: JSON.stringify({
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             title: 'Archive bytes',
             kind: 'project-context',
             content,
@@ -57,18 +57,18 @@ describe('nanocore e2e workspace portability', () => {
         await fetch(`${source.baseUrl}/api/app/operations/workspace.export`, {
           method: 'POST',
           headers: { authorization: `Bearer ${sourceToken}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
         }),
         {}
       );
       const web = await fetch(
-        `${source.baseUrl}/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`,
+        `${source.baseUrl}/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exported.exportId}/archive`,
         { headers: { authorization: `Bearer ${sourceToken}` } }
       );
       expect(
         (
           await fetch(
-            `${source.baseUrl}/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+            `${source.baseUrl}/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exported.exportId}/archive`
           )
         ).status
       ).toBe(401);
@@ -77,7 +77,7 @@ describe('nanocore e2e workspace portability', () => {
       const destinationPath = join(localRoot, 'archive.openkit-workspace.tar.zst');
       expect(
         await administratorArchiveCall(source, String(sourceToken), 'workspace.archive-download', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           exportId: exported.exportId,
           destinationPath,
         })
@@ -118,7 +118,7 @@ describe('nanocore e2e workspace portability', () => {
     const sourceHarness = await startNanoCoreHarness();
     harnesses.push(sourceHarness);
 
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     await expectJson(
       await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.create`, {
         workspaceId,
@@ -195,7 +195,7 @@ describe('nanocore e2e workspace portability', () => {
     const harness = await startNanoCoreHarness();
     harnesses.push(harness);
 
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const exported = await expectJson(
       await postJson(`${harness.baseUrl}/api/app/operations/workspace.export`, { workspaceId }),
       { workspaceId }
@@ -226,6 +226,10 @@ describe('nanocore e2e workspace portability', () => {
       )}\n`
     );
 
+    const before = (await expectJson(
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {}),
+      {}
+    )) as { items: Array<{ workspace: { id: string } }> };
     await expectErrorJson(
       await postJson(`${harness.baseUrl}/api/app/operations/workspace.import`, {
         exportId,
@@ -243,11 +247,11 @@ describe('nanocore e2e workspace portability', () => {
       }),
       {}
     )) as {
-      items?: Array<{ id?: string }>;
+      items: Array<{ workspace: { id: string } }>;
     };
 
-    expect(workspaces.items?.some((workspace) => workspace.id === 'ws_imported_ws_demo')).toBe(
-      false
+    expect(workspaces.items.map((entry) => entry.workspace.id).sort()).toEqual(
+      before.items.map((entry) => entry.workspace.id).sort()
     );
   });
 
@@ -255,7 +259,7 @@ describe('nanocore e2e workspace portability', () => {
     const harness = await startNanoCoreHarness();
     harnesses.push(harness);
 
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const exported = await expectJson(
       await postJson(`${harness.baseUrl}/api/app/operations/workspace.export`, { workspaceId }),
       { workspaceId }
@@ -274,6 +278,10 @@ describe('nanocore e2e workspace portability', () => {
 
     await writeFile(workspaceRecordPath, '{"id":"tampered"}\n');
 
+    const before = (await expectJson(
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {}),
+      {}
+    )) as { items: Array<{ workspace: { id: string } }> };
     await expectErrorJson(
       await postJson(`${harness.baseUrl}/api/app/operations/workspace.import`, {
         exportId,
@@ -291,11 +299,11 @@ describe('nanocore e2e workspace portability', () => {
       }),
       {}
     )) as {
-      items?: Array<{ id?: string }>;
+      items: Array<{ workspace: { id: string } }>;
     };
 
-    expect(workspaces.items?.some((workspace) => workspace.id === 'ws_imported_ws_demo')).toBe(
-      false
+    expect(workspaces.items.map((entry) => entry.workspace.id).sort()).toEqual(
+      before.items.map((entry) => entry.workspace.id).sort()
     );
   });
 });
@@ -398,7 +406,7 @@ async function seedArchiveAdministrator(dataRoot: string): Promise<string> {
   const coreDb = openCoreDb(dataRoot);
   try {
     return createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',

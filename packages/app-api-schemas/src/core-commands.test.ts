@@ -13,9 +13,9 @@ it.each([
   ['turn.interrupt', InterruptTurnRequestSchema],
 ] as const)('preserves the complete %s schema unknown-field policy and required selectors', (id, former) => {
   const input = {
-    workspaceId: 'ws1',
-    threadId: 'th1',
-    turnId: 't1',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     requestId: randomUUID(),
     futureHint: true,
   };

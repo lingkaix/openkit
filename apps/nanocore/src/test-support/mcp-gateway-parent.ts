@@ -48,7 +48,7 @@ const gatewayInput = {
     },
   },
   server,
-  workspaceId: 'ws_demo',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
 };
 void gateway
   .callTool({

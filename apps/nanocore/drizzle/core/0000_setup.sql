@@ -409,6 +409,7 @@ CREATE TABLE `vault_admin_audit_events` (
 
 CREATE TABLE `vault_grants` (
 	`grant_id` text PRIMARY KEY NOT NULL,
+	`issuance` text NOT NULL CONSTRAINT `vault_grants_issuance_check` CHECK (`issuance` IN ('target', 'imported-history')),
 	`vault_reference_id` text NOT NULL,
 	`owner_scope` text NOT NULL,
 	`workspace_id` text,

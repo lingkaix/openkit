@@ -24,8 +24,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Use Codex naming in this prompt, but implement the focused fix.',
       readiness: [readyCandidate],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.selectedWorkerCandidate).toEqual(readyCandidate);
@@ -40,8 +40,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Implement the failing quick chat test and run the focused suite.',
       readiness: [READY_CODEX, READY_OPENCODE],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -81,8 +81,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     if (!delegates) {
@@ -109,8 +109,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Delete repository file README.md.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -127,8 +127,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Implement the release dashboard and run focused tests.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.delegationDraft).toMatchObject({
@@ -136,8 +136,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       source: 'worker-coordinator',
       mode: 'automation',
       prompt: 'Implement the release dashboard and run focused tests.',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       target: {
         agentId: 'agent_codex',
       },
@@ -145,8 +145,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
         maxWorkerIterations: 1,
       },
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
     });
     expect(decision.delegationDraft).not.toHaveProperty('runMode');
@@ -158,8 +158,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Implement the release dashboard and run focused tests.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.workerRequest).toEqual({
@@ -170,8 +170,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
         'The worker reports verification evidence or a clear blocker.',
       ],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
       resources: [],
       expectedArtifacts: [
@@ -213,8 +213,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'explicit_task',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.decision).toBe('worker_turn');
@@ -226,8 +226,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
         'The worker reports verification evidence or a clear blocker.',
       ],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
       resources: [],
       expectedArtifacts: [
@@ -267,8 +267,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Use OpenCode to inspect the project and propose the smallest fix.',
       readiness: [READY_CODEX, READY_OPENCODE],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -285,8 +285,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'What is NanoCore?',
       readiness: [READY_CODEX, READY_OPENCODE],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -301,8 +301,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Help.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -318,8 +318,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Deploy to production, rotate credentials, and charge the customer card.',
       readiness: [READY_CODEX, READY_OPENCODE],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -335,8 +335,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Implement the focused fix.',
       readiness: [],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -352,8 +352,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Retry the previous worker turn.',
       readiness: [READY_CODEX],
-      threadState: { status: 'failed', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'failed', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -369,8 +369,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Plan a multi-step release goal for NanoCore.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -392,8 +392,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -408,8 +408,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt: 'Implement a multi-step release checklist.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -472,8 +472,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(routing).toMatchObject({
@@ -493,8 +493,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(routing).toMatchObject({
@@ -539,8 +539,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(routing).toMatchObject({
@@ -632,8 +632,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(routing).toMatchObject({
@@ -791,8 +791,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(routing.decision).toBe(decision);
@@ -807,8 +807,8 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(routing).toMatchObject({
@@ -837,8 +837,8 @@ describe('explicit Task delegation', () => {
       entryIntent: 'explicit_task',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
     expect(decision).toMatchObject({
       decision: 'worker_turn',
@@ -854,8 +854,8 @@ describe('explicit Task delegation', () => {
       entryIntent: 'explicit_task',
       prompt: 'Help.',
       readiness: [{ ...READY_CODEX, readiness: 'blocked' }],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
     expect(decision).toMatchObject({
       decision: 'blocked',

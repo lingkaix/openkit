@@ -2,11 +2,12 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attemptActionOwners from './execution-attempt-records.js';
 import {
@@ -26,23 +27,27 @@ function createFixture() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-backend-session-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     profileRef: 'profile_worker',
     queueEntryId: 'queue_backend_session',
     requestedAgentId: 'agent_codex_host',
-    threadId: 'thread_backend_session',
-    turnId: 'turn_backend_session',
+    threadId: testEntityId('th', 'thread_backend_session'),
+    turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
     turnInput: 'Run worker',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => '2026-07-15T00:00:01.000Z',
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_backend_session',
-    agentSessionId: 'as_backend_session',
+    attemptId: testEntityId('attempt', 'lease_backend_session'),
+    agentSessionId: 'as_00000000-0000-741c-b104-26abc3a228bc',
     inputRef: 'aepsnap_backend_session',
     bindingRef: 'lease-binding:lease_backend_session',
     sessionCompatibilityKey: 'fixture-compatibility',
@@ -77,7 +82,7 @@ function materializingInput() {
     },
     backendVersion: '0.0.99',
     identity: {
-      agentSessionId: 'as_backend_session',
+      agentSessionId: 'as_00000000-0000-741c-b104-26abc3a228bc',
       backendKind: 'openshell',
       backendSessionId: 'openkit-as_backend_session',
       deploymentId: 'deployment-test',
@@ -87,9 +92,9 @@ function materializingInput() {
       transientProviderInstanceId: 'okp-deployment-test-worker-inference-backend-session',
     },
     lineage: {
-      threadId: 'thread_backend_session',
-      turnId: 'turn_backend_session',
-      workspaceId: 'ws_demo',
+      threadId: testEntityId('th', 'thread_backend_session'),
+      turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
     now: () => '2026-07-15T00:00:03.000Z',
     sandboxBindingRef: 'lease-binding:lease_backend_session',
@@ -169,7 +174,7 @@ describe('worker backend sessions', () => {
       const replay = recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
 
       expect(first).toEqual({
-        agentSessionId: 'as_backend_session',
+        agentSessionId: 'as_00000000-0000-741c-b104-26abc3a228bc',
         backendKind: 'openshell',
         deploymentId: 'deployment-test',
         backendLineage: {
@@ -181,7 +186,7 @@ describe('worker backend sessions', () => {
         backendVersion: '0.0.99',
         backendSessionId: 'openkit-as_backend_session',
         createdAt: '2026-07-15T00:00:03.000Z',
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         packageSnapshotId: 'aepsnap_backend_session',
         originPhysicalEpoch: 'a'.repeat(64),
         physicalCleanedAt: null,
@@ -191,10 +196,10 @@ describe('worker backend sessions', () => {
         transientProviderInstanceId: 'okp-deployment-test-worker-inference-backend-session',
         workspaceHandoffState: 'pending',
         state: 'materializing',
-        threadId: 'thread_backend_session',
-        turnId: 'turn_backend_session',
+        threadId: testEntityId('th', 'thread_backend_session'),
+        turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
         updatedAt: '2026-07-15T00:00:03.000Z',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(replay).toEqual(first);
       expect(getWorkerBackendSession(coreDb, first.attemptId)).toEqual(first);
@@ -293,7 +298,10 @@ describe('worker backend sessions', () => {
       expect(() =>
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
-          lineage: { ...materializingInput().lineage, turnId: 'turn_other' },
+          lineage: {
+            ...materializingInput().lineage,
+            turnId: 'tu_00000000-0000-7e18-a597-336d92a699e9',
+          },
         })
       ).toThrow('execution attempt binding does not match worker backend session lineage.');
     } finally {
@@ -310,12 +318,14 @@ describe('worker backend sessions', () => {
           ...materializingInput(),
           identity: {
             ...materializingInput().identity,
-            agentSessionId: 'as_plan_from_another_lease',
+            agentSessionId: 'as_00000000-0000-7f97-a9ca-e375aab5a2da',
             packageSnapshotId: 'aepsnap_plan_from_another_lease',
           },
         })
       ).toThrow('execution attempt binding does not match worker backend session lineage.');
-      expect(getWorkerBackendSession(coreDb, 'lease_backend_session')).toBeNull();
+      expect(
+        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_backend_session'))
+      ).toBeNull();
     } finally {
       coreDb.sqlite.close();
     }
@@ -327,12 +337,12 @@ describe('worker backend sessions', () => {
 
     try {
       attemptActionOwners.closeSchedulerExecutionAttemptWithoutEffects(terminalDb, {
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         cause: 'turn-failed-before-materialization',
         noOutstandingEffects: true,
       });
       attemptActionOwners.recordSchedulerExecutionOperation(expiredDb, {
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         operationId: 'fixture-submit:lease_backend_session',
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
@@ -346,8 +356,12 @@ describe('worker backend sessions', () => {
           now: () => '2026-07-15T02:00:03.000Z',
         })
       ).toThrow('execution attempt is not live for worker backend materialization.');
-      expect(getWorkerBackendSession(terminalDb, 'lease_backend_session')).toBeNull();
-      expect(getWorkerBackendSession(expiredDb, 'lease_backend_session')).toBeNull();
+      expect(
+        getWorkerBackendSession(terminalDb, testEntityId('attempt', 'lease_backend_session'))
+      ).toBeNull();
+      expect(
+        getWorkerBackendSession(expiredDb, testEntityId('attempt', 'lease_backend_session'))
+      ).toBeNull();
     } finally {
       terminalDb.sqlite.close();
       expiredDb.sqlite.close();
@@ -362,7 +376,7 @@ describe('worker backend sessions', () => {
 
     try {
       attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         operationId: 'fixture-submit:lease_backend_session',
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
@@ -371,7 +385,7 @@ describe('worker backend sessions', () => {
       if (condition === 'terminal') {
         coreDb.sqlite
           .prepare("UPDATE scheduler_execution_attempts SET phase = 'closing' WHERE attempt_id = ?")
-          .run('lease_backend_session');
+          .run(testEntityId('attempt', 'lease_backend_session'));
       }
 
       expect(() =>
@@ -380,7 +394,9 @@ describe('worker backend sessions', () => {
           now: () => now,
         })
       ).toThrow('execution attempt is not live for worker backend materialization.');
-      expect(getWorkerBackendSession(coreDb, 'lease_backend_session')).toMatchObject({
+      expect(
+        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_backend_session'))
+      ).toMatchObject({
         state: 'materializing',
       });
     } finally {
@@ -404,14 +420,14 @@ describe('worker backend sessions', () => {
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                state, created_at, updated_at
              )
-             SELECT 'lease_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
+             SELECT 'attempt_00000000-0000-7000-8000-000000000972', 'ws_00000000-0000-71f5-922f-6fd42f52f580', 'th_00000000-0000-7000-8000-000000000972', 'tu_00000000-0000-7e18-a597-336d92a699e9', 'as_00000000-0000-7436-9246-ac6dd3ca3fe4',
                     'aepsnap_other', backend_kind, deployment_id, backend_version,
                     runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, 'openkit-as_other',
                     'server/runtime/worker-backend-sessions/aepsnap_other',
                     'provider-other', workspace_handoff_state,
                     state, created_at, updated_at
              FROM worker_backend_sessions
-             WHERE attempt_id = 'lease_backend_session'`
+             WHERE attempt_id = '${testEntityId('attempt', 'lease_backend_session')}'`
           )
           .run()
       ).toThrow(/UNIQUE constraint failed/);
@@ -437,7 +453,7 @@ describe('worker backend sessions', () => {
                workspace_handoff_state,
                state, created_at, updated_at
              )
-             SELECT 'lease_provider_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
+             SELECT 'attempt_00000000-0000-7000-8000-000000000973', 'ws_00000000-0000-71f5-922f-6fd42f52f580', 'th_00000000-0000-7000-8000-000000000972', 'tu_00000000-0000-7e18-a597-336d92a699e9', 'as_00000000-0000-7436-9246-ac6dd3ca3fe4',
                     'aepsnap_provider_other', backend_kind, deployment_id, backend_version,
                     runtime_target_id, origin_physical_epoch, backend_lineage_json, 'lease-binding:lease-provider-other',
                     'openkit-as_other',
@@ -445,7 +461,7 @@ describe('worker backend sessions', () => {
                     transient_provider_instance_id, workspace_handoff_state,
                     state, created_at, updated_at
              FROM worker_backend_sessions
-             WHERE attempt_id = 'lease_backend_session'`
+             WHERE attempt_id = '${testEntityId('attempt', 'lease_backend_session')}'`
           )
           .run()
       ).toThrow(/UNIQUE constraint failed/);
@@ -461,12 +477,12 @@ describe('worker backend sessions', () => {
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         toState: 'materialized',
       });
       expect(
         markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-          attemptId: 'lease_backend_session',
+          attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:04.500Z',
         })
       ).toMatchObject({ workspaceHandoffState: 'complete' });
@@ -511,14 +527,14 @@ describe('worker backend sessions', () => {
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                state, created_at, updated_at
              )
-             SELECT 'lease_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
+             SELECT 'attempt_00000000-0000-7000-8000-000000000972', 'ws_00000000-0000-71f5-922f-6fd42f52f580', 'th_00000000-0000-7000-8000-000000000972', 'tu_00000000-0000-7e18-a597-336d92a699e9', 'as_00000000-0000-7436-9246-ac6dd3ca3fe4',
                     ${replacements.package_snapshot_id}, backend_kind, deployment_id, backend_version,
                     runtime_target_id, origin_physical_epoch, backend_lineage_json, ${replacements.sandbox_binding_ref}, ${replacements.backend_session_id},
                     ${replacements.staging_directory_ref}, transient_provider_instance_id,
                     workspace_handoff_state,
                     state, created_at, updated_at
              FROM worker_backend_sessions
-             WHERE attempt_id = 'lease_backend_session'`
+             WHERE attempt_id = '${testEntityId('attempt', 'lease_backend_session')}'`
           )
           .run()
       ).toThrow(/UNIQUE constraint failed/);
@@ -534,26 +550,26 @@ describe('worker backend sessions', () => {
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'cleanup-pending',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:05.000Z',
         toState: 'cleanup-failed',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-failed',
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:06.000Z',
         toState: 'cleanup-pending',
       });
       expect(
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'cleanup-pending',
-          attemptId: 'lease_backend_session',
+          attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:07.000Z',
           toState: 'physical-cleaned',
         })
@@ -565,7 +581,7 @@ describe('worker backend sessions', () => {
       expect(
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'physical-cleaned',
-          attemptId: 'lease_backend_session',
+          attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:08.000Z',
           toState: 'cleaned',
         })
@@ -577,7 +593,7 @@ describe('worker backend sessions', () => {
       expect(() =>
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'physical-cleaned',
-          attemptId: 'lease_backend_session',
+          attemptId: testEntityId('attempt', 'lease_backend_session'),
           toState: 'cleaned',
         })
       ).toThrow('Worker backend session state changed before transition.');
@@ -591,7 +607,7 @@ describe('worker backend sessions', () => {
 
     try {
       attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         operationId: 'fixture-submit:lease_backend_session',
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
@@ -599,18 +615,18 @@ describe('worker backend sessions', () => {
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'materialized',
       });
       markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.500Z',
       });
 
       expect(
         markWorkerBackendSessionLaunching(coreDb, {
-          attemptId: 'lease_backend_session',
+          attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:05.000Z',
         })
       ).toMatchObject({ state: 'launching', updatedAt: '2026-07-15T00:00:05.000Z' });
@@ -627,7 +643,7 @@ describe('worker backend sessions', () => {
 
     try {
       attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         operationId: 'fixture-submit:lease_backend_session',
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
@@ -635,27 +651,29 @@ describe('worker backend sessions', () => {
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'materialized',
       });
       markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-        attemptId: 'lease_backend_session',
+        attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.500Z',
       });
       if (condition === 'stale lease') {
         coreDb.sqlite
           .prepare("UPDATE scheduler_execution_attempts SET phase = 'closing' WHERE attempt_id = ?")
-          .run('lease_backend_session');
+          .run(testEntityId('attempt', 'lease_backend_session'));
       }
 
       expect(() =>
         markWorkerBackendSessionLaunching(coreDb, {
-          attemptId: 'lease_backend_session',
+          attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => now,
         })
       ).toThrow('execution attempt is not live for worker backend launch.');
-      expect(getWorkerBackendSession(coreDb, 'lease_backend_session')).toMatchObject({
+      expect(
+        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_backend_session'))
+      ).toMatchObject({
         state: 'materialized',
       });
     } finally {

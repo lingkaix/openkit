@@ -107,13 +107,15 @@ function writeInternalRoleProfiles(dataRoot: string): void {
 }
 
 function writeUserConfig(dataRoot: string): void {
-  const configRoot = join(dataRoot, 'users', 'user_demo', 'config');
+  const configRoot = join(dataRoot, 'users', 'usr_00000000-0000-7e68-be9b-ac7521cb7be0', 'config');
   mkdirSync(configRoot, { recursive: true });
   writeFileSync(
     join(configRoot, 'user.jsonc'),
     JSON.stringify({
       schemaVersion: 1,
-      workspaces: [{ workspaceId: 'ws_demo', agentId: 'agent_personal' }],
+      workspaces: [
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', agentId: 'agent_personal' },
+      ],
     })
   );
 }
@@ -299,7 +301,7 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeWorkspaceConfig(
       dataRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "schemaVersion": 1,
         "workspace": {
@@ -320,7 +322,7 @@ describe('runtime config loading and reload planning', () => {
 
     expect(snapshot.workspaceConfigs).toEqual([
       expect.objectContaining({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         config: expect.objectContaining({
           workspace: expect.objectContaining({
             roots: [expect.objectContaining({ id: 'data', path: 'files/data' })],
@@ -335,7 +337,7 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeWorkspaceDataSources(
       dataRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "schemaVersion": 1,
         "sources": [
@@ -357,7 +359,7 @@ describe('runtime config loading and reload planning', () => {
 
     expect(snapshot.workspaceDataSourceCatalogs).toEqual([
       expect.objectContaining({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         catalog: expect.objectContaining({
           sources: [expect.objectContaining({ id: 'main-repo', kind: 'git' })],
         }),
@@ -388,15 +390,15 @@ describe('runtime config loading and reload planning', () => {
           },
         ],
       });
-    writeWorkspaceMcpServers(baseRoot, 'ws_demo', catalog(60_000));
-    writeWorkspaceMcpServers(nextRoot, 'ws_demo', catalog(30_000));
+    writeWorkspaceMcpServers(baseRoot, 'ws_00000000-0000-7000-8000-000000000001', catalog(60_000));
+    writeWorkspaceMcpServers(nextRoot, 'ws_00000000-0000-7000-8000-000000000001', catalog(30_000));
 
     const base = loadRuntimeConfig(baseRoot, { version: 1 });
     const next = loadRuntimeConfig(nextRoot, { version: 2 });
 
     expect(base.workspaceMcpServerCatalogs).toEqual([
       expect.objectContaining({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         catalog: expect.objectContaining({
           servers: [expect.objectContaining({ id: 'echo', timeoutMs: 60_000 })],
         }),
@@ -418,7 +420,7 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(nextRoot, 'openai/gpt-5.1');
     writeWorkspaceConfig(
       baseRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "workspace": {
           "name": "Demo Workspace",
@@ -430,7 +432,7 @@ describe('runtime config loading and reload planning', () => {
     );
     writeWorkspaceConfig(
       nextRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "workspace": {
           "name": "Demo Workspace",
@@ -526,11 +528,13 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(
       nextRoot,
       'openai/gpt-5.1',
-      ', "policy": { "workspaceApprovalModes": { "ws_trusted": { "repo.push": "auto_allow" } } }'
+      ', "policy": { "workspaceApprovalModes": { "ws_00000000-0000-779d-821b-9fd29ef901ba": { "repo.push": "auto_allow" } } }'
     );
     const previous = loadRuntimeConfig(baseRoot, { version: 1 });
     const next = loadRuntimeConfig(nextRoot, { version: 2 });
-    expect(next.openKitConfig.policy?.workspaceApprovalModes?.ws_trusted).toEqual({
+    expect(
+      next.openKitConfig.policy?.workspaceApprovalModes?.['ws_00000000-0000-779d-821b-9fd29ef901ba']
+    ).toEqual({
       'repo.push': 'auto_allow',
     });
     const plan = diffRuntimeConfig(previous, next);
@@ -981,11 +985,16 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const store = createDemoStore({ dataRoot });
     const manager = createRuntimeConfigManager({ captureCoverage: store, dataRoot });
-    const thread = store.createThread('ws_demo', 'Capture reload');
-    const running = store.createTurn('ws_demo', thread.id, 'Keep historical pair', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture reload');
+    const running = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Keep historical pair',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
     expect(captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)).toEqual({
       scope: 'server',
@@ -1006,10 +1015,15 @@ describe('runtime config loading and reload planning', () => {
     expect(store.getTurnById(running.id).status).toBe('running');
     expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
 
-    const next = store.createTurn('ws_demo', thread.id, 'Next turn sees on', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const next = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Next turn sees on',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     expect(store.getTurnCaptureCoverage(next.id)).toEqual({ scope: 'server', value: 'on' });
   });
 });

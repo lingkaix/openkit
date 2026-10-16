@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
+import { allocateEntityId } from '@openkit/protocol';
 import { workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 // Test-only composition checks the private host producer and its actual supervising reader.
@@ -361,25 +362,31 @@ function turnInput(
       lineage: {
         agentSessionId: 'session-a',
         packageSnapshotId: 'package-1',
-        threadId: 'thread-one',
-        turnId: overrides.turnId ?? 'turn-1',
-        workspaceId: 'workspace-one',
+        threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+        turnId: overrides.turnId ?? 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
       },
       maxStreamCount: 1,
       maxTotalBytes: 1_000,
       nativeOriginIndexPath: workerTurnCapturePaths(
-        'thread-one',
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
         'pi',
-        overrides.turnId ?? 'turn-1'
+        overrides.turnId ?? 'tu_00000000-0000-7e49-8268-e35715b55d0c'
       ).nativeOriginIndexPath,
-      rawStreamsRoot: workerTurnCapturePaths('thread-one', 'pi', overrides.turnId ?? 'turn-1')
-        .rawStreamsRoot,
-      streamManifestPath: workerTurnCapturePaths('thread-one', 'pi', overrides.turnId ?? 'turn-1')
-        .streamManifestPath,
+      rawStreamsRoot: workerTurnCapturePaths(
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
+        'pi',
+        overrides.turnId ?? 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      ).rawStreamsRoot,
+      streamManifestPath: workerTurnCapturePaths(
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
+        'pi',
+        overrides.turnId ?? 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      ).streamManifestPath,
     },
     skillTargetPaths: [{ id: 'greeting', targetPath: join(dirs.workingDirectory, 'skills') }],
     turnDirectory: dirs.turnDirectory,
-    turnId: overrides.turnId ?? 'turn-1',
+    turnId: overrides.turnId ?? 'tu_00000000-0000-7e49-8268-e35715b55d0c',
     turnInput: overrides.prompt ?? 'prompt',
     workingDirectory: overrides.workingDirectory ?? dirs.workingDirectory,
   };
@@ -430,7 +437,7 @@ it('projects the host native length outcome without establishing a new conversat
         outcome: { status: 'length', reason: 'pi-length' },
         nativeHandle: { state: 'pending' },
         compactionEntryIds: [],
-        turnId: 'turn-length',
+        turnId: 'tu_00000000-0000-7304-ae84-8bd1c177855d',
       },
       { expectedHandleText: null, secrets: [] }
     )
@@ -455,7 +462,7 @@ describe('Pi frame projection', () => {
         compactionEntryIds: ['compact-1'],
         nativeHandle,
         outcome,
-        turnId: 'turn-1',
+        turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
       } satisfies PiTurnSettledFrame,
       { expectedHandleText: null, secrets }
     );
@@ -866,7 +873,9 @@ process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
       channel = value;
     });
     sessions.push(session);
-    const pending = session.startTurn(turnInput(dirs, { prompt: 'go', turnId: 'turn-1' }));
+    const pending = session.startTurn(
+      turnInput(dirs, { prompt: 'go', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })
+    );
     const pipe = channel;
     if (!pipe) throw new Error('Pi host channel was not observed.');
     pipe.destroy();
@@ -884,7 +893,9 @@ process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
       channel = value;
     });
     sessions.push(session);
-    const pending = session.startTurn(turnInput(dirs, { prompt: 'go', turnId: 'turn-1' }));
+    const pending = session.startTurn(
+      turnInput(dirs, { prompt: 'go', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })
+    );
     const pipe = channel;
     if (!pipe) throw new Error('Pi host channel was not observed.');
     pipe.destroy();
@@ -896,7 +907,9 @@ process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
     const child = latestChild();
     expect(child.exitCode).toBeNull();
     expect(child.signalCode).toBeNull();
-    const again = await session.startTurn(turnInput(dirs, { prompt: 'again', turnId: 'turn-2' }));
+    const again = await session.startTurn(
+      turnInput(dirs, { prompt: 'again', turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' })
+    );
     await expect(again.settled).rejects.toThrow('Pi host channel is lost.');
     expect(child.exitCode).toBeNull();
     expect(child.signalCode).toBeNull();
@@ -922,7 +935,10 @@ process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
     const dirs = await createDirs();
     const session = await openLive(dirs);
     sessions.push(session);
-    const input = turnInput(dirs, { prompt: 'go', turnId: 'turn-1' });
+    const input = turnInput(dirs, {
+      prompt: 'go',
+      turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+    });
     await expect(
       session.startTurn({
         ...input,
@@ -1142,7 +1158,12 @@ describe('Pi controlled channel faults', () => {
     expect(files).toHaveLength(1);
     const retained = await readFile(files[0]!);
     await expect(
-      session.startTurn(turnInput(dirs, { turnId: 'turn-2', prompt: 'do not retry' }))
+      session.startTurn(
+        turnInput(dirs, {
+          turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          prompt: 'do not retry',
+        })
+      )
     ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
     expect(
       writes.mock.calls.filter(([bytes]) => JSON.parse(String(bytes)).op === 'turn')
@@ -1539,7 +1560,7 @@ describe('Pi controlled channel faults', () => {
       channel.emit(
         'data',
         Buffer.from(
-          `${JSON.stringify({ id: request.id, ok: true, result: { state: 'closed' } })}\n${tail === 'native-inline' ? `${JSON.stringify({ event: 'native', turnId: 'turn-1', data: { type: 'message_end' } })}\n` : ''}`
+          `${JSON.stringify({ id: request.id, ok: true, result: { state: 'closed' } })}\n${tail === 'native-inline' ? `${JSON.stringify({ event: 'native', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c', data: { type: 'message_end' } })}\n` : ''}`
         )
       );
       setImmediate(() => {
@@ -1554,12 +1575,12 @@ describe('Pi controlled channel faults', () => {
                 : tail === 'partial'
                   ? '{"event":'
                   : tail === 'omitted'
-                    ? `${JSON.stringify({ event: 'native_omitted', turnId: 'turn-1' })}\n`
+                    ? `${JSON.stringify({ event: 'native_omitted', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })}\n`
                     : tail === 'native'
-                      ? `${JSON.stringify({ event: 'native', turnId: 'turn-1', data: { type: 'message_end' } })}\n`
+                      ? `${JSON.stringify({ event: 'native', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c', data: { type: 'message_end' } })}\n`
                       : `${JSON.stringify({
                           event: 'turn_settled',
-                          turnId: 'turn-1',
+                          turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
                           outcome: { status: 'failed', reason: 'pi-prompt-failed' },
                           nativeHandle: { state: 'pending' },
                           compactionEntryIds: [],
@@ -1607,7 +1628,11 @@ describe('Pi controlled channel faults', () => {
         ...input,
         llmRoute: { ...input.llmRoute, model: 'logical-c', id: 'logical-c' },
       };
-      const successorInput = { ...changed, allowedLlmRoutes: [changed.llmRoute], turnId: 'turn-2' };
+      const successorInput = {
+        ...changed,
+        allowedLlmRoutes: [changed.llmRoute],
+        turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+      };
       const write = vi.spyOn(spawnControl.children.at(-1)!.stdio[3] as Duplex, 'write');
       await expect(session.startTurn(successorInput)).rejects.toThrow('route set changed');
       expect(write).not.toHaveBeenCalled();
@@ -1666,7 +1691,7 @@ describe('Pi controlled channel faults', () => {
     const reordered = {
       ...initial,
       allowedLlmRoutes: [...initial.allowedLlmRoutes].reverse(),
-      turnId: 'turn-2',
+      turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
     };
     expect((await (await session.startTurn(reordered)).settled).status).toBe('completed');
   });
@@ -1824,7 +1849,9 @@ describe('Pi controlled channel faults', () => {
       const child = spawnControl.children.at(-1)!;
       child.kill = () => false;
     }
-    const turn = await session.startTurn(turnInput(dirs, { turnId: 'turn-2' }));
+    const turn = await session.startTurn(
+      turnInput(dirs, { turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' })
+    );
     if (blocked) await expect(turn.settled).rejects.toThrow('Pi native stop was not proved.');
     else {
       expect(await turn.settled).toMatchObject({ status: 'failed' });
@@ -1923,9 +1950,9 @@ describe('Pi controlled channel faults', () => {
     const { dirs, session } = await peer('silent');
     const turn = await session.startTurn(turnInput(dirs));
     const closing = session.close();
-    await expect(session.startTurn(turnInput(dirs, { turnId: 'turn-2' }))).rejects.toThrow(
-      'Pi host is closing.'
-    );
+    await expect(
+      session.startTurn(turnInput(dirs, { turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' }))
+    ).rejects.toThrow('Pi host is closing.');
     await expect(closing).resolves.toBeUndefined();
     expect(await turn.settled).toMatchObject({ status: 'failed', stopReason: 'pi-channel-lost' });
   });
@@ -2060,7 +2087,12 @@ describe('Pi resident host', () => {
       expect((await session.nativeHandle()).state).toBe('pending');
       expect(existsSync(join(f.dirs.stateRoot, 'sessions'))).toBe(false);
       const first = await (
-        await session.startTurn(turnInput(f.dirs, { prompt: 'remember cobalt', turnId: 'turn-1' }))
+        await session.startTurn(
+          turnInput(f.dirs, {
+            prompt: 'remember cobalt',
+            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+          })
+        )
       ).settled;
       expect(first).toEqual({
         assistantText: 'answer-1',
@@ -2077,7 +2109,10 @@ describe('Pi resident host', () => {
       expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit_work__echo');
       const second = await (
         await session.startTurn(
-          turnInput(f.dirs, { prompt: 'what was the word?', turnId: 'turn-2' })
+          turnInput(f.dirs, {
+            prompt: 'what was the word?',
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          })
         )
       ).settled;
       expect(second).toMatchObject({ assistantText: 'answer-2', status: 'completed' });
@@ -2089,7 +2124,7 @@ describe('Pi resident host', () => {
       const changedInput = turnInput(f.dirs, {
         modelId: 'logical-b',
         prompt: 'continue',
-        turnId: 'turn-3',
+        turnId: 'tu_00000000-0000-701a-ab45-3210b32e0cff',
       });
       const changed = await (
         await session.startTurn({
@@ -2128,13 +2163,19 @@ describe('Pi resident host', () => {
       expect(f.capability.log).toHaveLength(capabilityCount);
       await expect(
         successor.startTurn(
-          turnInput(f.dirs, { prompt: 'again', turnId: 'turn-4', workingDirectory: f.dirs.root })
+          turnInput(f.dirs, {
+            prompt: 'again',
+            turnId: 'tu_00000000-0000-78d7-a65b-c0f4c13f467a',
+            workingDirectory: f.dirs.root,
+          })
         )
       ).rejects.toThrow('Pi resume handle records another working directory.');
       expect(f.inference.requests).toHaveLength(beforeInspect);
       f.capability.bound = true;
       const resumed = await (
-        await successor.startTurn(turnInput(f.dirs, { prompt: 'again', turnId: 'turn-4' }))
+        await successor.startTurn(
+          turnInput(f.dirs, { prompt: 'again', turnId: 'tu_00000000-0000-78d7-a65b-c0f4c13f467a' })
+        )
       ).settled;
       expect(resumed).toMatchObject({ assistantText: 'answer-4', status: 'completed' });
       expect(requestTexts(f.inference.requests.at(-1)!).join('\n')).toContain('answer-1');
@@ -2160,12 +2201,20 @@ describe('Pi resident host', () => {
       expect(
         (
           await (
-            await session.startTurn(turnInput(f.dirs, { prompt: 'first', turnId: 'turn-1' }))
+            await session.startTurn(
+              turnInput(f.dirs, {
+                prompt: 'first',
+                turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+              })
+            )
           ).settled
         ).status
       ).toBe('completed');
       const hung = await session.startTurn(
-        turnInput(f.dirs, { prompt: 'mid-model', turnId: 'turn-2' })
+        turnInput(f.dirs, {
+          prompt: 'mid-model',
+          turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        })
       );
       await waitFor(() => f.inference.requests.length === 2);
       await hung.interrupt();
@@ -2178,7 +2227,7 @@ describe('Pi resident host', () => {
       expect((await session.nativeHandle()).state).toBe('ready');
       f.capability.holdToolCall = true;
       const tool = await session.startTurn(
-        turnInput(f.dirs, { prompt: 'mid-tool', turnId: 'turn-3' })
+        turnInput(f.dirs, { prompt: 'mid-tool', turnId: 'tu_00000000-0000-701a-ab45-3210b32e0cff' })
       );
       await waitFor(() => f.capability.log.some((entry) => entry.method === 'tools/call'));
       await tool.interrupt();
@@ -2188,7 +2237,12 @@ describe('Pi resident host', () => {
       expect(
         (
           await (
-            await session.startTurn(turnInput(f.dirs, { prompt: 'next', turnId: 'turn-4' }))
+            await session.startTurn(
+              turnInput(f.dirs, {
+                prompt: 'next',
+                turnId: 'tu_00000000-0000-78d7-a65b-c0f4c13f467a',
+              })
+            )
           ).settled
         ).status
       ).toBe('completed');
@@ -2198,7 +2252,10 @@ describe('Pi resident host', () => {
       fenced.capability.bound = true;
       const first = await fenced.open();
       const opening = await first.startTurn(
-        turnInput(fenced.dirs, { prompt: 'never', turnId: 'turn-1' })
+        turnInput(fenced.dirs, {
+          prompt: 'never',
+          turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        })
       );
       await waitFor(() => fenced.inference.requests.length === 1);
       await opening.interrupt();
@@ -2206,7 +2263,12 @@ describe('Pi resident host', () => {
       expect(await sessionJsonlFiles(fenced.dirs.stateRoot)).toHaveLength(1);
       expect((await first.nativeHandle()).state).toBe('unknown');
       await expect(
-        first.startTurn(turnInput(fenced.dirs, { prompt: 'again', turnId: 'turn-2' }))
+        first.startTurn(
+          turnInput(fenced.dirs, {
+            prompt: 'again',
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          })
+        )
       ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
       await first.close();
     },
@@ -2223,7 +2285,7 @@ describe('Pi resident host', () => {
       expect((await early.nativeHandle()).state).toBe('pending');
       expect(await sessionJsonlFiles(hung.dirs.stateRoot)).toEqual([]);
       const opening = await early.startTurn(
-        turnInput(hung.dirs, { prompt: 'never', turnId: 'turn-1' })
+        turnInput(hung.dirs, { prompt: 'never', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })
       );
       await waitFor(() => hung.capability.log.some((entry) => entry.method === 'initialize'));
       expect(await sessionJsonlFiles(hung.dirs.stateRoot)).toEqual([]);
@@ -2236,7 +2298,12 @@ describe('Pi resident host', () => {
       expect(await sessionJsonlFiles(hung.dirs.stateRoot)).toEqual([]);
       expect((await early.nativeHandle()).state).toBe('unknown');
       await expect(
-        early.startTurn(turnInput(hung.dirs, { prompt: 'again', turnId: 'turn-2' }))
+        early.startTurn(
+          turnInput(hung.dirs, {
+            prompt: 'again',
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          })
+        )
       ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
       await early.close();
 
@@ -2247,7 +2314,10 @@ describe('Pi resident host', () => {
       expect((await session.nativeHandle()).state).toBe('pending');
       const first = await (
         await session.startTurn(
-          turnInput(done.dirs, { prompt: 'remember cobalt', turnId: 'turn-1' })
+          turnInput(done.dirs, {
+            prompt: 'remember cobalt',
+            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+          })
         )
       ).settled;
       expect(first).toMatchObject({ assistantText: 'answer-1', status: 'completed' });
@@ -2263,7 +2333,12 @@ describe('Pi resident host', () => {
       const successor = await done.open(ready.reference);
       expect(await successor.nativeHandle()).toEqual(ready);
       const resumed = await (
-        await successor.startTurn(turnInput(done.dirs, { prompt: 'again', turnId: 'turn-2' }))
+        await successor.startTurn(
+          turnInput(done.dirs, {
+            prompt: 'again',
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          })
+        )
       ).settled;
       expect(resumed).toMatchObject({ assistantText: 'answer-2', status: 'completed' });
       expect(requestTexts(done.inference.requests.at(-1)!).join('\n')).toContain('answer-1');
@@ -2295,7 +2370,9 @@ describe('Pi resident host', () => {
     });
     sessions.push(session);
     expect((await session.nativeHandle()).state).toBe('pending');
-    const turn = await session.startTurn(turnInput(dirs, { prompt: 'go', turnId: 'turn-1' }));
+    const turn = await session.startTurn(
+      turnInput(dirs, { prompt: 'go', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })
+    );
     expect(await turn.settled).toMatchObject({
       assistantText: null,
       status: 'failed',
@@ -2304,7 +2381,9 @@ describe('Pi resident host', () => {
     expect(await sessionJsonlFiles(dirs.stateRoot)).toEqual([]);
     expect((await session.nativeHandle()).state).toBe('unknown');
     await expect(
-      session.startTurn(turnInput(dirs, { prompt: 'again', turnId: 'turn-2' }))
+      session.startTurn(
+        turnInput(dirs, { prompt: 'again', turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' })
+      )
     ).rejects.toThrow('Pi host channel is lost.');
     expect(session.childState()).toBe('absent');
     await expect(session.close()).rejects.toThrow('Pi host close was not proved.');
@@ -2346,7 +2425,9 @@ describe('Pi resident host', () => {
       capability.bound = true;
       const session = await open();
       sessions.push(session);
-      const turn = await session.startTurn(turnInput(dirs, { prompt: 'drop', turnId: 'turn-1' }));
+      const turn = await session.startTurn(
+        turnInput(dirs, { prompt: 'drop', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })
+      );
       await waitFor(() => inference.requests.length === 1);
       channel?.end();
       const lost = await turn.settled;
@@ -2361,7 +2442,9 @@ describe('Pi resident host', () => {
 
       const killed = await open();
       sessions.push(killed);
-      const hanging = await killed.startTurn(turnInput(dirs, { prompt: 'kill', turnId: 'turn-2' }));
+      const hanging = await killed.startTurn(
+        turnInput(dirs, { prompt: 'kill', turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' })
+      );
       await waitFor(() => inference.requests.length === 2);
       killed.kill();
       expect(await hanging.settled).toMatchObject({
@@ -2445,7 +2528,12 @@ export default function (pi) {
       for (const [path, marker] of Object.entries(markers)) await writeFile(path, `${marker}\n`);
       f.capability.bound = true;
       const settled = await (
-        await session.startTurn(turnInput(f.dirs, { prompt: '/hello world', turnId: 'turn-1' }))
+        await session.startTurn(
+          turnInput(f.dirs, {
+            prompt: '/hello world',
+            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+          })
+        )
       ).settled;
       expect(settled).toMatchObject({ assistantText: 'blocked as expected', status: 'completed' });
       expect(JSON.stringify(settled)).not.toContain('"noise"');
@@ -2522,7 +2610,9 @@ export default function (pi) {
       f.capability.bound = true;
       const session = await f.open();
       const first = await (
-        await session.startTurn(turnInput(f.dirs, { prompt: 'first', turnId: 'turn-1' }))
+        await session.startTurn(
+          turnInput(f.dirs, { prompt: 'first', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })
+        )
       ).settled;
       expect(first.status).toBe('completed');
       expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit_work__echo');
@@ -2530,12 +2620,20 @@ export default function (pi) {
       const requests = f.inference.requests.length;
       await expect(
         session.startTurn(
-          turnInput(f.dirs, { mcpServerIds: ['openkit-extra'], prompt: 'switch', turnId: 'turn-2' })
+          turnInput(f.dirs, {
+            mcpServerIds: ['openkit-extra'],
+            prompt: 'switch',
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          })
         )
       ).rejects.toThrow('Pi MCP supply changed; a successor host must resume the session.');
       await expect(
         session.startTurn(
-          turnInput(f.dirs, { mcpServerIds: ['openkit-extra'], prompt: 'switch', turnId: 'turn-3' })
+          turnInput(f.dirs, {
+            mcpServerIds: ['openkit-extra'],
+            prompt: 'switch',
+            turnId: 'tu_00000000-0000-701a-ab45-3210b32e0cff',
+          })
         )
       ).rejects.toThrow('Pi MCP supply changed; a successor host must resume the session.');
       expect(f.inference.requests).toHaveLength(requests);
@@ -2549,7 +2647,7 @@ export default function (pi) {
           turnInput(f.dirs, {
             mcpServerIds: ['openkit-extra'],
             prompt: 'second',
-            turnId: 'turn-4',
+            turnId: 'tu_00000000-0000-78d7-a65b-c0f4c13f467a',
           })
         )
       ).settled;
@@ -2595,7 +2693,12 @@ export default function (pi) {
       f.capability.bound = true;
       const session = await f.open();
       const first = await (
-        await session.startTurn(turnInput(f.dirs, { prompt: 'fill the context', turnId: 'turn-1' }))
+        await session.startTurn(
+          turnInput(f.dirs, {
+            prompt: 'fill the context',
+            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+          })
+        )
       ).settled;
       expect(first).toMatchObject({ assistantText: 'answer-1', status: 'completed' });
       expect(session.lastCompactionEntryIds).toHaveLength(1);
@@ -2610,7 +2713,12 @@ export default function (pi) {
         entries.filter((entry) => entry.type === 'compaction').map((entry) => entry.id)
       ).toEqual(session.lastCompactionEntryIds);
       const second = await (
-        await session.startTurn(turnInput(f.dirs, { prompt: 'after pressure', turnId: 'turn-2' }))
+        await session.startTurn(
+          turnInput(f.dirs, {
+            prompt: 'after pressure',
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          })
+        )
       ).settled;
       expect(second).toMatchObject({ status: 'completed', stopReason: 'stop' });
       expect(session.lastCompactionEntryIds).toEqual([]);
@@ -2621,7 +2729,10 @@ export default function (pi) {
       const successor = await f.open(ready.reference);
       const resumed = await (
         await successor.startTurn(
-          turnInput(f.dirs, { prompt: 'after close', turnId: 'turn-resume' })
+          turnInput(f.dirs, {
+            prompt: 'after close',
+            turnId: 'tu_00000000-0000-7c72-955c-111ce7b29cbb',
+          })
         )
       ).settled;
       expect(resumed).toMatchObject({ status: 'completed', stopReason: 'stop' });
@@ -2643,11 +2754,11 @@ export default function (pi) {
       expect(compactionIds).toHaveLength(1);
       expect(retainedIds.filter((id) => id === compactionIds[0])).toEqual(compactionIds);
       const outcomes = [
-        ['turn-3', 'length', 'pi-length', 'length'],
-        ['turn-4', 'status', 'pi-inference-failed', 'failed'],
+        ['tu_00000000-0000-701a-ab45-3210b32e0cff', 'length', 'pi-length', 'length'],
+        ['tu_00000000-0000-78d7-a65b-c0f4c13f467a', 'status', 'pi-inference-failed', 'failed'],
         // This fixture completes a tool call, then settles a correlated native length message.
-        ['turn-5', 'tool', 'pi-length', 'length'],
-        ['turn-6', 'empty', 'pi-final-message-empty', 'failed'],
+        ['tu_00000000-0000-71b1-b7c1-394fcee14622', 'tool', 'pi-length', 'length'],
+        ['tu_00000000-0000-7980-8eb4-9be48353f359', 'empty', 'pi-final-message-empty', 'failed'],
       ] as const;
       for (const [turnId, nextMode, reason, status] of outcomes) {
         mode = nextMode;
@@ -2663,7 +2774,12 @@ export default function (pi) {
       expect(
         (
           await (
-            await successor.startTurn(turnInput(f.dirs, { prompt: 'back', turnId: 'turn-7' }))
+            await successor.startTurn(
+              turnInput(f.dirs, {
+                prompt: 'back',
+                turnId: 'tu_00000000-0000-7335-b198-8f30ef2ab244',
+              })
+            )
           ).settled
         ).status
       ).toBe('completed');
@@ -2677,7 +2793,10 @@ export default function (pi) {
     async () => {
       const f = await fixture(() => ({ text: 'answer-1' }));
       const session = await f.open();
-      const input = turnInput(f.dirs, { prompt: 'work', turnId: 'turn-1' });
+      const input = turnInput(f.dirs, {
+        prompt: 'work',
+        turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      });
       await expect(
         session.startTurn({
           ...input,
@@ -2727,7 +2846,9 @@ export default function (pi) {
       expect((await session.nativeHandle()).state).toBe('unknown');
       expect(await readFile(path, 'utf8')).toContain('"id":"replaced"');
       await expect(
-        session.startTurn(turnInput(f.dirs, { prompt: 'more', turnId: 'turn-2' }))
+        session.startTurn(
+          turnInput(f.dirs, { prompt: 'more', turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' })
+        )
       ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
       expect(f.inference.requests).toHaveLength(1);
       await session.close();
@@ -2756,7 +2877,12 @@ export default function (pi) {
       );
       noisy.capability.bound = true;
       const failed = await (
-        await bound.startTurn(turnInput(noisy.dirs, { prompt: 'fail', turnId: 'turn-1' }))
+        await bound.startTurn(
+          turnInput(noisy.dirs, {
+            prompt: 'fail',
+            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+          })
+        )
       ).settled;
       expect(failed.status).toBe('failed');
       expect(failed.diagnostics?.stderr.startsWith('BOUND-MARK-')).toBe(true);
@@ -2770,7 +2896,12 @@ export default function (pi) {
       expect(JSON.stringify(failed.diagnostics)).not.toContain(noisy.inferenceCredential);
       expect(JSON.stringify(failed.diagnostics)).not.toContain(noisy.capabilityCredential);
       await expect(
-        bound.startTurn(turnInput(noisy.dirs, { prompt: 'again', turnId: 'turn-2' }))
+        bound.startTurn(
+          turnInput(noisy.dirs, {
+            prompt: 'again',
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          })
+        )
       ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
     },
     TIMEOUT
@@ -2981,7 +3112,7 @@ describe('M native configuration', () => {
       ).toMatchObject({ status: 'completed' });
       await expect(
         session.startTurn({
-          ...turnInput(f.dirs, { turnId: 'second' }),
+          ...turnInput(f.dirs, { turnId: 'tu_01890f3e-0000-7000-8000-000000000002' }),
           skillTargetPaths: [{ id: 'new', targetPath: join(f.dirs.root, 'new') }],
         })
       ).rejects.toThrow('Pi Skill supply changed');
@@ -3175,7 +3306,7 @@ it.each([
   };
   const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
     ...base,
-    turnId: text,
+    turnId: allocateEntityId('tu'),
     turnInput: text,
     llmRoute,
     allowedLlmRoutes: [reasoning, plain],

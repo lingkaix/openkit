@@ -1,4 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import {
+  AgentSessionIdSchema,
+  allocateEntityId,
+  ExecutionAttemptIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
@@ -18,13 +25,13 @@ import { commandInputHash } from './idempotent-command.js';
 export const EXECUTION_ATTEMPT_BUDGET_MS = 7_200_000;
 
 const AttemptSchema = z.object({
-  attemptId: z.string().min(1),
+  attemptId: ExecutionAttemptIdSchema,
   queueEntryId: z.string().min(1),
   backendId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  threadId: z.string().min(1),
-  turnId: z.string().min(1),
-  agentSessionId: z.string().min(1).nullable(),
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  agentSessionId: AgentSessionIdSchema.nullable(),
   preparationInputJson: z.string(),
   inputRef: z.string().min(1).nullable(),
   bindingRef: z.string().min(1).nullable(),
@@ -114,7 +121,7 @@ export function createSchedulerExecutionAttempt(
   }
 ): SchedulerExecutionAttemptRecord {
   const timestamp = input.now?.() ?? new Date().toISOString();
-  const attemptId = input.attemptId ?? `attempt_${randomUUID()}`;
+  const attemptId = input.attemptId ?? allocateEntityId('attempt');
   return coreDb.sqlite
     .transaction(() => {
       const entry = requireSchedulerAdmissionEntry(coreDb, input.entry.queueEntryId);
