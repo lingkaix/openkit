@@ -14,6 +14,7 @@ import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transpor
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { createCallerOperationImplementations } from './caller-operation-implementations.js';
 import { createCatalogOperationImplementations } from './catalog/catalog-operations.js';
+import { type ChannelServices, createChannelOperationImplementations } from './channel-services.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
@@ -66,6 +67,8 @@ import { createWorkspaceSharingOperationImplementations } from './workspace-shar
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
+  /** Shared deployment-local channel and notification owners. */
+  readonly channelServices?: ChannelServices;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
   /** Existing deployment configuration family services. */
@@ -144,6 +147,7 @@ export interface OperationInvocationDependencies {
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
     createCallerOperationImplementations(dependencies),
+    createChannelOperationImplementations(dependencies.channelServices),
     createMaterialOperationImplementations({
       coreDb: dependencies.coreDb,
       store: dependencies.store!,

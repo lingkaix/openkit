@@ -56,6 +56,12 @@ import {
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
+import {
+  type ChannelServices,
+  createChannelServices,
+  type DiscordAttentionTransport,
+} from './channel-services.js';
+import { createDiscordRestTransport } from './channels/discord-rest.js';
 import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
@@ -72,6 +78,7 @@ import {
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
+import { registerDiscordInteractionRoutes } from './discord-interaction-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
@@ -88,6 +95,7 @@ import {
 } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
+import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
@@ -140,7 +148,10 @@ import {
   assertAgentManifestSupportsModel,
   TurnStartValidationError,
 } from './runtime/orchestrator.js';
-import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
+import {
+  installPendingRequestAdmission,
+  setPendingRequestAttentionObserver,
+} from './runtime/pending-request-flow.js';
 import { cancelOwnedQueuedAdmission, startProductTurn } from './runtime/product-turn-start.js';
 import { createCoordinatorTaskTool } from './runtime/task-admission.js';
 import { waitForWorkerTurnTerminalState } from './runtime/task-turn-wait.js';
@@ -377,6 +388,8 @@ function workerCoordinatorCandidates(
  * Construction options for the Hono app.
  */
 export interface CreateAppOptions {
+  /** Optional private Discord send boundary; deterministic tests supply a fake. */
+  discordAttentionTransport?: DiscordAttentionTransport;
   mode?: CoreMode;
   auth?: BetterAuthServer;
   coreDb?: CoreDb;
@@ -1381,6 +1394,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     dispatch: nanoHostSessionDispatch,
   });
 
+  let channelServices: ChannelServices | undefined;
+  registerDiscordInteractionRoutes({
+    app,
+    config: startupOpenKitConfig.channels?.discord,
+    services: () => channelServices,
+  });
+
   app.use('/api/*', browserCors);
   app.use('/api/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
   app.use('/v1/*', browserCors);
@@ -1786,6 +1806,39 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
   };
 
+  if (options.coreDb) {
+    const discordConfig = startupOpenKitConfig.channels?.discord;
+    const botTokenRef = discordConfig?.botTokenRef;
+    const transport =
+      options.discordAttentionTransport ??
+      (botTokenRef && publicBaseUrl
+        ? createDiscordRestTransport({
+            publicBaseUrl,
+            resolveBotToken: async () => resolveEnvSecretRef(botTokenRef),
+          })
+        : undefined);
+    channelServices = createChannelServices({
+      coreDb: options.coreDb,
+      store: sharedStore,
+      mode,
+      openWorkspace: repositoryWorkspaceDb,
+      ...(discordConfig ? { discordConfig } : {}),
+      ...(transport ? { transport } : {}),
+      invokePending: (id, value, actor) =>
+        createOperationInvocation({
+          coreDb: options.coreDb,
+          store: sharedStore,
+          repositoryWorkspaceDb,
+          inflightCommands,
+          pendingRequestServices,
+          workspaceMutationAdmission,
+          mode,
+        })(id, value, { kind: 'public', actor, delivery: 'human' }),
+    });
+    setPendingRequestAttentionObserver(sharedStore, channelServices.attentionRaised);
+    channelServices.recoverAttention();
+  }
+
   registerOperationJsonRoutes({
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
@@ -1824,6 +1877,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     conversationService: chatService,
     taskStart,
     pendingRequestServices,
+    ...(channelServices ? { channelServices } : {}),
     startModeWorkerTurn,
     coreDb: options.coreDb,
     workspaceMutationAdmission,
@@ -1878,6 +1932,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     conversationService: chatService,
     taskStart,
     pendingRequestServices,
+    ...(channelServices ? { channelServices } : {}),
     runtimeConfigManager,
     runtimeConfigOperations,
     providerSubscriptionOperations,

@@ -350,6 +350,30 @@ const archiveBindings = {
   },
 };
 
+/** Public capability exclusions that keep unsupported scope out of the operation catalog. */
+export const operationExclusions = [
+  {
+    source: 'app-api',
+    name: 'channel.discord.pair',
+    reason:
+      'A pairing challenge is delivered only in the authenticated Web account flow; it is not an access token or a CLI output.',
+    owner: 'docs/specs/20260930-pending_requests.md',
+  },
+  {
+    source: 'core-projection',
+    name: 'meta',
+    reason: 'Unauthenticated connection probing is a support binding, outside operation discovery.',
+    owner: 'docs/specs/20261002-operation_definition.md',
+  },
+  {
+    source: 'core-projection',
+    name: 'subscribeTurnEvents',
+    reason:
+      'The CLI has no event subscription mode; bounded durable reads and the three owned archive streams remain available.',
+    owner: 'docs/specs/20260910-agent_operator_skill.md',
+  },
+];
+
 /**
  * The single transport-neutral OpenKit operation inventory.
  *
@@ -403,71 +427,61 @@ export const operationCatalog = [
       return { deleted: credentialStore.deleteToken({ baseUrl: endpoint }) };
     },
   },
-  ...Object.entries(appSchemas.OPERATION_DEFINITIONS).map(([id, definition]) => ({
-    ...STANDARD,
-    ...(definition.scope.kind === 'server' ? DEPLOYMENT_ADMIN_ACCESS : {}),
-    ...(Object.hasOwn(appSchemas.ADMINISTRATION_OPERATION_DEFINITIONS, id) &&
-    definition.scope.kind !== 'server'
-      ? {
-          requiredAccess:
-            definition.scope.kind === 'actor-quick-chat-workspace'
-              ? 'deployment admin; private Quick Chat; exact human confirmation when required'
-              : 'deployment admin; current Workspace and source-audience access; exact human confirmation when required',
+  ...Object.entries(appSchemas.OPERATION_DEFINITIONS)
+    .filter(
+      ([id]) =>
+        !operationExclusions.some((entry) => entry.source === 'app-api' && entry.name === id)
+    )
+    .map(([id, definition]) => ({
+      ...STANDARD,
+      ...(definition.scope.kind === 'server' ? DEPLOYMENT_ADMIN_ACCESS : {}),
+      ...(Object.hasOwn(appSchemas.ADMINISTRATION_OPERATION_DEFINITIONS, id) &&
+      definition.scope.kind !== 'server'
+        ? {
+            requiredAccess:
+              definition.scope.kind === 'actor-quick-chat-workspace'
+                ? 'deployment admin; private Quick Chat; exact human confirmation when required'
+                : 'deployment admin; current Workspace and source-audience access; exact human confirmation when required',
+          }
+        : {}),
+      ...(definition.scope.kind === 'user'
+        ? { requiredAccess: 'canonical user: implicit local actor or server-admin bearer token' }
+        : {}),
+      ...('inputSensitivity' in definition
+        ? { inputSensitivity: definition.inputSensitivity }
+        : {}),
+      ...(id === 'material.revision-save' ? { inputSensitivity: 'workspace content' } : {}),
+      ...(id === 'material.revision-read' ? { outputSensitivity: 'workspace content' } : {}),
+      id,
+      source: 'app-api',
+      appOperationId: id,
+      clientMethod: `operations.${id}`,
+      group: id.split('.')[0],
+      summary: definition.description,
+      mutating: definition.mutating,
+      inputSchema: strictShared(definition.inputSchema),
+      outputSchema: definition.outputSchema,
+      handler: async ({ client }, input) => {
+        if (id === 'material.create') requireAgentReadableMaterial(input.sensitivity);
+        if (id === 'material.revision-read' || id === 'material.revision-save') {
+          const { material } = await client.operations['material.read']({
+            workspaceId: input.workspaceId,
+            materialId: input.materialId,
+          });
+          requireAgentReadableMaterial(material.sensitivity);
         }
-      : {}),
-    ...(definition.scope.kind === 'user'
-      ? { requiredAccess: 'canonical user: implicit local actor or server-admin bearer token' }
-      : {}),
-    ...('inputSensitivity' in definition ? { inputSensitivity: definition.inputSensitivity } : {}),
-    ...(id === 'material.revision-save' ? { inputSensitivity: 'workspace content' } : {}),
-    ...(id === 'material.revision-read' ? { outputSensitivity: 'workspace content' } : {}),
-    id,
-    source: 'app-api',
-    appOperationId: id,
-    clientMethod: `operations.${id}`,
-    group: id.split('.')[0],
-    summary: definition.description,
-    mutating: definition.mutating,
-    inputSchema: strictShared(definition.inputSchema),
-    outputSchema: definition.outputSchema,
-    handler: async ({ client }, input) => {
-      if (id === 'material.create') requireAgentReadableMaterial(input.sensitivity);
-      if (id === 'material.revision-read' || id === 'material.revision-save') {
-        const { material } = await client.operations['material.read']({
-          workspaceId: input.workspaceId,
-          materialId: input.materialId,
-        });
-        requireAgentReadableMaterial(material.sensitivity);
-      }
-      return client.operations[id](input);
-    },
-    credentials: definition.credentials,
-    ...secretDeliveryProjection(id, definition),
-    ...(definition.binding === 'streaming'
-      ? {
-          ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
-          inputSensitivity: 'host-local path',
-          ...archiveBindings[id],
-        }
-      : {}),
-  })),
-];
-
-/** Public capability exclusions that keep unsupported scope out of the operation catalog. */
-export const operationExclusions = [
-  {
-    source: 'core-projection',
-    name: 'meta',
-    reason: 'Unauthenticated connection probing is a support binding, outside operation discovery.',
-    owner: 'docs/specs/20261002-operation_definition.md',
-  },
-  {
-    source: 'core-projection',
-    name: 'subscribeTurnEvents',
-    reason:
-      'The CLI has no event subscription mode; bounded durable reads and the three owned archive streams remain available.',
-    owner: 'docs/specs/20260910-agent_operator_skill.md',
-  },
+        return client.operations[id](input);
+      },
+      credentials: definition.credentials,
+      ...secretDeliveryProjection(id, definition),
+      ...(definition.binding === 'streaming'
+        ? {
+            ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
+            inputSensitivity: 'host-local path',
+            ...archiveBindings[id],
+          }
+        : {}),
+    })),
 ];
 
 /**

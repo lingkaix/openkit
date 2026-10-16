@@ -1,9 +1,9 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: concept
 date: "2026-09-30"
-updated: "2026-10-15"
+updated: "2026-10-16"
 ---
 # Pending Requests
 
@@ -15,6 +15,7 @@ updated: "2026-10-15"
 - The per-Thread bound on outstanding requests, the invalidating events, and the mapping of outcomes onto Approval status.
 - The semantics of the answer and withdraw commands, and the pending-request semantics of the existing approval response command.
 - The canonical-load validation of the record against its Items and receipts.
+- External attention references, delivery attempts, and the exact channel response projection for these requests.
 
 ## Does Not Own
 
@@ -272,7 +273,49 @@ A record that fails a predicate, such as missing request lineage, conflicting It
 
 This version starts from a new data root and reads no data that an earlier version wrote, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md). There is no upgrade migration of retained requests, gates, Turn fields, AgentSessions, or scheduler and checkpoint rows. The reload-time derivation of approval state from Items and the denial authored by `nanocore-boot-reconciliation` are deleted.
 
+## External Attention And Discord Responses
+
+### Authority And Scope
+
+External attention is a delivery projection of an approval request or user-input request. Core retains one source reference per exact request and responsible recipient. Delivery records own only transport state. They never copy the request lifecycle or decide an outcome. Server control storage owns account bindings, inbound deduplication, attention references, and delivery attempts. Portable Workspace import does not import these deployment-local account or transport authorities.
+
+Discord is the first adapter. Its first direct-response allowlist is approval denials and answers to non-secret user-input requests. Approval grants return to the App, which owns their additional confirmation and irreversible-effect disclosure. All other interactions link to the App. Email carries only digest or attention links. No adapter's implementation proves acceptance of another adapter.
+
+All first-release Discord interactions occur in a private direct message to the bound account. Shared channels cannot receive request content or submit decisions. Current source access and destination audience admission precede every disclosure and send. Attention messages contain an App link, with no request arguments or protected summary. A link still requires App authentication and current source access.
+
+### Account Binding
+
+A currently authenticated Core user starts a one-use, expiring pairing challenge. Only the authenticated Web pairing flow receives its plaintext. The CLI excludes pairing with this owning reason; its access-token sink must not store a channel challenge. MCP also excludes this one-time-secret result. Core stores only its digest. A verified Discord interaction consumes that challenge and binds the proven Discord account to that user. A challenge cannot replace another user's active binding. Revoke ends the binding and pending pairing challenges. Rebinding never restores prior response authority or replays prior input.
+
+The channel resolves a currently active ordinary Core actor for each input. It never inherits an administrator credential from pairing. The existing response owner checks responsible user, Workspace membership, Thread audience, exact request lineage, and current execution authority at response time.
+
+### Delivery Lifecycle
+
+An attention reference starts queued. A delivery attempt is recorded as sending before transport contact. A positive transport acknowledgement records sent, which proves neither reading nor a Core decision. A definite no-send refusal records failed-no-send. An ambiguous exception, lost acknowledgement, or interrupted sending attempt records delivery-unknown. An unsupported core value or contradictory record fails closed.
+
+The first attempt fixes its channel. An unknown or sent delivery cannot be sent again through another channel or an automatic retry. A user may explicitly retry failed-no-send through the same channel after fresh authority and audience checks. A transport dependency failure before contact remains a definite no-send failure. Missing source, ended request, disabled actor, revoked binding, or lost access refuses sending. Notification creation and failure never block the request's Core lifecycle.
+
+### Exact Responses And Recovery
+
+Core verifies the Discord request signature, application identity, timestamp freshness, and private destination before reading account authority. It records the authenticated inbound event identity and exact input digest before dispatch. An identical duplicate returns a bounded acknowledgement of its retained state without dispatch. Duplicate inspection requires a fresh inspection before disclosure; receipts retain no effect or question text. A changed payload under that identity conflicts. An unfinished dispatch remains response-unknown after restart and is never automatically dispatched again. The Core request owner is the inspection authority when the channel result is unknown.
+
+A private inspection discloses the complete exact approval effect and its digest before direct denial admission. Core binds the disclosure to the account, binding, and exact request. If the complete effect cannot be disclosed within the adapter limit, the user must respond in the App. A later response acknowledges that exact disclosure and rechecks current effect identity. A stale disclosure cannot retarget another request or effect. Secret questions, unavailable detail, unsupported kinds, and changed or terminal requests return a link or typed refusal without guessing a decision.
+
+The channel invokes the existing approval or answer command with one stable command identity for the authenticated event. It preserves the actual actor and owner's result. Its acknowledgement says accepted only when that owner returns acceptance. A missing result stays unknown even when transport response publication fails. The existing Pending Request owner alone determines whether an effect was claimed, executed, denied, or unknown.
+
+### Observable Acceptance
+
+- A pairing challenge cannot bind twice, bind after expiry, or transfer another user's account.
+- Invalid signatures, shared-channel input, disabled actors, revoked bindings, changed duplicate input, and stale disclosures cause no command dispatch.
+- Duplicate input and restart after incomplete dispatch cause no second dispatch or inferred decision.
+- A response after membership or audience revocation fails under the current owner, even if pairing and disclosure succeeded earlier.
+- Sending records the attempt before contact. A missing acknowledgement remains unknown after restart and cannot trigger automatic resend.
+- An explicit retry after definite no-send failure repeats current source, recipient, and binding checks.
+- Notification failures leave the exact Pending Request and any recorded Core outcome unchanged.
+
 ## Current Implementation Projection
+
+The first channel slice composes private Discord signatures, account pairing and revocation, exact denial and non-secret answer responses, inbound deduplication, and shared attention delivery. Native settings, generated OpenAPI and CLI, Web settings, and the operator manuals project the same definitions. Pairing is an explicit Web-only one-time-secret operation. Fake-backed regressions establish the adapter and Core boundaries; they do not prove a real Discord send. Approval grants retain the App confirmation path. Email has the shared link-only payload contract, with no SMTP adapter or real-send claim.
 
 The `approval.respond`, `question.answer` and `pending-request.withdraw` definitions project to JSON, OpenAPI, `client.operations` and the bundled CLI. `apps/nanocore/src/pending-request-operations.ts` joins them to the existing captured-call, command receipt and later-Turn delivery owners; their former routes and client mappings are absent. Approval opaque-child admission reads only canonical or Approval-map lineage after selected-Workspace authorization; answers and withdrawals use body-Workspace and addressed-Thread admission, leaving canonical-record and decision outcomes to the Pending Request owner.
 
