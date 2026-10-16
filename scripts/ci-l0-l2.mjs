@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   coveredSuite,
+  mergeCoveredSuite,
   packageSuite,
   prepareCoverage,
   rootNodeInventory,
@@ -13,27 +14,96 @@ import {
   testOwners,
 } from './release-tests.mjs';
 
-/** Give each coverage package one job; native suites, root tests and static/build checks stay distinct. */
+/** Share measured setup work and partition only where the complete runner cost justifies it. */
 export function shardPlan(root = process.cwd()) {
   const owners = testOwners(root);
   if (new Set(owners.map((o) => o.name)).size !== owners.length)
     throw Error('Duplicate deterministic test owner');
-  return [
-    { id: 'static', kind: 'static', owners: [] },
+  const vitest = owners.filter((owner) => owner.vitest);
+  const plan = [
+    {
+      id: 'static',
+      kind: 'static',
+      owners: [],
+      tasks: ['check:repo', 'lint', 'typecheck', 'build'],
+    },
     { id: 'root', kind: 'root', owners: [] },
-    { id: 'native', kind: 'native', owners: owners.filter((o) => !o.vitest).map((o) => o.name) },
-    ...owners
-      .filter((o) => o.vitest)
-      .map((o) => ({
-        id: o.name.replace('@openkit/', ''),
-        kind: 'coverage',
-        owners: [o.name],
-      })),
+    {
+      id: 'native-nanohost',
+      kind: 'native',
+      owners: owners
+        .filter((owner) => !owner.vitest && owner.name === '@openkit/nanohost')
+        .map((owner) => owner.name),
+    },
+    {
+      id: 'native-other',
+      kind: 'native',
+      owners: owners
+        .filter((owner) => !owner.vitest && owner.name !== '@openkit/nanohost')
+        .map((owner) => owner.name),
+    },
+    ...vitest
+      .filter((owner) => owner.name === '@openkit/worker-shim')
+      .flatMap((owner) => {
+        const id = owner.name.replace('@openkit/', '');
+        const count = 2;
+        return Array.from({ length: count }, (_, index) => ({
+          id: `${id}-${index + 1}`,
+          kind: 'coverage',
+          owners: [owner.name],
+          partition: { index: index + 1, count },
+        }));
+      }),
+    {
+      id: 'nanocore',
+      kind: 'coverage',
+      owners: vitest
+        .filter((owner) => owner.name === '@openkit/nanocore')
+        .map((owner) => owner.name),
+    },
+    {
+      id: 'web',
+      kind: 'coverage',
+      owners: vitest.filter((owner) => owner.name === '@openkit/web').map((owner) => owner.name),
+    },
+    {
+      id: 'coverage-packages',
+      kind: 'coverage',
+      owners: vitest
+        .filter(
+          (owner) =>
+            !['@openkit/nanocore', '@openkit/worker-shim', '@openkit/web'].includes(owner.name)
+        )
+        .map((owner) => owner.name),
+    },
   ];
+  // Put measured long suites first in the matrix; hosted scheduling can reorder jobs.
+  const priority = (shard) =>
+    shard.owners[0] === '@openkit/worker-shim'
+      ? 0
+      : shard.owners[0] === '@openkit/nanocore'
+        ? 1
+        : 2;
+  return plan.sort((a, b) => priority(a) - priority(b));
+}
+
+/** Derive one whole-owner coverage merge for each partitioned suite. */
+export function coveragePlan(root = process.cwd()) {
+  return shardPlan(root)
+    .filter((s) => s.partition?.index === 1)
+    .map((s) => ({
+      id: s.owners[0].replace('@openkit/', ''),
+      owners: s.owners,
+      count: s.partition.count,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** A gate is complete only when every expected shard has exactly one successful observation. */
-export function requireShardResults(results, expected = shardPlan().map((s) => s.id)) {
+export function requireShardResults(
+  results,
+  expected = [...shardPlan().map((s) => s.id), ...coveragePlan().map((s) => `${s.id}-coverage`)]
+) {
   if (
     !Array.isArray(results) ||
     results.length !== expected.length ||
@@ -60,37 +130,63 @@ function command(args, root) {
     throw Error(`L0-L2 shard command failed: ${args[0]}`);
 }
 
-/** Execute one complete shard; coverage uses the already admitted unchanged package recipe. */
-export function runShard(id, { root = process.cwd(), inventoryOnly = false } = {}) {
+/** Execute one admitted owner partition without omitting its existing prerequisites or skip guard. */
+export function runShard(
+  id,
+  {
+    root = process.cwd(),
+    inventoryOnly = false,
+    execute = command,
+    runPackage = packageSuite,
+    prepare = prepareCoverage,
+    runCoverage = coveredSuite,
+  } = {}
+) {
   const shard = shardPlan(root).find((s) => s.id === id);
   if (!shard) throw Error('Unknown L0-L2 shard');
   const owners = testOwners(root).filter((o) => shard.owners.includes(o.name));
   if (shard.kind === 'coverage') {
-    prepareCoverage(owners, { root });
-    const directory = resolve(root, 'temp/ci-shards');
+    prepare(owners, { root });
+    const directory = resolve(
+      root,
+      'temp/ci-shards',
+      ...(shard.partition ? [owners[0].name.replace('@openkit/', '')] : [])
+    );
     mkdirSync(directory, { recursive: true });
-    for (const owner of owners)
-      console.log(
-        JSON.stringify(
-          coveredSuite(owner, {
-            inventoryOnly,
-            reportFile: inventoryOnly ? undefined : join(directory, `${id}-execution.report`),
-          })
-        )
-      );
+    if (shard.partition) mkdirSync(join(directory, 'blobs'), { recursive: true });
+    const executions = owners.map((owner) =>
+      runCoverage(owner, {
+        inventoryOnly,
+        partition: shard.partition,
+        reportFile: inventoryOnly
+          ? undefined
+          : join(
+              directory,
+              `${shard.partition ? id : owner.name.replace('@openkit/', '')}-execution.report`
+            ),
+        blobFile:
+          !inventoryOnly && shard.partition ? join(directory, 'blobs', `${id}.json`) : undefined,
+      })
+    );
+    for (const execution of executions) console.log(JSON.stringify(execution));
+    return {
+      owners: shard.owners,
+      ...(shard.partition ? { partition: shard.partition } : {}),
+      executions,
+    };
   } else if (shard.kind === 'static') {
     if (inventoryOnly) throw Error('Inventory admission selects coverage shards only');
-    for (const task of ['check:repo', 'lint', 'typecheck', 'build'])
-      command(['pnpm', '-w', task], root);
+    for (const task of shard.tasks) execute(['pnpm', '-w', task], root);
   } else if (shard.kind === 'native') {
     if (inventoryOnly) throw Error('Inventory admission selects coverage shards only');
-    // NanoHost's native protocol seam consumes the built NanoCore process.
-    command(['pnpm', '--filter', '@openkit/nanocore...', 'build'], root);
-    for (const owner of owners) packageSuite(owner, { root });
+    // Only NanoHost's native protocol seam consumes the built NanoCore process.
+    if (shard.owners.includes('@openkit/nanohost'))
+      execute(['pnpm', '--filter', '@openkit/nanocore...', 'build'], root);
+    for (const owner of owners) runPackage(owner, { root });
   } else {
     if (inventoryOnly) throw Error('Inventory admission selects coverage shards only');
     const files = rootSuite({ root });
-    command(['python3', '-I', '-B', 'scripts/docker/app-update-helper.test.py'], root);
+    execute(['python3', '-I', '-B', 'scripts/docker/app-update-helper.test.py'], root);
     return { files };
   }
 }
@@ -100,6 +196,22 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const args = process.argv.slice(2);
     if (args.length === 1 && args[0] === '--matrix') {
       console.log(JSON.stringify({ include: shardPlan() }));
+    } else if (args.length === 1 && args[0] === '--coverage-matrix') {
+      console.log(JSON.stringify({ include: coveragePlan() }));
+    } else if (args[0] === '--merge-coverage' && args.length === 2) {
+      const merge = coveragePlan().find((s) => s.id === args[1]);
+      if (!merge) throw Error('Unknown L0-L2 coverage merge');
+      const owner = testOwners(process.cwd()).find((o) => merge.owners.includes(o.name));
+      const directory = resolve('temp/ci-shards', merge.id);
+      const execution = mergeCoveredSuite(owner, {
+        directory,
+        reportFile: join(directory, `${merge.id}-merged-execution.report`),
+        count: merge.count,
+      });
+      writeFileSync(
+        resolve('temp/ci-shards', `${merge.id}-coverage.json`),
+        JSON.stringify({ id: `${merge.id}-coverage`, conclusion: 'success', execution })
+      );
     } else if (args[0] === '--join' && args.length === 2) {
       const files = readdirSync(args[1]).filter((f) => f.endsWith('.json'));
       requireShardResults(files.map((f) => JSON.parse(readFileSync(join(args[1], f), 'utf8'))));
@@ -112,7 +224,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         JSON.stringify({ id: args[1], conclusion: 'success', ...details })
       );
     } else {
-      throw Error('Usage: node scripts/ci-l0-l2.mjs --matrix | --run ID | --join DIRECTORY');
+      throw Error(
+        'Usage: node scripts/ci-l0-l2.mjs --matrix | --coverage-matrix | --run ID | --merge-coverage ID | --join DIRECTORY'
+      );
     }
   } catch (error) {
     console.error(error.message);
