@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type {
   OperationDefinition,
   OperationMutationTarget,
@@ -18,11 +19,14 @@ import {
 } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { readAutomationOperationLineage } from './automation-operations.js';
+import { normalizeCapabilityRequestId } from './capability/usage-ledger.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import type {
   AdmittedOperationContext,
   AdmittedOperationScope,
+  AssistantOperationInvocationContext,
+  InternalOperationDefinition,
   OperationInvocationContext,
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -510,4 +514,96 @@ function resolveMutationTarget(
     default:
       return unknownStrategy(target.kind);
   }
+}
+
+/** Parses and admits a private read against its original command binding and current owners. */
+export function admitInternalOperation(
+  definition: InternalOperationDefinition,
+  value: unknown,
+  entry: AssistantOperationInvocationContext | OperationInvocationContext,
+  binding: AssistantOperationInvocationContext,
+  dependencies: OperationAdmissionDependencies
+) {
+  if (
+    definition.binding !== 'internal' ||
+    definition.mutating !== false ||
+    definition.policyOperation !== 'workspace.read' ||
+    definition.entryScope !== 'conversation.submit' ||
+    !binding ||
+    binding.kind !== 'assistant-command' ||
+    !entry ||
+    entry.kind !== 'assistant-command' ||
+    entry.entryScope !== definition.entryScope ||
+    binding.entryScope !== definition.entryScope ||
+    !binding.actor?.userId ||
+    !['local', 'session', 'token'].includes(binding.actor.kind) ||
+    !isDeepStrictEqual(entry.actor, binding.actor) ||
+    !binding.workspaceId ||
+    entry.workspaceId !== binding.workspaceId ||
+    !binding.threadId ||
+    entry.threadId !== binding.threadId ||
+    !binding.turnId ||
+    entry.turnId !== binding.turnId ||
+    normalizeCapabilityRequestId(binding.requestId) === null ||
+    entry.requestId !== binding.requestId ||
+    !(binding.signal instanceof AbortSignal) ||
+    !(entry.signal instanceof AbortSignal)
+  )
+    throw denied();
+  // The original command can always cancel a Tool, even when the loop has its own deadline.
+  const signal = AbortSignal.any([binding.signal, entry.signal]);
+  signal.throwIfAborted();
+  if (value && typeof value === 'object') {
+    for (const field of [
+      'actor',
+      'userId',
+      'triggerActor',
+      'workspaceId',
+      'threadId',
+      'turnId',
+      'entryScope',
+      'requestId',
+      'signal',
+      'agentSessionId',
+      'packageSnapshotId',
+    ]) {
+      if (Object.hasOwn(value, field))
+        throw new OperationError(
+          'bound_input_conflict',
+          'Caller cannot supply trusted invocation identity.',
+          403
+        );
+    }
+  }
+  const parsed = definition.inputSchema.safeParse(value);
+  if (!parsed.success) throw new OperationError('invalid_request', 'Invalid operation input.', 400);
+  const { coreDb, store } = dependencies;
+  if (
+    !coreDb ||
+    !store ||
+    coreDb.dataRoot !== store.getDataRoot() ||
+    !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition) ||
+    !isThreadIdVisible(
+      store,
+      entry.workspaceId,
+      entry.threadId,
+      entry.actor.userId,
+      isCurrentDeploymentAdministrator(coreDb, entry.actor)
+    )
+  )
+    throw denied();
+  try {
+    const thread = store.getThread(entry.workspaceId, entry.threadId);
+    const turn = store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
+    if (
+      thread.entryPath !== 'conversation' ||
+      (turn.status !== 'pending' && turn.status !== 'running') ||
+      turn.triggerActor.kind !== 'user' ||
+      turn.triggerActor.id !== entry.actor.userId
+    )
+      throw denied();
+  } catch {
+    throw denied();
+  }
+  return { input: parsed.data, context: { ...entry, signal } };
 }

@@ -528,19 +528,20 @@ function chatAnsweringProvider(
       profiles: [],
     },
     llmPiAiClient: {
-      createChatCompletion: async (_provider, request) => {
-        const user = request.messages.find((message) => message.role === 'user');
-        prompts.push(typeof user?.content === 'string' ? user.content : '');
+      createResponses: async (_provider, request) => {
+        const user = request.input.filter((message) => message.role === 'user').at(-1);
+        prompts.push(user?.content.map((part) => part.text).join('') ?? '');
         return {
-          id: 'chatcmpl_assistant_chat',
-          object: 'chat.completion',
-          created: 1,
+          id: 'resp_assistant_chat',
+          object: 'response',
+          status: 'completed',
           model: request.model,
-          choices: [
+          output: [
             {
-              index: 0,
-              message: { role: 'assistant', content: 'Assistant answer.' },
-              finish_reason: 'stop',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'Assistant answer.' }],
             },
           ],
         };

@@ -1532,6 +1532,7 @@ describe('canonical administration Workspace admission', () => {
       predecessorFenced: true,
       ready: true,
       freshEmpty: true,
+      physicalEpoch: null,
       observedAt: '2026-10-05T00:00:00.000Z',
     };
     const execute = vi.fn(() => expected);
