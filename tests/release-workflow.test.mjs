@@ -577,7 +577,7 @@ const candidateJobBaseline = {
 
 const shardJobBaseline = {
   'l0-l2-plan': '23d1b0909aa51ceafd306c2ff3471183a8dafdeaa3f6303b4ecac741be066f63',
-  'l0-l2-shards': '368fc0314a47da15771a82b025fa6b00dd203cc688f06ed47a6b498deb6c517f',
+  'l0-l2-shards': 'd03d064fadefd3d77a73b988b9fe6d034b7a4ddbdeaaccabcbf22921a2f3f89e',
   'l0-l2-coverage': '8c87089f4b629f9ac761e3ea2240fd15c0f4463f94f4ba035339db102cad2896',
   'l0-l2': 'b6457a2076a878e997a3416dc226a006e9e97098170798e9167edeb6f59eb1e0',
 };
@@ -838,6 +838,29 @@ test('every main push runs the complete nonpublishing candidate gate without pub
   }
   assert.equal(jobRuns('web-e2e', 'workflow_dispatch', 'refs/heads/main', 'full'), true);
   assert.equal(jobRuns('web-e2e', 'workflow_dispatch', 'refs/heads/main', 'web-e2e'), true);
+});
+
+test('CI serializes NanoHost fixture startup without changing other test-harness settings', () => {
+  const command = step(
+    workflow.jobs['l0-l2-shards'],
+    'Run one complete shard as the unprivileged image user'
+  );
+  const setup = command.run.slice(command.run.indexOf('\n') + 1, command.run.indexOf('runuser'));
+  assert.doesNotMatch(setup, /chown|runuser/u);
+  for (const id of ['native-nanohost', 'native-other', 'root', 'web']) {
+    for (const inherited of [undefined, '7']) {
+      const env = { ...process.env, SHARD_ID: id };
+      if (inherited === undefined) delete env.RUST_TEST_THREADS;
+      else env.RUST_TEST_THREADS = inherited;
+      const result = spawnSync(
+        'sh',
+        ['-eu', '-c', setup + '\nprintf %s "${RUST_TEST_THREADS-unset}"'],
+        { env, encoding: 'utf8' }
+      );
+      assert.equal(result.status, 0, id);
+      assert.equal(result.stdout, id === 'native-nanohost' ? '1' : (inherited ?? 'unset'), id);
+    }
+  }
 });
 
 test('L0-L2 runs complete package coverage and native/root suites through a fail-closed aggregate', () => {
