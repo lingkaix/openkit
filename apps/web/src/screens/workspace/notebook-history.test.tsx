@@ -39,9 +39,9 @@ function renderNotebook({ deferDiff = false } = {}) {
         return Response.json({ notebookRevision: currentRevision, items: [] });
       case operationHttpPath('knowledge.indexes'):
         return Response.json({
-          linkGraph: { schemaVersion: 1, workspaceId: WORKSPACE, rebuiltAt: null, edges: [] },
-          validation: { schemaVersion: 1, workspaceId: WORKSPACE, rebuiltAt: null, records: [] },
-          sourceReferences: { schemaVersion: 1, workspaceId: WORKSPACE, rebuiltAt: null, references: [] },
+          linkGraph: { schemaVersion: 1, workspaceId: body.workspaceId, rebuiltAt: null, edges: [] },
+          validation: { schemaVersion: 1, workspaceId: body.workspaceId, rebuiltAt: null, records: [] },
+          sourceReferences: { schemaVersion: 1, workspaceId: body.workspaceId, rebuiltAt: null, references: [] },
         });
       case operationHttpPath('knowledge.source.list'):
       case operationHttpPath('knowledge.observation.list'):
