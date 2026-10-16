@@ -736,7 +736,7 @@ function readWorkerContextPackageFiles(
         throw new Error(`Portable worker Context Package tree is incomplete: ${turnPath}.`);
       }
       files.set(tracePath, readCanonicalTextFile(join(turnDirectory, 'context-package.json')));
-      for (const entry of readTextTree(root, packagePath, true)) {
+      for (const entry of readTextTree(root, packagePath, true, `${packagePath}/originals/`)) {
         files.set(...entry);
       }
     }
@@ -782,7 +782,8 @@ function assertWorkerContextPackageFiles(files: ReadonlyMap<string, string>): vo
 function readTextTree(
   root: string,
   relativeDirectory: string,
-  recursive: boolean
+  recursive: boolean,
+  originalPrefix?: string
 ): ReadonlyMap<string, string> {
   const directory = workspaceDirectory(root, relativeDirectory, false);
   const files = new Map<string, string>();
@@ -803,7 +804,9 @@ function readTextTree(
         assertCanonicalDirectory(path);
         visit(path, relativePath);
       } else if (entry.isFile()) {
-        files.set(relativePath, readCanonicalTextFile(path));
+        // Original snapshots are copied and verified as binary files by the export owner.
+        if (!originalPrefix || !relativePath.startsWith(originalPrefix))
+          files.set(relativePath, readCanonicalTextFile(path));
       } else {
         throw new Error(`Portable workspace tree contains an invalid entry: ${path}.`);
       }

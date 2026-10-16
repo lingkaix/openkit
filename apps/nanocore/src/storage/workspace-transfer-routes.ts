@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   constants,
+  chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -902,6 +903,8 @@ export function importVerifiedWorkspace({
       const target = join(workspaceRoot, path);
       mkdirSync(dirname(target), { recursive: true });
       copyFileSync(source, target, constants.COPYFILE_EXCL);
+      if (/^threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\//.test(path))
+        chmodSync(target, 0o444);
     }
     for (const artifact of snapshot.artifacts) {
       if (artifact.content.format !== 'file') continue;
