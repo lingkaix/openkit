@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 /** Runs the real worker route with a controlled Provider boundary and real capability storage. */
-function fixture(configured = true) {
+function fixture(configured = true, requestKind?: 'turn' | 'prewarm' | 'compaction') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-inference-diagnostics-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -144,6 +144,16 @@ function fixture(configured = true) {
         body: JSON.stringify({
           model: 'worker-model',
           stream,
+          ...(requestKind
+            ? {
+                openkit_runtime_hint: {
+                  runtimeFamily: 'codex',
+                  nativeSessionId: 'native-session',
+                  nativeThreadId: 'native-thread',
+                  requestKind,
+                },
+              }
+            : {}),
           ...(endpoint === 'responses'
             ? { input: 'prompt-canary' }
             : { messages: [{ role: 'user', content: 'prompt-canary' }] }),
@@ -587,4 +597,59 @@ it.each([
   await response.text();
   expect(warn).not.toHaveBeenCalled();
   expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
+});
+
+it('maps a confirmed pre-output native compaction failure to the owned envelope', async () => {
+  const f = fixture(true, 'compaction');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockRejectedValue(
+    Object.assign(new Error('private-provider-canary'), {
+      failure: { kind: 'unknown', settled: false },
+    })
+  );
+  const response = await f.post(true);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'context_compaction_unavailable',
+      message: 'Context compaction is unavailable.',
+      type: 'provider_error',
+    },
+  });
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it('maps unavailable routes for confirmed compaction without inventing a Provider attempt', async () => {
+  const f = fixture(false, 'compaction');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const response = await f.post(false);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'context_compaction_unavailable',
+      message: 'Context compaction is unavailable.',
+      type: 'provider_error',
+    },
+  });
+  expect(f.dispatch).not.toHaveBeenCalled();
+});
+
+it('keeps an indistinguishable ordinary native failure in its existing category', async () => {
+  const f = fixture(true, 'turn');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockRejectedValue(
+    Object.assign(new Error('private-provider-canary'), {
+      failure: { kind: 'unknown', settled: false },
+    })
+  );
+  const response = await f.post(true);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'provider_error',
+      message: 'Provider request failed.',
+      type: 'provider_error',
+    },
+  });
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
 });
