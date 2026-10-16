@@ -1,5 +1,15 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  cp,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -613,5 +623,135 @@ describe('KnowledgeNotebook real Git content publication', () => {
     // Restore only the test-owned fault so cleanup never leaves a deliberately corrupt repository.
     await writeFile(objectPath, originalBytes);
     expect((await reopened.readRevision(revision)).files['a.md']).toBe(page('A', 'retained'));
+  });
+});
+
+describe('KnowledgeNotebook complete same-deployment graph validation', () => {
+  it('refuses corrupt retained Proposal blobs outside published ancestry', async () => {
+    const { notebook, repositoryPath, revision } = await fixture();
+    const proposalId = `kp_${'3'.repeat(64)}`;
+    const candidate = notebook.prepare({
+      baseRevision: revision,
+      changes: { 'private.md': page('Private', 'Unpublished') },
+      metadata: { ...metadata('proposal'), authority: { kind: 'proposal', proposalId } },
+    });
+    notebook.retainCandidate({ proposalId, candidateRevision: candidate });
+    const blob = await git(repositoryPath, ['rev-parse', `${candidate}:pages/private.md`]);
+    const objectPath = path.join(repositoryPath, 'objects', blob.slice(0, 2), blob.slice(2));
+    await chmod(objectPath, 0o600);
+    const corrupt = Buffer.from(page('Private', 'Changed bytes'));
+    await writeFile(
+      objectPath,
+      deflateSync(Buffer.concat([Buffer.from(`blob ${corrupt.length}\0`), corrupt]))
+    );
+    await expect(
+      Promise.resolve().then(() => notebook.validateRetainedGraph())
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(notebook.publishedRevision()).toBe(revision);
+  });
+  it('validates a reopened complete graph, including packed and unreferenced commits, without publishing candidates', async () => {
+    const { root, repositoryPath, notebook, revision } = await fixture();
+    const proposalId = `kp_${'5'.repeat(64)}`;
+    const candidate = notebook.prepare({
+      baseRevision: revision,
+      changes: { 'proposal.md': page('Proposal', 'Retained') },
+      metadata: { ...metadata('retained'), authority: { kind: 'proposal', proposalId } },
+    });
+    notebook.retainCandidate({ proposalId, candidateRevision: candidate });
+    const unreferenced = notebook.prepare({
+      baseRevision: revision,
+      changes: { 'unused.md': page('Unused', 'Unreferenced') },
+      metadata: metadata('unused'),
+    });
+    await git(repositoryPath, ['repack', '-a', '-d']);
+    const reopened = new KnowledgeNotebook({ repositoryPath });
+    expect(reopened.validateRetainedGraph()).toEqual({
+      publishedRevision: revision,
+      revisions: [revision, candidate, unreferenced].sort(),
+    });
+    expect(reopened.history().revisions.map((record) => record.revision)).toEqual([revision]);
+    // Complete same-deployment copying preserves the graph instead of reminting its identities.
+    const restoredPath = path.join(root, 'restored.git');
+    await cp(repositoryPath, restoredPath, { recursive: true });
+    const restored = new KnowledgeNotebook({ repositoryPath: restoredPath });
+    expect(restored.validateRetainedGraph()).toEqual(reopened.validateRetainedGraph());
+    expect(restored.readRevision(candidate)).toEqual(reopened.readRevision(candidate));
+    expect(await git(restoredPath, ['rev-parse', `refs/proposals/${proposalId}`])).toBe(candidate);
+  });
+
+  it.each([
+    'refs/heads/other',
+    'refs/tags/claim',
+    'refs/proposals/nested/id',
+    `refs/proposals/kp_${'6'.repeat(64)}`,
+  ])('rejects unauthorized or inconsistent retained ref %s', async (ref) => {
+    const { repositoryPath, notebook, revision } = await fixture();
+    await git(repositoryPath, ['update-ref', ref, revision]);
+    expect(() => notebook.validateRetainedGraph()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(notebook.publishedRevision()).toBe(revision);
+  });
+
+  it('rejects a Proposal ref whose embedded authority names another Proposal', async () => {
+    const { repositoryPath, notebook, revision } = await fixture();
+    const proposalId = `kp_${'7'.repeat(64)}`;
+    const candidate = notebook.prepare({
+      baseRevision: revision,
+      changes: { 'candidate.md': page('Candidate', 'Retained') },
+      metadata: { ...metadata('mismatch'), authority: { kind: 'proposal', proposalId } },
+    });
+    await git(repositoryPath, ['update-ref', `refs/proposals/kp_${'8'.repeat(64)}`, candidate]);
+    expect(() => notebook.validateRetainedGraph()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+  });
+
+  it('rejects symbolic authority refs rather than treating their targets as additional live roots', async () => {
+    const { repositoryPath, notebook } = await fixture();
+    await git(repositoryPath, [
+      'symbolic-ref',
+      `refs/proposals/kp_${'9'.repeat(64)}`,
+      'refs/heads/published',
+    ]);
+    expect(() => notebook.validateRetainedGraph()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+  });
+
+  it.each([
+    'metadata',
+    'utf8',
+    'mode',
+  ] as const)('rejects unreferenced %s corruption even though fsck alone accepts the objects', async (fault) => {
+    const { repositoryPath, notebook, revision } = await fixture();
+    let tree: string | undefined;
+    if (fault !== 'metadata') {
+      const index = await git(repositoryPath, ['hash-object', '-w', '--stdin'], ROOT_INDEX);
+      const blob = await git(
+        repositoryPath,
+        ['hash-object', '-w', '--stdin'],
+        fault === 'utf8' ? Buffer.from([0xff]) : '../../outside'
+      );
+      const pages = await git(
+        repositoryPath,
+        ['mktree'],
+        `100644 blob ${index}\tindex.md\n${fault === 'mode' ? '120000' : '100644'} blob ${blob}\tinvalid.md\n`
+      );
+      tree = await git(repositoryPath, ['mktree'], `040000 tree ${pages}\tpages\n`);
+    }
+    const unreferenced = await rawCommit(
+      repositoryPath,
+      revision,
+      fault === 'metadata' ? 'not service metadata' : JSON.stringify(metadata('invalid')),
+      tree
+    );
+    await git(repositoryPath, ['fsck', '--strict', '--full', '--no-reflogs', '--no-dangling']);
+    expect(() => notebook.validateRetainedGraph()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(notebook.history().revisions.map((record) => record.revision)).not.toContain(
+      unreferenced
+    );
   });
 });

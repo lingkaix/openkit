@@ -15,7 +15,8 @@ import type { z } from 'zod';
 const PUBLISHED_REF = 'refs/heads/published';
 const FILE_BYTES = 2 * 1024 * 1024;
 const EDITING_BYTES = 32 * 1024 * 1024;
-const EMPTY_INDEX = '---\nokf_version: "0.2"\n---\n# Notebook\n';
+/** Exact initial reserved navigation bytes shared by fresh notebooks and offline preparation. */
+export const DEFAULT_NOTEBOOK_INDEX = '---\nokf_version: "0.2"\n---\n# Notebook\n';
 /** The shared typed commit facts also supply the existing Audit owner's pre-publication projection. */
 export const NotebookCommitMetadataSchema = KnowledgeNotebookCommitMetadataSchema;
 
@@ -60,7 +61,10 @@ function validPath(path: string): boolean {
 }
 
 /** Validates transport-independent limits; OKF/schema/source admission belongs to the common publisher caller. */
-function validateFiles(files: Readonly<Record<string, string>>, editing = false): void {
+export function validateNotebookFiles(
+  files: Readonly<Record<string, string>>,
+  editing = false
+): void {
   let total = 0;
   const folded = new Set<string>();
   for (const [path, text] of Object.entries(files)) {
@@ -213,9 +217,9 @@ export class KnowledgeNotebook {
     readonly metadata: NotebookCommitMetadata;
   }): string {
     const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
-    const files = { 'index.md': EMPTY_INDEX, ...input.files };
+    const files = { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...input.files };
     if (!metadata.success) throw new NotebookError('invalid_request');
-    validateFiles(files);
+    validateNotebookFiles(files);
     if (lstatSync(this.repositoryPath, { throwIfNoEntry: false }))
       throw new NotebookError('recovery_required');
     mkdirSync(dirname(this.repositoryPath), { recursive: true });
@@ -304,7 +308,7 @@ export class KnowledgeNotebook {
     const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
     if (!metadata.success) throw new NotebookError('invalid_request');
     const entries = { ...this.inspectRevision(input.baseRevision).entries };
-    validateFiles(
+    validateNotebookFiles(
       Object.fromEntries(
         Object.entries(input.changes).filter(
           (entry): entry is [string, string] => entry[1] !== null
@@ -384,6 +388,61 @@ export class KnowledgeNotebook {
       revision = record.parentRevision;
     }
     return { revisions, nextRevision: revision };
+  }
+
+  /**
+   * Validates every retained Git object, commit and service-owned ref without granting authority.
+   * Backup callers own quiescence and the matching Proposal/Review records outside this Git owner.
+   * Returns identities only; invalid or unsupported graph state requires explicit recovery.
+   */
+  validateRetainedGraph(): {
+    readonly publishedRevision: string;
+    readonly revisions: readonly string[];
+  } {
+    const publishedRevision = this.publishedRevision();
+    if (this.git(['symbolic-ref', 'HEAD']).trim() !== PUBLISHED_REF)
+      throw new NotebookError('recovery_required');
+    // fsck checks every retained object, including unreachable candidate objects, by its real hash.
+    this.git(['fsck', '--strict', '--full', '--no-reflogs', '--no-dangling']);
+    for (const row of this.git([
+      'for-each-ref',
+      '--format=%(refname) %(objectname) %(objecttype) %(symref)',
+    ])
+      .trim()
+      .split('\n')) {
+      const [ref, revision, type, symbolicTarget] = row.split(' ');
+      if (!ref || !revision || type !== 'commit' || symbolicTarget)
+        throw new NotebookError('recovery_required');
+      if (ref === PUBLISHED_REF) {
+        if (revision !== publishedRevision) throw new NotebookError('recovery_required');
+        continue;
+      }
+      const proposal = /^refs\/proposals\/([A-Za-z0-9_-]+)$/.exec(ref);
+      if (!proposal) throw new NotebookError('recovery_required');
+      const candidate = this.inspectRevision(revision);
+      if (
+        !candidate.parentRevision ||
+        candidate.metadata.authority.kind !== 'proposal' ||
+        candidate.metadata.authority.proposalId !== proposal[1]
+      )
+        throw new NotebookError('recovery_required');
+    }
+    const revisions: string[] = [];
+    for (const row of this.git([
+      'cat-file',
+      '--batch-all-objects',
+      '--batch-check=%(objectname) %(objecttype)',
+    ])
+      .trim()
+      .split('\n')) {
+      const [revision, type] = row.split(' ');
+      if (type !== 'commit' || !revision) continue;
+      // Existing tree, metadata and fatal UTF-8 boundaries also cover unreferenced commits.
+      // Release each page collection immediately; the result carries object identities only.
+      this.readRevision(revision);
+      revisions.push(revision);
+    }
+    return { publishedRevision, revisions: revisions.sort() };
   }
 
   /** Writes data-only blob/tree/commit objects; no working tree, filters or executable content is used. */

@@ -51,8 +51,8 @@ function pageLinks(path: string, body: string): ReadonlySet<string> {
 /** Validates one complete immutable candidate, with changed pages and affected existing links checked together. */
 export function validateNotebookCandidate(input: {
   readonly ownerScope: KnowledgeOwnerScope;
-  readonly base: NotebookRevision;
-  readonly candidate: NotebookRevision;
+  readonly base: Pick<NotebookRevision, 'files'>;
+  readonly candidate: Pick<NotebookRevision, 'files'>;
   readonly scopeSchemaText: string;
   readonly registeredSources: ReadonlyMap<string, string | null>;
   readonly resolvedReferences: ReadonlyMap<string, ReadonlySet<string>>;
