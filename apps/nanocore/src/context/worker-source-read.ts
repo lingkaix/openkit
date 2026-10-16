@@ -40,7 +40,7 @@ export type WorkerSourceReadResult =
  * @param input Current authenticated Worker package and existing authority owners.
  * @param inventoryPath Exact sourceFiles packagePath from the accepted Turn snapshot.
  * @returns Verified source, canonical package root and a current-authority check for the caller's bounded operation.
- * @throws Error with no source metadata when current authority or accepted inventory is unavailable.
+ * @throws Error when authority or inventory is unavailable; callers must return a value-free refusal.
  */
 export function resolveCurrentWorkerSource(input: {
   readonly environmentPackage: AgentEnvironmentPackage;

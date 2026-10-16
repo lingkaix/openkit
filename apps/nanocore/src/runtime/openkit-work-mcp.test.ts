@@ -821,6 +821,13 @@ it('reads retained bytes through the real dispatcher and withholds them after cu
   });
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
   expect(proof).toHaveBeenCalledOnce();
+  const unselected = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+    path: `${packagePath}/not-selected`,
+    mode: 'read',
+  });
+  expect(unselected.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(JSON.stringify(unselected)).not.toContain('Finished report');
+  expect(proof).toHaveBeenCalledTimes(2);
   fixture.coreDb.sqlite.transaction(() => {
     disableCanonicalUser(fixture.coreDb, 'user_local');
   })();
@@ -831,5 +838,5 @@ it('reads retained bytes through the real dispatcher and withholds them after cu
   expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(JSON.stringify(denied)).not.toContain(artifactId);
   expect(JSON.stringify(denied)).not.toContain('Finished report');
-  expect(proof).toHaveBeenCalledOnce();
+  expect(proof).toHaveBeenCalledTimes(2);
 });
