@@ -6,7 +6,6 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import * as visionOwner from '../context/vision-view.js';
@@ -21,8 +20,8 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { createPdfFixture } from '../test-support/pdf-fixture.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
