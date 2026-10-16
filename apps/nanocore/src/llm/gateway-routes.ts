@@ -29,7 +29,10 @@ import {
   writeGatewayRouteLineage,
 } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { admitModelRequest, ModelRequestAdmissionError } from '../context/model-request-admission.js';
+import {
+  admitModelRequest,
+  ModelRequestAdmissionError,
+} from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -1918,13 +1921,20 @@ export function registerWorkerInferenceRoutes({
         throw error;
       };
       let rawInitialized = false;
-      const rawObservers: Array<{ pending: number; started: number; events: number; locallyRefused: boolean }> = [];
+      const rawObservers: Array<{
+        pending: number;
+        started: number;
+        events: number;
+        locallyRefused: boolean;
+      }> = [];
       durableCall.beforeFinished = (status) => {
         if (!rawInitialized) return;
         const complete =
           (status !== 'succeeded' || rawObservers.length > 0) &&
           rawObservers.every(
-            (observer) => observer.pending === 0 && (observer.locallyRefused || (observer.started > 0 && observer.events > 0))
+            (observer) =>
+              observer.pending === 0 &&
+              (observer.locallyRefused || (observer.started > 0 && observer.events > 0))
           );
         let persisted = false;
         try {
@@ -2258,10 +2268,17 @@ export function registerWorkerInferenceRoutes({
             } catch (error) {
               // Stock flattens callback errors; retain only this trusted local failure category.
               const failure = admissionFailure
-                ? new GatewayAttemptFailure({
-                    kind: admissionFailure.code === 'internal_agent_context_exceeded' ? 'context_overflow' : 'invalid_request',
-                    settled: true,
-                  }, admissionFailure, true)
+                ? new GatewayAttemptFailure(
+                    {
+                      kind:
+                        admissionFailure.code === 'internal_agent_context_exceeded'
+                          ? 'context_overflow'
+                          : 'invalid_request',
+                      settled: true,
+                    },
+                    admissionFailure,
+                    true
+                  )
                 : error;
               observedFailure = (failure as { failure?: PiAiFailure } | null)?.failure;
               throw failure;

@@ -192,7 +192,10 @@ describe('final payload local admission', () => {
       }),
     ]);
     expect(f.bodies).toEqual([]);
-    expect(captured).toMatchObject({ outputReserveTokens: 32, contextWindowTokens: f.model.contextWindow });
+    expect(captured).toMatchObject({
+      outputReserveTokens: 32,
+      contextWindowTokens: f.model.contextWindow,
+    });
     held.release();
     await completion;
     expect(f.bodies).toHaveLength(1);

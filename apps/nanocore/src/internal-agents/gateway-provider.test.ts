@@ -1903,7 +1903,11 @@ describe('internal rolling context Gateway boundary', () => {
     });
     expect(createResponses).toHaveBeenCalledOnce();
     createResponses.mockImplementationOnce(async (_provider, input, context) => {
-      await context.transport.finalRequestAdmission({ payload: input, contextWindowTokens: 16_000, outputReserveTokens: 2_000 });
+      await context.transport.finalRequestAdmission({
+        payload: input,
+        contextWindowTokens: 16_000,
+        outputReserveTokens: 2_000,
+      });
       return completeResponse;
     });
     await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
