@@ -15,6 +15,7 @@
     "host:provision": "bash tests/support/host/provision.sh",
     "host:teardown": "bash tests/support/host/teardown.sh",
     "test:nanohost-installer-live": "bash scripts/test-env.sh host bash tests/support/nanohost-release-installer-live.sh",
+    "test:nanohost-maintenance-live": "bash scripts/test-env.sh host node --test scripts/host-worker-update/nanohost-systemd.live.mjs",
     "test:app-image-admin-recovery": "bash scripts/test-env.sh host node --test scripts/docker/app-admin-recovery-smoke.test.mjs",
     "build": "bash scripts/test-env.sh any bash -c 'turbo run build && esbuild skills/openkit-cli.mjs --bundle --platform=node --target=node24 --format=cjs --minify --outfile=skills/openkit-ops/scripts/openkit'",
     "build:openkit": "bash scripts/test-env.sh any bash -c 'pnpm --filter @openkit/core-client... build && esbuild skills/openkit-cli.mjs --bundle --platform=node --target=node24 --format=cjs --minify --outfile=skills/openkit-ops/scripts/openkit'",
