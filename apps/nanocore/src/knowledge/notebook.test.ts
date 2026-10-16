@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { deflateSync } from 'node:zlib';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { KnowledgeNotebook } from './notebook.js';
 
+const localUserId = allocateEntityId('usr');
 const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
 const ROOT_INDEX = '---\nokf_version: "0.2"\n---\n# Knowledge\n';
@@ -17,7 +19,7 @@ function metadata(requestId = 'notebook-bootstrap', summary = 'Create notebook')
   return {
     summary,
     changeRequest: { requestId, inputDigest: `sha256:${'1'.repeat(64)}` },
-    producer: { kind: 'user' as const, id: 'user_local' },
+    producer: { kind: 'user' as const, id: localUserId },
     authority: { kind: 'direct' as const, instructionReference: `item:${requestId}` },
     sourceReferences: [],
   };
@@ -388,7 +390,7 @@ describe('KnowledgeNotebook real Git content publication', () => {
     expect(JSON.parse(message)).toEqual(facts);
     expect(message).toBe(JSON.stringify(facts));
     expect((await notebook.readRevision(candidate)).metadata).toEqual(facts);
-    expect(await git(repositoryPath, ['show', '-s', '--format=%an', candidate])).toBe('user_local');
+    expect(await git(repositoryPath, ['show', '-s', '--format=%an', candidate])).toBe(localUserId);
   });
 
   it.each([
