@@ -1396,7 +1396,7 @@ describe('Recovery and search', () => {
         [{ workspaceId: WORKSPACE_B.id }],
       ])
     );
-    expect(vi.mocked(client.operations['recovery.worker-list']).mock.calls).toEqual([[{}]]);
+    expect(vi.mocked(client.operations['recovery.worker-list']).mock.calls).toEqual([[{}], [{}]]);
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).queryByText(INSPECT_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
