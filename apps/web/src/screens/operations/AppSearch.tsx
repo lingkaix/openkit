@@ -23,7 +23,9 @@ export function AppSearch({ onClose }: { onClose?: () => void }) {
   const [draft, setDraft] = useState('');
   const [submitted, setSubmitted] = useState('');
   const search = useAppSearch(submitted);
-  const hits = search.data ?? [];
+  // Discovery alone cannot authorize retained private search metadata after a failed read.
+  const currentRead = search.isFetchedAfterMount && search.isSuccess && !search.isFetching;
+  const hits = currentRead ? (search.data ?? []) : [];
 
   function submit(value: string) {
     if (disconnected) return;
@@ -39,6 +41,7 @@ export function AppSearch({ onClose }: { onClose?: () => void }) {
   }
 
   function openHit(hit: AppSearchHit) {
+    if (!currentRead) return;
     const workspaceId = admittedTarget(hit);
     if (!workspaceId) return;
     useWorkspaceStore.getState().setCurrentWorkspaceId(workspaceId);
@@ -67,8 +70,8 @@ export function AppSearch({ onClose }: { onClose?: () => void }) {
           {search.isError ? (
             <ErrorBanner message="Couldn't search." onRetry={() => void search.refetch()} />
           ) : null}
-          {search.isFetching && search.data === undefined ? <Skeleton lines={2} /> : null}
-          {search.isSuccess && hits.length === 0 ? (
+          {search.isFetching ? <Skeleton lines={2} /> : null}
+          {currentRead && hits.length === 0 ? (
             <p className="text-sm text-fg-muted">No search results</p>
           ) : null}
           {hits.length > 0 ? (
