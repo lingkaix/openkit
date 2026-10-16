@@ -94,7 +94,12 @@ export function useArtifactReviews(workspaceId: string | null, artifactId: strin
 
 /** Identifies contract-defined refusal before any Review or follow-up effect. */
 function reviewCommandRefused(error: unknown) {
-  return error instanceof ApiCallError && ['conflict', 'thread_busy', 'invalid_request', 'forbidden', 'not_found', 'stale'].includes(error.code ?? '');
+  return (
+    error instanceof ApiCallError &&
+    ['conflict', 'thread_busy', 'invalid_request', 'forbidden', 'not_found', 'stale'].includes(
+      error.code ?? ''
+    )
+  );
 }
 
 /** Submit one exact decision, retaining its identity until an authoritative outcome or refusal. */
@@ -146,7 +151,13 @@ export function useSelectArtifactCandidate(
   const pending = useRef<{ signature: string; requestId: string } | null>(null);
   const mutation = useMutation({
     mutationFn: (reason: string | undefined) => {
-      const signature = JSON.stringify({ workspaceId, artifactId, artifactVersion, contentDigest, reason });
+      const signature = JSON.stringify({
+        workspaceId,
+        artifactId,
+        artifactVersion,
+        contentDigest,
+        reason,
+      });
       if (pending.current && pending.current.signature !== signature)
         throw new Error('Inspect or retry the unconfirmed candidate choice before changing it.');
       pending.current ??= { signature, requestId: createRequestId() };
@@ -164,7 +175,10 @@ export function useSelectArtifactCandidate(
     },
     onSuccess: async () => {
       pending.current = null;
-      await cache.refetchQueries({ queryKey: goalKeys.reviews(workspaceId, artifactId), exact: true });
+      await cache.refetchQueries({
+        queryKey: goalKeys.reviews(workspaceId, artifactId),
+        exact: true,
+      });
     },
   });
   return { ...mutation, isUncertain: mutation.isError && !reviewCommandRefused(mutation.error) };

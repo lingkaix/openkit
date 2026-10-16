@@ -22,8 +22,11 @@ describe('exact Material range feedback', () => {
     fireEvent.select(text);
     await user.click(screen.getByRole('button', { name: 'Use feedback range' }));
     expect(onChange).toHaveBeenLastCalledWith({
-      materialId: base.materialId, revisionId: base.revisionId,
-      contentDigest: base.contentDigest, start: 1, end: 7,
+      materialId: base.materialId,
+      revisionId: base.revisionId,
+      contentDigest: base.contentDigest,
+      start: 1,
+      end: 7,
       originalText: '\r\n😀e\u0301',
     });
   });
@@ -35,7 +38,11 @@ describe('exact Material range feedback', () => {
     const start = screen.getByRole('textbox', { name: 'Range start' });
     const end = screen.getByRole('textbox', { name: 'Range end' });
     const use = screen.getByRole('button', { name: 'Use feedback range' });
-    for (const [from, to] of [['1', '1'], ['0', '99'], ['4', '5']]) {
+    for (const [from, to] of [
+      ['1', '1'],
+      ['0', '99'],
+      ['4', '5'],
+    ]) {
       await user.clear(start);
       await user.type(start, from);
       await user.clear(end);
@@ -48,13 +55,22 @@ describe('exact Material range feedback', () => {
     await user.clear(end);
     await user.type(end, '7');
     await user.click(use);
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ start: 3, end: 7, originalText: '😀e\u0301' }));
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ start: 3, end: 7, originalText: '😀e\u0301' })
+    );
   });
 
   it('keeps the original substring and exposes a separate clear action', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
-    const value = { materialId: base.materialId, revisionId: base.revisionId, contentDigest: base.contentDigest, start: 0, end: 3, originalText: 'A\r\n' };
+    const value = {
+      materialId: base.materialId,
+      revisionId: base.revisionId,
+      contentDigest: base.contentDigest,
+      start: 0,
+      end: 3,
+      originalText: 'A\r\n',
+    };
     render(<MaterialRangeFeedback revision={base} value={value} onChange={onChange} />);
     expect(screen.getByRole('status')).toHaveTextContent('0–3');
     await user.click(screen.getByRole('button', { name: 'Clear feedback range' }));

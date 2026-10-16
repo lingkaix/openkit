@@ -182,7 +182,11 @@ function makeClient(
 }
 
 /** Captures the current router location for search-param assertions. */
-function LocationProbe({ onChange }: { onChange: (search: string, pathname: string, state?: unknown) => void }) {
+function LocationProbe({
+  onChange,
+}: {
+  onChange: (search: string, pathname: string, state?: unknown) => void;
+}) {
   const location = useLocation();
   onChange(location.search, location.pathname, location.state);
   return null;
@@ -752,80 +756,134 @@ describe('Artifact Review S14', () => {
   });
 });
 
-
 describe('Exact Review feedback and candidate choice', () => {
   const path = `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`;
 
   it('shows binary metadata and exact original download instead of descriptor JSON', async () => {
-    const binary = { ...ARTIFACT, content: { format: 'file', mediaType: 'image/png', byteLength: 123 } };
-    const client = makeClient({ operations: { 'artifact.read': vi.fn().mockResolvedValue(binary) } });
+    const binary = {
+      ...ARTIFACT,
+      content: { format: 'file', mediaType: 'image/png', byteLength: 123 },
+    };
+    const client = makeClient({
+      operations: { 'artifact.read': vi.fn().mockResolvedValue(binary) },
+    });
     renderApp(path, client);
     const section = await screen.findByRole('region', { name: 'Original file' });
     expect(section).toHaveTextContent('image/png');
     expect(section).toHaveTextContent('123 bytes');
     expect(section).toHaveTextContent(ARTIFACT.contentDigest);
     expect(section).not.toHaveTextContent('"format"');
-    expect(within(section).getByRole('link', { name: 'Download original' })).toHaveAttribute('href', '/exact-original-download');
-    expect(client.artifactFiles.browserDownloadUrl).toHaveBeenCalledWith({ workspaceId: ARTIFACT.workspaceId, artifactId: ARTIFACT.id, artifactVersion: 1 });
+    expect(within(section).getByRole('link', { name: 'Download original' })).toHaveAttribute(
+      'href',
+      '/exact-original-download'
+    );
+    expect(client.artifactFiles.browserDownloadUrl).toHaveBeenCalledWith({
+      workspaceId: ARTIFACT.workspaceId,
+      artifactId: ARTIFACT.id,
+      artifactVersion: 1,
+    });
   });
 
   it('sends the exact recorded Material range with the existing decision', async () => {
     const user = userEvent.setup();
     const decide = vi.fn().mockResolvedValue({});
-    const client = makeClient({ operations: {
-      'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
-      'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-      'artifact.review.decide': decide,
-    } });
+    const client = makeClient({
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+        'artifact.review.decide': decide,
+      },
+    });
     renderApp(path, client);
     const start = await screen.findByRole('textbox', { name: 'Range start' });
     await user.type(start, '2');
     await user.type(screen.getByRole('textbox', { name: 'Range end' }), '9');
     await user.click(screen.getByRole('button', { name: 'Use feedback range' }));
     await user.click(screen.getByRole('button', { name: 'Reject' }));
-    expect(decide).toHaveBeenCalledWith(expect.objectContaining({
-      rangeFeedback: { materialId: MATERIAL_BASE_REVISION.materialId, revisionId: MATERIAL_BASE_REVISION.revisionId,
-        contentDigest: MATERIAL_BASE_REVISION.contentDigest, start: 2, end: 9,
-        originalText: MATERIAL_BASE_REVISION.content.slice(2, 9) },
-    }));
+    expect(decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rangeFeedback: {
+          materialId: MATERIAL_BASE_REVISION.materialId,
+          revisionId: MATERIAL_BASE_REVISION.revisionId,
+          contentDigest: MATERIAL_BASE_REVISION.contentDigest,
+          start: 2,
+          end: 9,
+          originalText: MATERIAL_BASE_REVISION.content.slice(2, 9),
+        },
+      })
+    );
   });
 
   it('records a candidate choice without a decision or work and exposes use only after refetch', async () => {
     const user = userEvent.setup();
-    const chosen = { ...REVIEW, candidateSelections: [{ actorId: 'user-choice', requestId: 'req_choice', reason: 'Clearer result', selectedAt: TIMESTAMP }] };
-    const list = vi.fn().mockResolvedValueOnce({ reviews: [REVIEW] }).mockResolvedValue({ reviews: [chosen] });
+    const chosen = {
+      ...REVIEW,
+      candidateSelections: [
+        {
+          actorId: 'user-choice',
+          requestId: 'req_choice',
+          reason: 'Clearer result',
+          selectedAt: TIMESTAMP,
+        },
+      ],
+    };
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({ reviews: [REVIEW] })
+      .mockResolvedValue({ reviews: [chosen] });
     const select = vi.fn().mockResolvedValue({ review: chosen });
-    const client = makeClient({ operations: { 'artifact.review-list': list, 'artifact.review.select': select } });
+    const client = makeClient({
+      operations: { 'artifact.review-list': list, 'artifact.review.select': select },
+    });
     renderApp(path, client);
     const action = await screen.findByRole('button', { name: 'Select candidate' });
     expect(screen.getByRole('button', { name: 'Use in next Turn' })).toBeDisabled();
     await user.type(screen.getByRole('textbox', { name: 'Selection reason' }), 'Clearer result');
     await user.click(action);
-    await waitFor(() => expect(select).toHaveBeenCalledWith({ workspaceId: ARTIFACT.workspaceId,
-      artifactId: ARTIFACT.id, artifactVersion: 1, contentDigest: ARTIFACT.contentDigest,
-      requestId: expect.any(String), reason: 'Clearer result' }));
+    await waitFor(() =>
+      expect(select).toHaveBeenCalledWith({
+        workspaceId: ARTIFACT.workspaceId,
+        artifactId: ARTIFACT.id,
+        artifactVersion: 1,
+        contentDigest: ARTIFACT.contentDigest,
+        requestId: expect.any(String),
+        reason: 'Clearer result',
+      })
+    );
     expect(await screen.findByText('user-choice')).toBeInTheDocument();
     expect(screen.getByText('Clearer result')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Use in next Turn' })).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Use in next Turn' })).toBeEnabled()
+    );
     expect(client.operations['artifact.review.decide']).not.toHaveBeenCalled();
     expect(client.operations['turn.start']).not.toHaveBeenCalled();
   });
 });
 
-
 describe('Review read and selection failure boundaries', () => {
   const path = `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`;
 
   it('hides cached Artifact facts after a current read denial, including decided Reviews', async () => {
-    const read = vi.fn().mockResolvedValueOnce(ARTIFACT).mockRejectedValue(new ApiCallError(403, 'Denied'));
-    const client = makeClient({ operations: {
-      'artifact.read': read,
-      'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [{ ...REVIEW, decision: 'accepted', decisionActorId: 'user1', decidedAt: TIMESTAMP }] }),
-    } });
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(ARTIFACT)
+      .mockRejectedValue(new ApiCallError(403, 'Denied'));
+    const client = makeClient({
+      operations: {
+        'artifact.read': read,
+        'artifact.review-list': vi.fn().mockResolvedValue({
+          reviews: [
+            { ...REVIEW, decision: 'accepted', decisionActorId: 'user1', decidedAt: TIMESTAMP },
+          ],
+        }),
+      },
+    });
     const cache = renderApp(path, client);
     expect(await screen.findByRole('heading', { name: ARTIFACT.title })).toBeInTheDocument();
     await cache.refetchQueries({ queryKey: ['artifact', ARTIFACT.workspaceId, ARTIFACT.id] });
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load this artifact review.");
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load this artifact review."
+    );
     expect(screen.queryByRole('heading', { name: ARTIFACT.title })).not.toBeInTheDocument();
     expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
   });
@@ -836,40 +894,82 @@ describe('Review read and selection failure boundaries', () => {
     const client = makeClient({ operations: { 'artifact.review.select': select } });
     renderApp(path, client);
     const button = await screen.findByRole('button', { name: 'Select candidate' });
-    await user.type(screen.getByRole('textbox', { name: 'Selection reason' }), 'Keep exact candidate');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Selection reason' }),
+      'Keep exact candidate'
+    );
     await user.click(button);
-    expect(await screen.findByRole('alert')).toHaveTextContent(/selection.*could not be confirmed/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /selection.*could not be confirmed/i
+    );
     expect(screen.getByRole('button', { name: 'Use in next Turn' })).toBeDisabled();
     await user.click(button);
     await waitFor(() => expect(select).toHaveBeenCalledTimes(2));
     expect(select.mock.calls[0][0]).toEqual(select.mock.calls[1][0]);
-    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue('Keep exact candidate');
+    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue(
+      'Keep exact candidate'
+    );
     expect(client.operations['turn.start']).not.toHaveBeenCalled();
   });
 
   it('hands an explicitly selected exact candidate to its source Thread without starting work', async () => {
     const user = userEvent.setup();
     const location = vi.fn();
-    const client = makeClient({ operations: { 'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [{ ...REVIEW, candidateSelections: [{ actorId: 'other-user', requestId: 'req_choice', reason: null, selectedAt: TIMESTAMP }] }] }) } });
+    const client = makeClient({
+      operations: {
+        'artifact.review-list': vi.fn().mockResolvedValue({
+          reviews: [
+            {
+              ...REVIEW,
+              candidateSelections: [
+                {
+                  actorId: 'other-user',
+                  requestId: 'req_choice',
+                  reason: null,
+                  selectedAt: TIMESTAMP,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    });
     renderApp(path, client, location);
     await user.click(await screen.findByRole('button', { name: 'Use in next Turn' }));
-    await waitFor(() => expect(location).toHaveBeenCalledWith('', `/chat/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}`, {
-      candidateInput: { workspaceId: ARTIFACT.workspaceId, threadId: ARTIFACT.threadId, artifactId: ARTIFACT.id, artifactVersion: 1, contentDigest: ARTIFACT.contentDigest },
-    }));
+    await waitFor(() =>
+      expect(location).toHaveBeenCalledWith(
+        '',
+        `/chat/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}`,
+        {
+          candidateInput: {
+            workspaceId: ARTIFACT.workspaceId,
+            threadId: ARTIFACT.threadId,
+            artifactId: ARTIFACT.id,
+            artifactVersion: 1,
+            contentDigest: ARTIFACT.contentDigest,
+          },
+        }
+      )
+    );
     expect(client.operations['turn.start']).not.toHaveBeenCalled();
   });
 });
-
 
 describe('Exact decision retry', () => {
   it('retains the range and request identity while an unknown result blocks a different decision', async () => {
     const user = userEvent.setup();
     const decide = vi.fn().mockRejectedValue(new Error('unknown result'));
-    const client = makeClient({ operations: { 'artifact.review.decide': decide,
-      'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
-      'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-    } });
-    renderApp(`/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`, client);
+    const client = makeClient({
+      operations: {
+        'artifact.review.decide': decide,
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+      },
+    });
+    renderApp(
+      `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
+      client
+    );
     await user.type(await screen.findByRole('textbox', { name: 'Range start' }), '2');
     await user.type(screen.getByRole('textbox', { name: 'Range end' }), '9');
     await user.click(screen.getByRole('button', { name: 'Use feedback range' }));
@@ -881,19 +981,42 @@ describe('Exact decision retry', () => {
     await user.click(accept);
     await waitFor(() => expect(decide).toHaveBeenCalledTimes(2));
     expect(decide.mock.calls[0][0].requestId).toEqual(expect.any(String));
-    expect(decide.mock.calls[0][0].rangeFeedback).toEqual(expect.objectContaining({ start: 2, end: 9, originalText: 'Release' }));
+    expect(decide.mock.calls[0][0].rangeFeedback).toEqual(
+      expect.objectContaining({ start: 2, end: 9, originalText: 'Release' })
+    );
     expect(screen.getByRole('button', { name: 'Clear feedback range' })).toBeDisabled();
     expect(decide.mock.calls[0][0]).toEqual(decide.mock.calls[1][0]);
   });
 
   it('displays recorded range evidence on the decided Review', async () => {
-    const range = { materialId: MATERIAL_BASE_REVISION.materialId, revisionId: MATERIAL_BASE_REVISION.revisionId,
-      contentDigest: MATERIAL_BASE_REVISION.contentDigest, start: 2, end: 9, originalText: 'Release' };
-    const client = makeClient({ operations: {
-      'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
-      'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [{ ...PROPOSAL_REVIEW, decision: 'rejected', decisionActorId: 'user1', decidedAt: TIMESTAMP, rangeFeedback: range }] }),
-    } });
-    renderApp(`/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`, client);
+    const range = {
+      materialId: MATERIAL_BASE_REVISION.materialId,
+      revisionId: MATERIAL_BASE_REVISION.revisionId,
+      contentDigest: MATERIAL_BASE_REVISION.contentDigest,
+      start: 2,
+      end: 9,
+      originalText: 'Release',
+    };
+    const client = makeClient({
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({
+          reviews: [
+            {
+              ...PROPOSAL_REVIEW,
+              decision: 'rejected',
+              decisionActorId: 'user1',
+              decidedAt: TIMESTAMP,
+              rangeFeedback: range,
+            },
+          ],
+        }),
+      },
+    });
+    renderApp(
+      `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
+      client
+    );
     const evidence = await screen.findByRole('region', { name: 'Recorded feedback range' });
     expect(evidence).toHaveTextContent('Release');
     expect(evidence).toHaveTextContent(MATERIAL_BASE_REVISION.revisionId);
@@ -902,45 +1025,75 @@ describe('Exact decision retry', () => {
   });
 });
 
-
 describe('Same-candidate read failure recovery', () => {
   it('hides denied facts while retaining authored feedback, range and uncertain choice identity', async () => {
     const user = userEvent.setup();
-    const read = vi.fn().mockResolvedValueOnce(PROPOSAL_ARTIFACT)
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(PROPOSAL_ARTIFACT)
       .mockRejectedValueOnce(new ApiCallError(403, 'Denied'))
       .mockResolvedValue(PROPOSAL_ARTIFACT);
     const select = vi.fn().mockRejectedValue(new Error('unknown selection result'));
-    const client = makeClient({ operations: {
-      'artifact.read': read,
-      'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-      'artifact.review.select': select,
-    } });
-    const cache = renderApp(`/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`, client);
+    const client = makeClient({
+      operations: {
+        'artifact.read': read,
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+        'artifact.review.select': select,
+      },
+    });
+    const cache = renderApp(
+      `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
+      client
+    );
     await user.type(await screen.findByRole('textbox', { name: 'Range start' }), '2');
     await user.type(screen.getByRole('textbox', { name: 'Range end' }), '9');
     await user.click(screen.getByRole('button', { name: 'Use feedback range' }));
-    await user.type(screen.getByRole('textbox', { name: 'Review feedback' }), 'Preserve this feedback');
-    await user.type(screen.getByRole('textbox', { name: 'Selection reason' }), 'Preserve this reason');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Review feedback' }),
+      'Preserve this feedback'
+    );
+    await user.type(
+      screen.getByRole('textbox', { name: 'Selection reason' }),
+      'Preserve this reason'
+    );
     await user.click(screen.getByRole('button', { name: 'Select candidate' }));
     await screen.findByRole('alert');
     await cache.refetchQueries({ queryKey: ['artifact', ARTIFACT.workspaceId, ARTIFACT.id] });
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load this artifact review.");
-    expect(screen.queryByRole('heading', { name: PROPOSAL_ARTIFACT.title })).not.toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load this artifact review."
+    );
+    expect(
+      screen.queryByRole('heading', { name: PROPOSAL_ARTIFACT.title })
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Review feedback' })).not.toBeInTheDocument();
     expect(screen.queryByText('Preserve this reason')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByRole('textbox', { name: 'Review feedback' })).toHaveValue('Preserve this feedback');
-    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue('Preserve this reason');
+    expect(await screen.findByRole('textbox', { name: 'Review feedback' })).toHaveValue(
+      'Preserve this feedback'
+    );
+    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue(
+      'Preserve this reason'
+    );
     expect(screen.getByRole('button', { name: 'Clear feedback range' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Select candidate' }));
     await waitFor(() => expect(select).toHaveBeenCalledTimes(2));
     expect(select.mock.calls[0][0]).toEqual(select.mock.calls[1][0]);
-    cache.setQueryData(['artifact', ARTIFACT.workspaceId, ARTIFACT.id], { ...PROPOSAL_ARTIFACT, version: 2, contentDigest: `sha256:${'f'.repeat(64)}` });
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This review is unavailable.'));
+    cache.setQueryData(['artifact', ARTIFACT.workspaceId, ARTIFACT.id], {
+      ...PROPOSAL_ARTIFACT,
+      version: 2,
+      contentDigest: `sha256:${'f'.repeat(64)}`,
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('This review is unavailable.')
+    );
     expect(screen.queryByRole('textbox', { name: 'Review feedback' })).not.toBeInTheDocument();
     cache.setQueryData(['artifact', ARTIFACT.workspaceId, ARTIFACT.id], PROPOSAL_ARTIFACT);
-    expect(await screen.findByRole('textbox', { name: 'Review feedback' })).toHaveValue('Preserve this feedback');
-    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue('Preserve this reason');
+    expect(await screen.findByRole('textbox', { name: 'Review feedback' })).toHaveValue(
+      'Preserve this feedback'
+    );
+    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue(
+      'Preserve this reason'
+    );
     await user.click(screen.getByRole('button', { name: 'Select candidate' }));
     await waitFor(() => expect(select).toHaveBeenCalledTimes(3));
     expect(select.mock.calls[0][0]).toEqual(select.mock.calls[2][0]);

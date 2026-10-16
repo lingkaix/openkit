@@ -1,4 +1,4 @@
-import { type GetArtifactResponse, ApiCallError } from '@openkit/core-client';
+import { ApiCallError, type GetArtifactResponse } from '@openkit/core-client';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
@@ -24,8 +24,8 @@ import {
   useArtifact,
   useArtifactReviews,
   useCurrentWorkspaceId,
-  useSubmitArtifactReview,
   useSelectArtifactCandidate,
+  useSubmitArtifactReview,
 } from './data';
 
 /**
@@ -89,22 +89,35 @@ export function ArtifactReviewScreen() {
       ? artifact.data
       : null;
 
-
-  return <ExactArtifactReview
-    key={`${workspaceId}:${artifactId}:${review.artifactVersion}:${review.contentDigest}`}
-    workspaceId={workspaceId}
-    routeWorkspaceId={routeWorkspaceId}
-    threadId={threadId}
-    artifactId={artifactId}
-    review={review}
-    sourceUnavailable={sourceUnavailable}
-    exactArtifact={exactArtifact}
-    onRefresh={() => { void reviews.refetch(); void artifact.refetch(); }}
-  />;
+  return (
+    <ExactArtifactReview
+      key={`${workspaceId}:${artifactId}:${review.artifactVersion}:${review.contentDigest}`}
+      workspaceId={workspaceId}
+      routeWorkspaceId={routeWorkspaceId}
+      threadId={threadId}
+      artifactId={artifactId}
+      review={review}
+      sourceUnavailable={sourceUnavailable}
+      exactArtifact={exactArtifact}
+      onRefresh={() => {
+        void reviews.refetch();
+        void artifact.refetch();
+      }}
+    />
+  );
 }
 
 /** Keeps transient feedback and command retry identity within one exact reviewed candidate. */
-function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifactId, review, sourceUnavailable, exactArtifact, onRefresh }: {
+function ExactArtifactReview({
+  workspaceId,
+  routeWorkspaceId,
+  threadId,
+  artifactId,
+  review,
+  sourceUnavailable,
+  exactArtifact,
+  onRefresh,
+}: {
   workspaceId: string;
   routeWorkspaceId: string;
   threadId: string;
@@ -119,24 +132,72 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
   const { checking, failed: disconnected } = useConnection();
   const [feedback, setFeedback] = useState('');
   const [reason, setReason] = useState('');
-  const [rangeFeedback, setRangeFeedback] = useState<NonNullable<ArtifactReviewDecisionInput['rangeFeedback']> | null>(null);
+  const [rangeFeedback, setRangeFeedback] = useState<NonNullable<
+    ArtifactReviewDecisionInput['rangeFeedback']
+  > | null>(null);
   const decide = useSubmitArtifactReview(workspaceId, artifactId, review.artifactVersion);
-  const select = useSelectArtifactCandidate(workspaceId, artifactId, review.artifactVersion, review.contentDigest);
+  const select = useSelectArtifactCandidate(
+    workspaceId,
+    artifactId,
+    review.artifactVersion,
+    review.contentDigest
+  );
   const proposal = review.materialProposal;
-  const base = useWorkspaceMaterialRevision(workspaceId, proposal?.materialId ?? null, proposal?.baseRevisionId ?? null);
+  const base = useWorkspaceMaterialRevision(
+    workspaceId,
+    proposal?.materialId ?? null,
+    proposal?.baseRevisionId ?? null
+  );
   const fileProposal = Boolean(proposal && exactArtifact?.content.format === 'file');
   const proposalText = useMaterialProposalText(workspaceId, fileProposal ? exactArtifact : null);
-  const conflict = decide.error instanceof ApiCallError && decide.error.status === 409 && decide.error.code === 'conflict';
-  if (sourceUnavailable) return <div className="mx-auto w-full max-w-[960px] px-6 py-8"><ErrorBanner message="Couldn't load this artifact review." onRetry={onRefresh} /></div>;
-  if (review.decision === null && !exactArtifact) return <ErrorBanner message="This review is unavailable. Recovery is required before a decision can be recorded." />;
-  if (proposal && base.isError) return <ErrorBanner message="Couldn't load the recorded Material base." onRetry={() => void base.refetch()} />;
-  const exactBase = proposal && base.data && base.data.revision.materialId === proposal.materialId && base.data.revision.revisionId === proposal.baseRevisionId && base.data.revision.contentDigest === proposal.baseContentDigest ? base.data.revision : null;
-  if (proposal && base.data && !exactBase) return <ErrorBanner message="The recorded Material base does not match this Review." onRetry={() => void base.refetch()} />;
+  const conflict =
+    decide.error instanceof ApiCallError &&
+    decide.error.status === 409 &&
+    decide.error.code === 'conflict';
+  if (sourceUnavailable)
+    return (
+      <div className="mx-auto w-full max-w-[960px] px-6 py-8">
+        <ErrorBanner message="Couldn't load this artifact review." onRetry={onRefresh} />
+      </div>
+    );
+  if (review.decision === null && !exactArtifact)
+    return (
+      <ErrorBanner message="This review is unavailable. Recovery is required before a decision can be recorded." />
+    );
+  if (proposal && base.isError)
+    return (
+      <ErrorBanner
+        message="Couldn't load the recorded Material base."
+        onRetry={() => void base.refetch()}
+      />
+    );
+  const exactBase =
+    proposal &&
+    base.data &&
+    base.data.revision.materialId === proposal.materialId &&
+    base.data.revision.revisionId === proposal.baseRevisionId &&
+    base.data.revision.contentDigest === proposal.baseContentDigest
+      ? base.data.revision
+      : null;
+  if (proposal && base.data && !exactBase)
+    return (
+      <ErrorBanner
+        message="The recorded Material base does not match this Review."
+        onRetry={() => void base.refetch()}
+      />
+    );
   const baseUnavailable = Boolean(proposal && !exactBase);
-  const proposalUnavailable = fileProposal && (proposalText.isPending || proposalText.isError || proposalText.isFetching);
+  const proposalUnavailable =
+    fileProposal && (proposalText.isPending || proposalText.isError || proposalText.isFetching);
   const candidateUnavailable = !exactArtifact || !review.sourceThreadId;
   const trimmedFeedback = feedback.trim();
-  const writeBlocked = checking || disconnected || decide.isPending || select.isPending || baseUnavailable || proposalUnavailable;
+  const writeBlocked =
+    checking ||
+    disconnected ||
+    decide.isPending ||
+    select.isPending ||
+    baseUnavailable ||
+    proposalUnavailable;
   const reviewStatusText =
     review.decision === 'accepted'
       ? 'Approved'
@@ -210,33 +271,59 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
           <Card className="mx-auto max-w-[760px]">
             <section aria-label="Original file" className="flex flex-col gap-3">
               <Eyebrow>Original file</Eyebrow>
-              <p className="text-sm text-fg">{exactArtifact.content.mediaType} · {exactArtifact.content.byteLength} bytes</p>
+              <p className="text-sm text-fg">
+                {exactArtifact.content.mediaType} · {exactArtifact.content.byteLength} bytes
+              </p>
               <p className="text-sm text-fg">Version {review.artifactVersion}</p>
               <p className="font-mono text-xs text-fg-muted">{review.contentDigest}</p>
-              <p className="text-sm text-fg-muted">Review the original file. A text comparison is not available.</p>
-              <a className="text-sm font-medium text-accent hover:underline" href={client.artifactFiles.browserDownloadUrl({ workspaceId, artifactId, artifactVersion: review.artifactVersion })}>Download original</a>
+              <p className="text-sm text-fg-muted">
+                Review the original file. A text comparison is not available.
+              </p>
+              <a
+                className="text-sm font-medium text-accent hover:underline"
+                href={client.artifactFiles.browserDownloadUrl({
+                  workspaceId,
+                  artifactId,
+                  artifactVersion: review.artifactVersion,
+                })}
+              >
+                Download original
+              </a>
             </section>
           </Card>
-        ) : <ProposalReview
-          workspaceId={workspaceId}
-          review={review}
-          artifact={exactArtifact}
-          conflict={conflict}
-          onRefresh={onRefresh}
-        />}
-        {review.decision === null && exactBase ? <MaterialRangeFeedback
-          revision={exactBase}
-          value={rangeFeedback}
-          onChange={setRangeFeedback}
-          isDisabled={writeBlocked || decide.isUncertain}
-        /> : null}
-        {review.rangeFeedback ? <section aria-label="Recorded feedback range" className="mx-auto mt-5 max-w-[760px] text-sm text-fg">
-          <Eyebrow>Recorded feedback range</Eyebrow>
-          <p>{review.rangeFeedback.materialId} · {review.rangeFeedback.revisionId}</p>
-          <p className="font-mono text-xs">{review.rangeFeedback.contentDigest}</p>
-          <p>Original UTF-16 offsets {review.rangeFeedback.start}–{review.rangeFeedback.end}</p>
-          <pre className="whitespace-pre-wrap font-sans">{review.rangeFeedback.originalText}</pre>
-        </section> : null}
+        ) : (
+          <ProposalReview
+            workspaceId={workspaceId}
+            review={review}
+            artifact={exactArtifact}
+            conflict={conflict}
+            onRefresh={onRefresh}
+          />
+        )}
+        {review.decision === null && exactBase ? (
+          <MaterialRangeFeedback
+            revision={exactBase}
+            value={rangeFeedback}
+            onChange={setRangeFeedback}
+            isDisabled={writeBlocked || decide.isUncertain}
+          />
+        ) : null}
+        {review.rangeFeedback ? (
+          <section
+            aria-label="Recorded feedback range"
+            className="mx-auto mt-5 max-w-[760px] text-sm text-fg"
+          >
+            <Eyebrow>Recorded feedback range</Eyebrow>
+            <p>
+              {review.rangeFeedback.materialId} · {review.rangeFeedback.revisionId}
+            </p>
+            <p className="font-mono text-xs">{review.rangeFeedback.contentDigest}</p>
+            <p>
+              Original UTF-16 offsets {review.rangeFeedback.start}–{review.rangeFeedback.end}
+            </p>
+            <pre className="whitespace-pre-wrap font-sans">{review.rangeFeedback.originalText}</pre>
+          </section>
+        ) : null}
       </div>
 
       <aside
@@ -271,22 +358,77 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
         <section aria-label="Candidate choice" className="flex flex-col gap-3">
           <Eyebrow>Candidate choice</Eyebrow>
           <div aria-live="polite">
-          {review.candidateSelections?.length ? <p className="text-sm text-fg">Candidate selected.</p> : null}
-          {(review.candidateSelections ?? []).map((choice) => <div key={choice.requestId} className="text-sm text-fg">
-            <p>{choice.actorId}</p>
-            <p className="text-xs text-fg-muted">{choice.selectedAt}</p>
-            {choice.reason ? <p>{choice.reason}</p> : null}
-          </div>)}
+            {review.candidateSelections?.length ? (
+              <p className="text-sm text-fg">Candidate selected.</p>
+            ) : null}
+            {(review.candidateSelections ?? []).map((choice) => (
+              <div key={choice.requestId} className="text-sm text-fg">
+                <p>{choice.actorId}</p>
+                <p className="text-xs text-fg-muted">{choice.selectedAt}</p>
+                {choice.reason ? <p>{choice.reason}</p> : null}
+              </div>
+            ))}
           </div>
-          <TextField label="Selection reason" value={reason} onChange={setReason} isDisabled={writeBlocked || candidateUnavailable || select.isUncertain} description="Optional. Selection records a choice and starts no work." />
-          <Button size="sm" variant="outline" isDisabled={writeBlocked || candidateUnavailable} onPress={() => select.mutate(reason.trim() || undefined)}>Select candidate</Button>
-          {select.isPending ? <p role="status" className="text-sm text-fg-muted">Recording candidate choice.</p> : null}
-          {select.isError ? <ErrorBanner message={select.error instanceof ApiCallError && (select.error.code === 'stale' || select.error.status === 404) ? 'This exact candidate is unavailable. Refresh the review.' : 'Candidate selection could not be confirmed. Inspect the review or retry the same choice.'} onRetry={onRefresh} /> : null}
-          <Button size="sm" isDisabled={writeBlocked || !exactArtifact || !review.sourceThreadId || !(review.candidateSelections?.length)} onPress={() => {
-            if (!review.sourceThreadId || !exactArtifact) return;
-            navigate(chatThreadPath(workspaceId, review.sourceThreadId), { state: { candidateInput: { workspaceId, threadId: review.sourceThreadId, artifactId, artifactVersion: review.artifactVersion, contentDigest: review.contentDigest } } });
-          }}>Use in next Turn</Button>
-          <p className="text-xs text-fg-muted">Use adds the selected candidate to the source conversation draft. Choose Send there to start a Turn.</p>
+          <TextField
+            label="Selection reason"
+            value={reason}
+            onChange={setReason}
+            isDisabled={writeBlocked || candidateUnavailable || select.isUncertain}
+            description="Optional. Selection records a choice and starts no work."
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            isDisabled={writeBlocked || candidateUnavailable}
+            onPress={() => select.mutate(reason.trim() || undefined)}
+          >
+            Select candidate
+          </Button>
+          {select.isPending ? (
+            <p role="status" className="text-sm text-fg-muted">
+              Recording candidate choice.
+            </p>
+          ) : null}
+          {select.isError ? (
+            <ErrorBanner
+              message={
+                select.error instanceof ApiCallError &&
+                (select.error.code === 'stale' || select.error.status === 404)
+                  ? 'This exact candidate is unavailable. Refresh the review.'
+                  : 'Candidate selection could not be confirmed. Inspect the review or retry the same choice.'
+              }
+              onRetry={onRefresh}
+            />
+          ) : null}
+          <Button
+            size="sm"
+            isDisabled={
+              writeBlocked ||
+              !exactArtifact ||
+              !review.sourceThreadId ||
+              !review.candidateSelections?.length
+            }
+            onPress={() => {
+              if (!review.sourceThreadId || !exactArtifact) return;
+              navigate(chatThreadPath(workspaceId, review.sourceThreadId), {
+                state: {
+                  candidateInput: {
+                    workspaceId,
+                    threadId: review.sourceThreadId,
+                    artifactId,
+                    artifactVersion: review.artifactVersion,
+                    contentDigest: review.contentDigest,
+                  },
+                },
+              });
+            }}
+          >
+            Use in next Turn
+          </Button>
+          <p className="text-xs text-fg-muted">
+            Use adds the selected candidate to the source conversation draft. Choose Send there to
+            start a Turn.
+          </p>
         </section>
 
         <div>
@@ -299,9 +441,22 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
             </div>
           )}
 
-          {decide.isError && !conflict ? <ErrorBanner message="The review decision could not be confirmed. Inspect the review or retry the same decision." onRetry={onRefresh} /> : null}
-          {decide.isPending ? <p role="status" className="mt-2 text-sm text-fg-muted">Recording review decision.</p> : null}
-          {baseUnavailable ? <p role="status" className="mt-2 text-sm text-fg-muted">The recorded Material base is unavailable.</p> : null}
+          {decide.isError && !conflict ? (
+            <ErrorBanner
+              message="The review decision could not be confirmed. Inspect the review or retry the same decision."
+              onRetry={onRefresh}
+            />
+          ) : null}
+          {decide.isPending ? (
+            <p role="status" className="mt-2 text-sm text-fg-muted">
+              Recording review decision.
+            </p>
+          ) : null}
+          {baseUnavailable ? (
+            <p role="status" className="mt-2 text-sm text-fg-muted">
+              The recorded Material base is unavailable.
+            </p>
+          ) : null}
           {review.decision === null ? (
             <div className="mt-3 flex flex-col gap-2">
               <p className="text-sm text-fg-muted">Awaiting decision.</p>
@@ -320,7 +475,9 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
               <Button
                 size="sm"
                 onPress={() => submitDecision('accepted')}
-                isDisabled={writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'accepted')}
+                isDisabled={
+                  writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'accepted')
+                }
               >
                 Accept
               </Button>
@@ -328,7 +485,11 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
                 size="sm"
                 variant="outline"
                 onPress={() => submitDecision('needs_refinement')}
-                isDisabled={writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'needs_refinement') || !trimmedFeedback}
+                isDisabled={
+                  writeBlocked ||
+                  (decide.isUncertain && decide.variables?.decision !== 'needs_refinement') ||
+                  !trimmedFeedback
+                }
               >
                 Request refinement
               </Button>
@@ -336,7 +497,11 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
                 size="sm"
                 variant="outline"
                 onPress={() => submitDecision('redo')}
-                isDisabled={writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'redo') || !trimmedFeedback}
+                isDisabled={
+                  writeBlocked ||
+                  (decide.isUncertain && decide.variables?.decision !== 'redo') ||
+                  !trimmedFeedback
+                }
               >
                 Redo
               </Button>
@@ -344,7 +509,9 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
                 size="sm"
                 variant="negative-outline"
                 onPress={() => submitDecision('rejected')}
-                isDisabled={writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'rejected')}
+                isDisabled={
+                  writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'rejected')
+                }
               >
                 Reject
               </Button>
@@ -352,7 +519,9 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
                 size="sm"
                 variant="outline"
                 onPress={() => submitDecision('deferred')}
-                isDisabled={writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'deferred')}
+                isDisabled={
+                  writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'deferred')
+                }
               >
                 Defer
               </Button>
