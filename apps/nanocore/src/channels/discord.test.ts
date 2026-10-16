@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import { OperationError } from '../operation-error.js';
+import { applyNativeScopeMigrations } from '../storage/migrate.js';
 import {
   createDiscordChannel,
   type DiscordPendingView,
@@ -20,17 +21,11 @@ const publicKey = keys.publicKey
   .toString('hex');
 const databases: Database.Database[] = [];
 
-/** Installs only the migration-owned tables in an isolated real SQLite fixture. */
+/** Applies the production Core journal in an isolated real SQLite fixture. */
 function database() {
   const sqlite = new Database(':memory:');
-  sqlite.exec(`
-    CREATE TABLE discord_pairing_challenges (digest TEXT PRIMARY KEY NOT NULL,user_id TEXT NOT NULL,expires_at INTEGER NOT NULL,consumed_at INTEGER);
-    CREATE TABLE discord_account_bindings (discord_user_id TEXT PRIMARY KEY NOT NULL,user_id TEXT NOT NULL,revision TEXT NOT NULL,paired_at INTEGER NOT NULL,revoked_at INTEGER);
-    CREATE UNIQUE INDEX discord_account_bindings_active_user ON discord_account_bindings(user_id) WHERE revoked_at IS NULL;
-    CREATE TABLE discord_inbound_receipts (event_id TEXT PRIMARY KEY NOT NULL,payload_digest TEXT NOT NULL,request_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('dispatching','settled','response-unknown')),created_at INTEGER NOT NULL);
-    CREATE TABLE discord_disclosures (token_digest TEXT PRIMARY KEY NOT NULL,discord_user_id TEXT NOT NULL,binding_revision TEXT NOT NULL,workspace_id TEXT NOT NULL,thread_id TEXT NOT NULL,pending_request_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('approval','user-input')),content_digest TEXT NOT NULL,expires_at INTEGER NOT NULL);
-  `);
   databases.push(sqlite);
+  applyNativeScopeMigrations(sqlite, 'core');
   return sqlite;
 }
 
@@ -166,8 +161,12 @@ describe('Discord signed transport and account binding', () => {
     expect(verify()).toBeTruthy();
     expect(() => verify({ ...input, body: Buffer.from('{}') })).toThrow();
     expect(() => verify({ ...input, signature: '00'.repeat(64) })).toThrow();
-    expect(() => verify(f.signed({}, '1'))).toThrow();
-    expect(() => verify(f.signed({}, String(Date.parse('2026-10-16T11:00:00Z') / 1000)))).toThrow();
+    expect(() => verify(f.signed(f.envelope('inspect', f.target), '1'))).toThrow();
+    expect(() =>
+      verify(
+        f.signed(f.envelope('inspect', f.target), String(Date.parse('2026-10-16T11:00:00Z') / 1000))
+      )
+    ).toThrow();
     expect(() =>
       verify(f.signed({ ...f.envelope('inspect', f.target), application_id: '999999999999999999' }))
     ).toThrow();
