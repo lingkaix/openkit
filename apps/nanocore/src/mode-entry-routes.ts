@@ -41,12 +41,12 @@ import {
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
-import { uuidv5 } from './generative-kernel/uuid.js';
-import { createAssistantGenerativeTools } from './generative-ui/internal-tools.js';
 import {
   admitModelRequest,
   ModelRequestAdmissionError,
 } from './context/model-request-admission.js';
+import { uuidv5 } from './generative-kernel/uuid.js';
+import { createAssistantGenerativeTools } from './generative-ui/internal-tools.js';
 import {
   type AssistantCommandResult,
   assembleAssistantCommandRun,
