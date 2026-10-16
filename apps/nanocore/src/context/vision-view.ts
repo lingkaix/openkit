@@ -400,8 +400,8 @@ export async function processVisionView(input: ProcessVisionViewInput): Promise<
 
 /** ImageMagick 7 prints this fixed CLI notice even for a successful conversion. Any other diagnostic remains a processing failure. */
 function unexpectedImageDiagnostics(stderr: Buffer, executable: '/usr/bin/identify' | '/usr/bin/convert'): boolean {
-  const notice = 'WARNING: The convert command is deprecated in IMv7, use "magick" instead of "convert" or "magick convert"\n\n\n';
-  return stderr.length > 0 && !(executable === '/usr/bin/convert' && stderr.equals(Buffer.from(notice)));
+  const notice = 'WARNING: The convert command is deprecated in IMv7, use "magick" instead of "convert" or "magick convert"';
+  return stderr.length > 0 && !(executable === '/usr/bin/convert' && stderr.toString('utf8').trimEnd() === notice);
 }
 
 /** Hashes delivered bytes and actual processor configuration without introducing another identity owner. */
