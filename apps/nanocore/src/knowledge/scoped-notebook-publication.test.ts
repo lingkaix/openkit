@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
@@ -11,6 +11,7 @@ import {
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb, type UserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -58,7 +59,8 @@ function fixture() {
     tokenScope: verified.scope,
   };
   const store = new FsStore();
-  const common = { coreDb, store, inflightCommands: new WeakMap() };
+  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+  const common = { coreDb, store, runtimeConfigManager, inflightCommands: new WeakMap() };
   const user = { ...common, actor, target: { kind: 'user' } as const, userDb };
   const server = { ...common, actor: administrator, target: { kind: 'server' } as const };
   const initialization = () => ({
@@ -132,6 +134,53 @@ function notebook(input: Parameters<typeof resolveScopedNotebookOwner>[0]): Know
 }
 
 describe('internal direct User and Server Notebook publication', () => {
+  it.each([
+    'user',
+    'server',
+  ] as const)('honors current %s protected-page policy before effects and again after preparation', async (kind) => {
+    const f = fixture();
+    const input = kind === 'user' ? f.user : f.server;
+    const initial = kind === 'user' ? f.initialUser : f.initialServer;
+    const db = kind === 'user' ? f.userDb : f.coreDb;
+    const request = edit(initial, resolveScopedNotebookOwner(input).ownerScope);
+    const configRoot =
+      kind === 'user' ? join(f.dataRoot, 'users', alice, 'config') : join(f.dataRoot, 'config');
+    const configPath = join(configRoot, kind === 'user' ? 'user.jsonc' : 'server.jsonc');
+    const protect = (pageIds: string[]) => {
+      mkdirSync(configRoot, { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: pageIds },
+        })
+      );
+      expect(input.runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+    };
+    protect(['note']);
+    await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
+      code: 'review_required',
+    });
+    expect(notebook(input).publishedRevision()).toBe(initial);
+    expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
+
+    protect([]);
+    const prepare = KnowledgeNotebook.prototype.prepare;
+    const prepared = vi
+      .spyOn(KnowledgeNotebook.prototype, 'prepare')
+      .mockImplementationOnce(function (this: KnowledgeNotebook, input) {
+        const candidate = prepare.call(this, input);
+        protect(['note']);
+        return candidate;
+      });
+    await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
+      code: 'review_required',
+    });
+    expect(prepared).toHaveBeenCalledOnce();
+    expect(notebook(input).publishedRevision()).toBe(initial);
+    expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
+  });
+
   it.each([
     'user',
     'server',

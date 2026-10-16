@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { UserDb } from '../storage/db.js';
@@ -48,11 +49,12 @@ function scopeSchema(notebookRoot: string): string {
 /**
  * Joins authenticated native self/Server authority to the one existing publisher, Audit and receipt owners.
  *
- * This internal direct-human foundation accepts only empty source_refs. Source disclosure, output audience, suppression, maintenance and Agent delegation are not granted here and must be joined before broader operations exist.
+ * This internal direct-human foundation accepts only empty source_refs. Source disclosure, output audience, suppression and Agent delegation are not granted here and must be joined before broader operations exist.
  */
 export async function publishScopedNotebook(
   input: WritableScopedNotebook & {
     readonly store: FsStore;
+    readonly runtimeConfigManager: RuntimeConfigManager;
     readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   },
   request: NotebookEdit
@@ -99,9 +101,14 @@ export async function publishScopedNotebook(
             )
           )
         );
+        const current = input.runtimeConfigManager.current();
+        const maintenance = userDb
+          ? current.userConfigs.find(({ userId }) => userId === userDb.userId)?.config
+              .knowledgeMaintenance
+          : current.openKitConfig.knowledgeMaintenance;
         return {
           scopeSchemaText: scopeSchema(owner.notebookRoot),
-          reviewRequiredPageIds: [],
+          reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
           registeredSources: new Map(),
           resolvedReferences: new Map(),
         };
