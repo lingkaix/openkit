@@ -16,7 +16,7 @@ describe('server config schema', () => {
         A: { companionPath: '/run/nanohost/a.json', secretPath: '/run/nanohost/a.token' },
         B: { companionPath: '/run/nanohost/b.json', secretPath: '/run/nanohost/b.token' },
       },
-      deploymentId: 'local',
+      deploymentId: 'dep_00000000-0000-7780-8ff7-8a77c50b1701',
       identityId: 'host',
       rendezvousUrl: 'https://core.example',
     };
@@ -83,10 +83,10 @@ describe('server config schema', () => {
 
   it.each([
     { auth: { enabled: true } },
-    { auth: { localModeUserId: 'user_local' } },
+    { auth: { localModeUserId: 'usr_00000000-0000-7000-8000-000000000001' } },
     { auth: { provider: 'better-auth' } },
     { defaults: { agentId: 'agent_codex_host' } },
-    { defaults: { workspaceId: 'ws_default' } },
+    { defaults: { workspaceId: 'ws_00000000-0000-7345-bbf3-167695f526ce' } },
     { server: { cors: { origins: ['ftp://console.openkit.example'] } } },
     { server: { publicBaseUrl: 'https://core.openkit.example/path' } },
     { server: { trustedProxies: ['127.0.0.1'] } },
@@ -210,7 +210,7 @@ describe('server config schema', () => {
         nanohost: {
           bind: { host: '0.0.0.0', port: 4318 },
           identityId: 'integration_nanohost_primary',
-          deploymentId: 'deploy_primary',
+          deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
           rendezvousUrl: 'https://nanocore.example:8443',
           credentialRef: 'nanohost-transport:primary',
           credentialSlots: {
@@ -230,7 +230,7 @@ describe('server config schema', () => {
       nanohost: {
         bind: { host: '0.0.0.0', port: 4318 },
         identityId: 'integration_nanohost_primary',
-        deploymentId: 'deploy_primary',
+        deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
         rendezvousUrl: 'https://nanocore.example:8443',
         credentialRef: 'nanohost-transport:primary',
         credentialSlots: {
@@ -262,7 +262,7 @@ describe('server config schema', () => {
               secretPath: '/run/credentials/nanohost-b.token',
             },
           },
-          deploymentId: 'deploy_primary',
+          deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
           identityId: 'integration_nanohost_primary',
           rendezvousUrl: 'https://nanocore.example:8443',
         },
@@ -293,7 +293,7 @@ describe('server config schema', () => {
               secretPath: '/run/credentials/nanohost-b.token',
             },
           },
-          deploymentId: 'deploy_primary',
+          deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
           identityId: 'integration_nanohost_primary',
           rendezvousUrl: 'https://nanocore.example:8443',
           credentialRef: 'nanohost-transport:primary',

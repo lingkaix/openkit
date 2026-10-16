@@ -12,7 +12,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
@@ -30,6 +30,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createWorkerEnvironmentActivation,
@@ -84,7 +85,7 @@ const LAYOUT: WorkerStorageLayout = {
   version: '1',
   workingDirectory: '/tmp/openkit-bootstrap',
 };
-const ACTOR: Actor = { kind: 'local', userId: 'user_local' };
+const ACTOR: Actor = { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' };
 
 const openDbs: CoreDb[] = [];
 
@@ -368,7 +369,7 @@ describe('Worker environment activation', () => {
         inspectImage: async () => ({
           imageDigest: IMAGE_DIGEST,
           layout: LAYOUT,
-          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          layoutDigest: `sha256:${'f'.repeat(64)}`,
           environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
         }),
       },
@@ -600,7 +601,7 @@ describe('Worker environment activation', () => {
         inspectImage: async () => ({
           imageDigest: IMAGE_DIGEST,
           layout: LAYOUT,
-          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          layoutDigest: `sha256:${'f'.repeat(64)}`,
           environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
         }),
       },
@@ -650,7 +651,7 @@ describe('Worker environment activation', () => {
         inspectImage: async () => ({
           imageDigest: IMAGE_DIGEST,
           layout: LAYOUT,
-          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          layoutDigest: `sha256:${'f'.repeat(64)}`,
           environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
         }),
       },
@@ -695,7 +696,7 @@ describe('Worker environment activation', () => {
     fixture.coreDb.sqlite
       .prepare(
         `UPDATE worker_storage_contributors
-         SET responsible_user_id = 'user_other'
+         SET responsible_user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
          WHERE storage_ref = ?`
       )
       .run(fixture.storageRef);
@@ -725,7 +726,7 @@ describe('Worker environment activation', () => {
         inspectImage: async () => ({
           imageDigest: IMAGE_DIGEST,
           layout: LAYOUT,
-          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          layoutDigest: `sha256:${'f'.repeat(64)}`,
           environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
         }),
       },

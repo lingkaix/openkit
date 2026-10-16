@@ -26,7 +26,7 @@ function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
         token: PRIVATE,
         auditEvents: [
           {
-            id: 'audit_1',
+            id: 'aud_00000000-0000-70e2-abff-6e1084ebf069',
             category: 'permission',
             action: 'server.inspect',
             outcome: 'succeeded',
@@ -150,7 +150,7 @@ describe('Server audit administration', () => {
         token: PRIVATE,
         auditEvents: [
           {
-            id: 'audit_preferred',
+            id: 'aud_00000000-0000-71dc-ab7e-94febcb1458c',
             category: 'system',
             action: 'boot.start',
             outcome: 'succeeded',
@@ -160,7 +160,7 @@ describe('Server audit administration', () => {
             payload: PRIVATE,
           },
           {
-            id: 'audit_fallback',
+            id: 'aud_00000000-0000-7472-b026-b4219689ff97',
             category: 'system',
             action: 'boot.outcome',
             outcome: 'succeeded',
@@ -168,7 +168,7 @@ describe('Server audit administration', () => {
             createdAt: CREATED_AT,
           },
           {
-            id: 'audit_missing',
+            id: 'aud_00000000-0000-73c2-a4c1-e2c793ae9eb6',
             category: 'system',
             action: 'server.inspect',
             outcome: 'succeeded',

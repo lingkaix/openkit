@@ -14,7 +14,9 @@ describe('createAuthMiddleware', () => {
 
     const sessionApp = new Hono();
     const auth: BetterAuthServer = {
-      api: { getSession: async () => ({ user: { id: 'user_disabled' } }) },
+      api: {
+        getSession: async () => ({ user: { id: 'usr_00000000-0000-7e63-b85a-c188de8ee1c3' } }),
+      },
       handler: async () => new Response(null, { status: 404 }),
     };
     sessionApp.use(
@@ -36,7 +38,10 @@ describe('createAuthMiddleware', () => {
     const res = await app.request('/api/private');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ userId: 'user_local', kind: 'local' });
+    expect(await res.json()).toEqual({
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+      kind: 'local',
+    });
   });
 
   it('authenticates server-mode bearer access tokens without exposing token material', async () => {
@@ -49,8 +54,8 @@ describe('createAuthMiddleware', () => {
         accessTokenVerifier: async (secret) =>
           secret === token
             ? {
-                actor: { userId: 'user_token', kind: 'token' },
-                tokenId: 'tok_1',
+                actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+                tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
               }
             : null,
       })
@@ -65,7 +70,11 @@ describe('createAuthMiddleware', () => {
     });
 
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ userId: 'user_token', kind: 'token', tokenId: 'tok_1' });
+    expect(await ok.json()).toEqual({
+      userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b',
+      kind: 'token',
+      tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+    });
     expect(denied.status).toBe(401);
     expect(await denied.text()).not.toContain('okt_bad_token');
   });
@@ -80,8 +89,8 @@ describe('createAuthMiddleware', () => {
         accessTokenVerifier: async () => {
           verifierCalls += 1;
           return {
-            actor: { userId: 'user_token', kind: 'token' },
-            tokenId: 'tok_1',
+            actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
           };
         },
       })
@@ -111,8 +120,8 @@ describe('createAuthMiddleware', () => {
         accessTokenVerifier: async () => {
           verifierCalls += 1;
           return {
-            actor: { userId: 'user_token', kind: 'token' },
-            tokenId: 'tok_1',
+            actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
           };
         },
       })
@@ -136,8 +145,8 @@ describe('createAuthMiddleware', () => {
       '/api/*',
       createAuthMiddleware('server', undefined, {
         accessTokenVerifier: async () => ({
-          actor: { userId: 'user_token', kind: 'token' },
-          tokenId: 'tok_1',
+          actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
         }),
       })
     );
@@ -162,8 +171,8 @@ describe('createAuthMiddleware', () => {
         accessTokenVerifier: async () => {
           verifierCalls += 1;
           return {
-            actor: { userId: 'user_token', kind: 'token' },
-            tokenId: 'tok_1',
+            actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
           };
         },
       })
@@ -198,8 +207,8 @@ describe('createAuthMiddleware', () => {
       '/api/*',
       createAuthMiddleware('server', undefined, {
         accessTokenVerifier: async () => ({
-          actor: { userId: 'user_token', kind: 'token' },
-          tokenId: 'tok_1',
+          actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
         }),
       })
     );
@@ -232,8 +241,8 @@ describe('createAuthMiddleware', () => {
       '/api/*',
       createAuthMiddleware('server', undefined, {
         accessTokenVerifier: async () => ({
-          actor: { userId: 'user_token', kind: 'token' },
-          tokenId: 'tok_1',
+          actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
         }),
       })
     );
@@ -255,8 +264,8 @@ describe('createAuthMiddleware', () => {
       '/api/*',
       createAuthMiddleware('server', undefined, {
         accessTokenVerifier: async () => ({
-          actor: { userId: 'user_token', kind: 'token' },
-          tokenId: 'tok_1',
+          actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
         }),
       })
     );
@@ -286,12 +295,16 @@ describe('createAuthMiddleware', () => {
     const options = {
       accessTokenVerifier: async () => ({
         actor: {
-          userId: 'user_token',
+          userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b',
           kind: 'token' as const,
           tokenScope: 'workspace-readonly' as const,
-          tokenWorkspaceIds: ['ws_path', 'ws_body', 'ws_gateway'],
+          tokenWorkspaceIds: [
+            'ws_00000000-0000-7f29-bd5e-f9ef21ea57f9',
+            'ws_00000000-0000-7c47-bbc0-d7fccb581796',
+            'ws_00000000-0000-7cb9-b186-f0d729d2a660',
+          ],
         },
-        tokenId: 'tok_1',
+        tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
       }),
       workspaceMembershipVerifier: async () => {
         membershipVerifierCalls += 1;
@@ -311,16 +324,16 @@ describe('createAuthMiddleware', () => {
 
     for (const request of [
       {
-        path: '/api/app/workspaces/ws_path/mutate',
+        path: '/api/app/workspaces/ws_00000000-0000-7f29-bd5e-f9ef21ea57f9/mutate',
         body: { action: 'path-owned' },
       },
       {
         path: '/api/approvals/ap_1/respond',
-        body: { action: 'body-owned', workspaceId: 'ws_body' },
+        body: { action: 'body-owned', workspaceId: 'ws_00000000-0000-7c47-bbc0-d7fccb581796' },
       },
       {
         path: '/v1/responses',
-        body: { metadata: { openkit: { workspaceId: 'ws_gateway' } } },
+        body: { metadata: { openkit: { workspaceId: 'ws_00000000-0000-7cb9-b186-f0d729d2a660' } } },
       },
     ]) {
       const response = await tokenApp.request(request.path, {
@@ -339,7 +352,7 @@ describe('createAuthMiddleware', () => {
     const sessionApp = new Hono();
     const auth: BetterAuthServer = {
       api: {
-        getSession: async () => ({ user: { id: 'user_session' } }),
+        getSession: async () => ({ user: { id: 'usr_00000000-0000-7691-add4-fc1fc8769319' } }),
       },
       handler: async () => new Response(null, { status: 404 }),
     };
@@ -347,14 +360,17 @@ describe('createAuthMiddleware', () => {
     sessionApp.use('*', createAuthMiddleware('server', auth, options));
     sessionApp.post('/api/app/workspaces/:workspaceId/mutate', (c) => c.json(c.get('actor')));
 
-    const sessionResponse = await sessionApp.request('/api/app/workspaces/ws_path/mutate', {
-      method: 'POST',
-    });
+    const sessionResponse = await sessionApp.request(
+      '/api/app/workspaces/ws_00000000-0000-7f29-bd5e-f9ef21ea57f9/mutate',
+      {
+        method: 'POST',
+      }
+    );
 
     expect(sessionResponse.status).toBe(200);
     await expect(sessionResponse.json()).resolves.toEqual({
       kind: 'session',
-      userId: 'user_session',
+      userId: 'usr_00000000-0000-7691-add4-fc1fc8769319',
     });
     expect(membershipVerifierCalls).toBe(0);
   });
@@ -380,7 +396,7 @@ describe('createAuthMiddleware', () => {
                   tokenScope: 'nanohost-transport',
                   userId: 'integration_nanohost_primary',
                 } as import('./identity.js').Actor,
-                tokenId: 'tok_nanohost_1',
+                tokenId: 'tok_00000000-0000-7bbe-a61a-71522edc5ac3',
               }
             : null,
       })

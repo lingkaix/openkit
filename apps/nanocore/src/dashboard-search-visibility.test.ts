@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -51,7 +51,9 @@ describe('dashboard and search Thread audiences', () => {
       expect(response.status).toBe(200);
       const thread = await response.json();
       expect(thread.visibility).toBe(visibility);
-      expect(thread.privateOwnerUserId).toBe(visibility === 'private' ? 'user_local' : undefined);
+      expect(thread.privateOwnerUserId).toBe(
+        visibility === 'private' ? 'usr_00000000-0000-7000-8000-000000000001' : undefined
+      );
     }
   });
 
@@ -60,17 +62,17 @@ describe('dashboard and search Thread audiences', () => {
     const workspace = store.createWorkspace('Immutable audience');
     const thread = store.createThread(workspace.id, 'Private', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const changed = store.updateThread(workspace.id, thread.id, {
       name: 'Renamed',
       visibility: 'workspace',
-      privateOwnerUserId: 'user_other',
+      privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     } as never);
     expect(changed).toMatchObject({
       name: 'Renamed',
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
   });
 
@@ -79,7 +81,7 @@ describe('dashboard and search Thread audiences', () => {
     const workspace = store.createWorkspace('Formal admission');
     const thread = store.createThread(workspace.id, 'Private source', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const app = createApp({ store });
     for (const _mode of ['task']) {
@@ -111,7 +113,7 @@ describe('dashboard and search Thread audiences', () => {
     const ws = store.createWorkspace('Goal inception');
     const origin = store.createThread(ws.id, 'Private origin', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const app = createApp({ store });
     const response = await app.request('/api/app/operations/goal.create', {
@@ -141,19 +143,19 @@ describe('dashboard and search Thread audiences', () => {
     const workspace = store.createWorkspace('Team');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const now = Date.now();
     coreDb.sqlite
       .prepare(
-        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('user_other', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
+        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(now, now);
     const stamp = '2026-09-14T00:00:00.000Z';
     coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, stamp, stamp, stamp);
     const threads = [
@@ -170,12 +172,14 @@ describe('dashboard and search Thread audiences', () => {
       if (label.endsWith('private'))
         Object.assign(raw, {
           visibility: 'private',
-          privateOwnerUserId: label.startsWith('local') ? 'user_local' : 'user_other',
+          privateOwnerUserId: label.startsWith('local')
+            ? 'usr_00000000-0000-7000-8000-000000000001'
+            : 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
         });
       else Object.assign(raw, { visibility: 'workspace' });
       const turn = store.createTurn(workspace.id, thread.id, `${label} needle`, {
         kind: 'user',
-        id: 'user_local',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
       });
       store.createItem({
         id: `it_${label}`,
@@ -236,7 +240,8 @@ describe('dashboard and search Thread audiences', () => {
       if (!exposeUnavailableAudience) return thread;
       const copy = { ...thread } as unknown as Record<string, unknown>;
       if (thread.id === threads[4]!.id) delete copy.visibility;
-      if (thread.id === threads[5]!.id) copy.privateOwnerUserId = 'user_other';
+      if (thread.id === threads[5]!.id)
+        copy.privateOwnerUserId = 'usr_00000000-0000-73d4-904a-d4c4b905df7c';
       return copy as unknown as typeof thread;
     };
     const getThread = store.getThread.bind(store);
@@ -259,9 +264,9 @@ describe('dashboard and search Thread audiences', () => {
     });
     try {
       for (const [userId, scope] of [
-        ['user_local', 'workspace-readonly'],
-        ['user_other', 'workspace-readonly'],
-        ['user_local', 'server-admin'],
+        ['usr_00000000-0000-7000-8000-000000000001', 'workspace-readonly'],
+        ['usr_00000000-0000-73d4-904a-d4c4b905df7c', 'workspace-readonly'],
+        ['usr_00000000-0000-7000-8000-000000000001', 'server-admin'],
       ] as const) {
         const token = createOpenKitAccessTokenRecord(coreDb, {
           ownerUserId: userId,
@@ -270,8 +275,10 @@ describe('dashboard and search Thread audiences', () => {
           expiresAt: '2999-01-01T00:00:00.000Z',
         });
         const headers = { authorization: `Bearer ${token.secret}` };
-        const own = userId === 'user_local' ? threads[0]! : threads[1]!;
-        const denied = userId === 'user_local' ? threads[1]! : threads[0]!;
+        const own =
+          userId === 'usr_00000000-0000-7000-8000-000000000001' ? threads[0]! : threads[1]!;
+        const denied =
+          userId === 'usr_00000000-0000-7000-8000-000000000001' ? threads[1]! : threads[0]!;
         const readItems = vi.spyOn(store, 'listThreadItems');
         const dashboard = await app.request(
           ...operationRequest(
@@ -299,8 +306,14 @@ describe('dashboard and search Thread audiences', () => {
           artifactCount: scope === 'server-admin' ? 4 : 3,
           knowledgeEntryCount: 0,
         });
-        const deniedArtifactId = userId === 'user_local' ? 'ar_other-private' : 'ar_local-private';
-        const ownArtifactId = userId === 'user_local' ? 'ar_local-private' : 'ar_other-private';
+        const deniedArtifactId =
+          userId === 'usr_00000000-0000-7000-8000-000000000001'
+            ? 'ar_00000000-0000-7955-8f7a-56cc4f1f53c1'
+            : 'ar_00000000-0000-72b7-8c16-2b72362fa5bc';
+        const ownArtifactId =
+          userId === 'usr_00000000-0000-7000-8000-000000000001'
+            ? 'ar_00000000-0000-72b7-8c16-2b72362fa5bc'
+            : 'ar_00000000-0000-7955-8f7a-56cc4f1f53c1';
         const catalog = await app.request(
           ...operationRequest('artifact.list', { workspaceId: workspace.id }, { headers })
         );
@@ -309,8 +322,8 @@ describe('dashboard and search Thread audiences', () => {
           [
             ownArtifactId,
             ...(scope === 'server-admin' ? [deniedArtifactId] : []),
-            'ar_Task',
-            'ar_Goal',
+            'ar_00000000-0000-7bc3-9a1d-b66b46bc7746',
+            'ar_00000000-0000-72ae-b987-bd44a8ecb5b3',
           ].sort()
         );
         const record = await app.request(
@@ -371,7 +384,7 @@ describe('dashboard and search Thread audiences', () => {
           const source = store.getArtifact(workspace.id, ownArtifactId);
           store.createArtifact({
             ...source,
-            id: 'ar_imported_safe',
+            id: 'ar_00000000-0000-756e-88a2-a6c7d0485997',
             kind: 'file',
             title: 'Imported safe content',
             summary: null,
@@ -391,7 +404,11 @@ describe('dashboard and search Thread audiences', () => {
           const introduced = await app.request(
             ...operationRequest(
               'artifact.introduce',
-              { workspaceId: workspace.id, threadId: denied.id, artifactId: 'ar_imported_safe' },
+              {
+                workspaceId: workspace.id,
+                threadId: denied.id,
+                artifactId: 'ar_00000000-0000-756e-88a2-a6c7d0485997',
+              },
               {
                 method: 'POST',
                 headers: { ...headers, 'content-type': 'application/json' },

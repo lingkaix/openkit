@@ -10,7 +10,6 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { runWorkerHarness, WorkerHarness } from '../../../../packages/worker-shim/src/harness.js';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -20,6 +19,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createNanoHostHarnessRuntime,
@@ -446,7 +446,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'diag-workspace',
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       });
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
@@ -457,7 +457,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
         turnId: 'diag-turn',
         turnInput: 'Exercise exact private Harness transport delivery',
         requestedAgentId: 'agent_diag',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         now: () => now,
       });
       recordTestExecutionAttempt(coreDb, {

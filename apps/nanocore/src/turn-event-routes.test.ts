@@ -35,7 +35,7 @@ function parseSseEvents(text: string): unknown[] {
  */
 function createReplayTurn(
   store: FsStore,
-  workspaceId = 'ws_demo'
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
 ): {
   workspaceId: string;
   threadId: string;
@@ -44,7 +44,7 @@ function createReplayTurn(
   const thread = store.createThread(workspaceId, 'Replay thread');
   const turn = store.createTurn(workspaceId, thread.id, 'Replay this stream', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const assistantItem = store.createItem({
     id: `it_assistant_${turn.id}`,
@@ -159,11 +159,11 @@ describe('turn event routes', () => {
     vi.spyOn(store, 'addTurnListener').mockReturnValue(unsubscribe);
 
     const app = createApp({ store });
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const thread = store.createThread(workspaceId, 'Open replay thread');
     const turn = store.createTurn(workspaceId, thread.id, 'Keep streaming', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
 
     store.emitTurnEvent(turn.id, {
@@ -185,11 +185,11 @@ describe('turn event routes', () => {
 
   it('preserves events emitted while retained events are being replayed', async () => {
     const store = createDemoStore();
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const thread = store.createThread(workspaceId, 'Replay race thread');
     const turn = store.createTurn(workspaceId, thread.id, 'Preserve replay ordering', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const assistantItem = store.createItem({
       id: `it_assistant_${turn.id}`,
@@ -272,12 +272,20 @@ describe('turn event routes', () => {
   it('returns cursor_expired when since is older than the retained event window', async () => {
     const store = createDemoStore();
     const app = createApp({ store });
-    const thread = store.createThread('ws_demo', 'Overflow replay thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Fill the retained window', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const workspaceId = 'ws_demo';
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Overflow replay thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Fill the retained window',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const threadId = thread.id;
     const turnId = turn.id;
     store.createItem({
@@ -324,7 +332,7 @@ describe('turn event routes', () => {
     const app = createApp({ store });
 
     const res = await app.request(
-      `/api/workspaces/ws_demo/threads/th_demo/events?turnId=${turnId}&since=0`
+      `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=${turnId}&since=0`
     );
 
     expect(res.status).toBe(404);
@@ -334,15 +342,23 @@ describe('turn event routes', () => {
   it('omits AgentSession identity from ordinary SSE while retained events may still carry it', async () => {
     const store = createDemoStore();
     const app = createApp({ store });
-    const thread = store.createThread('ws_demo', 'Hidden AgentSession stream');
-    const turn = store.createTurn('ws_demo', thread.id, 'Hide AgentSession from SSE', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Hidden AgentSession stream'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Hide AgentSession from SSE',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const agentSession = store.createAgentSession({
-      id: 'as_hidden',
+      id: 'as_00000000-0000-7271-8ba3-bea82b217022',
       agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       status: 'busy',
       message: null,
@@ -352,14 +368,14 @@ describe('turn event routes', () => {
     const hiddenTurn = store.updateTurn(turn.id, { agentSessionId: agentSession.id });
     store.emitTurnEvent(turn.id, {
       event: 'agent.session.updated',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'agent-session-updated', agentSession },
     });
     store.emitTurnEvent(turn.id, {
       event: 'turn.updated',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'turn-updated', turn: hiddenTurn },
@@ -370,14 +386,14 @@ describe('turn event routes', () => {
     });
     store.emitTurnEvent(turn.id, {
       event: 'turn.completed',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
     });
 
     const response = await app.request(
-      `/api/workspaces/ws_demo/threads/${thread.id}/events?turnId=${turn.id}&since=0`
+      `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/${thread.id}/events?turnId=${turn.id}&since=0`
     );
     const events = parseSseEvents(await response.text());
 
@@ -388,6 +404,8 @@ describe('turn event routes', () => {
     expect(
       store.getTurnEvents(turn.id).some((event) => event.event === 'agent.session.updated')
     ).toBe(true);
-    expect(store.getTurn('ws_demo', thread.id, turn.id).agentSessionId).toBe('as_hidden');
+    expect(
+      store.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id).agentSessionId
+    ).toBe('as_00000000-0000-7271-8ba3-bea82b217022');
   });
 });

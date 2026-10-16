@@ -3018,7 +3018,7 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
         if (url !== 'http://nanocore.example/api/app/operations/${operation}' || options.method !== 'POST') throw new Error('Wrong transport');
         const body = JSON.parse(options.body);
         if (body.material !== ${JSON.stringify(material)} || body.workspaceId !== 'ws_demo' || (${JSON.stringify(operation)} === 'vault.secret-rotate' && body.referenceId !== 'vault_test')) throw new Error('Wrong body');
-        return Response.json({ protocolVersion: '0.5.0', code: 'vault_mutation_failed', message: body.material }, { status: 409 });
+        return Response.json({ protocolVersion: '0.6.0', code: 'vault_mutation_failed', message: body.material }, { status: 409 });
       };
     `),
       ]
@@ -3580,7 +3580,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         globalThis.fetch = async (url, options) => {
           if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' || operation === 'worker.list' || operation === 'app.search' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
-          return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+          return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.6.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };
       `),
         ]

@@ -8,11 +8,11 @@ import type { SandboxIntegrationClient } from './integration-client.js';
 import { runResidentTurn } from './turn.js';
 
 const lineage = {
-  agentSessionId: 'as_provenance',
+  agentSessionId: 'as_00000000-0000-7903-b6e3-9c24a9a663ee',
   packageSnapshotId: 'pkg_provenance',
-  threadId: 'th_task_sha256:0123',
-  turnId: 'tu_task_sha256:4567',
-  workspaceId: 'ws_provenance',
+  threadId: 'th_00000000-0000-71c6-9c44-9f6b3fa169f2',
+  turnId: 'tu_00000000-0000-757c-9567-a7db75693c37',
+  workspaceId: 'ws_00000000-0000-78cf-93c8-cdd8251ab364',
 };
 
 /** Supplies the exact Core projection without launching a native process. */
@@ -156,14 +156,18 @@ describe('admitted Turn provenance capture', () => {
         nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
       },
     },
-    { name: 'sibling Thread', value: declaration('th_other') },
+    { name: 'sibling Thread', value: declaration('th_00000000-0000-78ce-b458-8347d12d1da2') },
     { name: 'other runtime', value: declaration(lineage.threadId, 'pi') },
-    { name: 'sibling Turn', value: declaration(lineage.threadId, 'codex', 'tu_other') },
+    {
+      name: 'sibling Turn',
+      value: declaration(lineage.threadId, 'codex', 'tu_00000000-0000-7bf1-990f-799cdaa2a481'),
+    },
     {
       name: 'mixed origin index',
       value: {
         ...declaration(),
-        nativeOriginIndexPath: declaration('th_other').nativeOriginIndexPath,
+        nativeOriginIndexPath: declaration('th_00000000-0000-78ce-b458-8347d12d1da2')
+          .nativeOriginIndexPath,
       },
     },
     {

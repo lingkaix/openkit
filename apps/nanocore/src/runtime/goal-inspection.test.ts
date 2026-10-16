@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
 import { FsStore } from '../lib/store.js';
@@ -15,6 +14,7 @@ import {
 } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createGoalTools } from './goal-coordinator.js';
@@ -27,19 +27,19 @@ it.each([
   {
     authority: 'member',
     actorKind: 'session' as const,
-    privateOwnerUserId: 'user_foreign',
+    privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
     privateBody: 'FOREIGN_PRIVATE_ARTIFACT_CANARY',
   },
   {
     authority: 'private owner',
     actorKind: 'session' as const,
-    privateOwnerUserId: 'user_local',
+    privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     privateBody: 'OWN_PRIVATE_ARTIFACT_CANARY',
   },
   {
     authority: 'administrator',
     actorKind: 'local' as const,
-    privateOwnerUserId: 'user_foreign',
+    privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
     privateBody: 'ADMIN_FOREIGN_PRIVATE_ARTIFACT_CANARY',
   },
 ])('inspects linked Task evidence before completion without disclosing a private Artifact as $authority', async ({
@@ -53,10 +53,14 @@ it.each([
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
   const workspace = store.createWorkspace('Evidence inspection');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const db = openWorkspaceDb(root, workspace.id);
   applyScopedMigrations(db);
-  const actor = { kind: actorKind, userId: 'user_local' };
+  const actor = { kind: actorKind, userId: 'usr_00000000-0000-7000-8000-000000000001' };
   const human = { actor };
   const services = { coreDb };
   const invoke = createOperationInvocation({
@@ -202,7 +206,7 @@ it.each([
       updatedAt: taskTurn.startedAt!,
     });
     const reply = store.createItem({
-      id: 'it_note_reply',
+      id: 'it_00000000-0000-704d-b966-477a8ad1120b',
       workspaceId: workspace.id,
       threadId: completed.id,
       turnId: taskTurn.id,
@@ -214,7 +218,7 @@ it.each([
     });
 
     const refusal = 'Admission cancelled before a Task Turn; no queue remains.';
-    const reservedTurnId = 'tu_cancelled_note';
+    const reservedTurnId = 'tu_00000000-0000-7f4d-b307-02fa2c7dbe78';
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_cancelled_note',
@@ -323,7 +327,7 @@ it.each([
     );
     // A reference in a linked shared Thread cannot launder a private Artifact's origin audience.
     store.createItem({
-      id: 'it_private_reference',
+      id: 'it_00000000-0000-7189-a388-3daa686462d9',
       workspaceId: workspace.id,
       threadId: completed.id,
       turnId: taskTurn.id,
@@ -392,7 +396,10 @@ it.each([
               truncated: false,
               content: [
                 call('items', 'thread_items', { threadId: completed.id }),
-                call('terminal', 'turn_read', { threadId: completed.id, turnId: taskTurn.id }),
+                call('terminal', 'tu_00000000-0000-77a7-a194-9ad9d8661498', {
+                  threadId: completed.id,
+                  turnId: taskTurn.id,
+                }),
                 call('refusal', 'evidence_runtime_list', {}),
                 call('unrelated', 'thread_items', { threadId: unrelated.id }),
                 call('unlinked-artifact', 'artifact_read', { artifactId: unrelatedArtifact.id }),
@@ -512,7 +519,12 @@ it.each([
       },
     });
     expect(
-      (await read('turn_read', { threadId: completed.id, turnId: failedTurn.id })).output
+      (
+        await read('tu_00000000-0000-77a7-a194-9ad9d8661498', {
+          threadId: completed.id,
+          turnId: failedTurn.id,
+        })
+      ).output
     ).toMatchObject({
       status: 'failed',
       error: {
@@ -521,14 +533,25 @@ it.each([
       },
     });
     expect(
-      (await read('turn_read', { threadId: completed.id, turnId: privateTurn.id })).isError
+      (
+        await read('tu_00000000-0000-77a7-a194-9ad9d8661498', {
+          threadId: completed.id,
+          turnId: privateTurn.id,
+        })
+      ).isError
     ).toBe(true);
     expect((await read('thread_items', { threadId: privateThread.id })).isError).toBe(true);
     for (const [name, args] of [
-      ['thread_items', { threadId: completed.id, workspaceId: 'ws_foreign' }],
+      [
+        'thread_items',
+        { threadId: completed.id, workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405' },
+      ],
       [
         'artifact_read',
-        { artifactId: artifact.id, actor: { kind: 'local', userId: 'user_foreign' } },
+        {
+          artifactId: artifact.id,
+          actor: { kind: 'local', userId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
+        },
       ],
     ] as const)
       expect((await read(name, args)).output).toMatchObject({ code: 'invalid_request' });
@@ -537,7 +560,7 @@ it.each([
     for (const [name, args] of [
       ['thread_items', { threadId: completed.id }],
       ['artifact_read', { artifactId: artifact.id }],
-      ['turn_read', { threadId: completed.id, turnId: taskTurn.id }],
+      ['tu_00000000-0000-77a7-a194-9ad9d8661498', { threadId: completed.id, turnId: taskTurn.id }],
       ['evidence_runtime_list', {}],
     ] as const)
       expect((await read(name, args)).output).toMatchObject({ code: 'workspace_access_denied' });

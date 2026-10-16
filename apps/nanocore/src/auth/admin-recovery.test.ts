@@ -36,8 +36,22 @@ function createRecoveryDataRoot(): string {
       `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, status)
        VALUES (?, ?, ?, 1, ?, ?, ?)`
     );
-    insert.run('user_active', 'Active User', '  ACTIVE@Example.COM  ', 1, 1, 'active');
-    insert.run('user_disabled', 'Disabled User', 'disabled@example.com', 1, 1, 'disabled');
+    insert.run(
+      'usr_00000000-0000-7a88-a815-8b9385f27463',
+      'Active User',
+      '  ACTIVE@Example.COM  ',
+      1,
+      1,
+      'active'
+    );
+    insert.run(
+      'usr_00000000-0000-7e63-b85a-c188de8ee1c3',
+      'Disabled User',
+      'disabled@example.com',
+      1,
+      1,
+      'disabled'
+    );
   } finally {
     coreDb.sqlite.close();
   }
@@ -50,7 +64,7 @@ function recoveryArgs(
   dataRoot: string,
   outputPath: string,
   expiresAt = EXPIRES_AT,
-  ownerUserId = 'user_active'
+  ownerUserId = 'usr_00000000-0000-7a88-a815-8b9385f27463'
 ): string[] {
   return [
     'admin',
@@ -72,7 +86,9 @@ function recoveryArgs(
 function disableRecoveryOwner(dataRoot: string): void {
   const coreDb = openCoreDb(dataRoot);
   try {
-    coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, 'user_active', NOW))();
+    coreDb.sqlite.transaction(() =>
+      disableCanonicalUser(coreDb, 'usr_00000000-0000-7a88-a815-8b9385f27463', NOW)
+    )();
   } finally {
     coreDb.sqlite.close();
   }
@@ -142,12 +158,12 @@ describe('stopped-server administrator recovery', () => {
       {
         displayName: 'Active User',
         email: 'active@example.com',
-        userId: 'user_active',
+        userId: 'usr_00000000-0000-7a88-a815-8b9385f27463',
       },
     ]);
     expect(output).toEqual([`${JSON.stringify(result)}\n`]);
     expect(() => JSON.parse(output[0] ?? '')).not.toThrow();
-    expect(output.join('')).not.toContain('user_disabled');
+    expect(output.join('')).not.toContain('usr_00000000-0000-7e63-b85a-c188de8ee1c3');
     expect(output.join('')).not.toContain('disabled@example.com');
     expect(existsSync(dataRootLockPath(dataRoot))).toBe(false);
   });
@@ -182,7 +198,7 @@ describe('stopped-server administrator recovery', () => {
       expect(envelope).toMatchObject({
         expiresAt: EXPIRES_AT,
         kind: 'openkit-admin-recovery',
-        ownerUserId: 'user_active',
+        ownerUserId: 'usr_00000000-0000-7a88-a815-8b9385f27463',
       });
       expect(envelope.requestId).toMatch(/^[0-9a-f-]{36}$/u);
       expect(envelope.tokenId).toMatch(/^[0-9a-f-]{36}$/u);
@@ -191,7 +207,7 @@ describe('stopped-server administrator recovery', () => {
       expect(tokenRow.token_hash).toMatch(/^sha256:/u);
       expect(JSON.stringify(tokenRow)).not.toContain(envelope.token);
       expect(verifyOpenKitAccessTokenRecord(coreDb, envelope.token, { now: NOW })).toMatchObject({
-        ownerUserId: 'user_active',
+        ownerUserId: 'usr_00000000-0000-7a88-a815-8b9385f27463',
         scope: 'server-admin',
       });
       expect(auditRow).toMatchObject({
@@ -203,7 +219,7 @@ describe('stopped-server administrator recovery', () => {
       expect(result).toEqual({
         auditEventId: auditRow.audit_event_id,
         expiresAt: EXPIRES_AT,
-        ownerUserId: 'user_active',
+        ownerUserId: 'usr_00000000-0000-7a88-a815-8b9385f27463',
         status: 'completed',
         tokenId: envelope.tokenId,
       });
@@ -237,7 +253,7 @@ describe('stopped-server administrator recovery', () => {
       expect(await authenticated.json()).toMatchObject({
         kind: 'token',
         tokenId: envelope.tokenId,
-        userId: 'user_active',
+        userId: 'usr_00000000-0000-7a88-a815-8b9385f27463',
       });
     } finally {
       coreDb.sqlite.close();
@@ -265,7 +281,8 @@ describe('stopped-server administrator recovery', () => {
     const confirmationRoot = createRecoveryDataRoot();
     const confirmationPath = join(confirmationRoot, 'confirmation.json');
     const mismatched = recoveryArgs(confirmationRoot, confirmationPath);
-    mismatched[mismatched.length - 1] = 'issue-server-admin-token:user_other:wrong-expiry';
+    mismatched[mismatched.length - 1] =
+      'issue-server-admin-token:usr_00000000-0000-73d4-904a-d4c4b905df7c:wrong-expiry';
     expect(() => runOpenKitOperatorCli(mismatched, { now: () => NOW, write() {} })).toThrow(
       expect.objectContaining({ code: 'invalid_request' })
     );
@@ -285,10 +302,13 @@ describe('stopped-server administrator recovery', () => {
     const freshRoot = createRecoveryDataRoot();
     const freshPath = join(freshRoot, 'disabled-owner-new.json');
     expect(() =>
-      runOpenKitOperatorCli(recoveryArgs(freshRoot, freshPath, EXPIRES_AT, 'user_disabled'), {
-        now: () => NOW,
-        write() {},
-      })
+      runOpenKitOperatorCli(
+        recoveryArgs(freshRoot, freshPath, EXPIRES_AT, 'usr_00000000-0000-7e63-b85a-c188de8ee1c3'),
+        {
+          now: () => NOW,
+          write() {},
+        }
+      )
     ).toThrow(expect.objectContaining({ code: 'invalid_request' }));
     expect(existsSync(freshPath)).toBe(false);
 
@@ -587,7 +607,7 @@ describe('stopped-server administrator recovery', () => {
         ) {
           coreDb.sqlite
             .prepare('UPDATE audit_events SET workspace_id = ? WHERE request_id = ?')
-            .run('ws_contradiction', fixture.envelope.requestId);
+            .run('ws_00000000-0000-7216-98b5-830a474e9ed0', fixture.envelope.requestId);
         },
         tokenCount: 1,
         auditCount: 1,

@@ -2,7 +2,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createApp } from './app.js';
 import { listServerAuditEvents } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
@@ -10,6 +9,7 @@ import { ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { operationRequest } from './test-support/operation-request.js';
 
 const OWNER_SESSION_HEADER = 'x-openkit-test-owner-session';
@@ -23,13 +23,13 @@ function ownerSessionAuth(): BetterAuthServer {
         if (headers.get(OWNER_SESSION_HEADER) === '1') {
           return {
             session: { id: 'session_owner' },
-            user: { id: 'user_owner' },
+            user: { id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
           };
         }
         if (headers.get(MEMBER_SESSION_HEADER) === '1') {
           return {
             session: { id: 'session_member' },
-            user: { id: 'user_member' },
+            user: { id: 'usr_00000000-0000-7d56-82f8-ec994b63859b' },
           };
         }
         return null;
@@ -56,7 +56,12 @@ function sessionCookie(response: Response): string {
  * @param coreDb Core database handles.
  */
 function insertTokenOwnerUser(coreDb: CoreDb): void {
-  insertCanonicalUser(coreDb, 'user_owner', 'Owner', 'owner@example.com');
+  insertCanonicalUser(
+    coreDb,
+    'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+    'Owner',
+    'owner@example.com'
+  );
 }
 
 /**
@@ -109,7 +114,7 @@ describe('server-mode access-token auth', () => {
       const consumeBody = JSON.stringify({
         displayName: 'Owner',
         email: 'owner@example.com',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
         token: bootstrap.token,
         tokenExpiresAt: '2999-01-01T00:00:00.000Z',
@@ -143,10 +148,12 @@ describe('server-mode access-token auth', () => {
       };
       const bootstrapOwner = coreDb.sqlite
         .prepare('SELECT id, email FROM users WHERE id = ?')
-        .get('user_owner') as { email: string; id: string } | undefined;
+        .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as
+        | { email: string; id: string }
+        | undefined;
       const bootstrapCredential = coreDb.sqlite
         .prepare('SELECT account_id, provider_id, user_id FROM account WHERE user_id = ?')
-        .get('user_owner') as
+        .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as
         | { account_id: string; provider_id: string; user_id: string }
         | undefined;
       const listed = await app.request(
@@ -170,15 +177,18 @@ describe('server-mode access-token auth', () => {
       });
       expect(consumed.status).toBe(201);
       expect(consumedBody.record).toMatchObject({
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
       });
       expect(consumedBody.token).toMatch(/^okt_/);
-      expect(bootstrapOwner).toEqual({ email: 'owner@example.com', id: 'user_owner' });
+      expect(bootstrapOwner).toEqual({
+        email: 'owner@example.com',
+        id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      });
       expect(bootstrapCredential).toEqual({
-        account_id: 'user_owner',
+        account_id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         provider_id: 'credential',
-        user_id: 'user_owner',
+        user_id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       expect(listed.status).toBe(200);
       expect(signIn.status).toBe(200);
@@ -215,10 +225,15 @@ describe('server-mode access-token auth', () => {
     try {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
-      insertCanonicalUser(coreDb, 'user_member', 'Member', 'member@example.com');
+      insertCanonicalUser(
+        coreDb,
+        'usr_00000000-0000-7d56-82f8-ec994b63859b',
+        'Member',
+        'member@example.com'
+      );
       const issued = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -358,7 +373,7 @@ describe('server-mode access-token auth', () => {
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -433,7 +448,7 @@ describe('server-mode access-token auth', () => {
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -463,7 +478,7 @@ describe('server-mode access-token auth', () => {
       const workspace = (await workspaceResponse.json()) as { id: string };
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace',
         workspaceIds: [workspace.id],
       });
@@ -502,7 +517,7 @@ describe('server-mode access-token auth', () => {
             },
             body: JSON.stringify({
               scope: 'workspace',
-              workspaceIds: ['ws_missing'],
+              workspaceIds: ['ws_00000000-0000-7490-845b-dcfa3ee49925'],
               expiresAt: '2999-01-01T00:00:00.000Z',
             }),
           }
@@ -571,16 +586,16 @@ describe('server-mode access-token auth', () => {
       insertTokenOwnerUser(coreDb);
       const token = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       });
       const app = createApp({
         auth: {
           api: {
             getSession: async () => ({
               session: { id: 'session_token_admin' },
-              user: { id: 'user_owner' },
+              user: { id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
             }),
           },
           handler: async () => new Response(null, { status: 404 }),
@@ -642,7 +657,7 @@ describe('server-mode access-token auth', () => {
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -672,7 +687,7 @@ describe('server-mode access-token auth', () => {
       const workspace = (await workspaceResponse.json()) as { id: string };
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace',
         workspaceIds: [workspace.id],
       });
@@ -748,15 +763,15 @@ describe('server-mode access-token auth', () => {
       insertTokenOwnerUser(coreDb);
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace',
-        workspaceIds: ['ws_allowed'],
+        workspaceIds: ['ws_00000000-0000-7056-a1a1-4f49a5d58035'],
       });
       const readonlyToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_allowed'],
+        workspaceIds: ['ws_00000000-0000-7056-a1a1-4f49a5d58035'],
       });
       const app = createApp({
         auth: {
@@ -771,7 +786,7 @@ describe('server-mode access-token auth', () => {
       const unbound = await app.request(
         ...operationRequest(
           'workspace.dashboard',
-          { workspaceId: 'ws_denied' },
+          { workspaceId: 'ws_00000000-0000-77e6-9d59-59f0f02f181e' },
           {
             headers: { authorization: `Bearer ${workspaceToken.secret}` },
           }
@@ -793,12 +808,12 @@ describe('server-mode access-token auth', () => {
           body: JSON.stringify(input),
         }))({
         ...{ name: 'Blocked thread', requestId: '11111111-1111-4111-8111-111111111901' },
-        workspaceId: 'ws_allowed',
+        workspaceId: 'ws_00000000-0000-7056-a1a1-4f49a5d58035',
       });
 
       expect(unbound.status).toBe(403);
       expect(readonlyWrite.status).toBe(403);
-      expect(await unbound.text()).not.toContain('ws_denied');
+      expect(await unbound.text()).not.toContain('ws_00000000-0000-77e6-9d59-59f0f02f181e');
     } finally {
       coreDb.sqlite.close();
     }
@@ -856,7 +871,7 @@ describe('server-mode access-token auth', () => {
       const deniedWorkspace = (await deniedWorkspaceResponse.json()) as { id: string };
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace',
         workspaceIds: [allowedWorkspace.id],
       });
@@ -878,7 +893,7 @@ describe('server-mode access-token auth', () => {
           .prepare(
             `INSERT INTO users
               (id, display_name, email, email_verified, created_at, updated_at, kind)
-             VALUES ('user_replacement_owner', 'Replacement Owner',
+             VALUES ('usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'Replacement Owner',
                      'token-replacement@example.com', false, ?, ?, 'human')`
           )
           .run(Date.now(), Date.now());
@@ -887,19 +902,19 @@ describe('server-mode access-token auth', () => {
             `INSERT INTO workspace_members (
               workspace_id, user_id, status, access_level, invitation_id,
               joined_at, removed_at, revision, created_at, updated_at
-            ) VALUES (?, 'user_replacement_owner', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ) VALUES (?, 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
           )
           .run(allowedWorkspace.id, transferredAt, transferredAt, transferredAt);
         coreDb.sqlite
           .prepare(
             `UPDATE workspace_registry
-             SET owner_user_id = 'user_replacement_owner', revision = revision + 1, updated_at = ?
+             SET owner_user_id = 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', revision = revision + 1, updated_at = ?
              WHERE workspace_id = ?`
           )
           .run(transferredAt, allowedWorkspace.id);
         coreDb.sqlite
           .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-          .run(allowedWorkspace.id, 'user_owner');
+          .run(allowedWorkspace.id, 'usr_00000000-0000-7011-88df-c2b1e8466b6f');
       })();
       const listedAfterMembershipRemoval = await app.request('/api/app/operations/workspace.list', {
         ...{
@@ -935,10 +950,15 @@ describe('server-mode access-token auth', () => {
     try {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
-      insertCanonicalUser(coreDb, 'user_member', 'Member', 'member@example.com');
+      insertCanonicalUser(
+        coreDb,
+        'usr_00000000-0000-7d56-82f8-ec994b63859b',
+        'Member',
+        'member@example.com'
+      );
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -995,7 +1015,7 @@ describe('server-mode access-token auth', () => {
             },
             body: JSON.stringify({
               expiresAt: '2999-01-01T00:00:00.000Z',
-              ownerUserId: 'user_member',
+              ownerUserId: 'usr_00000000-0000-7d56-82f8-ec994b63859b',
               scope: 'workspace',
               workspaceIds: [memberWorkspaceBody.id],
             }),
@@ -1018,7 +1038,7 @@ describe('server-mode access-token auth', () => {
             },
             body: JSON.stringify({
               expiresAt: '2999-01-01T00:00:00.000Z',
-              ownerUserId: 'user_owner',
+              ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
               scope: 'workspace',
               workspaceIds: [memberWorkspaceBody.id],
             }),
@@ -1037,7 +1057,7 @@ describe('server-mode access-token auth', () => {
             },
             body: JSON.stringify({
               expiresAt: '2999-01-01T00:00:00.000Z',
-              ownerUserId: 'user_missing',
+              ownerUserId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
               scope: 'server-admin',
               workspaceIds: [],
             }),
@@ -1049,7 +1069,7 @@ describe('server-mode access-token auth', () => {
       expect(memberWorkspace.status).toBe(201);
       expect(issuedToMember.status).toBe(201);
       expect(issuedToMemberBody.record).toMatchObject({
-        ownerUserId: 'user_member',
+        ownerUserId: 'usr_00000000-0000-7d56-82f8-ec994b63859b',
         scope: 'workspace',
       });
       expect(issuedToCaller.status).toBe(403);
@@ -1068,12 +1088,17 @@ describe('server-mode access-token auth', () => {
     try {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
-      insertCanonicalUser(coreDb, 'user_member', 'Member', 'member@example.com');
+      insertCanonicalUser(
+        coreDb,
+        'usr_00000000-0000-7d56-82f8-ec994b63859b',
+        'Member',
+        'member@example.com'
+      );
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
-        tokenId: 'tok_owner_admin',
+        tokenId: 'tok_00000000-0000-75d5-969a-53fce04182b5',
         workspaceIds: [],
       });
       const app = createApp({
@@ -1174,11 +1199,19 @@ describe('server-mode access-token auth', () => {
       expect(mine.status).toBe(200);
       expect(mineBody).toMatchObject({
         defaultTokenId: admin.tokenId,
-        items: [{ tokenId: admin.tokenId, ownerUserId: 'user_owner', scope: 'server-admin' }],
+        items: [
+          {
+            tokenId: admin.tokenId,
+            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            scope: 'server-admin',
+          },
+        ],
       });
       expect(bearerMine.status).toBe(200);
       expect(await bearerMine.json()).toMatchObject({
-        items: [{ tokenId: admin.tokenId, ownerUserId: 'user_owner' }],
+        items: [
+          { tokenId: admin.tokenId, ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
+        ],
       });
       expect(otherWorkspace.status).toBe(201);
       expect(bypassDenied.status).toBe(200);
@@ -1205,17 +1238,17 @@ describe('server-mode access-token auth', () => {
       const first = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
         now: new Date('2026-08-30T00:00:00.000Z'),
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
-        tokenId: 'tok_default_first',
+        tokenId: 'tok_00000000-0000-7dab-b761-7bf989db36ad',
         workspaceIds: [],
       });
       const second = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
         now: new Date('2026-08-30T00:01:00.000Z'),
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
-        tokenId: 'tok_default_second',
+        tokenId: 'tok_00000000-0000-7738-b866-40ef37604600',
         workspaceIds: [],
       });
       const app = createApp({
@@ -1286,12 +1319,17 @@ describe('personal administrator-token canonical-user access', () => {
     const coreDb = openCoreDb(dataRoot);
     try {
       applyMigrations(coreDb);
-      insertCanonicalUser(coreDb, 'user_local', 'Local', 'local@example.com');
+      insertCanonicalUser(
+        coreDb,
+        'usr_00000000-0000-7000-8000-000000000001',
+        'Local',
+        'local@example.com'
+      );
       insertTokenOwnerUser(coreDb);
       for (const [tokenId, ownerUserId] of [
-        ['tok_local_first', 'user_local'],
-        ['tok_local_second', 'user_local'],
-        ['tok_other', 'user_owner'],
+        ['tok_00000000-0000-7c1a-914e-7b3f8202307f', 'usr_00000000-0000-7000-8000-000000000001'],
+        ['tok_00000000-0000-738c-a01b-b50e38d149f1', 'usr_00000000-0000-7000-8000-000000000001'],
+        ['tok_00000000-0000-7358-9dd3-3d116e8695d2', 'usr_00000000-0000-7011-88df-c2b1e8466b6f'],
       ]) {
         createOpenKitAccessTokenRecord(coreDb, {
           tokenId,
@@ -1306,8 +1344,8 @@ describe('personal administrator-token canonical-user access', () => {
       expect(listed.status).toBe(200);
       const body = await listed.json();
       expect(body.items.map((item: { tokenId: string }) => item.tokenId).sort()).toEqual([
-        'tok_local_first',
-        'tok_local_second',
+        'tok_00000000-0000-7c1a-914e-7b3f8202307f',
+        'tok_00000000-0000-738c-a01b-b50e38d149f1',
       ]);
       expect(JSON.stringify(body)).not.toMatch(/okt_|tokenHash|secret/);
       const selected = await app.request(
@@ -1317,13 +1355,18 @@ describe('personal administrator-token canonical-user access', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ tokenId: 'tok_local_second' }),
+            body: JSON.stringify({ tokenId: 'tok_00000000-0000-738c-a01b-b50e38d149f1' }),
           }
         )
       );
       expect(selected.status).toBe(200);
-      expect((await selected.json()).defaultTokenId).toBe('tok_local_second');
-      for (const tokenId of ['tok_other', 'tok_missing']) {
+      expect((await selected.json()).defaultTokenId).toBe(
+        'tok_00000000-0000-738c-a01b-b50e38d149f1'
+      );
+      for (const tokenId of [
+        'tok_00000000-0000-7358-9dd3-3d116e8695d2',
+        'tok_00000000-0000-7497-9e7b-7d920342ffdc',
+      ]) {
         const invalid = await app.request(
           ...operationRequest(
             'token.my-admin-default',
@@ -1339,11 +1382,11 @@ describe('personal administrator-token canonical-user access', () => {
         expect((await invalid.json()).code).toBe('access_token_default_invalid');
       }
       const after = await app.request(...operationRequest('token.my-admin-list', {}, {}));
-      expect((await after.json()).defaultTokenId).toBe('tok_local_second');
+      expect((await after.json()).defaultTokenId).toBe('tok_00000000-0000-738c-a01b-b50e38d149f1');
       for (const [id, input] of [
         ['token.list', {}],
         ['token.create', { scope: 'server-admin', expiresAt: '2999-01-01T00:00:00.000Z' }],
-        ['token.rotate', { tokenId: 'tok_local_first' }],
+        ['token.rotate', { tokenId: 'tok_00000000-0000-7c1a-914e-7b3f8202307f' }],
       ] as const) {
         const response = await app.request(
           ...operationRequest(id, {}, { body: JSON.stringify(input) })
@@ -1365,8 +1408,8 @@ describe('personal administrator-token canonical-user access', () => {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
-        tokenId: 'tok_admin',
-        ownerUserId: 'user_owner',
+        tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -1374,7 +1417,7 @@ describe('personal administrator-token canonical-user access', () => {
       const app = createApp({ auth: ownerSessionAuth(), coreDb, dataRoot, mode: 'server' });
       for (const [id, input] of [
         ['token.my-admin-list', {}],
-        ['token.my-admin-default', { tokenId: 'tok_admin' }],
+        ['token.my-admin-default', { tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' }],
       ] as const) {
         const admitted = await app.request(
           ...operationRequest(
@@ -1388,7 +1431,12 @@ describe('personal administrator-token canonical-user access', () => {
         );
         expect(admitted.status).toBe(200);
         expect(await admitted.json()).toMatchObject({
-          items: [{ tokenId: 'tok_admin', ownerUserId: 'user_owner' }],
+          items: [
+            {
+              tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+              ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            },
+          ],
         });
       }
     } finally {

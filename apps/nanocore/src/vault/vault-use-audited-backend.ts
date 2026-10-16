@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { allocateEntityId } from '@openkit/protocol';
 
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -203,7 +203,7 @@ class VaultUseAuditedBackend implements VaultBackend {
       receiptId: this.input.receiptId ?? null,
       resolvingPath: this.input.resolvingPath,
       usedAt: (this.input.now ?? (() => new Date().toISOString()))(),
-      useId: (this.input.createUseId ?? randomUUID)(),
+      useId: (this.input.createUseId ?? (() => allocateEntityId('vu')))(),
       vaultReferenceId: resolveInput.referenceId,
       workspaceId: this.input.workspaceId ?? null,
     });
@@ -251,7 +251,7 @@ class VaultUseAuditedBackend implements VaultBackend {
       return this.input.auditEventId;
     }
 
-    return `aud_${randomUUID()}`;
+    return allocateEntityId('aud');
   }
 
   /**

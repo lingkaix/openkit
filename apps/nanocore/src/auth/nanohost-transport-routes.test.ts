@@ -12,7 +12,6 @@ import { join } from 'node:path';
 import { ADMINISTRATION_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { createCoreClient } from '../../../../packages/core-client/src/index.js';
-import { createApp } from '../app.js';
 import { listServerAuditEvents } from '../audit-events.js';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -24,6 +23,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import type { BetterAuthServer } from './middleware.js';
@@ -53,7 +53,7 @@ function ownerSessionAuth(): BetterAuthServer {
         headers.get(OWNER_SESSION_HEADER) === '1'
           ? {
               session: { id: 'session_owner' },
-              user: { id: 'user_owner' },
+              user: { id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
             }
           : null,
     },
@@ -81,7 +81,7 @@ function insertTokenOwnerUser(coreDb: CoreDb): void {
         kind,
         last_seen_at
       )
-       VALUES ('user_owner', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
+       VALUES ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
     )
     .run(now, now);
 }
@@ -166,7 +166,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -368,7 +368,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -461,7 +461,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       insertTokenOwnerUser(coreDb);
       const occupiedSecret = 'okt_occupied_enroll_secret_aaaaaaaaaaaaaaaaaaaaaa';
       const occupiedCompanion = [
-        'token_id=tok_occupied',
+        'token_id=tok_00000000-0000-79cc-9890-eba854d7c87b',
         'issuance_generation=1',
         'identity_id=integration_nanohost_primary',
         'deployment_id=deploy_primary',
@@ -471,7 +471,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       writeFileSync(join(slotRoot, 'A.meta'), occupiedCompanion, { mode: 0o600 });
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -522,7 +522,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       writeFileSync(blocked, 'not-a-directory');
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -597,7 +597,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -787,7 +787,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -866,7 +866,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         deploymentId: config.deploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
         ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       coreDb.sqlite
         .prepare('UPDATE nanohost_transport_tokens SET deployment_id = ? WHERE token_id = ?')
@@ -875,7 +875,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         deploymentId: config.deploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
         ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       coreDb.sqlite
         .prepare(
@@ -929,7 +929,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const event = decommissionEvents[0];
       expect(event).toMatchObject({
         action: 'nanohost.transport.decommission',
-        actor: { kind: 'user', id: 'user_owner' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
         category: 'system',
         outcome: 'succeeded',
         resource: `nanohost-transport-identity:${config.identityId}`,
@@ -988,14 +988,14 @@ describe('NanoHost transport App API safe-sink routes', () => {
         deploymentId: config.deploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
         ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       coreDb.sqlite
         .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
         .run(config.identityId);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1081,7 +1081,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         deploymentId: config.deploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
         ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       coreDb.sqlite
         .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
@@ -1094,7 +1094,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         .all();
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1160,7 +1160,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1257,7 +1257,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       insertActiveNanoHostIdentity(coreDb, 'integration_nanohost_primary', 'deploy_primary');
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1333,7 +1333,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         deploymentId: retainedDeploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
         ownerNanoHostIdentityId: retainedIdentityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       coreDb.sqlite
         .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
@@ -1346,7 +1346,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         .all();
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1413,7 +1413,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1446,7 +1446,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const enrollBody = (await enrolled.json()) as { record: { tokenId: string } };
       const occupiedSecret = 'okt_revoked_opposite_slot_secret_aaaaaaaaaaaaaaaa';
       const occupiedCompanion = [
-        'token_id=tok_revoked_opposite',
+        'token_id=tok_00000000-0000-79f4-8f10-6aa9eb95cec4',
         'issuance_generation=1',
         `identity_id=${config.identityId}`,
         `deployment_id=${config.deploymentId}`,
@@ -1499,7 +1499,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1605,7 +1605,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1622,7 +1622,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
           '2026-02-01T00:00:00.000Z'
         );
       const foreignCompanion = [
-        'token_id=tok_foreign',
+        'token_id=tok_00000000-0000-7655-8cd1-7eb19d1529c7',
         'issuance_generation=1',
         `identity_id=${config.identityId}`,
         `deployment_id=${config.deploymentId}`,
@@ -1693,7 +1693,7 @@ function administrationFixture(acceptingProductWork = true) {
   const config = configuredNanoHost(slotRoot);
   const admin = createOpenKitAccessTokenRecord(coreDb, {
     expiresAt: '2999-01-01T00:00:00.000Z',
-    ownerUserId: 'user_owner',
+    ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     scope: 'server-admin',
     workspaceIds: [],
   });
@@ -2087,7 +2087,7 @@ describe('definition-derived deployment administration cutover', () => {
         ['POST', '/api/app/nanohost/decommission'],
         ['GET', '/api/app/storage/layout-report'],
         ['POST', '/api/app/data-root/backups'],
-        ['POST', '/api/app/data-root/backups/drb_old/verify'],
+        ['POST', '/api/app/data-root/backups/drb_00000000-0000-7deb-9650-30cc9f4f046a/verify'],
       ]) {
         const response = await f.app.request(path!, {
           method,
@@ -2153,9 +2153,9 @@ describe('definition-derived deployment administration cutover', () => {
       });
       const readonly = createOpenKitAccessTokenRecord(f.coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       });
       const headers = { authorization: `Bearer ${readonly.secret}` };
       const tokensBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
@@ -2174,7 +2174,7 @@ describe('definition-derived deployment administration cutover', () => {
         'nanohost.token-rotation-abort': { tokenId: enrolled.record.tokenId },
         'nanohost.decommission': {},
         'backup.create': {},
-        'backup.verify': { backupId: 'drb_readonly' },
+        'backup.verify': { backupId: 'drb_00000000-0000-72bc-9adf-7dcbe6dd4826' },
         'storage.layout-report': {},
       })) {
         const response = await f.app.request(`/api/app/operations/${id}`, {
@@ -2219,7 +2219,7 @@ describe('definition-derived deployment administration cutover', () => {
         deploymentId: f.config.deploymentId,
         expiresAt: '2999-01-01T00:00:00.000Z',
         ownerNanoHostIdentityId: f.config.identityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       const tokenId = refusal === 'unproved-slot' ? retained.tokenId : 'token_missing';
       const companionTokenId = 'token_missing';

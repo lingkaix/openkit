@@ -15,9 +15,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-
 import { WorkspaceDeletionPhaseSchema } from '@openkit/app-api-schemas';
-import { RequestIdSchema, TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AuditEventIdSchema,
+  RequestIdSchema,
+  TimestampSchema,
+  UserIdSchema,
+  WorkspaceExportIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 import {
@@ -43,17 +49,17 @@ export const WorkspaceDeletionRequestRecordSchema = z
     schemaVersion: z.literal(1),
     workspaceId: WorkspaceIdSchema,
     requestId: RequestIdSchema,
-    originalOwnerUserId: z.string().min(1),
+    originalOwnerUserId: UserIdSchema,
     expectedRegistryRevision: z.number().int().positive(),
     confirmation: z.string().min(1),
     createdAt: TimestampSchema,
     phase: WorkspaceDeletionPhaseSchema,
-    recoveryExportId: z.string().min(1).nullable(),
+    recoveryExportId: WorkspaceExportIdSchema.nullable(),
     recoveryExportManifestDigest: z.string().min(1).nullable(),
     closureId: z.string().min(1).nullable(),
     closureDigest: z.string().min(1).nullable(),
     stagingRelativePath: z.string().min(1).nullable(),
-    terminalAuditEventId: z.string().min(1).nullable(),
+    terminalAuditEventId: AuditEventIdSchema.nullable(),
     commandReceiptKey: z.string().min(1).nullable(),
     retainedStaging: z.boolean(),
     cleanedAt: TimestampSchema.nullable(),

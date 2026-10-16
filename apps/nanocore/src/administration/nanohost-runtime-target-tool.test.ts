@@ -3,14 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
-
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
 
 const identityId = 'integration_nanohost_primary';
@@ -20,8 +19,12 @@ const physicalEpoch = 'a'.repeat(64);
 function toolFor(coreDb: ReturnType<typeof openCoreDb> | undefined) {
   return createAdministrationNanoHostRuntimeTargetTool({
     coreDb,
-    actor: { kind: 'local', userId: 'user_local' },
-    lineage: { workspaceId: 'ws_admin', threadId: 'th_admin', turnId: 'turn_admin' },
+    actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    lineage: {
+      workspaceId: 'ws_00000000-0000-7385-aa6f-e0db858f78e5',
+      threadId: 'th_00000000-0000-7bde-9ab2-7d21d4186dff',
+      turnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
+    },
     mode: 'server',
     nanoHostConfig: { deploymentId, identityId },
   });

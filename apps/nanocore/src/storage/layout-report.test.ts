@@ -20,8 +20,8 @@ describe('storage layout report', () => {
   it('reports target database ledgers', () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
-    const userDb = openUserDb(dataRoot, 'user_1');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
+    const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
       applyMigrations(coreDb);
@@ -38,10 +38,10 @@ describe('storage layout report', () => {
       expect(report.users).toEqual(
         expect.arrayContaining([
           {
-            userId: 'user_1',
+            userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
             userDb: expect.objectContaining({
               exists: true,
-              appliedMigrations: ['user_0000_setup'],
+              appliedMigrations: ['usr_00000000-0000-76f6-b592-f63edf15ea68'],
             }),
           },
         ])
@@ -49,7 +49,7 @@ describe('storage layout report', () => {
       expect(report.users.every((user) => !Object.hasOwn(user, 'workspaces'))).toBe(true);
       expect(report.workspaces).toEqual([
         {
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           workspaceDb: expect.objectContaining({
             exists: true,
             appliedMigrations: ['workspace_0000_setup'],
@@ -67,12 +67,32 @@ describe('storage layout report', () => {
   it('reports quarantined storage files for operator inspection', () => {
     const dataRoot = createDataRoot();
     mkdirSync(join(dataRoot, 'server', 'quarantine'), { recursive: true });
-    mkdirSync(join(dataRoot, 'users', 'user_1', 'quarantine'), { recursive: true });
-    mkdirSync(join(dataRoot, 'workspaces', 'ws_1', 'quarantine'), { recursive: true });
+    mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'quarantine'), {
+      recursive: true,
+    });
+    mkdirSync(
+      join(dataRoot, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'quarantine'),
+      { recursive: true }
+    );
     writeFileSync(join(dataRoot, 'server', 'quarantine', '1-core.sqlite'), 'server');
-    writeFileSync(join(dataRoot, 'users', 'user_1', 'quarantine', '2-user.sqlite'), 'user');
     writeFileSync(
-      join(dataRoot, 'workspaces', 'ws_1', 'quarantine', '3-workspace.sqlite'),
+      join(
+        dataRoot,
+        'users',
+        'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+        'quarantine',
+        '2-user.sqlite'
+      ),
+      'user'
+    );
+    writeFileSync(
+      join(
+        dataRoot,
+        'workspaces',
+        'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        'quarantine',
+        '3-workspace.sqlite'
+      ),
       'workspace'
     );
 
@@ -86,15 +106,15 @@ describe('storage layout report', () => {
       },
       {
         bytes: 4,
-        path: 'users/user_1/quarantine/2-user.sqlite',
+        path: 'users/usr_00000000-0000-7e68-8ab1-8dcac1be1b5b/quarantine/2-user.sqlite',
         scope: 'user',
-        userId: 'user_1',
+        userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
       },
       {
         bytes: 9,
-        path: 'workspaces/ws_1/quarantine/3-workspace.sqlite',
+        path: 'workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/quarantine/3-workspace.sqlite',
         scope: 'workspace',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       },
     ]);
   });

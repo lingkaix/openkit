@@ -57,7 +57,7 @@ describe('Thread canonical record envelope', () => {
   it('classifies a pre-envelope Thread as conversation and rewrites the gated envelope', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-cutover-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.ensureQuickChatWorkspace('user_local');
+    const workspace = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
     const thread = store.createThread(workspace.id, 'Cutover thread');
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     const legacy = { ...persisted.value };
@@ -83,7 +83,7 @@ describe('Thread canonical record envelope', () => {
     expect(restarted.getThread(workspace.id, thread.id)).toMatchObject({
       entryPath: 'conversation',
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     expect(threadRecord(dataRoot, workspace.id, thread.id).value).toMatchObject({
       entryPath: 'conversation',
@@ -112,7 +112,7 @@ it('cuts over exclusively formal worker history but never publishes ambiguous pr
     const thread = store.createThread(workspace.id, 'Historical conversation');
     const turn = store.createTurn(workspace.id, thread.id, 'Work', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     if (formal) store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
@@ -135,11 +135,11 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
   for (const damage of [
     { visibility: undefined },
     { privateOwnerUserId: undefined },
-    { visibility: 'workspace', privateOwnerUserId: 'user_other' },
+    { visibility: 'workspace', privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
   ]) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-damaged-visibility-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.ensureQuickChatWorkspace('user_local');
+    const workspace = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
     const thread = store.createThread(workspace.id, 'Private conversation');
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify({ ...persisted.value, ...damage }));
@@ -154,12 +154,12 @@ it('does not infer shared inception when formal and conversation Turns have tied
   const thread = store.createThread(workspace.id, 'Mixed history');
   const formal = store.createTurn(workspace.id, thread.id, 'Formal', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   store.updateTurn(formal.id, { agentId: 'agent_codex_host' });
   const conversation = store.createTurn(workspace.id, thread.id, 'Conversation', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const conversationPath = join(
     dataRoot,

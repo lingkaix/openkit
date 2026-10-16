@@ -751,7 +751,13 @@ function openPredecessorCoreDb(dataRoot: string): CoreDb {
     throw new Error('Predecessor Core database failed SQLite integrity validation.');
   }
 
-  return { scope: 'core', sqlite, db: drizzle(sqlite, { schema }), dataRoot };
+  return {
+    scope: 'core',
+    canInitializeLocalUser: false,
+    sqlite,
+    db: drizzle(sqlite, { schema }),
+    dataRoot,
+  };
 }
 
 /**

@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
 import {
@@ -20,12 +20,12 @@ import {
 } from './worker-control-records.js';
 
 const lineage: WorkerLineage = {
-  agentSessionId: 'as_events_1',
+  agentSessionId: 'as_00000000-0000-7e3a-a966-bbf1c9a21fcc',
   packageSnapshotId: 'aepsnap_events_1',
   requestId: 'req_events_1',
-  threadId: 'th_events_1',
-  turnId: 'turn_events_1',
-  workspaceId: 'ws_events_1',
+  threadId: 'th_00000000-0000-7ccc-992e-e88b1e35ca99',
+  turnId: 'tu_00000000-0000-7056-a6b5-80ab0aaa7f63',
+  workspaceId: 'ws_00000000-0000-708d-8de8-225685139ab1',
 };
 
 /**
@@ -51,7 +51,7 @@ function insertWorkerAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: lineage.workspaceId,
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -62,7 +62,7 @@ function insertWorkerAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
     turnId: lineage.turnId,
     turnInput: 'Wait for the exact durable worker final status',
     requestedAgentId: 'agent_worker',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     now: () => '2026-07-15T00:00:00.000Z',
   });
   recordTestExecutionAttempt(coreDb, {
@@ -87,7 +87,7 @@ function createFinalStatusAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: lineage.workspaceId,
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -97,7 +97,7 @@ function createFinalStatusAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
     requestId: lineage.requestId,
     requestedAgentId: 'agent_worker',
     threadId: lineage.threadId,
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     turnId: lineage.turnId,
     turnInput: 'Run final-status binding test',
     workspaceId: lineage.workspaceId,
@@ -206,10 +206,10 @@ describe('worker control accepted event records', () => {
     const second = eventRecord(2);
     const first = eventRecord(1);
     const otherLineages: WorkerLineage[] = [
-      { ...lineage, workspaceId: 'ws_events_other' },
-      { ...lineage, threadId: 'th_events_other' },
-      { ...lineage, turnId: 'turn_events_other' },
-      { ...lineage, agentSessionId: 'as_events_other' },
+      { ...lineage, workspaceId: 'ws_00000000-0000-734b-bd0c-14f97b7a79e8' },
+      { ...lineage, threadId: 'th_00000000-0000-7bcd-b2ee-62461f26417e' },
+      { ...lineage, turnId: 'tu_00000000-0000-7fa0-af79-2182b18f7840' },
+      { ...lineage, agentSessionId: 'as_00000000-0000-7644-b75e-e0ae1ac7e602' },
       { ...lineage, packageSnapshotId: 'aepsnap_events_other' },
       { ...lineage, requestId: null },
     ];
@@ -249,7 +249,7 @@ describe('worker control accepted event records', () => {
 
     const nullRequestLineage = {
       ...lineage,
-      agentSessionId: 'as_events_null_request',
+      agentSessionId: 'as_00000000-0000-732f-9aef-8202afffc559',
       packageSnapshotId: 'aepsnap_events_null_request',
       requestId: null,
     };
@@ -279,7 +279,7 @@ describe('worker control accepted event records', () => {
   it('fails closed when a durable event record is invalid or contradicts its row lineage', () => {
     for (const record of [
       { invalid: true },
-      eventRecord(1, { ...lineage, workspaceId: 'ws_embedded_other' }),
+      eventRecord(1, { ...lineage, workspaceId: 'ws_00000000-0000-7aae-857d-5f1cc2c3e110' }),
     ]) {
       const coreDb = openCoreDb(
         mkdtempSync(join(tmpdir(), 'openkit-worker-control-invalid-event-'))

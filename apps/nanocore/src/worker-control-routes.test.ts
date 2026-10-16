@@ -10,7 +10,6 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient } from '../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from './app.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -64,12 +63,16 @@ import {
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { coreDbPath, LOCAL_USER_ID } from './storage/fs-layout.js';
+import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -110,14 +113,19 @@ function createWorkerControlRouteFixture(workspaceRoots: MaterializedWorkspaceRo
   token: string;
 } {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Control worker over HTTP', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Control worker over HTTP',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'as_control_route_1',
+      agentSessionId: 'as_00000000-0000-7362-8030-32a876185467',
       triggerActor: { kind: 'user', id: LOCAL_USER_ID },
       backend: {
         kind: 'openshell',
@@ -159,12 +167,12 @@ function createWorkerControlRouteFixture(workspaceRoots: MaterializedWorkspaceRo
     environmentPackage,
     gateway,
     lineage: {
-      agentSessionId: 'as_control_route_1',
+      agentSessionId: 'as_00000000-0000-7362-8030-32a876185467',
       packageSnapshotId: environmentPackage.snapshotId,
       requestId: 'req_control_route_1',
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
     store,
     token: registration.token,
@@ -414,7 +422,11 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-heartbeat-gap-')));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: LOCAL_USER_ID,
+    });
     const binding = createDurableWorkerControlLease(
       coreDb,
       fixture.environmentPackage,
@@ -705,7 +717,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const binding = createDurableWorkerControlLease(
@@ -832,16 +844,24 @@ describe('worker control routes', () => {
   it('keeps event append sequence conflicts durable across default gateway instances', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-sequence-')));
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Durable sequence thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Durable sequence thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Control worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_durable_sequence',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
@@ -866,7 +886,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
 
@@ -951,16 +971,24 @@ describe('worker control routes', () => {
   it('persists accepted worker-control records through the default gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-records-')));
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Durable control records thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Durable control records thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Control worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_durable_records',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
@@ -985,7 +1013,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
 
@@ -1078,7 +1106,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const gateway = new WorkerControlGateway({
@@ -1187,16 +1215,24 @@ describe('worker control routes', () => {
   it('records rejected worker-control evidence through the default gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rejected-')));
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Rejected control records thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Rejected control records thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Control worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_rejected_records',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
@@ -1221,7 +1257,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
 
@@ -1249,7 +1285,7 @@ describe('worker control routes', () => {
           record: {
             event: { data: { delta: 'hello', itemId: 'candidate_item_1' }, type: 'item.delta' },
             kind: 'event',
-            lineage: { ...lineage, threadId: 'th_other' },
+            lineage: { ...lineage, threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2' },
             schemaVersion: 1,
             sequence: 1,
           },
@@ -1300,16 +1336,24 @@ describe('worker control routes', () => {
   it('enforces durable scheduler binding refs through the default gateway factory', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-default-')));
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Default binding thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Default binding thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Control worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_default_binding',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
@@ -1331,11 +1375,15 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: LOCAL_USER_ID,
+    });
     const gateway = createDefaultWorkerControlGateway(coreDb);
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       profileRef: environmentPackage.agent.profileId,
       queueEntryId: 'queue_default_binding',
       requestedAgentId: environmentPackage.agent.agentId,
@@ -1535,7 +1583,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const gateway = createDefaultWorkerControlGateway(coreDb);
@@ -1568,7 +1616,11 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: LOCAL_USER_ID,
+    });
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:database_failure',
@@ -1697,16 +1749,24 @@ describe('worker control routes', () => {
   it('rolls back final status atomically before a successful restart retry', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-final-')));
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Final status thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Complete worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Final status thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Complete worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_final_status',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
@@ -1728,7 +1788,11 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: LOCAL_USER_ID,
+    });
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
     applyScopedMigrations(workspaceDb);
@@ -1743,7 +1807,7 @@ describe('worker control routes', () => {
         createdAt: '2026-06-16T00:00:01.000Z',
         id: 'wmr_final_status',
         inputSnapshotId: 'wis_final_status',
-        materializedRootRef: 'workspace://ws_demo/repo_default',
+        materializedRootRef: 'workspace://ws_00000000-0000-7000-8000-000000000001/repo_default',
         packageSnapshotId: lineage.packageSnapshotId,
         policyDigest: 'sha256:policy',
         readinessEvidence: [{ kind: 'backend.ready', ref: 'version:0.0.63' }],
@@ -1755,7 +1819,7 @@ describe('worker control routes', () => {
     ]);
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       profileRef: environmentPackage.agent.profileId,
       queueEntryId: 'queue_final_status',
       requestId: lineage.requestId,
@@ -2037,7 +2101,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const binding = createDurableWorkerControlLease(
@@ -2117,7 +2181,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const binding = createDurableWorkerControlLease(
@@ -2232,7 +2296,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const binding = createDurableWorkerControlLease(
@@ -2422,7 +2486,7 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const binding = createDurableWorkerControlLease(
@@ -2578,16 +2642,24 @@ describe('worker control routes', () => {
   it('retains accepted supply refresh acknowledgement evidence in Core', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-supply-refresh-ack-')));
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Supply refresh thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Supply refresh thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Control worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_supply_refresh',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
@@ -2612,13 +2684,13 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const gateway = createDefaultWorkerControlGateway(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         profileRef: environmentPackage.agent.profileId,
         queueEntryId: 'queue_supply_refresh',
         requestedAgentId: environmentPackage.agent.agentId,
@@ -2845,16 +2917,24 @@ describe('worker control routes', () => {
   it('rebuilds live worker-control sessions from durable gateway rows', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-')));
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Rebuild worker session');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Rebuild worker session'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Control worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'session_rebuild',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
@@ -2879,13 +2959,13 @@ describe('worker control routes', () => {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         profileRef: environmentPackage.agent.profileId,
         queueEntryId: 'queue_rebuild',
         requestId: lineage.requestId,

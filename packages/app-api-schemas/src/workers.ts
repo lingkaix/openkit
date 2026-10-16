@@ -1,4 +1,10 @@
-import { AgentSessionStatusSchema, TimestampSchema } from '@openkit/protocol';
+import {
+  AgentSessionStatusSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Last recorded current AgentSession status; terminal states are not Worker rows. */
@@ -23,13 +29,13 @@ export const WorkspaceWorkerWorkSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('task'),
-      turnId: z.string().min(1),
+      turnId: TurnIdSchema,
     })
     .strict(),
   z
     .object({
       kind: z.literal('goal'),
-      turnId: z.string().min(1),
+      turnId: TurnIdSchema,
       goalId: z.string().min(1),
       taskId: z.string().min(1),
     })
@@ -104,7 +110,7 @@ export const WorkspaceWorkerLastUsedModelSchema = z.discriminatedUnion('kind', [
 /** One current Worker row keyed by Thread. */
 export const WorkspaceWorkerSchema = z
   .object({
-    threadId: z.string().min(1),
+    threadId: ThreadIdSchema,
     threadTitle: z.string().min(1),
     agentId: z.string().min(1),
     agentName: z.string().min(1),
@@ -121,7 +127,7 @@ export const WorkspaceWorkerSchema = z
 /** Selected-Workspace current Worker inventory. */
 export const WorkspaceWorkersResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     items: z.array(WorkspaceWorkerSchema),
   })
   .strict();

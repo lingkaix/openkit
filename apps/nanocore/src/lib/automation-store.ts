@@ -1,7 +1,6 @@
+import { allocateEntityId } from '@openkit/protocol';
 /** Native record absence, distinguished from unexpected storage failures. */
 export class AutomationRecordNotFoundError extends Error {}
-
-import { randomUUID } from 'node:crypto';
 
 import type {
   AutomationRecord,
@@ -81,7 +80,7 @@ export class AutomationStore {
   public createAutomation(userId: string, input: CreateAutomationRequest): AutomationRecord {
     const timestamp = new Date().toISOString();
     const automation: AutomationRecord = {
-      id: `auto_${randomUUID()}`,
+      id: allocateEntityId('auto'),
       ...input,
       status: 'paused',
       createdAt: timestamp,

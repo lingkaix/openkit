@@ -120,14 +120,17 @@ function fixture(withOtherWorkspace = false) {
     return path;
   };
   write(
-    'workspaces/ws_demo/workspace.jsonc',
+    'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc',
     JSON.stringify({ workspace: { name: 'Team', roots: [] } })
   );
   const manager = createRuntimeConfigManager({ initialSnapshot: loadRuntimeConfig(dataRoot) });
   const files = new RuntimeConfigFileService({
     dataRoot,
-    workspaceIds: ['ws_demo', ...(otherWorkspaceId ? [otherWorkspaceId] : [])],
-    userId: 'user_local',
+    workspaceIds: [
+      'ws_00000000-0000-7000-8000-000000000001',
+      ...(otherWorkspaceId ? [otherWorkspaceId] : []),
+    ],
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
@@ -246,7 +249,10 @@ describe('configuration-stage work-slot source refusal', () => {
     ['update', 'catalog-first'],
   ] as const)('accepts shared Git/folder docs on both %s writes in %s order', (mode, order) => {
     const f = fixture(true);
-    f.write('workspaces/ws_demo/data-sources.jsonc', catalog('git', 'docs'));
+    f.write(
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+      catalog('git', 'docs')
+    );
     const agentId = 'agents/team.agent.jsonc';
     const catalogId = `workspaces/${f.otherWorkspaceId}/data-sources.jsonc`;
     if (mode === 'update') {
@@ -282,7 +288,10 @@ describe('configuration-stage work-slot source refusal', () => {
     ['update', 'data-source'],
   ] as const)('refuses only-folder docs before the %s %s write changes bytes', (mode, kind) => {
     const f = fixture(true);
-    f.write('workspaces/ws_demo/data-sources.jsonc', catalog('workspace-dir', 'docs'));
+    f.write(
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+      catalog('workspace-dir', 'docs')
+    );
     const agentId = 'agents/team.agent.jsonc';
     const catalogId = `workspaces/${f.otherWorkspaceId}/data-sources.jsonc`;
     const selected = agent([{ id: 'docs', sourceRef: 'docs', access: 'read-write' }]);
@@ -322,7 +331,10 @@ describe('configuration-stage work-slot source refusal', () => {
     ['update', 'sourceRef'],
   ] as const)('accepts an unrelated Agent %s while an authored %s selection still refuses its own write', (mode, shape) => {
     const f = fixture();
-    f.write('workspaces/ws_demo/data-sources.jsonc', catalog('workspace-dir'));
+    f.write(
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+      catalog('workspace-dir')
+    );
     const unsupportedId = 'agents/team.agent.jsonc';
     const unsupported = agent(
       shape === 'sourceRef'
@@ -371,7 +383,10 @@ describe('configuration-stage work-slot source refusal', () => {
     'update',
   ] as const)('refuses a non-Git Agent input before %s stores bytes', (mode) => {
     const f = fixture();
-    f.write('workspaces/ws_demo/data-sources.jsonc', catalog('workspace-dir'));
+    f.write(
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+      catalog('workspace-dir')
+    );
     const id = 'agents/team.agent.jsonc';
     const previous = agent([]);
     const path = mode === 'update' ? f.write(id, previous) : join(f.dataRoot, 'config', id);
@@ -399,8 +414,11 @@ describe('configuration-stage work-slot source refusal', () => {
     'update',
   ] as const)('refuses a configured folder root before %s stores bytes', (mode) => {
     const f = fixture();
-    const id = 'workspaces/ws_demo/workspace.jsonc';
-    const path = join(f.dataRoot, 'workspaces/ws_demo/config/workspace.jsonc');
+    const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
+    const path = join(
+      f.dataRoot,
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
+    );
     const previous = readFileSync(path, 'utf8');
     const revision = f.files.readFile(id).file.revision;
     if (mode === 'create') rmSync(path);
@@ -430,7 +448,7 @@ describe('configuration-stage work-slot source refusal', () => {
 
   it('keeps unselected non-Git catalog registration valid but refuses changing a selected Git source to a folder', () => {
     const f = fixture();
-    const id = 'workspaces/ws_demo/data-sources.jsonc';
+    const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
     const created = f.files.createFile({
       id,
       kind: 'data-source',
@@ -462,7 +480,7 @@ describe('configuration-stage work-slot source refusal', () => {
     f.write('agents/team.agent.jsonc', agent(selection));
     expect(() =>
       f.files.createFile({
-        id: 'workspaces/ws_demo/data-sources.jsonc',
+        id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
         kind: 'data-source',
         content: catalog('workspace-dir'),
       })
@@ -473,19 +491,27 @@ describe('configuration-stage work-slot source refusal', () => {
         status: 409,
       })
     );
-    expect(existsSync(join(f.dataRoot, 'workspaces/ws_demo/config/data-sources.jsonc'))).toBe(
-      false
-    );
+    expect(
+      existsSync(
+        join(
+          f.dataRoot,
+          'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc'
+        )
+      )
+    ).toBe(false);
   });
 
   it('still loads authored folder selections and roots without rewriting their bytes', () => {
     const f = fixture();
     const source = catalog('workspace-dir');
-    const sourcePath = f.write('workspaces/ws_demo/data-sources.jsonc', source);
+    const sourcePath = f.write(
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+      source
+    );
     const content = agent(selection);
     const agentPath = f.write('agents/team.agent.jsonc', content);
     f.write(
-      'workspaces/ws_demo/workspace.jsonc',
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc',
       JSON.stringify({
         workspace: {
           name: 'Team',
@@ -509,7 +535,10 @@ describe('configuration-stage work-slot source refusal', () => {
     'runtime.file-update',
   ])('projects the exact refusal through %s', async (operation) => {
     const f = fixture();
-    f.write('workspaces/ws_demo/data-sources.jsonc', catalog('workspace-dir'));
+    f.write(
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+      catalog('workspace-dir')
+    );
     const id = 'agents/team.agent.jsonc';
     if (operation === 'runtime.file-update') f.write(id, agent([]));
     const app = createAppWithWorkspaceAuthority({ dataRoot: f.dataRoot, store: f.store });
@@ -533,7 +562,10 @@ describe('configuration-stage work-slot source refusal', () => {
 
   it('accepts selected Git with additive input metadata', () => {
     const f = fixture();
-    f.write('workspaces/ws_demo/data-sources.jsonc', catalog('git'));
+    f.write(
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+      catalog('git')
+    );
     const content = agent([{ ...selection[0], kind: 'directory' }]);
     const created = f.files.createFile({ id: 'agents/team.agent.jsonc', kind: 'agent', content });
     expect(created.file.exists).toBe(true);

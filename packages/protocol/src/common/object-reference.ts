@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { entityIdPattern } from './entity-id.js';
 import { isThreadId, isTurnId, isUserId, isWorkspaceId } from './ids.js';
 
 /** Logical collection identified by the fixed local reference grammar. */
@@ -57,9 +58,7 @@ export const PageReferenceSchema = ScopeQualifiedReferenceSchema.extend({
 });
 
 /** Existing server-generated retrieval-trace id, independent of its owning collection. */
-export const RetrievalTraceIdSchema = z
-  .string()
-  .regex(/^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+export const RetrievalTraceIdSchema = z.string().regex(entityIdPattern('krt'));
 
 /** Query-owned trace reference; a reference never grants access to its evidence. */
 export const RetrievalTraceReferenceSchema = ScopeQualifiedReferenceSchema.extend({

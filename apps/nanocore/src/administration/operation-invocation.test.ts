@@ -6,12 +6,12 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import * as invocation from '../operation-composition.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from '../runtime/nanohost-runtime-target.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   ADMINISTRATION_TOOL_NAMES,
   type AdministrationEnvironmentTools,
@@ -28,7 +28,7 @@ describe('real administration assembly through invocation', () => {
     const entered = vi.spyOn(invocation, 'createOperationInvocation');
     try {
       const issued = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
@@ -43,12 +43,12 @@ describe('real administration assembly through invocation', () => {
         kind: 'token' as const,
         tokenScope: 'server-admin' as const,
         tokenId: issued.record.tokenId,
-        userId: 'user_local',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
       };
       const lineage = {
-        workspaceId: 'ws_private_administration',
-        threadId: 'th_private_administration',
-        turnId: 'turn_private_administration',
+        workspaceId: 'ws_00000000-0000-70bc-b43b-6f2fd3815bfd',
+        threadId: 'th_00000000-0000-7764-bf98-8c8f63c68605',
+        turnId: 'tu_00000000-0000-798e-b4ef-6a6d0f668d1c',
       };
       const unaffected = ADMINISTRATION_TOOL_NAMES.slice(0, 7).map(
         (name): AgentTool => ({

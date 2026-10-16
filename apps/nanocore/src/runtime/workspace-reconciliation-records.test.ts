@@ -17,7 +17,7 @@ const timestamp = '2026-07-08T00:00:00.000Z';
 describe('workspace reconciliation records', () => {
   it('preserves retained annotations and unchanged bytes through updates, recovery and reopening', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-reconciliation-extensions-'));
-    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(db);
       const original = recordWorkspaceReconciliationRecord(db, {
@@ -40,10 +40,10 @@ describe('workspace reconciliation records', () => {
         .prepare('UPDATE workspace_reconciliation_records SET payload_json = ?')
         .run(payload);
       db.sqlite.close();
-      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(
         ListWorkspaceReconciliationRecordsResponseSchema.parse({
-          items: listWorkspaceReconciliationRecords(db, 'ws_demo'),
+          items: listWorkspaceReconciliationRecords(db, 'ws_00000000-0000-7000-8000-000000000001'),
         })
       ).toEqual({ items: [original] });
       recordWorkspaceReconciliationRecord(db, original);
@@ -64,14 +64,14 @@ describe('workspace reconciliation records', () => {
       });
       const recovered = resolveWorkspaceReconciliationRecord({
         workspaceDb: db,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reconciliationRecordId: original.id,
         decision: 'resume_collection',
         decidedAt: '2026-07-08T00:10:00.000Z',
         workerOutputManifests: [
           {
             id: 'wom_new',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             materializationRecordId: 'wmr_1',
             inputSnapshotId: 'wis_1',
             workerSessionId: 'session_1',
@@ -91,8 +91,10 @@ describe('workspace reconciliation records', () => {
       expect(recovered.backendReachability.status).toBe('unknown');
       expect(JSON.stringify(recovered)).not.toContain('futureAnnotation');
       db.sqlite.close();
-      db = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(listWorkspaceReconciliationRecords(db, 'ws_demo')).toEqual([recovered]);
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      expect(
+        listWorkspaceReconciliationRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([recovered]);
       const row = db.sqlite
         .prepare('SELECT payload_json FROM workspace_reconciliation_records')
         .get() as { payload_json: string };
@@ -110,7 +112,9 @@ describe('workspace reconciliation records', () => {
         db.sqlite
           .prepare('UPDATE workspace_reconciliation_records SET payload_json = ?')
           .run(JSON.stringify({ ...extended, ...change }));
-        expect(() => listWorkspaceReconciliationRecords(db, 'ws_demo')).toThrow();
+        expect(() =>
+          listWorkspaceReconciliationRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
+        ).toThrow();
         expect(() => recordWorkspaceReconciliationRecord(db, original)).toThrow();
       }
     } finally {
@@ -121,7 +125,7 @@ describe('workspace reconciliation records', () => {
 
   it('records durable reconciliation state transitions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -133,10 +137,12 @@ describe('workspace reconciliation records', () => {
         finishedAt: timestamp,
       });
 
-      expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toMatchObject([
+      expect(
+        listWorkspaceReconciliationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toMatchObject([
         {
           id: 'wrr_1',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           triggerReason: 'restart',
           affectedRecordIds: ['wmr_1', 'bwh_1'],
           backendReachability: { status: 'unavailable', checkedAt: timestamp, detail: null },
@@ -155,7 +161,7 @@ describe('workspace reconciliation records', () => {
 
   it('maps human recovery decisions to terminal state and backend teardown decisions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-decision-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const decidedAt = '2026-07-08T00:05:00.000Z';
 
     try {
@@ -183,7 +189,7 @@ describe('workspace reconciliation records', () => {
           decision: 'stage_verified',
           reconciliationRecordId: 'wrr_stage_verified',
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject({
         finishedAt: decidedAt,
@@ -198,7 +204,7 @@ describe('workspace reconciliation records', () => {
           decision: 'quarantine',
           reconciliationRecordId: 'wrr_quarantine',
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject({
         finishedAt: decidedAt,
@@ -213,7 +219,7 @@ describe('workspace reconciliation records', () => {
           decision: 'abandon',
           reconciliationRecordId: 'wrr_abandon',
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject({
         finishedAt: decidedAt,
@@ -229,7 +235,7 @@ describe('workspace reconciliation records', () => {
 
   it('resumes recovery collection from durable output manifests and retained evidence ids', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-resume-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const decidedAt = '2026-07-08T00:10:00.000Z';
 
     try {
@@ -249,14 +255,14 @@ describe('workspace reconciliation records', () => {
           decision: 'resume_collection',
           reconciliationRecordId: 'wrr_resume',
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           workerOutputManifests: [
             {
-              artifactIds: ['ar_resume'],
+              artifactIds: ['ar_00000000-0000-7a55-a9de-2210835b8c8a'],
               backendKind: 'openshell',
               changedPaths: [{ binary: false, path: 'README.md', status: 'modified' }],
               collectedAt: timestamp,
-              evidenceRefs: [{ kind: 'worker', ref: 'turn_resume' }],
+              evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-7cd5-99a8-a01fc47c5224' }],
               id: 'wom_resume',
               ignoredOutputs: [],
               inputSnapshotId: 'wis_1',
@@ -265,7 +271,7 @@ describe('workspace reconciliation records', () => {
               strategy: 'git',
               testOutputRefs: [],
               workerSessionId: 'session_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             },
           ],
         })
@@ -290,7 +296,7 @@ describe('workspace reconciliation records', () => {
 
   it('rejects resume collection when no durable output manifest matches the recovery record', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-resume-empty-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -306,7 +312,7 @@ describe('workspace reconciliation records', () => {
           decision: 'resume_collection',
           reconciliationRecordId: 'wrr_resume_empty',
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           workerOutputManifests: [],
         })
       ).toThrow('Workspace recovery collection has no durable output manifest');
@@ -320,7 +326,7 @@ describe('workspace reconciliation records', () => {
 function workspaceReconciliationRecord() {
   return {
     id: 'wrr_1',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     triggerReason: 'restart',
     affectedRecordIds: ['wmr_1', 'bwh_1'],
     backendHandleSummary: {

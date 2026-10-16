@@ -53,7 +53,7 @@ function authoritySnapshot(workspaceDb: WorkspaceDb): unknown {
 
 describe('Artifact Review authority', () => {
   it('owns deterministic immutable Review history by exact Artifact version', () => {
-    const workspaceDb = openTestWorkspaceDb('ws_review_history');
+    const workspaceDb = openTestWorkspaceDb('ws_00000000-0000-7716-b700-bc790c21df4a');
 
     try {
       const second = createArtifactReview(workspaceDb, {
@@ -61,7 +61,7 @@ describe('Artifact Review authority', () => {
         artifactVersion: 2,
         contentDigest: contentDigest('version two'),
         sourceThreadId: 'thread_demo',
-        sourceTurnId: 'turn_two',
+        sourceTurnId: 'tu_00000000-0000-7b57-ac3a-3174f55981a0',
         sourceAgentId: 'agent_demo',
         materialProposal: null,
         createdAt: '2026-07-19T00:00:02.000Z',
@@ -71,19 +71,19 @@ describe('Artifact Review authority', () => {
         artifactVersion: 1,
         contentDigest: contentDigest('version one'),
         sourceThreadId: 'thread_demo',
-        sourceTurnId: 'turn_one',
+        sourceTurnId: 'tu_00000000-0000-720b-b7e3-329cde0924fd',
         sourceAgentId: 'agent_demo',
         materialProposal: null,
         createdAt: '2026-07-19T00:00:01.000Z',
       };
       const first = createArtifactReview(workspaceDb, firstInput);
       const expectedReviewId = `arev_${createHash('sha256')
-        .update(JSON.stringify(['ws_review_history', 'artifact_demo', 1]))
+        .update(JSON.stringify(['ws_00000000-0000-7716-b700-bc790c21df4a', 'artifact_demo', 1]))
         .digest('hex')
         .slice(0, 24)}`;
 
       expect(first).toEqual({
-        workspaceId: 'ws_review_history',
+        workspaceId: 'ws_00000000-0000-7716-b700-bc790c21df4a',
         reviewId: expectedReviewId,
         ...firstInput,
         decision: null,
@@ -113,7 +113,7 @@ describe('Artifact Review authority', () => {
   });
 
   it('enforces first-writer decisions, exact replay, and reserved follow-up identity', () => {
-    const workspaceDb = openTestWorkspaceDb('ws_review_decisions');
+    const workspaceDb = openTestWorkspaceDb('ws_00000000-0000-73bd-8075-86252d2e4777');
 
     try {
       const acceptedContent = 'accept this output';
@@ -122,13 +122,13 @@ describe('Artifact Review authority', () => {
         artifactVersion: 1,
         contentDigest: contentDigest(acceptedContent),
         sourceThreadId: 'thread_decision',
-        sourceTurnId: 'turn_decision',
+        sourceTurnId: 'tu_00000000-0000-7556-8814-c40997decfe7',
         sourceAgentId: 'agent_decision',
         materialProposal: null,
         createdAt: '2026-07-19T01:00:00.000Z',
       });
       const acceptedInput = {
-        actorId: 'user_local',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
         artifactContent: acceptedContent,
         artifactId: accepted.artifactId,
         artifactMediaType: 'text/plain' as const,
@@ -177,13 +177,13 @@ describe('Artifact Review authority', () => {
         artifactVersion: 2,
         contentDigest: contentDigest(redoContent),
         sourceThreadId: 'thread_decision',
-        sourceTurnId: 'turn_decision',
+        sourceTurnId: 'tu_00000000-0000-7556-8814-c40997decfe7',
         sourceAgentId: 'agent_decision',
         materialProposal: null,
         createdAt: '2026-07-19T01:00:02.000Z',
       });
       const redoInput = {
-        actorId: 'user_local',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
         artifactContent: redoContent,
         artifactId: redo.artifactId,
         artifactMediaType: 'text/plain' as const,
@@ -209,7 +209,7 @@ describe('Artifact Review authority', () => {
         artifactVersion: 3,
         contentDigest: contentDigest(unresolvedContent),
         sourceThreadId: 'thread_decision',
-        sourceTurnId: 'turn_decision',
+        sourceTurnId: 'tu_00000000-0000-7556-8814-c40997decfe7',
         sourceAgentId: 'agent_decision',
         materialProposal: null,
         createdAt: '2026-07-19T01:00:04.000Z',
@@ -217,7 +217,7 @@ describe('Artifact Review authority', () => {
       const beforeCorruption = authoritySnapshot(workspaceDb);
       expect(() =>
         decideArtifactReview(workspaceDb, {
-          actorId: 'user_local',
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
           artifactContent: 'wrong bytes',
           artifactId: 'artifact_decision',
           artifactMediaType: 'text/plain',
@@ -235,12 +235,12 @@ describe('Artifact Review authority', () => {
   });
 
   it('atomically applies an accepted proposal and preserves conflict state', () => {
-    const workspaceDb = openTestWorkspaceDb('ws_review_apply');
+    const workspaceDb = openTestWorkspaceDb('ws_00000000-0000-7f79-97b4-ff613d9974e0');
 
     try {
       const material = createWorkspaceMaterial(workspaceDb, {
         acceptedAt: '2026-07-19T02:00:00.000Z',
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         kind: 'markdown',
         requestId: 'request_create_material',
         sensitivity: 'internal',
@@ -249,7 +249,7 @@ describe('Artifact Review authority', () => {
       const baseContent = '# Base\n';
       const base = saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: '2026-07-19T02:00:01.000Z',
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         content: baseContent,
         contentDigest: contentDigest(baseContent),
         expectedRevisionId: null,
@@ -284,7 +284,7 @@ describe('Artifact Review authority', () => {
         artifactVersion: 1,
         contentDigest: contentDigest(proposalContent),
         sourceThreadId: 'thread_included',
-        sourceTurnId: 'turn_worker',
+        sourceTurnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
         sourceAgentId: 'agent_worker',
         materialProposal: {
           materialId: material.materialId,
@@ -308,7 +308,7 @@ describe('Artifact Review authority', () => {
       workspaceDb.sqlite
         .prepare(`UPDATE workspace_material_revisions SET content = 'corrupt base'
           WHERE workspace_id = ? AND material_id = ? AND revision_id = ?`)
-        .run('ws_review_apply', material.materialId, base.revisionId);
+        .run('ws_00000000-0000-7f79-97b4-ff613d9974e0', material.materialId, base.revisionId);
       const corruptBase = authoritySnapshot(workspaceDb);
       expect(() => decideArtifactReview(workspaceDb, decideInput)).toThrowError(
         expect.objectContaining({ code: 'recovery_required' })
@@ -317,7 +317,12 @@ describe('Artifact Review authority', () => {
       workspaceDb.sqlite
         .prepare(`UPDATE workspace_material_revisions SET content = ?
           WHERE workspace_id = ? AND material_id = ? AND revision_id = ?`)
-        .run(baseContent, 'ws_review_apply', material.materialId, base.revisionId);
+        .run(
+          baseContent,
+          'ws_00000000-0000-7f79-97b4-ff613d9974e0',
+          material.materialId,
+          base.revisionId
+        );
 
       decideArtifactReview(workspaceDb, decideInput);
       const decided = getArtifactReview(workspaceDb, proposal.artifactId, proposal.artifactVersion);
@@ -333,7 +338,7 @@ describe('Artifact Review authority', () => {
           decided.appliedMaterialRevisionId ?? ''
         )
       ).toEqual({
-        workspaceId: 'ws_review_apply',
+        workspaceId: 'ws_00000000-0000-7f79-97b4-ff613d9974e0',
         materialId: material.materialId,
         revisionId: decided.appliedMaterialRevisionId,
         parentRevisionId: base.revisionId,
@@ -369,7 +374,7 @@ describe('Artifact Review authority', () => {
         artifactVersion: 1,
         contentDigest: contentDigest(conflictingContent),
         sourceThreadId: 'thread_included',
-        sourceTurnId: 'turn_worker_two',
+        sourceTurnId: 'tu_00000000-0000-7e70-80e3-e496fa0255e3',
         sourceAgentId: 'agent_worker',
         materialProposal: {
           materialId: material.materialId,
@@ -381,7 +386,7 @@ describe('Artifact Review authority', () => {
       const userContent = '# Newer user revision\n';
       saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: '2026-07-19T02:00:07.000Z',
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         content: userContent,
         contentDigest: contentDigest(userContent),
         expectedRevisionId: decided.appliedMaterialRevisionId,
@@ -420,7 +425,7 @@ describe('Artifact Review authority', () => {
         artifactVersion: 1,
         contentDigest: contentDigest(rollbackContent),
         sourceThreadId: 'thread_included',
-        sourceTurnId: 'turn_worker_three',
+        sourceTurnId: 'tu_00000000-0000-72db-a321-0e4588859c6f',
         sourceAgentId: 'agent_worker',
         materialProposal: {
           materialId: material.materialId,

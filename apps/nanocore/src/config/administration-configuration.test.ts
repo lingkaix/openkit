@@ -9,13 +9,14 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -40,14 +41,14 @@ function fixture() {
   ensureLocalUser(coreDb);
   const token = createOpenKitAccessTokenRecord(coreDb, {
     tokenId: `tok_${randomUUID()}`,
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const actor: Actor = {
     kind: 'token',
-    userId: 'user_local',
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     tokenId: token.tokenId,
     tokenScope: 'server-admin',
     tokenWorkspaceIds: [],
@@ -251,7 +252,11 @@ describe('administration catalog configuration', () => {
       { extensions: {} },
       { baseUrl: 'https://bad.invalid' },
       { models: [] },
-      { modelMetadata: { 'gpt-5': { secretRef: 'vault://not-editable' } } },
+      {
+        modelMetadata: {
+          'gpt-5': { secretRef: 'vault://vault_00000000-0000-7cca-ad90-c1173d3bc17d' },
+        },
+      },
       { modelMetadata: { missing: { tool_call: true } } },
     ]) {
       expect(() => f.service.propose({ ...f.request, changes }, f.home)).toThrow();
@@ -370,7 +375,7 @@ describe('administration catalog configuration', () => {
     });
     await expect(scoped.apply(f.confirm(proposal))).rejects.toThrow('administrator authority');
     const foreign = f.store.createThread(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'Project thread',
       'thread_foreign',
       'administration'

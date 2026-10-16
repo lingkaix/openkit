@@ -230,6 +230,7 @@ These kinds retain their owning derivations and use the same text form as any in
 | AuditEvent | `aud` | `c3d8713d-557b-5bf8-aa9c-a28bf50775d4` |
 | PermissionDecision | `pd` | `bcf1702a-4e6a-59c6-86ac-75352a8fc41d` |
 | Knowledge retrieval trace | `krt` | `32a06e66-912c-53a4-b9d2-85b0a9edfe0b` |
+| Workspace deletion recovery export, only the producer declared by [Workspace Deletion](../specs/20260715-multi_user_workspace_system.md#pre-cutover-deletion-projection) | `wsexp` | `d8e266d0-77a0-5e91-b599-de82740626ff` |
 
 Core MUST assign the IDs of Core-owned durable records according to their owning schema and accepted specification.
 

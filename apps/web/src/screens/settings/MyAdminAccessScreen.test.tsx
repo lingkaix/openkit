@@ -8,11 +8,11 @@ import { MyAdminAccessScreen } from './MyAdminAccessScreen';
 
 const TIMESTAMP = '2026-08-30T00:00:00.000Z';
 const TOKENS = {
-  defaultTokenId: 'tok_default',
+  defaultTokenId: 'tok_00000000-0000-7fcf-93d8-22b95fc6c2e6',
   items: [
     {
-      tokenId: 'tok_default',
-      ownerUserId: 'user_1',
+      tokenId: 'tok_00000000-0000-7fcf-93d8-22b95fc6c2e6',
+      ownerUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
       scope: 'server-admin' as const,
       workspaceIds: [],
       status: 'active' as const,
@@ -26,8 +26,8 @@ const TOKENS = {
       lastUsedSource: null,
     },
     {
-      tokenId: 'tok_other',
-      ownerUserId: 'user_1',
+      tokenId: 'tok_00000000-0000-7358-9dd3-3d116e8695d2',
+      ownerUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
       scope: 'server-admin' as const,
       workspaceIds: [],
       status: 'active' as const,
@@ -49,7 +49,7 @@ function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
       'token.my-admin-list': vi.fn().mockResolvedValue(TOKENS),
       'token.my-admin-default': vi.fn().mockResolvedValue({
         ...TOKENS,
-        defaultTokenId: 'tok_other',
+        defaultTokenId: 'tok_00000000-0000-7358-9dd3-3d116e8695d2',
       }),
       ...app,
     },
@@ -73,12 +73,14 @@ describe('My admin access', () => {
     const client = makeClient();
     renderScreen(client);
 
-    expect(await screen.findByText('tok_default')).toBeInTheDocument();
-    expect(screen.getByText('tok_other')).toBeInTheDocument();
-    await user.click(screen.getByRole('radio', { name: 'tok_other (active)' }));
+    expect(await screen.findByText('tok_00000000-0000-7fcf-93d8-22b95fc6c2e6')).toBeInTheDocument();
+    expect(screen.getByText('tok_00000000-0000-7358-9dd3-3d116e8695d2')).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('radio', { name: 'tok_00000000-0000-7358-9dd3-3d116e8695d2 (active)' })
+    );
     await waitFor(() =>
       expect(client.operations['token.my-admin-default']).toHaveBeenCalledWith({
-        tokenId: 'tok_other',
+        tokenId: 'tok_00000000-0000-7358-9dd3-3d116e8695d2',
       })
     );
   });
@@ -109,7 +111,7 @@ describe('My admin access', () => {
             ...TOKENS.items,
             {
               ...TOKENS.items[1],
-              tokenId: 'tok_revoked',
+              tokenId: 'tok_00000000-0000-72cc-b0c5-e119824039f4',
               status: 'revoked',
               revokedAt: TIMESTAMP,
             },
@@ -119,11 +121,15 @@ describe('My admin access', () => {
       })
     );
 
-    const revoked = await screen.findByRole('radio', { name: 'tok_revoked (revoked)' });
+    const revoked = await screen.findByRole('radio', {
+      name: 'tok_00000000-0000-72cc-b0c5-e119824039f4 (revoked)',
+    });
     expect(revoked).toBeEnabled();
     await user.click(revoked);
     await waitFor(() =>
-      expect(setMyAdminAccessTokenDefault).toHaveBeenCalledWith({ tokenId: 'tok_revoked' })
+      expect(setMyAdminAccessTokenDefault).toHaveBeenCalledWith({
+        tokenId: 'tok_00000000-0000-72cc-b0c5-e119824039f4',
+      })
     );
     expect(
       await screen.findByText("Couldn't change the default server-admin token.")

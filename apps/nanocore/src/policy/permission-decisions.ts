@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   type ActorRef,
   ActorRefSchema,
   type AuditEvent,
+  allocateEntityId,
   RequestIdSchema,
   TimestampSchema,
 } from '@openkit/protocol';
@@ -713,7 +713,7 @@ function permissionDecisionAuditEventId(
   }
 
   return input.ownerScope === 'workspace' || input.ownerScope === 'server'
-    ? `aud_${randomUUID()}`
+    ? allocateEntityId('aud')
     : null;
 }
 
@@ -845,7 +845,7 @@ function mapServerPermissionDecisionRow(
 export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionInput): void {
   recordProductPermissionDecision({
     coreDb: input.coreDb,
-    decisionId: `pd_${randomUUID()}`,
+    decisionId: allocateEntityId('pd'),
     ownerScope: 'server',
     policyEngineVersion: 'nanocore-gateway-policy:v1',
     policySnapshotId: 'runtime_config_gateway_policy',
@@ -868,7 +868,7 @@ export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionIn
 export function recordWorkerTurnLaunchDecision(input: RecordWorkerTurnLaunchDecisionInput): void {
   recordProductPermissionDecision({
     workspaceDb: input.workspaceDb,
-    decisionId: `pd_${randomUUID()}`,
+    decisionId: allocateEntityId('pd'),
     ownerScope: 'workspace',
     workspaceId: input.workspaceId,
     policyEngineVersion: 'nanocore-worker-policy:v1',

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
@@ -22,6 +22,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
 
@@ -68,12 +69,12 @@ function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> 
   workspaceDb.sqlite.close();
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: workspace.id,
   });
   createOpenKitAccessTokenRecord(coreDb, {
     expiresAt: '2099-01-01T00:00:00.000Z',
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     tokenId: 'token_admin_local',
     workspaceIds: [],
@@ -99,7 +100,7 @@ function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> 
     expectedRevision: created.revision,
     layout: LAYOUT,
     purpose: 'work',
-    responsibleUserId: 'user_local',
+    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     runtimeTargetId: 'target_1',
     storageRef: created.storageRef,
     threadId: thread.id,
@@ -142,7 +143,7 @@ function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> 
     ...effectOverride,
   };
   return {
-    actor: { kind: 'session', userId: 'user_local' },
+    actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
     binding,
     coreDb,
     operations: createWorkerEnvironmentOperations({ coreDb, runtimeEffects, store }),
@@ -218,7 +219,7 @@ describe('Worker environment operations', () => {
       queueEntryId: 'queued-storage-work',
       requestedAgentId: 'agent-codex',
       threadId: fixture.threadId,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turnId: 'turn-queued-storage-work',
       turnInput: 'Continue existing work.',
       workerStorageChoice: {
@@ -255,7 +256,7 @@ describe('Worker environment operations', () => {
       fixture.workspaceId,
       fixture.threadId,
       'Continue existing work.',
-      { kind: 'user', id: 'user_local' }
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     fixture.store.updateTurn(turn.id, { status: 'pending' });
     createSchedulerAdmissionEntry(fixture.coreDb, {
@@ -263,7 +264,7 @@ describe('Worker environment operations', () => {
       queueEntryId: 'queued-storage-work',
       requestedAgentId: 'agent-codex',
       threadId: fixture.threadId,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turnId: turn.id,
       turnInput: 'Continue existing work.',
       workerStorageChoice: {
@@ -348,10 +349,10 @@ describe('Worker environment operations', () => {
       'Other private conversation',
       'thread_private_other',
       'conversation',
-      { privateOwnerUserId: 'user_other', visibility: 'private' }
+      { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
     const foreign = fixture.store.createThread(
-      fixture.store.ensureQuickChatWorkspace('user_local').id,
+      fixture.store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001').id,
       'Private assistant'
     );
     const hidden = {
@@ -383,7 +384,7 @@ describe('Worker environment operations', () => {
       'Own private conversation',
       'thread_private_own',
       'conversation',
-      { privateOwnerUserId: 'user_local', visibility: 'private' }
+      { privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001', visibility: 'private' }
     );
 
     expect(
@@ -432,7 +433,7 @@ describe('Worker environment operations', () => {
       'Other private conversation',
       'thread_private_source',
       'conversation',
-      { privateOwnerUserId: 'user_other', visibility: 'private' }
+      { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
     fixture.coreDb.sqlite
       .prepare('UPDATE worker_storage_contributors SET thread_id = ? WHERE storage_ref = ?')
@@ -507,7 +508,7 @@ describe('Worker environment operations', () => {
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind, status
-        ) VALUES ('user_other', 'Other Admin', 'other@example.com', false, ?, ?, 'human', 'active')`
+        ) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other Admin', 'other@example.com', false, ?, ?, 'human', 'active')`
       )
       .run(now, now);
     fixture.coreDb.sqlite
@@ -515,12 +516,12 @@ describe('Worker environment operations', () => {
         `INSERT INTO workspace_members (
           workspace_id, user_id, status, access_level, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(fixture.workspaceId, NOW, NOW, NOW);
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'user_other',
+      ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       scope: 'server-admin',
       tokenId: 'token_admin_other',
       workspaceIds: [],
@@ -528,7 +529,10 @@ describe('Worker environment operations', () => {
 
     expect(
       fixture.operations.list(
-        { actor: { kind: 'session', userId: 'user_other' }, workspaceId: fixture.workspaceId },
+        {
+          actor: { kind: 'session', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+          workspaceId: fixture.workspaceId,
+        },
         { limit: 50 }
       )
     ).toEqual({ items: [], nextCursor: null });
@@ -840,7 +844,7 @@ describe('Worker environment operations', () => {
     fixture.coreDb.sqlite
       .prepare(
         `UPDATE worker_storage_contributors
-         SET responsible_user_id = 'user_other'
+         SET responsible_user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
          WHERE storage_ref = ?`
       )
       .run(fixture.binding.storageRef);

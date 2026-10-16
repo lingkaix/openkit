@@ -10,12 +10,12 @@ import {
   SaveWorkspaceMaterialRevisionResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -37,14 +37,17 @@ describe('Workspace Material app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const localThread = store.createThread('ws_demo', 'Authorized Material Thread');
+    const localThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Authorized Material Thread'
+    );
     const foreignWorkspace = store.createWorkspace('Foreign Material Workspace');
     const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Material Thread');
-    const localDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const localDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(localDb);
     const localMaterial = createWorkspaceMaterial(localDb, {
       acceptedAt: '2026-07-19T00:00:00.000Z',
-      actorId: 'user_local',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       kind: 'markdown',
       requestId: 'local-material-create',
       sensitivity: 'internal',
@@ -53,7 +56,7 @@ describe('Workspace Material app API', () => {
     const localContent = '# Authorized Material\n';
     saveWorkspaceMaterialRevision(localDb, {
       acceptedAt: '2026-07-19T00:00:01.000Z',
-      actorId: 'user_local',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       content: localContent,
       contentDigest: contentDigest(localContent),
       expectedRevisionId: null,
@@ -65,7 +68,7 @@ describe('Workspace Material app API', () => {
     applyScopedMigrations(foreignDb);
     const foreignMaterial = createWorkspaceMaterial(foreignDb, {
       acceptedAt: '2026-07-19T00:00:00.000Z',
-      actorId: 'user_local',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       kind: 'markdown',
       requestId: 'foreign-material-create',
       sensitivity: 'internal',
@@ -74,7 +77,7 @@ describe('Workspace Material app API', () => {
     const foreignContent = '# Foreign Material\n';
     const foreignRevision = saveWorkspaceMaterialRevision(foreignDb, {
       acceptedAt: '2026-07-19T00:00:01.000Z',
-      actorId: 'user_local',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       content: foreignContent,
       contentDigest: contentDigest(foreignContent),
       expectedRevisionId: null,
@@ -84,39 +87,39 @@ describe('Workspace Material app API', () => {
     foreignDb.sqlite.close();
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
       const stalePaths = [
         operationRequest('material.read', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           materialId: 'material_missing',
         }),
         operationRequest('material.read', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           materialId: foreignMaterial.materialId,
         }),
         operationRequest('material.revision-read', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           materialId: localMaterial.materialId,
           revisionId: 'revision_missing',
         }),
         operationRequest('material.revision-read', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           materialId: localMaterial.materialId,
           revisionId: foreignRevision.revisionId,
         }),
       ];
       const threadNotFoundPaths = [
         operationRequest('material.thread-read', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'thread_missing',
         }),
         operationRequest('material.thread-read', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: foreignThread.id,
         }),
       ];
@@ -161,7 +164,11 @@ describe('Workspace Material app API', () => {
         const response = await app.request(
           ...operationRequest(
             'material.bind',
-            { workspaceId: 'ws_demo', threadId: localThread.id, materialId: materialId },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: localThread.id,
+              materialId: materialId,
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -176,7 +183,7 @@ describe('Workspace Material app API', () => {
         });
       }
 
-      const inspectionDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const inspectionDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(inspectionDb);
       try {
         expect(
@@ -203,11 +210,14 @@ describe('Workspace Material app API', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Material route thread');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Material route thread'
+    );
     const app = createApp({ coreDb, dataRoot, store });
     const createRequest = {
       requestId: 'material-create-1',
@@ -220,7 +230,7 @@ describe('Workspace Material app API', () => {
       const createResponse = await app.request(
         ...operationRequest(
           'material.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -234,7 +244,7 @@ describe('Workspace Material app API', () => {
       const exactCreateReplay = await app.request(
         ...operationRequest(
           'material.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -250,7 +260,7 @@ describe('Workspace Material app API', () => {
       const conflictingCreate = await app.request(
         ...operationRequest(
           'material.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -273,7 +283,10 @@ describe('Workspace Material app API', () => {
       const firstSaveResponse = await app.request(
         ...operationRequest(
           'material.revision-save',
-          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -290,7 +303,11 @@ describe('Workspace Material app API', () => {
       const bindResponse = await app.request(
         ...operationRequest(
           'material.bind',
-          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -305,7 +322,7 @@ describe('Workspace Material app API', () => {
         outcome: 'bound',
       });
 
-      const bindReceiptDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const bindReceiptDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(bindReceiptDb);
       try {
         expect(
@@ -324,7 +341,11 @@ describe('Workspace Material app API', () => {
       const exactBindReplay = await app.request(
         ...operationRequest(
           'material.bind',
-          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -343,7 +364,11 @@ describe('Workspace Material app API', () => {
         const removedLiteralResponse = await app.request(
           ...operationRequest(
             'material.bind',
-            { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: thread.id,
+              materialId: created.materialId,
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -363,7 +388,7 @@ describe('Workspace Material app API', () => {
       const threadResponse = await app.request(
         ...operationRequest(
           'material.thread-read',
-          { workspaceId: 'ws_demo', threadId: thread.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
           {}
         )
       );
@@ -383,7 +408,10 @@ describe('Workspace Material app API', () => {
       const materialResponse = await app.request(
         ...operationRequest(
           'material.read',
-          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            materialId: created.materialId,
+          },
           {}
         )
       );
@@ -401,7 +429,10 @@ describe('Workspace Material app API', () => {
       const secondSaveResponse = await app.request(
         ...operationRequest(
           'material.revision-save',
-          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -423,7 +454,11 @@ describe('Workspace Material app API', () => {
       const excludeResponse = await app.request(
         ...operationRequest(
           'material.exclude',
-          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -441,7 +476,11 @@ describe('Workspace Material app API', () => {
       const unbindResponse = await app.request(
         ...operationRequest(
           'material.unbind',
-          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -457,7 +496,7 @@ describe('Workspace Material app API', () => {
       const unboundThreadResponse = await app.request(
         ...operationRequest(
           'material.thread-read',
-          { workspaceId: 'ws_demo', threadId: thread.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
           {}
         )
       );
@@ -469,7 +508,11 @@ describe('Workspace Material app API', () => {
       const rebindResponse = await app.request(
         ...operationRequest(
           'material.bind',
-          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -485,7 +528,7 @@ describe('Workspace Material app API', () => {
       const reboundThreadResponse = await app.request(
         ...operationRequest(
           'material.thread-read',
-          { workspaceId: 'ws_demo', threadId: thread.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
           {}
         )
       );
@@ -500,7 +543,7 @@ describe('Workspace Material app API', () => {
         },
       });
 
-      const receiptDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const receiptDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(receiptDb);
       try {
         const changeReceiptTarget = receiptDb.sqlite.prepare(`UPDATE idempotency_requests
@@ -511,7 +554,10 @@ describe('Workspace Material app API', () => {
         const corruptedReplay = await app.request(
           ...operationRequest(
             'material.revision-save',
-            { workspaceId: 'ws_demo', materialId: created.materialId },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              materialId: created.materialId,
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -531,7 +577,10 @@ describe('Workspace Material app API', () => {
       const historicalReplay = await app.request(
         ...operationRequest(
           'material.revision-save',
-          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -547,7 +596,10 @@ describe('Workspace Material app API', () => {
       const tamperedReplay = await app.request(
         ...operationRequest(
           'material.revision-save',
-          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -561,10 +613,10 @@ describe('Workspace Material app API', () => {
       });
 
       const corruptTraceTurn = store.createTurn(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         thread.id,
         'Create a corrupt trace candidate.',
-        { kind: 'user', id: 'user_local' }
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
       );
       store.updateTurn(corruptTraceTurn.id, {
         status: 'completed',
@@ -575,7 +627,7 @@ describe('Workspace Material app API', () => {
         join(
           dataRoot,
           'workspaces',
-          'ws_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
           'threads',
           thread.id,
           'turns',
@@ -588,20 +640,20 @@ describe('Workspace Material app API', () => {
       const corruptProjection = await app.request(
         ...operationRequest(
           'material.thread-read',
-          { workspaceId: 'ws_demo', threadId: thread.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
           {}
         )
       );
       expect(corruptProjection.status).toBe(409);
       await expect(corruptProjection.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
-      const ownerDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const ownerDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(ownerDb);
       try {
         expect(
           ownerDb.sqlite
             .prepare('DELETE FROM workspace_materials WHERE workspace_id = ? AND material_id = ?')
-            .run('ws_demo', created.materialId).changes
+            .run('ws_00000000-0000-7000-8000-000000000001', created.materialId).changes
         ).toBe(1);
       } finally {
         ownerDb.sqlite.close();
@@ -609,7 +661,11 @@ describe('Workspace Material app API', () => {
       const ownerlessBindingReplay = await app.request(
         ...operationRequest(
           'material.bind',
-          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            materialId: created.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

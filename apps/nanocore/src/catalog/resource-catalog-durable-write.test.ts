@@ -87,7 +87,7 @@ function snapshotFixture(kind: 'import' | 'portability', withCatalogAuthority = 
       catalog: EMPTY_RESOURCE_CATALOG,
       dataRoot,
       expectedRevision: 0,
-      workspaceId: 'ws_durable',
+      workspaceId: 'ws_00000000-0000-7ca8-a881-c3c5386365fe',
     });
   const input = {
     activate: true,

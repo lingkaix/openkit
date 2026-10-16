@@ -51,7 +51,7 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
     rationale: 'Exercise canonical Proposal loading.',
     confidence: 1,
     verifiedExternalReferences: [VERIFIED_EXTERNAL_REFERENCE],
-    producer: { kind: 'user', id: 'user_local' },
+    producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     createdAt: TIMESTAMP,
   });
 }
@@ -68,7 +68,7 @@ function createCanonicalRecordFixture() {
   const thread = store.createThread(workspace.id, 'Canonical record schema thread');
   const turn = store.createTurn(workspace.id, thread.id, 'Validate canonical record schemas', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
 
   return {
@@ -133,7 +133,7 @@ describe('workspace canonical record schemas', () => {
       decision: 'rejected',
       requestId: REVIEW_REQUEST_ID,
       verifiedExternalReferences: [VERIFIED_EXTERNAL_REFERENCE],
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       decidedAt: TIMESTAMP,
     });
     const path = join(workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`);
@@ -154,7 +154,7 @@ describe('workspace canonical record schemas', () => {
   ])('rejects a knowledge source with %s', (violation) => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
     const source = store.createKnowledgeSource({
-      id: 'ks_invalid_schema',
+      id: 'ks_00000000-0000-7f61-8145-5542ffc8eec0',
       workspaceId: workspace.id,
       kind: 'upload',
       title: 'Invalid source schema',
@@ -187,7 +187,7 @@ describe('workspace canonical record schemas', () => {
   ])('rejects an AgentSession missing required %s', (field) => {
     const { dataRoot, store, workspace, thread, workspaceRoot } = createCanonicalRecordFixture();
     const session = store.createAgentSession({
-      id: 'as_invalid_schema',
+      id: 'as_00000000-0000-78b0-aef0-27ad15cf38f1',
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -208,7 +208,7 @@ describe('workspace canonical record schemas', () => {
   it('stores only a scalar environment package snapshot reference in an AgentSession', () => {
     const { store, workspace, thread, workspaceRoot } = createCanonicalRecordFixture();
     const session = store.createAgentSession({
-      id: 'as_scalar_aep_reference',
+      id: 'as_00000000-0000-7262-a704-19543c73f9a3',
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,

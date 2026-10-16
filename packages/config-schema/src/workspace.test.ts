@@ -149,7 +149,10 @@ describe('workspace config schema', () => {
           {
             agentId: 'agent_codex',
             credentialBindings: [
-              { requirementId: 'github-token', vaultGrantId: 'grant_workspace_github' },
+              {
+                requirementId: 'github-token',
+                vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
+              },
             ],
             sandbox: {
               credentialDeclarations: [
@@ -168,7 +171,7 @@ describe('workspace config schema', () => {
     });
 
     expect(parsed.workspace.agents[0]?.credentialBindings).toEqual([
-      { requirementId: 'github-token', vaultGrantId: 'grant_workspace_github' },
+      { requirementId: 'github-token', vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e' },
     ]);
     expect(() =>
       WorkspaceConfigSchema.parse({
@@ -182,7 +185,7 @@ describe('workspace config schema', () => {
                   {
                     id: 'github_token',
                     targetEnvVarName: 'GITHUB_TOKEN',
-                    vaultGrantId: 'grant_workspace_github',
+                    vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
                     visibility: 'runtime-env',
                   },
                 ],

@@ -2,7 +2,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import {
@@ -34,6 +33,7 @@ import {
 import { openCoreDb } from './storage/db';
 import { applyMigrations } from './storage/migrate';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -45,7 +45,11 @@ function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   return coreDb;
 }
 
@@ -73,9 +77,9 @@ function createPreparedAttempt(coreDb: ReturnType<typeof createMigratedCoreDb>, 
   const suffix = attemptId.replace('lease_', '');
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     queueEntryId: `queue_${suffix}`,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: `thread_${suffix}`,
     turnId: `turn_${suffix}`,
     turnInput: `Run Native attempt ${suffix}`,
@@ -165,10 +169,10 @@ describe('scheduler records', () => {
         backendId: 'nanohost',
         queueEntryId: 'queue_admin_token',
         serverAdminTokenId: 'token_admin_1',
-        triggerActor: { kind: 'user' as const, id: 'user_admin' },
-        workspaceId: 'ws_1',
-        threadId: 'th_1',
-        turnId: 'turn_1',
+        triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+        turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
         turnInput: 'Run task',
         requestedAgentId: 'assistant',
       };
@@ -186,7 +190,7 @@ describe('scheduler records', () => {
     try {
       expect(listQueuedSchedulerAdmissionEntries(reopened)[0]).toMatchObject({
         serverAdminTokenId: 'token_admin_1',
-        triggerActor: { kind: 'user', id: 'user_admin' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
       });
       expect(
         reopened.sqlite
@@ -204,11 +208,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_automation',
-        workspaceId: 'ws_b',
+        workspaceId: 'ws_00000000-0000-7b97-bc3d-37f962735158',
         threadId: 'thread_b',
-        turnId: 'turn_b',
+        turnId: 'tu_00000000-0000-7549-99d3-d5b2ca742b12',
         turnInput: 'Run automation work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -217,10 +221,10 @@ describe('scheduler records', () => {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_goal_fresh',
-        triggerActor: { kind: 'user', id: 'user_local' },
-        workspaceId: 'ws_goal',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        workspaceId: 'ws_00000000-0000-7509-8702-098e8909b075',
         threadId: 'thread_goal',
-        turnId: 'turn_goal',
+        turnId: 'tu_00000000-0000-76a6-868e-53ea1748cac3',
         turnInput: 'Run fresh Goal work',
         requestedAgentId: 'agent_worker',
         workerStorageChoice: {
@@ -235,12 +239,12 @@ describe('scheduler records', () => {
         queueEntryId: 'queue_interactive',
         triggerActor: {
           kind: 'automation',
-          id: 'automation_interactive',
-          responsibleUserId: 'user_interactive',
+          id: 'auto_00000000-0000-7618-af97-ff26fae216d4',
+          responsibleUserId: 'usr_00000000-0000-7852-8b54-762f114b9c0a',
         },
-        workspaceId: 'ws_a',
+        workspaceId: 'ws_00000000-0000-7159-b04f-df2eaa9abaf0',
         threadId: 'thread_a',
-        turnId: 'turn_a',
+        turnId: 'tu_00000000-0000-786a-a85a-d068baf8c0f6',
         turnInput: 'Run interactive work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -261,18 +265,18 @@ describe('scheduler records', () => {
           kind: 'selected',
           purpose: 'work',
           reuseWorkSlotRef: 'wsl_predecessor',
-          storageRef: 'wst_selected',
+          storageRef: 'wst_00000000-0000-77ec-b7e9-3fa6a72e99a1',
           taskId: 'task_a',
         },
         now: () => '2026-07-05T00:00:03.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_maintenance',
-        workspaceId: 'ws_c',
+        workspaceId: 'ws_00000000-0000-7700-9168-e31a19301e5a',
         threadId: 'thread_c',
-        turnId: 'turn_c',
+        turnId: 'tu_00000000-0000-72e9-a456-3c7982319b03',
         turnInput: 'Run maintenance work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -293,8 +297,8 @@ describe('scheduler records', () => {
         )?.triggerActor
       ).toEqual({
         kind: 'automation',
-        id: 'automation_interactive',
-        responsibleUserId: 'user_interactive',
+        id: 'auto_00000000-0000-7618-af97-ff26fae216d4',
+        responsibleUserId: 'usr_00000000-0000-7852-8b54-762f114b9c0a',
       });
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).find(
@@ -325,7 +329,7 @@ describe('scheduler records', () => {
         kind: 'selected',
         purpose: 'work',
         reuseWorkSlotRef: 'wsl_predecessor',
-        storageRef: 'wst_selected',
+        storageRef: 'wst_00000000-0000-77ec-b7e9-3fa6a72e99a1',
         taskId: 'task_a',
       });
       expect(
@@ -344,11 +348,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_bad_storage_choice',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_bad_storage_choice',
-        turnId: 'turn_bad_storage_choice',
+        turnId: 'tu_00000000-0000-7eed-b6e4-588f037a258a',
         turnInput: 'Reject malformed storage choice',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -361,7 +365,7 @@ describe('scheduler records', () => {
            WHERE queue_entry_id = ?`
         )
         .run(
-          JSON.stringify({ kind: 'fresh', storageRef: 'wst_smuggled' }),
+          JSON.stringify({ kind: 'fresh', storageRef: 'wst_00000000-0000-74af-9710-256527cd7cc8' }),
           'queue_bad_storage_choice'
         );
 
@@ -379,11 +383,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_one',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         turnInput: 'Run first queued turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -393,11 +397,11 @@ describe('scheduler records', () => {
       expect(() =>
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_two',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'thread_demo',
-          turnId: 'turn_demo',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           turnInput: 'Run duplicate queued turn',
           requestedAgentId: 'agent_worker',
           profileRef: null,
@@ -415,11 +419,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_denied',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         turnInput: 'Run denied turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -446,10 +450,10 @@ describe('scheduler records', () => {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_retry_denied',
-        triggerActor: { kind: 'user', id: 'user_original_trigger' },
-        workspaceId: 'ws_demo',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7814-ae85-578d000c895b' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         turnInput: 'Run denied turn again',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -462,7 +466,7 @@ describe('scheduler records', () => {
 
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retry_denied',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(retried.status).toBe('queued');
@@ -472,12 +476,12 @@ describe('scheduler records', () => {
       ).toEqual(['queue_retry_denied']);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued'],
         })
       ).toEqual([
         expect.objectContaining({
-          triggerActor: { kind: 'user', id: 'user_original_trigger' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7814-ae85-578d000c895b' },
         }),
       ]);
     } finally {
@@ -492,10 +496,10 @@ describe('scheduler records', () => {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_cancel',
-        triggerActor: { kind: 'user', id: 'user_original_trigger' },
-        workspaceId: 'ws_demo',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7814-ae85-578d000c895b' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         turnInput: 'Cancel this turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -504,7 +508,7 @@ describe('scheduler records', () => {
 
       const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_cancel',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(cancelled.status).toBe('cancelled');
@@ -795,8 +799,8 @@ describe('scheduler records', () => {
         },
         lineage: {
           threadId: 'thread_cleanup_barrier',
-          turnId: 'turn_cleanup_barrier',
-          workspaceId: 'ws_demo',
+          turnId: 'tu_00000000-0000-7a75-957c-d739a7f0231f',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: 'lease-binding:lease_cleanup_barrier',
@@ -810,10 +814,10 @@ describe('scheduler records', () => {
         })
       ).toMatchObject({ state: 'pending', fenceRef: null });
       completeTerminalAttempt(coreDb, {
-        id: 'turn_cleanup_barrier',
+        id: 'tu_00000000-0000-7a75-957c-d739a7f0231f',
         status: 'failed',
         threadId: 'thread_cleanup_barrier',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
@@ -832,10 +836,10 @@ describe('scheduler records', () => {
         toState: 'physical-cleaned',
       });
       completeTerminalAttempt(coreDb, {
-        id: 'turn_cleanup_barrier',
+        id: 'tu_00000000-0000-7a75-957c-d739a7f0231f',
         status: 'failed',
         threadId: 'thread_cleanup_barrier',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
@@ -848,10 +852,10 @@ describe('scheduler records', () => {
         toState: 'cleaned',
       });
       completeTerminalAttempt(coreDb, {
-        id: 'turn_cleanup_barrier',
+        id: 'tu_00000000-0000-7a75-957c-d739a7f0231f',
         status: 'failed',
         threadId: 'thread_cleanup_barrier',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(
         await closeOwnedExecutionAttempt(coreDb, {
@@ -931,8 +935,8 @@ describe('scheduler records', () => {
         },
         lineage: {
           threadId: 'thread_cleanup_grace',
-          turnId: 'turn_cleanup_grace',
-          workspaceId: 'ws_demo',
+          turnId: 'tu_00000000-0000-703b-a3bb-48e8b60613c1',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: 'lease-binding:lease_cleanup_grace',
@@ -993,7 +997,7 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, `lease_${suffix}`);
       completeTerminalAttempt(coreDb, {
         id: `turn_${suffix}`,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: `thread_${suffix}`,
         status: turnStatus,
       });
@@ -1033,7 +1037,7 @@ describe('scheduler records', () => {
         try {
           completeTerminalAttempt(coreDb, {
             id: `turn_${suffix}`,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: `thread_${suffix}`,
             status: lateStatus,
           });
@@ -1051,7 +1055,7 @@ describe('scheduler records', () => {
           try {
             completeTerminalAttempt(reopened, {
               id: `turn_${suffix}`,
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId: `thread_${suffix}`,
               status: lateStatus,
             });
@@ -1074,8 +1078,8 @@ describe('scheduler records', () => {
     try {
       createPreparedAttempt(coreDb, 'lease_turn_running');
       completeTerminalAttempt(coreDb, {
-        id: 'turn_turn_running',
-        workspaceId: 'ws_demo',
+        id: 'tu_00000000-0000-7794-a3d2-887ee0833627',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_turn_running',
         status: 'running',
       });
@@ -1128,8 +1132,8 @@ describe('scheduler records', () => {
         },
         lineage: {
           threadId: 'thread_anchored_startup_timeout',
-          turnId: 'turn_anchored_startup_timeout',
-          workspaceId: 'ws_demo',
+          turnId: 'tu_00000000-0000-7730-88bf-78cb0dac803b',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: 'lease-binding:lease_anchored_startup_timeout',
@@ -1206,8 +1210,8 @@ describe('scheduler records', () => {
             agentSessionId: 'session_releasing',
             packageSnapshotId: 'pkg_demo',
             threadId: 'thread_releasing',
-            turnId: 'turn_releasing',
-            workspaceId: 'ws_demo',
+            turnId: 'tu_00000000-0000-7a18-a0e5-0ef6c875a475',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
@@ -1269,8 +1273,8 @@ describe('scheduler records', () => {
           agentSessionId: 'session_binding',
           packageSnapshotId: 'pkg_demo',
           threadId: 'thread_binding',
-          turnId: 'turn_binding',
-          workspaceId: 'ws_demo',
+          turnId: 'tu_00000000-0000-788e-b3e7-749c254f4604',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       });
 
@@ -1279,7 +1283,7 @@ describe('scheduler records', () => {
         observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_binding')
       ).toMatchObject({
         phase: 'open',
-        turn_id: 'turn_binding',
+        turn_id: 'tu_00000000-0000-788e-b3e7-749c254f4604',
         agent_session_id: 'session_binding',
         binding_ref: 'lease-binding:lease_binding',
       });
@@ -1300,8 +1304,8 @@ describe('scheduler records', () => {
             agentSessionId: 'session_binding_expired',
             packageSnapshotId: 'pkg_demo',
             threadId: 'thread_binding_expired',
-            turnId: 'turn_binding_expired',
-            workspaceId: 'ws_demo',
+            turnId: 'tu_00000000-0000-7662-8699-dd8cebc38999',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           now: () => '2026-07-05T02:01:00.000Z',
           sandboxBindingRef: 'lease-binding:lease_binding_expired',
@@ -1324,8 +1328,8 @@ describe('scheduler records', () => {
             agentSessionId: 'session_binding_startup_timeout',
             packageSnapshotId: 'pkg_demo',
             threadId: 'thread_binding_startup_timeout',
-            turnId: 'turn_binding_startup_timeout',
-            workspaceId: 'ws_demo',
+            turnId: 'tu_00000000-0000-71a3-9256-ec029ef41f8b',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           now: () => '2026-07-05T00:26:00.000Z',
           sandboxBindingRef: 'lease-binding:lease_binding_startup_timeout',
@@ -1354,8 +1358,8 @@ describe('scheduler records', () => {
             agentSessionId: 'session_binding_heartbeat_timeout',
             packageSnapshotId: 'pkg_demo',
             threadId: 'thread_binding_heartbeat_timeout',
-            turnId: 'turn_binding_heartbeat_timeout',
-            workspaceId: 'ws_demo',
+            turnId: 'tu_00000000-0000-7f4e-9564-12f08e323fc5',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           now: () => '2026-07-05T00:00:41.000Z',
           sandboxBindingRef: 'lease-binding:lease_binding_heartbeat_timeout',
@@ -1375,8 +1379,8 @@ describe('scheduler records', () => {
         agentSessionId: 'session_binding_rejected',
         packageSnapshotId: 'pkg_demo',
         threadId: 'thread_binding_rejected',
-        turnId: 'turn_binding_rejected',
-        workspaceId: 'ws_demo',
+        turnId: 'tu_00000000-0000-7445-b3de-d79b47b58a8f',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       };
 
       expect(
@@ -1415,12 +1419,12 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_thread_first',
         requestId: 'request_first',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_shared',
-        turnId: 'turn_thread_first',
+        turnId: 'tu_00000000-0000-757e-9d88-15b1ac0398a4',
         turnInput: 'Run first shared-thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -1431,17 +1435,17 @@ describe('scheduler records', () => {
       expect(first.queueEntryId).toBe('queue_thread_first');
       attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
         entry: first,
-        attemptId: 'attempt_thread_first',
+        attemptId: 'attempt_00000000-0000-7fb6-b1e2-8a89e0747cd8',
         preparationInput: { admission: first },
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_thread_second',
         requestId: 'request_second',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_shared',
-        turnId: 'turn_thread_second',
+        turnId: 'tu_00000000-0000-709c-85c3-72cc446f5309',
         turnInput: 'Run second shared-thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -1449,11 +1453,11 @@ describe('scheduler records', () => {
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_thread_other',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'thread_other',
-        turnId: 'turn_thread_other',
+        turnId: 'tu_00000000-0000-7fc4-83eb-15c8a537b2cd',
         turnInput: 'Run other thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -1464,7 +1468,7 @@ describe('scheduler records', () => {
       expect(second.queueEntryId).toBe('queue_thread_other');
       attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
         entry: second,
-        attemptId: 'attempt_thread_other',
+        attemptId: 'attempt_00000000-0000-7513-9184-4604f787d87e',
         preparationInput: { admission: second },
       });
       expect(

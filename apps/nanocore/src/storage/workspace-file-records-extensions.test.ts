@@ -40,11 +40,11 @@ describe('descriptive canonical history extensions', () => {
       sourceReferences: [`knowledge:source@sha256:${'b'.repeat(64)}`],
       rationale: 'Retained rationale',
       confidence: 1,
-      producer: { kind: 'user' as const, id: 'user_local' },
+      producer: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       createdAt: workspace.createdAt,
     };
     const source = {
-      id: 'ks_history',
+      id: 'ks_00000000-0000-7735-9de8-620b1f965365',
       workspaceId: workspace.id,
       kind: 'document' as const,
       title: 'History',
@@ -88,7 +88,7 @@ describe('descriptive canonical history extensions', () => {
         .digest('hex')}`,
       requestId: reviewRequestId,
       decision: 'deferred' as const,
-      actor: { kind: 'user' as const, id: 'user_local' },
+      actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       proposalDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       knowledgePageId: proposal.knowledgePageId,
       contentDigest: proposal.contentDigest,
@@ -129,23 +129,23 @@ describe('descriptive canonical history extensions', () => {
     const thread = store.createThread(workspace.id, 'History');
     const turn = store.createTurn(workspace.id, thread.id, 'Request', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.createItem({
-      id: 'it_history',
+      id: 'it_00000000-0000-7107-a6b6-12de9088d8ca',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
       createdAt: workspace.createdAt,
       type: 'user-message',
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       text: 'Request',
       status: 'completed',
       completedAt: workspace.createdAt,
     });
     const now = workspace.createdAt;
     store.createAgentSession({
-      id: 'as_history',
+      id: 'as_00000000-0000-74db-9692-cadae15b58fb',
       agentId: 'agent_history',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -153,7 +153,10 @@ describe('descriptive canonical history extensions', () => {
       message: null,
       createdAt: now,
       updatedAt: now,
-      retainedStorage: { storageRef: `wst_${'a'.repeat(32)}`, workSlotRef: 'work' },
+      retainedStorage: {
+        storageRef: 'wst_00000000-0000-7b39-9ec2-cb19893c9f63',
+        workSlotRef: 'work',
+      },
       sandboxSummary: { access: 'none', workspaceRootRefs: [], summary: null },
       workspaceRoots: [
         {
@@ -175,7 +178,7 @@ describe('descriptive canonical history extensions', () => {
     const body = 'Retained artifact.';
     const digest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
     store.createArtifact({
-      id: 'ar_history',
+      id: 'ar_00000000-0000-780c-b09d-92983bad1f5b',
       workspaceId: workspace.id,
       threadId: null,
       turnId: null,
@@ -192,7 +195,7 @@ describe('descriptive canonical history extensions', () => {
         sourceKind: 'direct-import',
         sourceId: 'import-history',
         sourceDigest: digest,
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: 'import-history',
         recordedAt: now,
       },
@@ -201,8 +204,19 @@ describe('descriptive canonical history extensions', () => {
     });
     const root = join(dataRoot, 'workspaces', workspace.id);
     const workspacePath = join(root, 'workspace-record.json');
-    const sessionPath = join(root, 'runtime', 'agent-sessions', 'as_history', 'session.json');
-    const artifactPath = join(root, 'artifacts', 'ar_history', 'artifact.json');
+    const sessionPath = join(
+      root,
+      'runtime',
+      'agent-sessions',
+      'as_00000000-0000-74db-9692-cadae15b58fb',
+      'session.json'
+    );
+    const artifactPath = join(
+      root,
+      'artifacts',
+      'ar_00000000-0000-780c-b09d-92983bad1f5b',
+      'artifact.json'
+    );
     const turnPath = join(root, 'threads', thread.id, 'turns', turn.id, 'turn.json');
     for (const [path, nesting] of [
       [workspacePath, []],
@@ -232,7 +246,10 @@ describe('descriptive canonical history extensions', () => {
         event: 'item.created',
         data: {
           type: 'item-created',
-          item: { ...item, actor: { kind: 'user', id: 'user_local' } },
+          item: {
+            ...item,
+            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          },
         },
       },
     ];

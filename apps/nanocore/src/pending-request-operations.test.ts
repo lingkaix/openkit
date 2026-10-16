@@ -2,8 +2,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -13,8 +11,10 @@ import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -31,14 +31,19 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
   const store = createDemoStore();
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const turn = store.createTurn('ws_demo', 'th_demo', `Approve ${action}`, {
-    kind: 'user',
-    id: 'user_local',
-  });
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    `Approve ${action}`,
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   const gate = {
     approvalId: `ap_${actionSlug}`,
@@ -47,7 +52,7 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
   const timestamp = '2026-09-30T00:00:00.000Z';
   store.createApproval({
     id: gate.approvalId,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: turn.threadId,
     turnId: turn.id,
     kind: 'permission',
@@ -59,7 +64,7 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
   });
   store.createItem({
     id: gate.approvalItemId,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'approval-request',
@@ -76,13 +81,17 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
       workspaceDb,
       decisionId: `pd_${actionSlug}_required`,
       ownerScope: 'workspace',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       policyEngineVersion: 'test-runtime-approval:v1',
       policySnapshotId: 'test-runtime-approval',
       subjectSummary: { kind: 'test' },
       action,
       resourceSummary: { action },
-      contextSummary: { threadId: turn.threadId, turnId: turn.id, workspaceId: 'ws_demo' },
+      contextSummary: {
+        threadId: turn.threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      },
       result: 'require_approval',
       reasonCode: `${actionSlug}_approval_required`,
       enforcementPoint: 'test.incomplete_runtime_approval',
@@ -94,13 +103,13 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
   if (action === 'review.apply') {
     raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
       requestId: gate.approvalId,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: turn.threadId,
       raisingTurnId: turn.id,
       requestItemId: gate.approvalItemId,
       kind: 'approval',
       requesterKind: 'person',
-      responsibleUserId: 'user_local',
+      responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       governedIntent: { action },
       approval: {
         kind: 'permission',
@@ -186,7 +195,10 @@ describe('Pending Request operations', () => {
       await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
 
-      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(
+        fixture.coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
         expect(
           workspaceDb.sqlite
@@ -423,13 +435,13 @@ describe('Pending Request operations', () => {
 
     try {
       fixture.store.createItem({
-        id: 'it_ahead_decision',
+        id: 'it_00000000-0000-704e-85f3-3ea74d4aa3a0',
         workspaceId: fixture.turn.workspaceId,
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
         type: 'approval-decision',
         status: 'completed',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         causationId: 'req_ahead',
         approvalRequestId: fixture.gate.approvalId,
         decision: 'granted',
@@ -449,7 +461,7 @@ describe('Pending Request operations', () => {
           .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
           .filter((item) => item.type === 'approval-decision')
           .map((item) => item.id)
-      ).toEqual(['it_ahead_decision']);
+      ).toEqual(['it_00000000-0000-704e-85f3-3ea74d4aa3a0']);
       expect(fixture.store.listCommandRequests()).toEqual([]);
     } finally {
       if (workspaceDb.sqlite.open) {
@@ -466,13 +478,18 @@ describe('Pending Request operations', () => {
     const store = createDemoStore();
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Approve runtime action', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Approve runtime action',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createApproval({
       id: 'ap_runtime_scope',
       workspaceId: turn.workspaceId,
@@ -507,7 +524,7 @@ describe('Pending Request operations', () => {
             body: JSON.stringify({
               decision: 'granted',
               requestId: '00000000-0000-4000-8000-000000000106',
-              threadId: 'th_wrong',
+              threadId: 'th_00000000-0000-7e9e-8ca1-a96ae30af5d8',
               turnId: turn.id,
               workspaceId: turn.workspaceId,
             }),
@@ -534,13 +551,18 @@ describe('Pending Request operations', () => {
     const store = createDemoStore();
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject non-policy runtime approval', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Reject non-policy runtime approval',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createApproval({
       id: 'ap_runtime_unsupported',
       workspaceId: turn.workspaceId,

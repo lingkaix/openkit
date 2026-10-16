@@ -8,7 +8,7 @@ import { VaultSecretsPanel } from './VaultSecretsPanel';
 
 const SECRET = 'ghp_fake_test_only_canary';
 const reference = {
-  referenceId: 'vault_example',
+  referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
   secretKind: 'github-token',
   currentVersion: 1,
   status: 'active',
@@ -37,7 +37,9 @@ function setup() {
     'vault.secret-create': vi.fn().mockResolvedValue({ ...reference, material: SECRET }),
     'vault.secret-rotate': vi.fn().mockResolvedValue(reference),
     'vault.secret-revoke': vi.fn().mockResolvedValue({ ...reference, status: 'revoked' }),
-    'vault.grant-create': vi.fn().mockResolvedValue({ grantId: 'grant_example' }),
+    'vault.grant-create': vi
+      .fn()
+      .mockResolvedValue({ grantId: 'grant_00000000-0000-7384-bb27-4e38ade00776' }),
     'vault.grant-revoke': vi.fn().mockResolvedValue({ status: 'revoked' }),
     'vault.grant-narrow': vi.fn().mockResolvedValue({}),
   };
@@ -45,7 +47,7 @@ function setup() {
   const view = render(
     <QueryClientProvider client={cache}>
       <CoreClientProvider client={{ operations } as unknown as CoreClient}>
-        <VaultSecretsPanel workspaceId="ws_demo" />
+        <VaultSecretsPanel workspaceId="ws_00000000-0000-7000-8000-000000000001" />
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -154,7 +156,7 @@ describe('Vault secret administration', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add secret' }));
     await waitFor(() =>
       expect(operations['vault.secret-create']).toHaveBeenCalledWith({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         secretKind: 'github-token',
         material: SECRET,
       })
@@ -165,39 +167,49 @@ describe('Vault secret administration', () => {
   });
   it('rotates and revokes explicitly, and creates a gateway grant', async () => {
     const { operations, cache } = setup();
-    await userEvent.click(await screen.findByRole('button', { name: 'Rotate vault_example' }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Rotate vault_00000000-0000-7665-b682-3d8ade3ac72a',
+      })
+    );
     await userEvent.type(screen.getByLabelText('Secret value'), SECRET);
     await userEvent.click(screen.getByRole('button', { name: 'Save replacement' }));
     await waitFor(() =>
       expect(operations['vault.secret-rotate']).toHaveBeenCalledWith({
-        workspaceId: 'ws_demo',
-        referenceId: 'vault_example',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
         material: SECRET,
       })
     );
     await userEvent.click(
-      await screen.findByRole('button', { name: 'Create gateway grant for vault_example' })
+      await screen.findByRole('button', {
+        name: 'Create gateway grant for vault_00000000-0000-7665-b682-3d8ade3ac72a',
+      })
     );
     await waitFor(() =>
       expect(operations['vault.grant-create']).toHaveBeenCalledWith({
-        workspaceId: 'ws_demo',
-        referenceId: 'vault_example',
-      })
-    );
-    await userEvent.click(screen.getByRole('button', { name: 'Revoke vault_example' }));
-    await waitFor(() =>
-      expect(operations['vault.secret-revoke']).toHaveBeenCalledWith({
-        workspaceId: 'ws_demo',
-        referenceId: 'vault_example',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
       })
     );
     await userEvent.click(
-      await screen.findByRole('button', { name: 'Revoke grant grant_existing' })
+      screen.getByRole('button', { name: 'Revoke vault_00000000-0000-7665-b682-3d8ade3ac72a' })
+    );
+    await waitFor(() =>
+      expect(operations['vault.secret-revoke']).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
+      })
+    );
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Revoke grant grant_00000000-0000-7304-a220-7c8803035355',
+      })
     );
     await waitFor(() =>
       expect(operations['vault.grant-revoke']).toHaveBeenCalledWith({
-        workspaceId: 'ws_demo',
-        grantId: 'grant_existing',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        grantId: 'grant_00000000-0000-7304-a220-7c8803035355',
       })
     );
     expect(cacheBytes(cache)).not.toContain(SECRET);

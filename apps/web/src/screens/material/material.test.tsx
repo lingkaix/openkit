@@ -11,9 +11,9 @@ import { SURFACES } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
 import { useSaveWorkspaceMaterialRevision } from './data';
 
-const WORKSPACE_ID = 'ws_materials';
-const THREAD_ID = 'thread_materials';
-const MATERIAL_ID = 'material_release_notes';
+const WORKSPACE_ID = 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55';
+const THREAD_ID = 'th_00000000-0000-7797-b2b8-f3be78117473';
+const MATERIAL_ID = 'mat_00000000-0000-7afa-a16b-33440db6a104';
 const TIMESTAMP = '2026-08-03T00:00:00.000Z';
 const MATERIAL_ACTION_NAME =
   /new material|create material|save|bind material|unbind|exclude|restore|send.*(?:now|current revision)|follow.?up|cancel/i;
@@ -27,7 +27,7 @@ const MATERIAL = {
   materialId: MATERIAL_ID,
   title: 'Release notes',
   kind: 'markdown' as const,
-  currentRevisionId: 'revision_2',
+  currentRevisionId: 'mrev_00000000-0000-730e-b6bf-17ca9153c337',
   sensitivity: 'internal' as const,
   createdAt: TIMESTAMP,
   updatedAt: TIMESTAMP,
@@ -36,11 +36,11 @@ const MATERIAL = {
 const REVISION_1 = {
   workspaceId: WORKSPACE_ID,
   materialId: MATERIAL_ID,
-  revisionId: 'revision_1',
+  revisionId: 'mrev_00000000-0000-7dfd-b321-ac6a81c1b523',
   parentRevisionId: null,
   mediaType: 'text/markdown' as const,
   contentDigest: 'sha256:96dedef0f21abaa9874b529b84fa425c3c30af02596ac0962e2bbbb53abadf74',
-  authorId: 'user_editor',
+  authorId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
   createdAt: '2026-08-03T00:00:00.000Z',
   content: '# Release notes\nFirst draft.\n',
 };
@@ -48,11 +48,11 @@ const REVISION_1 = {
 const REVISION_2 = {
   workspaceId: WORKSPACE_ID,
   materialId: MATERIAL_ID,
-  revisionId: 'revision_2',
+  revisionId: 'mrev_00000000-0000-730e-b6bf-17ca9153c337',
   parentRevisionId: REVISION_1.revisionId,
   mediaType: 'text/markdown' as const,
   contentDigest: 'sha256:67dd813bbaa3012d8dffe3a0555859cd323550f99d709830981dad5ba218b70f',
-  authorId: 'user_editor',
+  authorId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
   createdAt: '2026-08-03T00:01:00.000Z',
   content: '# Release notes\n',
 };
@@ -68,8 +68,8 @@ const REVISION_2_SUMMARY = {
   createdAt: REVISION_2.createdAt,
 };
 
-const THREAD_QUEUED_REVISION_ID = 'revision_queued';
-const THREAD_RESTORED_QUEUE_ID = 'revision_restored';
+const THREAD_QUEUED_REVISION_ID = 'mrev_00000000-0000-7cd8-b971-826dd13dc847';
+const THREAD_RESTORED_QUEUE_ID = 'mrev_00000000-0000-7253-af1b-c5407afa6b7a';
 const THREAD_MATERIAL = {
   workspaceId: WORKSPACE_ID,
   threadId: THREAD_ID,
@@ -77,8 +77,8 @@ const THREAD_MATERIAL = {
   currentRevision: REVISION_2_SUMMARY,
   inclusionState: 'included' as const,
   latestQueuedRevisionId: THREAD_QUEUED_REVISION_ID,
-  lastWorkerSeenRevisionId: 'revision_worker_seen',
-  currentTurnRevisionId: 'revision_current_turn',
+  lastWorkerSeenRevisionId: 'mrev_00000000-0000-78ed-ba4a-524613b47324',
+  currentTurnRevisionId: 'mrev_00000000-0000-750d-8a07-6d157a32106c',
   activeDelivery: null,
 };
 
@@ -115,7 +115,9 @@ function makeClient(
     },
     operations: {
       'material.list': vi.fn().mockResolvedValue({ materials: [MATERIAL] }),
-      'material.create': vi.fn().mockResolvedValue({ materialId: 'material_new' }),
+      'material.create': vi
+        .fn()
+        .mockResolvedValue({ materialId: 'mat_00000000-0000-72a5-8964-fa2b62341db0' }),
       'material.read': vi.fn().mockResolvedValue({ material: MATERIAL }),
       'material.revision-list': vi.fn().mockResolvedValue({
         revisions: [REVISION_1, REVISION_2].map(({ content: _content, ...revision }) => revision),
@@ -131,7 +133,7 @@ function makeClient(
       }),
       'material.revision-save': vi.fn().mockResolvedValue({
         materialId: MATERIAL_ID,
-        revisionId: 'revision_3',
+        revisionId: 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d1',
       }),
       'material.thread-read': vi.fn().mockResolvedValue({ material: null }),
       'material.bind': vi.fn().mockResolvedValue({
@@ -178,7 +180,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -193,7 +195,7 @@ function makeClient(
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -453,7 +455,7 @@ describe('Workspace Material Plane 1 S11', () => {
     const createWorkspaceMaterial = vi
       .fn()
       .mockRejectedValueOnce(new Error('create unavailable'))
-      .mockResolvedValueOnce({ materialId: 'material_new' });
+      .mockResolvedValueOnce({ materialId: 'mat_00000000-0000-72a5-8964-fa2b62341db0' });
     const client = makeClient({ operations: { 'material.create': createWorkspaceMaterial } });
     renderMaterial(client);
 
@@ -499,7 +501,7 @@ describe('Workspace Material Plane 1 S11', () => {
     const materialWithoutRevision = { ...MATERIAL, currentRevisionId: null };
     const saveWorkspaceMaterialRevision = vi.fn().mockResolvedValue({
       materialId: MATERIAL_ID,
-      revisionId: 'revision_1',
+      revisionId: 'mrev_00000000-0000-7dfd-b321-ac6a81c1b523',
     });
     const client = makeClient({
       operations: {
@@ -612,7 +614,7 @@ describe('Workspace Material Plane 1 S11', () => {
     expect(editor).toHaveValue('# Release notes\nKeep this local draft.');
     expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
     expect(screen.getByText(REVISION_2.revisionId)).toBeInTheDocument();
-    expect(screen.queryByText('revision_3')).not.toBeInTheDocument();
+    expect(screen.queryByText('mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d1')).not.toBeInTheDocument();
     expect(saveWorkspaceMaterialRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: WORKSPACE_ID,
@@ -788,7 +790,7 @@ describe('Workspace Material Plane 1 S12', () => {
 
   it('re-reads the Thread Material projection after a bound save and displays the advanced queue', async () => {
     const user = userEvent.setup();
-    const advancedQueuedRevisionId = 'revision_3';
+    const advancedQueuedRevisionId = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d1';
     const getThreadMaterial = vi
       .fn()
       .mockResolvedValueOnce({ material: THREAD_MATERIAL })

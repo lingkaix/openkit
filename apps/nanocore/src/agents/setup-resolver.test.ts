@@ -537,12 +537,12 @@ describe('resolveAgentSetup', () => {
     const workspaceA = resolveAgentSetup(manifest, {
       gatewayConfig: gatewayConfig(),
       providerRegistry: providerRegistry(),
-      workspaceConfig: workspaceConfig('Workspace A', 'grant_workspace_a'),
+      workspaceConfig: workspaceConfig('Workspace A', 'grant_00000000-0000-7f83-847d-ca64a2c18901'),
     });
     const workspaceB = resolveAgentSetup(manifest, {
       gatewayConfig: gatewayConfig(),
       providerRegistry: providerRegistry(),
-      workspaceConfig: workspaceConfig('Workspace B', 'grant_workspace_b'),
+      workspaceConfig: workspaceConfig('Workspace B', 'grant_00000000-0000-785c-bf3c-88f756ef3a75'),
     });
     const missing = resolveAgentSetup(manifest, {
       gatewayConfig: gatewayConfig(),
@@ -553,13 +553,13 @@ describe('resolveAgentSetup', () => {
     expect(workspaceA.setup?.manifest.sandbox?.credentialDeclarations).toEqual([
       expect.objectContaining({
         requirementId: 'github-token',
-        vaultGrantId: 'grant_workspace_a',
+        vaultGrantId: 'grant_00000000-0000-7f83-847d-ca64a2c18901',
       }),
     ]);
     expect(workspaceB.setup?.manifest.sandbox?.credentialDeclarations).toEqual([
       expect.objectContaining({
         requirementId: 'github-token',
-        vaultGrantId: 'grant_workspace_b',
+        vaultGrantId: 'grant_00000000-0000-785c-bf3c-88f756ef3a75',
       }),
     ]);
     expect(missing.setup).toBeNull();

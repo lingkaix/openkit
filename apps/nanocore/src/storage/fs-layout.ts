@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
@@ -17,6 +16,8 @@ import {
   REQUIRED_FEATURE_REGISTRY,
   type RequiredFeatureId,
 } from '@openkit/config-schema';
+
+import { allocateEntityId, isEntityId } from '@openkit/protocol';
 
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 
@@ -39,11 +40,6 @@ const DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES = new Set([
 ]);
 
 /**
- * Deterministic local user id retained for user scope and internal resource-id generation.
- */
-export const LOCAL_USER_ID = 'user_local';
-
-/**
  * Paths created by ensureLayout.
  */
 export interface FsLayoutPaths {
@@ -57,8 +53,6 @@ export interface FsLayoutPaths {
   agents: string;
   /** Users root directory. */
   users: string;
-  /** Implicit local user directory. */
-  localUser: string;
   /** Owner-independent Workspace root directory. */
   workspaces: string;
   /** Local-mode runtime data directory. */
@@ -215,7 +209,6 @@ export function ensureLayoutDirectories(root: string): FsLayoutPaths {
     providers: resolveDataRootPath(root, 'config', 'providers'),
     agents: resolveDataRootPath(root, 'config', 'agents'),
     users: resolveDataRootPath(root, 'users'),
-    localUser: resolveDataRootPath(root, 'users', LOCAL_USER_ID),
     workspaces: resolveDataRootPath(root, 'workspaces'),
     local: resolveDataRootPath(root, 'local'),
     server: serverRoot,
@@ -246,7 +239,6 @@ export function ensureLayoutDirectories(root: string): FsLayoutPaths {
   }
   ensureEncryptedFileVaultStoreDirectory({ storeDir: paths.serverVault });
 
-  ensureUserLayout(root, LOCAL_USER_ID);
   ensureConfigTemplateSurface(root);
 
   return paths;
@@ -290,9 +282,8 @@ export function readDataRootLayoutMarker(root: string): DataRootLayoutMarker {
     'layoutVersion' in marker &&
     marker.layoutVersion === DATA_ROOT_LAYOUT_VERSION &&
     'deploymentId' in marker &&
-    typeof marker.deploymentId === 'string' &&
-    marker.deploymentId.length > 0 &&
-    (!('predecessorDeploymentId' in marker) || typeof marker.predecessorDeploymentId === 'string')
+    isEntityId('dep', marker.deploymentId) &&
+    (!('predecessorDeploymentId' in marker) || isEntityId('dep', marker.predecessorDeploymentId))
   ) {
     return marker as DataRootLayoutMarker;
   }
@@ -312,7 +303,7 @@ export function recordDataRootDeploymentMove(
   root: string,
   deploymentId: string
 ): DataRootLayoutMarker {
-  if (!deploymentId) {
+  if (!isEntityId('dep', deploymentId)) {
     throw new Error('DATA_ROOT deployment id must not be empty.');
   }
 
@@ -502,10 +493,10 @@ function ensureDataRootLayoutMarker(root: string): void {
 /**
  * Creates one unique data-root deployment identity.
  *
- * @returns Deployment id with the stable OpenKit prefix and a random UUID.
+ * @returns Deployment id with the canonical OpenKit prefix and a shared UUIDv7.
  */
 function createDataRootDeploymentId(): string {
-  return `dep_${randomUUID()}`;
+  return allocateEntityId('dep');
 }
 
 /**

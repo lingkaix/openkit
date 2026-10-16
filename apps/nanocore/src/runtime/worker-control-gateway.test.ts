@@ -50,12 +50,12 @@ function createWorkerControlFixture(
   const store = createDemoStore(dataRoot ? { dataRoot } : {});
   if (dataRoot) store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
   const turn = store.createTurn(
-    'ws_demo',
-    'th_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
     'Control worker',
     {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     },
     null,
     { turnId: `tu_control_${suffix}` }
@@ -64,7 +64,7 @@ function createWorkerControlFixture(
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     agentSetup: createTestAgentSetup(),
     agentSessionId: `as_control_${suffix}`,
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     backend: {
       kind: 'openshell',
     },
@@ -94,9 +94,9 @@ function createWorkerControlFixture(
       agentSessionId: `as_control_${suffix}`,
       packageSnapshotId: environmentPackage.snapshotId,
       requestId: `req_control_${suffix}`,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
   };
 }
@@ -1219,7 +1219,10 @@ describe('WorkerControlGateway', () => {
       gateway.appendEvent({
         authorization: `Bearer ${registration.token}`,
         lineage,
-        record: createEventRecord({ ...lineage, threadId: 'th_other' }, 3),
+        record: createEventRecord(
+          { ...lineage, threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2' },
+          3
+        ),
       })
     ).toThrowError(
       expect.objectContaining({
@@ -1244,7 +1247,11 @@ describe('WorkerControlGateway', () => {
     );
     expect(() =>
       gateway.recordHeartbeat(
-        heartbeatRequest(`Bearer ${registration.token}`, { ...lineage, threadId: 'th_other' }, 1)
+        heartbeatRequest(
+          `Bearer ${registration.token}`,
+          { ...lineage, threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2' },
+          1
+        )
       )
     ).toThrowError(
       expect.objectContaining({

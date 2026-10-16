@@ -2,8 +2,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -13,7 +11,9 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
@@ -61,7 +61,11 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   recordTestNativeRuntimeTarget(coreDb);
   admitTestNativeEnvironment(
     coreDb,
@@ -106,14 +110,14 @@ function approvalRaise(
 ): RaisePendingRequestInput {
   return {
     requestId,
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     raisingTurnId: turnId,
     requestItemId: `it_${requestId}`,
     kind: 'approval',
     requesterKind: 'worker',
     agentId: 'agent_demo',
-    responsibleUserId: 'user_local',
+    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     call: {
       serverId: 'echo',
       catalogRevision: 'sha256:catalog',
@@ -124,11 +128,11 @@ function approvalRaise(
       packageDigest: null,
       policyDecisionId: null,
       authorizationContext: {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId,
         agentSessionId: null,
         agentId: 'agent_demo',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         packageDigest: null,
         policyDecisionId: null,
       },
@@ -145,14 +149,14 @@ describe('pending requests', () => {
   ] as const)('refuses oversized exact effect before grant and still permits %s', async (ending) => {
     const { app, coreDb, store, dataRoot } = openPendingApp('agent_demo');
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Unclassified effect',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_missing_disclosure', 'large'.repeat(120000));
@@ -231,32 +235,32 @@ describe('pending requests', () => {
 
   it('freezes only sixteen complete outcomes and retains large multibyte values across restart', () => {
     const { coreDb, dataRoot, store } = openPendingApp();
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     const question = '多字节🙂"\\'.repeat(20000);
     const answer = 'large answer "\\🙂'.repeat(600000);
     const trigger = 'original trigger 多🙂"\\';
     try {
       const turn = store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Collect outcomes',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null,
         { agentId: 'agent_demo' }
       );
       for (let index = 0; index < 17; index++) {
         const requestId = `uq_count_${String(index).padStart(2, '0')}`;
         raisePendingRequest(db.sqlite, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           raisingTurnId: turn.id,
           requestId,
           requestItemId: `it_${requestId}`,
           kind: 'user-input',
           requesterKind: 'worker',
           agentId: 'agent_demo',
-          responsibleUserId: 'user_local',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
           questions: [
             {
               id: 'q',
@@ -271,7 +275,7 @@ describe('pending requests', () => {
           answerPendingRequest(
             db.sqlite,
             requestId,
-            { kind: 'user', id: 'user_local' },
+            { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             { q: [index === 0 ? answer : 'Small'] },
             NOW
           )
@@ -279,8 +283,8 @@ describe('pending requests', () => {
       }
       expect(
         freezeReadyOutcomes(db.sqlite, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'delivery_count',
           executor: 'worker',
           agentId: 'agent_demo',
@@ -296,7 +300,7 @@ describe('pending requests', () => {
       expect(value.pendingOutcomes[0].answers.q).toEqual([answer]);
       expect(readPendingRequest(db.sqlite, 'uq_count_16')?.delivery).toBe('undelivered');
       db.sqlite.close();
-      const reopened = openWorkspaceDb(dataRoot, 'ws_demo');
+      const reopened = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(frozenPendingOutcomeInput(reopened.sqlite, 'delivery_count', trigger)).toBe(bytes);
       } finally {
@@ -310,24 +314,27 @@ describe('pending requests', () => {
 
   it('projects only complete canonical detail within the inclusive UTF-8 boundary', () => {
     const { store, coreDb, dataRoot } = openPendingApp();
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const turn = store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Preview boundary',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null
       );
       const input = approvalRaise(turn.id, 'ap_detail_boundary', '');
       const record = raisePendingRequest(db.sqlite, input).record;
-      const preview = (message: string, userId = 'user_local') =>
+      const preview = (message: string, userId = 'usr_00000000-0000-7000-8000-000000000001') =>
         projectApprovalEffect({
           record: { ...record, canonicalArgumentsJson: JSON.stringify({ message }) },
           store,
           coreDb,
-          actor: { kind: userId === 'user_local' ? 'local' : 'session', userId },
+          actor: {
+            kind: userId === 'usr_00000000-0000-7000-8000-000000000001' ? 'local' : 'session',
+            userId,
+          },
         });
       const empty = preview('');
       expect(empty.status).toBe('available');
@@ -351,14 +358,14 @@ describe('pending requests', () => {
         .run(Date.now(), Date.now());
       coreDb.sqlite
         .prepare(
-          `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'another-user', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'another-user', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(NOW, NOW, NOW);
       expect(preview('not for this viewer', 'another-user')).toMatchObject({
         status: 'unavailable',
       });
       const privateThread = store.createThread(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'Private source',
         undefined,
         'conversation',
@@ -369,7 +376,7 @@ describe('pending requests', () => {
           record: { ...record, threadId: privateThread.id },
           store,
           coreDb,
-          actor: { kind: 'session', userId: 'user_local' },
+          actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         })
       ).toMatchObject({ status: 'unavailable' });
       coreDb.sqlite
@@ -390,7 +397,7 @@ describe('pending requests', () => {
           record: { ...record, serverId: null, governedIntent: null },
           store,
           coreDb,
-          actor: { kind: 'session', userId: 'user_local' },
+          actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         })
       ).toMatchObject({ status: 'unavailable' });
 
@@ -399,7 +406,7 @@ describe('pending requests', () => {
           record: { ...record, canonicalArgumentsJson: '{' },
           store,
           coreDb,
-          actor: { kind: 'session', userId: 'user_local' },
+          actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         })
       ).toEqual({ status: 'unavailable', reason: 'Complete captured effect could not be loaded.' });
       const summary = approvalCardCopy('🙂'.repeat(2000), '多'.repeat(2000));
@@ -417,13 +424,13 @@ describe('pending requests', () => {
   it('does not settle or publish a contradictory request at boot', () => {
     const { coreDb, store, dataRoot } = openPendingApp();
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Broken request',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     const record = raisePendingRequest(
       db.sqlite,
@@ -431,9 +438,9 @@ describe('pending requests', () => {
     ).record;
     db.sqlite
       .prepare(
-        "UPDATE pending_requests SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'user', deciding_actor_id = 'user_local', decided_at = ?, claim = 'claimed', execution_call_id = ? WHERE request_id = ?"
+        "UPDATE pending_requests SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'user', deciding_actor_id = 'usr_00000000-0000-7000-8000-000000000001', decided_at = ?, claim = 'claimed', execution_call_id = ? WHERE request_id = ?"
       )
-      .run(NOW, 'cap_pending_ap_broken_boot', record.requestId);
+      .run(NOW, 'cap_00000000-0000-71cc-8b29-e0da8c534fd7', record.requestId);
     const before = db.sqlite
       .prepare('SELECT * FROM pending_requests WHERE request_id = ?')
       .get(record.requestId);
@@ -461,17 +468,22 @@ describe('pending requests', () => {
     'foreign-decision-content',
   ] as const)('isolates canonical pending request contradiction: %s', (fault) => {
     const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Canonical request', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Canonical request',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       store.createItem({
-        id: 'it_canonical',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -484,13 +496,13 @@ describe('pending requests', () => {
       });
       const valid = raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ap_canonical',
-        requestItemId: 'it_canonical',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        requestItemId: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         raisingTurnId: turn.id,
         kind: 'approval',
         requesterKind: 'person',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         approval: {
           kind: 'permission',
           title: 'Canonical request',
@@ -499,19 +511,27 @@ describe('pending requests', () => {
         governedIntent: { operation: 'canonical-test' },
         now: NOW,
       });
-      const turns = store.listThreadTurns('ws_demo', 'th_demo');
+      const turns = store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
       expect(validateCanonicalLoad(valid, turns)).toBeNull();
       let broken = valid;
-      if (fault === 'missing-item') broken = { ...valid, requestItemId: 'it_nonexistent' };
+      if (fault === 'missing-item')
+        broken = { ...valid, requestItemId: 'it_00000000-0000-7073-8596-45dc5f23bd0f' };
       if (fault === 'request-content') broken = { ...valid, title: 'Different captured request' };
       if (fault === 'pending-claim')
-        broken = { ...valid, claim: 'claimed', executionCallId: 'cap_unowned' };
+        broken = {
+          ...valid,
+          claim: 'claimed',
+          executionCallId: 'cap_00000000-0000-7335-b155-428d9d7247c8',
+        };
       if (fault === 'foreign-actor')
         broken = {
           ...valid,
           state: 'resolved',
           resolution: 'denied',
-          decidingActor: { kind: 'user', id: 'user_intruder' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-74fc-a033-596a76f1bff7' },
           decidedAt: NOW,
         };
       if (fault === 'denied-claim')
@@ -519,31 +539,31 @@ describe('pending requests', () => {
           ...valid,
           state: 'resolved',
           resolution: 'denied',
-          decidingActor: { kind: 'user', id: 'user_local' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           decidedAt: NOW,
           claim: 'claimed',
-          executionCallId: 'cap_unowned',
+          executionCallId: 'cap_00000000-0000-7335-b155-428d9d7247c8',
         };
       if (fault === 'finished-refusal')
         broken = {
           ...valid,
           state: 'resolved',
           resolution: 'granted',
-          decidingActor: { kind: 'user', id: 'user_local' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           decidedAt: NOW,
           claim: 'finished',
           disposition: 'denied-not-executed',
         };
       if (fault === 'unnamed-decision' || fault === 'foreign-decision-content') {
         const item = {
-          id: 'it_decision_ap_canonical',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          id: 'it_00000000-0000-7de5-8c97-f7a0180b82a4',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           type: 'approval-decision' as const,
           status: 'completed' as const,
-          actor: { kind: 'user' as const, id: 'user_intruder' },
-          causationId: 'it_canonical',
+          actor: { kind: 'user' as const, id: 'usr_00000000-0000-74fc-a033-596a76f1bff7' },
+          causationId: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
           approvalRequestId: 'ap_canonical',
           decision: 'granted' as const,
           decidedAt: NOW,
@@ -555,7 +575,7 @@ describe('pending requests', () => {
           ...valid,
           state: 'resolved',
           resolution: 'denied',
-          decidingActor: { kind: 'user', id: 'user_local' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           decidedAt: NOW,
           publicationTurnId: fault === 'unnamed-decision' ? null : turn.id,
         };
@@ -576,14 +596,14 @@ describe('pending requests', () => {
   ] as const)('isolates the owner canonical publication fixture: %s', (fault) => {
     const { coreDb, store } = openPendingApp();
     const raising = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Canonical captured request',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(raising.id, 'ap_publication_matrix', 'matrix');
@@ -606,10 +626,10 @@ describe('pending requests', () => {
         id: pendingRequestItemId(input.requestId, 'decision'),
         workspaceId: input.workspaceId,
         threadId: input.threadId,
-        turnId: 'tu_publication',
+        turnId: 'tu_00000000-0000-7718-9293-4265e25b9375',
         type: 'approval-decision' as const,
         status: 'completed' as const,
-        actor: { kind: 'user' as const, id: 'user_local' },
+        actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
         causationId: input.requestItemId,
         approvalRequestId: input.requestId,
         decision: 'denied' as const,
@@ -619,7 +639,7 @@ describe('pending requests', () => {
       };
       const publication = {
         ...raising,
-        id: 'tu_publication',
+        id: 'tu_00000000-0000-7718-9293-4265e25b9375',
         startedAt: NOW,
         status: 'failed' as const,
         completedAt: NOW,
@@ -627,7 +647,7 @@ describe('pending requests', () => {
       };
       const later = {
         ...raising,
-        id: 'tu_delivery',
+        id: 'tu_00000000-0000-74b0-bdbf-68b899d25dc2',
         startedAt: NOW,
         status: 'running' as const,
         items: [] as (typeof decision)[],
@@ -643,7 +663,14 @@ describe('pending requests', () => {
         delivery: 'frozen' as const,
         deliveryCause: 'carried' as const,
       };
-      const turns = [...store.listThreadTurns('ws_demo', 'th_demo'), publication, later];
+      const turns = [
+        ...store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ),
+        publication,
+        later,
+      ];
       expect(validateCanonicalLoad(valid, turns)).toBeNull();
       expect(
         validateCanonicalLoad(valid, turns, [
@@ -665,10 +692,10 @@ describe('pending requests', () => {
       ).toBeNull();
       let broken: PendingRequestRecord = valid;
       if (fault === 'two-resolutions')
-        publication.items.push({ ...decision, id: 'it_extra_decision' });
+        publication.items.push({ ...decision, id: 'it_00000000-0000-772c-851f-fd16f7495d48' });
       if (fault === 'two-turns') later.items.push({ ...decision, turnId: later.id });
       if (fault === 'foreign-thread')
-        publication.items[0] = { ...decision, threadId: 'th_foreign' };
+        publication.items[0] = { ...decision, threadId: 'th_00000000-0000-7856-9931-7f8680874d49' };
       if (fault === 'wrong-executor') later.agentId = 'agent_foreign';
       if (fault === 'item-ahead') broken = { ...pending, publicationTurnId: publication.id };
       expect(validateCanonicalLoad(broken, turns)).not.toBeNull();
@@ -687,21 +714,21 @@ describe('pending requests', () => {
   ] as const)('rejects a contradictory captured authorization binding: %s', (fault) => {
     const { coreDb, store } = openPendingApp();
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Captured source',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_binding', 'binding');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -713,7 +740,10 @@ describe('pending requests', () => {
         completedAt: NOW,
       });
       const record = raiseRecordedPendingRequest(store, db.sqlite, input);
-      const turns = store.listThreadTurns('ws_demo', 'th_demo');
+      const turns = store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
       expect(validateCanonicalLoad(record, turns)).toBeNull();
       const context = record.authorizationContext!;
       const broken = {
@@ -727,9 +757,9 @@ describe('pending requests', () => {
               : {
                   ...context,
                   ...(fault === 'user'
-                    ? { responsibleUserId: 'user_foreign' }
+                    ? { responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
                     : fault === 'turn'
-                      ? { turnId: 'tu_foreign' }
+                      ? { turnId: 'tu_00000000-0000-7f7b-9b65-51065b0acd8c' }
                       : { packageDigest: 'sha256:foreign' }),
                 },
       };
@@ -743,21 +773,21 @@ describe('pending requests', () => {
   it('projects an unreadable canonical request as inspect-only in the Thread dashboard', async () => {
     const { coreDb, dataRoot, store, app } = openPendingApp('agent_demo');
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Unreadable request',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_unreadable', 'unreadable');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -777,7 +807,10 @@ describe('pending requests', () => {
       const response = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+        body: JSON.stringify({
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        }),
       });
       expect(response.status, await response.clone().text()).toBe(200);
       expect((await response.json()).pendingRequests).toContainEqual({
@@ -796,13 +829,13 @@ describe('pending requests', () => {
   it('does not mutate a contradictory request during archive closeout', async () => {
     const { coreDb, store, dataRoot, app } = openPendingApp();
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Broken request',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     const record = raisePendingRequest(
       db.sqlite,
@@ -810,9 +843,9 @@ describe('pending requests', () => {
     ).record;
     db.sqlite
       .prepare(
-        "UPDATE pending_requests SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'user', deciding_actor_id = 'user_local', decided_at = ?, claim = 'claimed', execution_call_id = ? WHERE request_id = ?"
+        "UPDATE pending_requests SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'user', deciding_actor_id = 'usr_00000000-0000-7000-8000-000000000001', decided_at = ?, claim = 'claimed', execution_call_id = ? WHERE request_id = ?"
       )
-      .run(NOW, 'cap_pending_ap_broken_boot', record.requestId);
+      .run(NOW, 'cap_00000000-0000-71cc-8b29-e0da8c534fd7', record.requestId);
     const before = db.sqlite
       .prepare('SELECT * FROM pending_requests WHERE request_id = ?')
       .get(record.requestId);
@@ -820,13 +853,16 @@ describe('pending requests', () => {
     const response = await app.request(
       ...operationRequest(
         'thread.archive',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '00000000-0000-4000-8000-000000000769',
           }),
         }
@@ -854,17 +890,22 @@ describe('pending requests', () => {
     'foreign-decision-content',
   ] as const)('isolates canonical pending request contradiction: %s', (fault) => {
     const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Canonical request', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Canonical request',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       store.createItem({
-        id: 'it_canonical',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -877,13 +918,13 @@ describe('pending requests', () => {
       });
       const valid = raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ap_canonical',
-        requestItemId: 'it_canonical',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        requestItemId: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         raisingTurnId: turn.id,
         kind: 'approval',
         requesterKind: 'person',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         approval: {
           kind: 'permission',
           title: 'Canonical request',
@@ -892,19 +933,27 @@ describe('pending requests', () => {
         governedIntent: { operation: 'canonical-test' },
         now: NOW,
       });
-      const turns = store.listThreadTurns('ws_demo', 'th_demo');
+      const turns = store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
       expect(validateCanonicalLoad(valid, turns)).toBeNull();
       let broken = valid;
-      if (fault === 'missing-item') broken = { ...valid, requestItemId: 'it_nonexistent' };
+      if (fault === 'missing-item')
+        broken = { ...valid, requestItemId: 'it_00000000-0000-7073-8596-45dc5f23bd0f' };
       if (fault === 'request-content') broken = { ...valid, title: 'Different captured request' };
       if (fault === 'pending-claim')
-        broken = { ...valid, claim: 'claimed', executionCallId: 'cap_unowned' };
+        broken = {
+          ...valid,
+          claim: 'claimed',
+          executionCallId: 'cap_00000000-0000-7335-b155-428d9d7247c8',
+        };
       if (fault === 'foreign-actor')
         broken = {
           ...valid,
           state: 'resolved',
           resolution: 'denied',
-          decidingActor: { kind: 'user', id: 'user_intruder' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-74fc-a033-596a76f1bff7' },
           decidedAt: NOW,
         };
       if (fault === 'denied-claim')
@@ -912,31 +961,31 @@ describe('pending requests', () => {
           ...valid,
           state: 'resolved',
           resolution: 'denied',
-          decidingActor: { kind: 'user', id: 'user_local' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           decidedAt: NOW,
           claim: 'claimed',
-          executionCallId: 'cap_unowned',
+          executionCallId: 'cap_00000000-0000-7335-b155-428d9d7247c8',
         };
       if (fault === 'finished-refusal')
         broken = {
           ...valid,
           state: 'resolved',
           resolution: 'granted',
-          decidingActor: { kind: 'user', id: 'user_local' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           decidedAt: NOW,
           claim: 'finished',
           disposition: 'denied-not-executed',
         };
       if (fault === 'unnamed-decision' || fault === 'foreign-decision-content') {
         const item = {
-          id: 'it_decision_ap_canonical',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          id: 'it_00000000-0000-7de5-8c97-f7a0180b82a4',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           type: 'approval-decision' as const,
           status: 'completed' as const,
-          actor: { kind: 'user' as const, id: 'user_intruder' },
-          causationId: 'it_canonical',
+          actor: { kind: 'user' as const, id: 'usr_00000000-0000-74fc-a033-596a76f1bff7' },
+          causationId: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
           approvalRequestId: 'ap_canonical',
           decision: 'granted' as const,
           decidedAt: NOW,
@@ -948,7 +997,7 @@ describe('pending requests', () => {
           ...valid,
           state: 'resolved',
           resolution: 'denied',
-          decidingActor: { kind: 'user', id: 'user_local' },
+          decidingActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           decidedAt: NOW,
           publicationTurnId: fault === 'unnamed-decision' ? null : turn.id,
         };
@@ -962,18 +1011,23 @@ describe('pending requests', () => {
 
   it('offers no attention action for a missing request Item and keeps a valid sibling actionable', async () => {
     const { coreDb, store, app } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Two requests', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Two requests',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       for (const id of ['good', 'bad']) {
         store.createItem({
           id: `it_attention_${id}`,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           type: 'approval-request',
           status: 'completed',
@@ -987,12 +1041,12 @@ describe('pending requests', () => {
         raiseRecordedPendingRequest(store, db.sqlite, {
           requestId: `ap_attention_${id}`,
           requestItemId: `it_attention_${id}`,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           raisingTurnId: turn.id,
           kind: 'approval',
           requesterKind: 'person',
-          responsibleUserId: 'user_local',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
           approval: {
             kind: 'permission',
             title: 'Attention request',
@@ -1004,11 +1058,15 @@ describe('pending requests', () => {
       }
       db.sqlite
         .prepare(
-          "UPDATE pending_requests SET request_item_id='it_nonexistent' WHERE request_id='ap_attention_bad'"
+          "UPDATE pending_requests SET request_item_id='it_00000000-0000-7073-8596-45dc5f23bd0f' WHERE request_id='ap_attention_bad'"
         )
         .run();
       const response = await app.request(
-        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+        ...operationRequest(
+          'attention.list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          undefined
+        )
       );
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -1037,18 +1095,23 @@ describe('pending requests', () => {
     'boot',
   ] as const)('publishes a delivered person grant invalidation on its own completed Turn: %s', async (cause) => {
     const { app, coreDb, dataRoot, store } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Host publication', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Host publication',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     const now = new Date().toISOString();
     try {
       store.createItem({
-        id: 'it_person_late',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-7a55-b4f2-9c2a5ec7c086',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -1061,13 +1124,13 @@ describe('pending requests', () => {
       });
       raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ap_person_late',
-        requestItemId: 'it_person_late',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        requestItemId: 'it_00000000-0000-7a55-b4f2-9c2a5ec7c086',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         raisingTurnId: turn.id,
         kind: 'approval',
         requesterKind: 'person',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         approval: {
           kind: 'permission',
           title: 'Host push',
@@ -1078,13 +1141,16 @@ describe('pending requests', () => {
       });
       db.sqlite
         .prepare(
-          "UPDATE pending_requests SET state='resolved', resolution='granted', deciding_actor_kind='user', deciding_actor_id='user_local', decided_at=? WHERE request_id='ap_person_late'"
+          "UPDATE pending_requests SET state='resolved', resolution='granted', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id='ap_person_late'"
         )
         .run(now);
       expect(
         validateCanonicalLoad(
           readPendingRequest(db.sqlite, 'ap_person_late')!,
-          store.listThreadTurns('ws_demo', 'th_demo')
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
         )
       ).toBeNull();
       store.updateTurn(turn.id, { status: 'completed', completedAt: now });
@@ -1092,10 +1158,15 @@ describe('pending requests', () => {
       expect(decision.delivery).toBe('delivered');
       expect(decision.publicationTurnId).not.toBe(turn.id);
       if (cause !== 'archive') {
-        const busy = store.createTurn('ws_demo', 'th_demo', 'Unrelated work', {
-          kind: 'user',
-          id: 'user_local',
-        });
+        const busy = store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'Unrelated work',
+          {
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }
+        );
         db.sqlite
           .prepare(
             "UPDATE pending_requests SET disposition='denied-not-executed', disposition_reason='membership-revoked' WHERE request_id='ap_person_late'"
@@ -1104,13 +1175,16 @@ describe('pending requests', () => {
         const refused = await app.request(
           ...operationRequest(
             'thread.archive',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
                 requestId: '00000000-0000-4000-8000-000000000761',
               }),
             }
@@ -1128,13 +1202,16 @@ describe('pending requests', () => {
         const archived = await app.request(
           ...operationRequest(
             'thread.archive',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
                 requestId: '00000000-0000-4000-8000-000000000762',
               }),
             }
@@ -1156,7 +1233,8 @@ describe('pending requests', () => {
       expect(publication.status).toBe('completed');
       expect(
         publication.items.filter(
-          (item) => item.type === 'status' && item.causationId === 'it_person_late'
+          (item) =>
+            item.type === 'status' && item.causationId === 'it_00000000-0000-7a55-b4f2-9c2a5ec7c086'
         )
       ).toHaveLength(1);
       expect(
@@ -1215,21 +1293,21 @@ describe('pending requests', () => {
       ...(site === 'terminal-barrier' ? { workerDelivery } : {}),
     });
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Delivery failure',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_delivery_failure', 'failure');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -1243,7 +1321,7 @@ describe('pending requests', () => {
       raiseRecordedPendingRequest(store, db.sqlite, input);
       db.sqlite
         .prepare(
-          "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='user_local', decided_at=? WHERE request_id=?"
+          "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id=?"
         )
         .run(NOW, input.requestId);
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
@@ -1287,10 +1365,10 @@ describe('pending requests', () => {
       }
       if (fault === 'transient') {
         const later = store.createTurn(
-          'ws_demo',
-          'th_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
           'Later user message',
-          { kind: 'user', id: 'user_local' },
+          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           null,
           { agentId: 'agent_demo' }
         );
@@ -1317,21 +1395,21 @@ describe('pending requests', () => {
     };
     installPendingRequestAdmission(store, dependencies);
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Pending boot admission',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_boot_queue', 'boot');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -1345,7 +1423,7 @@ describe('pending requests', () => {
       raiseRecordedPendingRequest(store, db.sqlite, input);
       db.sqlite
         .prepare(
-          "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='user_local', decided_at=? WHERE request_id=?"
+          "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id=?"
         )
         .run(NOW, input.requestId);
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
@@ -1409,21 +1487,21 @@ describe('pending requests', () => {
       openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
     });
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Request while busy',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_agent_barrier', 'barrier');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -1455,11 +1533,16 @@ describe('pending requests', () => {
 
   it('deduplicates an identical call, separates changed arguments, and stops at 16', () => {
     const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Raise approvals', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Raise approvals',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const first = raisePendingRequest(db.sqlite, approvalRaise(turn.id, 'ap_same', 'digest-a'));
@@ -1498,17 +1581,17 @@ describe('pending requests', () => {
     const listTools = vi.spyOn(gateway, 'listTools');
     const { app, coreDb, store } = openPendingApp('agent_demo', gateway);
     const turn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Raise one approval',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { agentId: 'agent_demo' }
     );
     store.createItem({
-      id: 'it_ap_supply',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      id: 'it_00000000-0000-7ee0-bb5c-599918e0151c',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       type: 'approval-request',
       status: 'completed',
@@ -1519,7 +1602,7 @@ describe('pending requests', () => {
       createdAt: NOW,
       completedAt: NOW,
     });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       const raised = approvalRaise(turn.id, 'ap_supply', 'digest-supply');
@@ -1558,16 +1641,16 @@ describe('pending requests', () => {
           body: JSON.stringify({
             decision: 'granted',
             requestId: '00000000-0000-4000-8000-000000000701',
-            threadId: 'th_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: turn.id,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           }),
         }
       )
     );
     expect(response.status, await response.clone().text()).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ id: 'ap_supply', status: 'granted' });
-    const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       expect(readPendingRequest(recorded.sqlite, 'ap_supply')).toMatchObject({
         resolution: 'granted',
@@ -1583,7 +1666,10 @@ describe('pending requests', () => {
     }
     await vi.waitFor(() => {
       const deliveredTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .find((candidate) => candidate.id !== turn.id);
       expect(deliveredTurn?.status).toBe('completed');
       expect(
@@ -1593,13 +1679,16 @@ describe('pending requests', () => {
       ).toEqual({ phase: 'closed' });
     });
     const outcome = store
-      .listThreadTurns('ws_demo', 'th_demo')
+      .listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
       .find((candidate) => candidate.id !== turn.id);
     expect(outcome, outcome?.error?.message).toMatchObject({
       status: 'completed',
       triggerSource: { kind: 'approval-resolution' },
     });
-    const delivered = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const delivered = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     expect(readPendingRequest(delivered.sqlite, 'ap_supply')).toMatchObject({
       delivery: 'delivered',
       deliveryTurnId: outcome!.id,
@@ -1611,8 +1700,13 @@ describe('pending requests', () => {
 
   it('answers once, rejects a changed map and a secret question before a write, and withdraws', async () => {
     const { app, coreDb, store } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Ask', { kind: 'user', id: 'user_local' });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Ask',
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
+    );
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     const question = {
       id: 'path',
@@ -1624,13 +1718,13 @@ describe('pending requests', () => {
     };
     try {
       store.createItem({
-        id: 'it_ui_path',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-730f-baa3-bbcbde464aaa',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'user-input-request',
         status: 'completed',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         userInputRequestId: 'ui_path',
         prompt: 'Which path?',
         questions: [question],
@@ -1639,25 +1733,25 @@ describe('pending requests', () => {
       });
       raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ui_path',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         raisingTurnId: turn.id,
-        requestItemId: 'it_ui_path',
+        requestItemId: 'it_00000000-0000-730f-baa3-bbcbde464aaa',
         kind: 'user-input',
         requesterKind: 'assistant',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         questions: [question],
         questionDigest: 'digest-path',
         now: NOW,
       });
       store.createItem({
-        id: 'it_ui_secret',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-7c53-9f67-b4db2e48a984',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'user-input-request',
         status: 'completed',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         userInputRequestId: 'ui_secret',
         prompt: 'Secret?',
         questions: [{ ...question, id: 'secret', isSecret: true }],
@@ -1666,13 +1760,13 @@ describe('pending requests', () => {
       });
       raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ui_secret',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         raisingTurnId: turn.id,
-        requestItemId: 'it_ui_secret',
+        requestItemId: 'it_00000000-0000-7c53-9f67-b4db2e48a984',
         kind: 'user-input',
         requesterKind: 'assistant',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         questions: [{ ...question, id: 'secret', isSecret: true }],
         questionDigest: 'digest-secret',
         now: NOW,
@@ -1690,8 +1784,8 @@ describe('pending requests', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             userInputRequestId: 'ui_secret',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '00000000-0000-4000-8000-000000000702',
             answers: { secret: ['hidden'] },
           }),
@@ -1709,8 +1803,8 @@ describe('pending requests', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             userInputRequestId: 'ui_path',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '00000000-0000-4000-8000-000000000703',
             answers: { path: ['left'] },
             futureSafeField: 'ignored-command-metadata',
@@ -1719,7 +1813,7 @@ describe('pending requests', () => {
       )
     );
     expect(answered.status, await answered.clone().text()).toBe(200);
-    const persisted = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const persisted = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     expect(
       JSON.stringify(persisted.sqlite.prepare('SELECT * FROM pending_requests').all())
     ).not.toContain('ignored-command-metadata');
@@ -1733,8 +1827,8 @@ describe('pending requests', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             userInputRequestId: 'ui_path',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '00000000-0000-4000-8000-000000000704',
             answers: { path: ['right'] },
           }),
@@ -1752,8 +1846,8 @@ describe('pending requests', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             pendingRequestId: 'ui_secret',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '00000000-0000-4000-8000-000000000705',
           }),
         }
@@ -1765,7 +1859,7 @@ describe('pending requests', () => {
       state: 'ended',
       ending: 'withdrawn',
     });
-    const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       expect(readPendingRequest(recorded.sqlite, 'ui_secret')).toMatchObject({
         state: 'ended',
@@ -1779,11 +1873,16 @@ describe('pending requests', () => {
 
   it('settles an unfinished claim to outcome-unknown and does not execute it again', () => {
     const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Claim', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Claim',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       raisePendingRequest(db.sqlite, approvalRaise(turn.id, 'ap_crash', 'digest-crash'));
@@ -1809,14 +1908,19 @@ describe('pending requests', () => {
 
   it('refuses archive while a Turn is running and a request is pending, then closes an idle Thread out', async () => {
     const { app, coreDb, store } = openPendingApp();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Busy', { kind: 'user', id: 'user_local' });
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Busy',
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
+    );
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       store.createItem({
-        id: 'it_ap_archive',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-7f98-abec-1cbad84927b3',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
         status: 'completed',
@@ -1838,40 +1942,56 @@ describe('pending requests', () => {
     const busy = await app.request(
       ...operationRequest(
         'thread.archive',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000706',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
           }),
         }
       )
     );
     expect(busy.status).toBe(409);
     await expect(busy.json()).resolves.toMatchObject({ code: 'thread_busy' });
-    expect(store.getThread('ws_demo', 'th_demo').status).not.toBe('archived');
+    expect(
+      store.getThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      ).status
+    ).not.toBe('archived');
     store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
     const archived = await app.request(
       ...operationRequest(
         'thread.archive',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000707',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
           }),
         }
       )
     );
     expect(archived.status, await archived.clone().text()).toBe(200);
-    expect(store.getThread('ws_demo', 'th_demo').status).toBe('archived');
-    const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    expect(
+      store.getThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      ).status
+    ).toBe('archived');
+    const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       expect(readPendingRequest(recorded.sqlite, 'ap_archive')).toMatchObject({
         state: 'ended',
@@ -1885,22 +2005,32 @@ describe('pending requests', () => {
 
   it('keeps a contradictory request inspect-only and a sibling request decidable after reload', () => {
     const { coreDb, dataRoot, store } = openPendingApp('agent_demo');
-    const goodTurn = store.createTurn('ws_demo', 'th_demo', 'Good', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const other = store.createThread('ws_demo', 'Other');
-    const otherTurn = store.createTurn('ws_demo', other.id, 'Other', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const goodTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Good',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const other = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other');
+    const otherTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      other.id,
+      'Other',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
       store.createItem({
-        id: 'it_ap_good',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'it_00000000-0000-7a95-bd5f-fb0fd4193911',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: goodTurn.id,
         type: 'approval-request',
         status: 'completed',
@@ -1912,8 +2042,8 @@ describe('pending requests', () => {
         completedAt: NOW,
       });
       store.createItem({
-        id: 'it_ap_bad',
-        workspaceId: 'ws_demo',
+        id: 'it_00000000-0000-70b9-a8af-9e7514095096',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: other.id,
         turnId: otherTurn.id,
         type: 'approval-request',
@@ -1933,7 +2063,7 @@ describe('pending requests', () => {
       raiseRecordedPendingRequest(store, db.sqlite, {
         ...approvalRaise(otherTurn.id, 'ap_bad', 'digest-bad'),
         threadId: other.id,
-        requestItemId: 'it_ap_bad',
+        requestItemId: 'it_00000000-0000-70b9-a8af-9e7514095096',
         call: {
           ...approvalRaise(otherTurn.id, 'ap_bad', 'digest-bad').call!,
           authorizationContext: {
@@ -1941,7 +2071,7 @@ describe('pending requests', () => {
             turnId: otherTurn.id,
             agentSessionId: null,
             agentId: 'agent_demo',
-            responsibleUserId: 'user_local',
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
             packageDigest: null,
             policyDecisionId: null,
           },
@@ -1952,12 +2082,12 @@ describe('pending requests', () => {
     }
     store.updateTurn(otherTurn.id, { status: 'completed', completedAt: NOW });
     const decision = {
-      workspaceId: 'ws_demo' as const,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001' as const,
       threadId: other.id,
       turnId: otherTurn.id,
       type: 'approval-decision' as const,
       status: 'completed' as const,
-      actor: { kind: 'user' as const, id: 'user_local' },
+      actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       causationId: 'req_bad_decision',
       approvalRequestId: 'ap_bad',
       decision: 'granted' as const,
@@ -1966,17 +2096,27 @@ describe('pending requests', () => {
       completedAt: NOW,
     };
     store.createItem(
-      { ...decision, id: 'it_bad_decision_1' },
+      { ...decision, id: 'it_00000000-0000-75e0-a0f5-4cc89dcbc3d9' },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
     store.createItem(
-      { ...decision, id: 'it_bad_decision_2', causationId: 'req_bad_decision_2' },
+      {
+        ...decision,
+        id: 'it_00000000-0000-7a9d-8492-cb28e485aef7',
+        causationId: 'req_bad_decision_2',
+      },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    const bad = readPendingRequest(openWorkspaceDb(dataRoot, 'ws_demo').sqlite, 'ap_bad');
-    expect(validateCanonicalLoad(bad!, store.listThreadTurns('ws_demo', other.id))?.reason).toBe(
-      'two-resolutions'
+    const bad = readPendingRequest(
+      openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').sqlite,
+      'ap_bad'
     );
+    expect(
+      validateCanonicalLoad(
+        bad!,
+        store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', other.id)
+      )?.reason
+    ).toBe('two-resolutions');
     store.updateTurn(goodTurn.id, { status: 'completed', completedAt: NOW });
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getApproval('ap_good').status).toBe('pending');

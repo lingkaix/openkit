@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-
 import {
   type ActivateWorkerEnvironmentRequest,
   ActivateWorkerEnvironmentRequestSchema,
@@ -13,7 +12,7 @@ import {
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { deriveEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { applyEdits, modify, type ParseError, parse } from 'jsonc-parser';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
@@ -904,10 +903,16 @@ function activationTurnIdentity(
   home: CandidateHome,
   request: Pick<ActivateWorkerEnvironmentRequest, 'requestId'>
 ): { readonly itemId: string; readonly turnId: string } {
-  const suffix = stableSuffix([actor.userId, home.workspaceId, home.threadId, request.requestId]);
+  const name = [
+    'worker_environment_activation',
+    actor.userId,
+    home.workspaceId,
+    home.threadId,
+    request.requestId,
+  ];
   return {
-    itemId: `it_worker_environment_activation_${suffix}`,
-    turnId: `tu_worker_environment_activation_${suffix}`,
+    itemId: deriveEntityId('it', name),
+    turnId: deriveEntityId('tu', name),
   };
 }
 
@@ -918,7 +923,7 @@ function activationArtifactId(actor: Actor, home: CandidateHome, requestId: stri
 
 /** Returns the deterministic result Artifact id for one private activation Turn. */
 function activationArtifactIdFromTurn(turnId: string): string {
-  return `ar_worker_environment_activation_${stableSuffix([turnId])}`;
+  return deriveEntityId('ar', ['worker_environment_activation', turnId]);
 }
 
 /** Stable status content that proves the exact request owned an existing partial Turn. */
@@ -964,11 +969,6 @@ function unknownAffected(values: readonly WorkerEnvironmentAffectedStorage[]): A
 /** Exact lowercase SHA-256 digest of immutable Artifact content. */
 function digest(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
-}
-
-/** Stable bounded lowercase identifier suffix. */
-function stableSuffix(parts: readonly unknown[]): string {
-  return createHash('sha256').update(JSON.stringify(parts), 'utf8').digest('hex').slice(0, 24);
 }
 
 /** Creates one closed unavailable failure without exposing runtime internals. */

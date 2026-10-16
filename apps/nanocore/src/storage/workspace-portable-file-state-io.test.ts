@@ -12,9 +12,12 @@ import {
 
 const JUNE = '2026-06-30T23:59:59.000Z';
 const JULY = '2026-07-01T00:00:00.000Z';
-const PORTABLE_TURN = { threadId: 'th_portable', turnId: 'tu_portable' } as const;
+const PORTABLE_TURN = {
+  threadId: 'th_00000000-0000-7d57-bb9a-837e048d6465',
+  turnId: 'tu_00000000-0000-7533-bc6b-7efa7795a620',
+} as const;
 const PORTABLE_OWNERS = {
-  workspaceId: 'ws_portable_source',
+  workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
   threads: [{ threadId: PORTABLE_TURN.threadId }],
   turns: [PORTABLE_TURN],
 } as const;
@@ -35,10 +38,10 @@ function writeJsonl(path: string, rows: readonly unknown[]): void {
 
 /** Writes one complete portable source fixture. */
 function writePortableFixture(root: string): void {
-  const workspaceId = 'ws_portable_source';
+  const workspaceId = 'ws_00000000-0000-7e30-a961-1cf5d6540406';
   const observations = [
     {
-      id: 'ko_june',
+      id: 'ko_00000000-0000-7ee4-b78c-17c74a854150',
       workspaceId,
       kind: 'maintenance',
       summary: 'June observation.',
@@ -52,7 +55,7 @@ function writePortableFixture(root: string): void {
       createdAt: JUNE,
     },
     {
-      id: 'ko_july',
+      id: 'ko_00000000-0000-74fd-834d-bd7444262a89',
       workspaceId,
       kind: 'maintenance',
       summary: 'July observation.',
@@ -68,7 +71,7 @@ function writePortableFixture(root: string): void {
   ];
   const claims = [
     {
-      id: 'kc_first',
+      id: 'kc_00000000-0000-7dea-b04c-c8d9dfd362fc',
       workspaceId,
       statement: 'First claim.',
       sourceReferences: [],
@@ -82,7 +85,7 @@ function writePortableFixture(root: string): void {
       updatedAt: JULY,
     },
     {
-      id: 'kc_second',
+      id: 'kc_00000000-0000-7b97-a8ba-ef418610f14a',
       workspaceId,
       statement: 'Second claim.',
       sourceReferences: [],
@@ -98,9 +101,9 @@ function writePortableFixture(root: string): void {
   ];
   const conflicts = [
     {
-      id: 'kf_history',
+      id: 'kf_00000000-0000-7aff-b31a-d6d16ddb088d',
       workspaceId,
-      subjectReferences: ['claim:kc_first'],
+      subjectReferences: ['claim:kc_00000000-0000-7dea-b04c-c8d9dfd362fc'],
       sourceReferences: [],
       status: 'needs_review',
       summary: 'Conflict history.',
@@ -110,9 +113,9 @@ function writePortableFixture(root: string): void {
       updatedAt: JUNE,
     },
     {
-      id: 'kf_history',
+      id: 'kf_00000000-0000-7aff-b31a-d6d16ddb088d',
       workspaceId,
-      subjectReferences: ['claim:kc_first'],
+      subjectReferences: ['claim:kc_00000000-0000-7dea-b04c-c8d9dfd362fc'],
       sourceReferences: [],
       status: 'resolved',
       summary: 'Conflict history.',
@@ -126,11 +129,11 @@ function writePortableFixture(root: string): void {
     },
   ];
   const retrieval = {
-    traceId: 'krt_00000000-0000-4000-8000-000000000001',
+    traceId: 'krt_00000000-0000-780e-b78f-51422afca1e9',
     queryContext: {
       serverId: 'server_portable_source',
       workspaceId,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
     },
@@ -167,7 +170,7 @@ function writePortableFixture(root: string): void {
   writeFileSync(retrievalPath, `${JSON.stringify(retrieval)}\n`);
   const threadRetrieval = {
     ...retrieval,
-    traceId: 'krt_00000000-0000-4000-8000-000000000002',
+    traceId: 'krt_00000000-0000-7afe-9d7a-6a1fdf1c3d36',
     queryContext: {
       ...retrieval.queryContext,
       turnId: undefined,
@@ -220,7 +223,7 @@ function writePortableFixture(root: string): void {
       schemaVersion: 1,
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
-      workspaceId: 'ws_portable_source',
+      workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
     })}\n`
   );
   writeFileSync(join(packageRoot, 'context-package', 'instructions.md'), 'Portable request.\n');
@@ -248,7 +251,7 @@ describe('workspace portable file-state IO', () => {
       'turns',
       PORTABLE_TURN.turnId,
       'retrieval-traces',
-      'krt_00000000-0000-4000-8000-000000000001.json'
+      'krt_00000000-0000-780e-b78f-51422afca1e9.json'
     );
     const retrieval = JSON.parse(readFileSync(retrievalPath, 'utf8'));
     retrieval.futureNote = 'retained';
@@ -273,7 +276,7 @@ describe('workspace portable file-state IO', () => {
           'turns',
           PORTABLE_TURN.turnId,
           'retrieval-traces',
-          'krt_00000000-0000-4000-8000-000000000001.json'
+          'krt_00000000-0000-780e-b78f-51422afca1e9.json'
         ),
         'utf8'
       )
@@ -298,7 +301,10 @@ describe('workspace portable file-state IO', () => {
     const state = readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS);
 
     expect([...state.observations.keys()]).toEqual(['202606', '202607']);
-    expect(state.claims.get('202607')?.map((row) => row.id)).toEqual(['kc_first', 'kc_second']);
+    expect(state.claims.get('202607')?.map((row) => row.id)).toEqual([
+      'kc_00000000-0000-7dea-b04c-c8d9dfd362fc',
+      'kc_00000000-0000-7b97-a8ba-ef418610f14a',
+    ]);
     expect([...state.conflicts.values()].flat().map((row) => row.status)).toEqual([
       'needs_review',
       'resolved',
@@ -315,15 +321,15 @@ describe('workspace portable file-state IO', () => {
     );
     expect([...state.workerContextPackageFiles]).toEqual([
       [
-        'threads/th_portable/turns/tu_portable/context-package.json',
-        '{"schemaVersion":1,"threadId":"th_portable","turnId":"tu_portable","workspaceId":"ws_portable_source"}\n',
+        'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package.json',
+        '{"schemaVersion":1,"threadId":"th_00000000-0000-7d57-bb9a-837e048d6465","turnId":"tu_00000000-0000-7533-bc6b-7efa7795a620","workspaceId":"ws_00000000-0000-7e30-a961-1cf5d6540406"}\n',
       ],
       [
-        'threads/th_portable/turns/tu_portable/context-package/instructions.md',
+        'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package/instructions.md',
         'Portable request.\n',
       ],
       [
-        'threads/th_portable/turns/tu_portable/context-package/package.json',
+        'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package/package.json',
         '{"schemaVersion":1}\n',
       ],
     ]);
@@ -356,8 +362,8 @@ describe('workspace portable file-state IO', () => {
     writePortableFixture(malformedRoot);
     writeJsonl(join(malformedRoot, 'knowledge', 'claims', '202607.jsonl'), [
       {
-        id: 'kc_unknown',
-        workspaceId: 'ws_portable_source',
+        id: 'kc_00000000-0000-70e0-81b3-473a81814be9',
+        workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
         statement: 'Unknown core values must fail closed.',
         sourceReferences: [],
         scope: 'workspace',
@@ -433,9 +439,9 @@ describe('workspace portable file-state IO', () => {
       ),
       `${JSON.stringify({
         schemaVersion: 1,
-        threadId: 'th_other',
-        turnId: 'tu_other',
-        workspaceId: 'ws_portable_source',
+        threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2',
+        turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481',
+        workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
       })}\n`
     );
 
@@ -461,10 +467,10 @@ describe('workspace portable file-state IO', () => {
       'turns',
       PORTABLE_TURN.turnId,
       'retrieval-traces',
-      'krt_00000000-0000-4000-8000-000000000001.json'
+      'krt_00000000-0000-780e-b78f-51422afca1e9.json'
     );
     const trace = JSON.parse(readFileSync(path, 'utf8'));
-    trace.queryContext.turnId = 'tu_other';
+    trace.queryContext.turnId = 'tu_00000000-0000-7bf1-990f-799cdaa2a481';
     writeFileSync(path, `${JSON.stringify(trace)}\n`);
     expect(() => readWorkspacePortableFileState(contradictoryRoot, PORTABLE_OWNERS)).toThrow(
       'Knowledge retrieval trace lineage is contradictory.'
@@ -480,7 +486,7 @@ describe('workspace portable file-state IO', () => {
         'threads',
         PORTABLE_TURN.threadId,
         'retrieval-traces',
-        '.krt_00000000-0000-4000-8000-000000000099.00000000-0000-4000-8000-000000000098.tmp'
+        '.krt_00000000-0000-77a1-9ebf-a9d24ca0b994.00000000-0000-4000-8000-000000000098.tmp'
       ),
       'incomplete'
     );
@@ -496,7 +502,7 @@ describe('workspace portable file-state IO', () => {
         'missing-trace-target',
         join(
           traceDirectory,
-          '.krt_00000000-0000-4000-8000-000000000099.00000000-0000-4000-8000-000000000098.tmp'
+          '.krt_00000000-0000-77a1-9ebf-a9d24ca0b994.00000000-0000-4000-8000-000000000098.tmp'
         )
       );
 

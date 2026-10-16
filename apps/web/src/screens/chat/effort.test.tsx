@@ -13,8 +13,8 @@ import { useWorkspaceStore } from '../workspace-store';
 import { chatKeys } from './data';
 
 const THREAD = {
-  id: 'th1',
-  workspaceId: 'ws1',
+  id: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   name: 'Effort conversation',
   preview: 'Effort conversation',
   status: 'active',
@@ -23,10 +23,10 @@ const THREAD = {
 };
 
 const COMPLETED_TURN = TurnSchema.parse({
-  id: 't1',
-  workspaceId: 'ws1',
-  threadId: 'th1',
-  triggerActor: { kind: 'user', id: 'user_editor' },
+  id: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  triggerActor: { kind: 'user', id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
   items: [],
   error: null,
   configVersion: null,
@@ -37,7 +37,7 @@ const COMPLETED_TURN = TurnSchema.parse({
 });
 
 const CONVERSATION_TARGET = {
-  workspaceId: 'ws1',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   threadId: null,
   defaultTargetRef: 'internal-role:assistant',
   targets: [
@@ -95,7 +95,9 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
 
       'thread.read': vi.fn().mockResolvedValue(THREAD),
       'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
-      'thread.create': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
+      'thread.create': vi
+        .fn()
+        .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' }),
       'thread.dashboard': vi.fn().mockResolvedValue({ turns: [] }),
       ...core,
       ...app,
@@ -103,15 +105,15 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
         .fn()
         .mockResolvedValueOnce({
           items: [
-            { id: 'ws1', name: 'Market research' },
-            { id: 'ws2', name: 'Second workspace' },
+            { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+            { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace' },
           ].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -121,15 +123,15 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
             | undefined) ??
             vi.fn().mockResolvedValue({
               items: [
-                { id: 'ws1', name: 'Market research' },
-                { id: 'ws2', name: 'Second workspace' },
+                { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+                { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace' },
               ].map((workspace) => ({
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -237,7 +239,10 @@ async function chooseEffort(user: ReturnType<typeof userEvent.setup>, label: str
 
 describe.each([
   ['starter', '/chat'],
-  ['Thread', '/chat/ws1/th1'],
+  [
+    'Thread',
+    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+  ],
 ])('Composer reasoning effort on %s', (surface, path) => {
   it('offers only advertised efforts in canonical order and updates with the model', async () => {
     const user = userEvent.setup();
@@ -412,15 +417,21 @@ describe.each([
       .mockRejectedValue(error);
     let catalog = effortCatalog();
     const getConversationTargets = vi.fn().mockImplementation(() => Promise.resolve(catalog));
-    const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
+    const createThread = vi
+      .fn()
+      .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
     const cache = renderApp(
       path,
       makeClient(
         {
           'thread.create': createThread,
-          'thread.read': vi
-            .fn()
-            .mockResolvedValue({ ...THREAD, id: surface === 'starter' ? 'th-new' : 'th1' }),
+          'thread.read': vi.fn().mockResolvedValue({
+            ...THREAD,
+            id:
+              surface === 'starter'
+                ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+                : 'th_00000000-0000-70a0-9cde-4561f64881c6',
+          }),
           'artifact.list': vi
             .fn()
             .mockResolvedValue({ items: [{ id: 'brief', version: 2, title: 'Brief' }] }),
@@ -440,13 +451,16 @@ describe.each([
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     const first = submitConversation.mock.calls[0];
     expect(first?.[0]).toEqual({
-      workspaceId: 'ws1',
-      threadId: path === '/chat' ? 'th-new' : 'th1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      threadId:
+        path === '/chat'
+          ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+          : 'th_00000000-0000-70a0-9cde-4561f64881c6',
       input: 'Exact draft  ',
       targetRef: 'internal-role:assistant',
       logicalModelId: 'reasoner',
       reasoningEffort: 'high',
-      artifactRefs: [{ artifactId: 'brief', artifactVersion: 2 }],
+      artifactRefs: [{ artifactId: 'ar_00000000-0000-7bc1-85a3-6c0dfcf6ab5d', artifactVersion: 2 }],
       requestId: expect.any(String),
     });
     expect(await screen.findByRole('button', { name: 'Send message' })).toBeDisabled();
@@ -491,9 +505,17 @@ describe.each([
     const first = submitConversation.mock.calls[0];
     expect(first?.[0]).not.toHaveProperty('reasoningEffort');
     await act(async () => {
-      cache.setQueryData(chatKeys.dashboard('ws1', surface === 'starter' ? 'th-new' : 'th1'), {
-        turns: [{ ...COMPLETED_TURN, reasoningEffort: 'high' }],
-      });
+      cache.setQueryData(
+        chatKeys.dashboard(
+          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          surface === 'starter'
+            ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+            : 'th_00000000-0000-70a0-9cde-4561f64881c6'
+        ),
+        {
+          turns: [{ ...COMPLETED_TURN, reasoningEffort: 'high' }],
+        }
+      );
       await cache.invalidateQueries({ queryKey: ['conversation-targets'] });
     });
     await user.click(screen.getByRole('button', { name: 'Send message' }));

@@ -14,12 +14,17 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import { chatTaskModeTurnId, commandInputHash } from '../runtime/idempotent-command.js';
+import {
+  commandInputHash,
+  conversationTaskThreadId,
+  conversationTaskTurnId,
+} from '../runtime/idempotent-command.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
@@ -50,11 +55,11 @@ const WORKER_REQUEST_BYTES = serializeStructuredWorkerDelegationRequest(
     acceptanceCriteria: ['The S39 verifier remains fail closed.'],
     constraints: { maxContextTokens: 4_096, maxWorkerIterations: 1 },
     contextRefs: [
-      { kind: 'workspace', id: 'ws_context' },
-      { kind: 'thread', id: 'th_context' },
-      { kind: 'item', id: 'it_prior' },
-      { kind: 'item', id: 'it_gate_request' },
-      { kind: 'item', id: 'it_gate_response' },
+      { kind: 'workspace', id: 'ws_00000000-0000-7990-bde7-4411160ea0db' },
+      { kind: 'thread', id: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5' },
+      { kind: 'item', id: 'it_00000000-0000-767c-97eb-d0af46940f44' },
+      { kind: 'item', id: 'it_00000000-0000-7d5c-b364-336c2c54fdf3' },
+      { kind: 'item', id: 'it_00000000-0000-7a18-85bb-ebc66a6f69bc' },
     ],
     escalationConditions: [],
     expectedArtifacts: [],
@@ -84,7 +89,7 @@ const KNOWLEDGE_PAGE_BYTES = [
   'openkit_status: "active"',
   'status: "stable"',
   'scope: "workspace"',
-  'source_refs: ["source:ks_alpha", "source:ks_beta"]',
+  'source_refs: ["source:ks_00000000-0000-7971-9553-9dd821fd7f55", "source:ks_00000000-0000-7930-9f0d-0ed5d41a7410"]',
   'review_state: "accepted"',
   'sensitivity: "public"',
   'freshness: "current"',
@@ -110,22 +115,51 @@ function rewriteTrace(
   };
 }
 
+/** Derives the fixture's receiving Thread and first Turn from the complete user handoff name. */
+function fixtureChatTaskTurnId(
+  actorId: string,
+  workspaceId: string,
+  originatingThreadId: string,
+  requestId: string
+): string {
+  const actor = { kind: 'user' as const, id: actorId };
+  const receivingThreadId = conversationTaskThreadId(
+    actor,
+    workspaceId,
+    originatingThreadId,
+    requestId
+  );
+  return conversationTaskTurnId(
+    actor,
+    workspaceId,
+    originatingThreadId,
+    receivingThreadId,
+    requestId
+  );
+}
+
 /** Creates deterministic package bytes for one worker Turn. */
 function createPackage(
   workspaceRoot: string,
   writeFiles = true,
-  turnId = 'tu_context'
+  turnId = 'tu_00000000-0000-71df-9e29-90f5b5578e47',
+  threadId = 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5'
 ): WorkerContextPackageFiles {
   const packageFiles = createWorkerContextPackageFiles({
     contextBudgetTokens: 4_096,
-    includedItemIds: ['it_request', 'it_prior', 'it_gate_request', 'it_gate_response'],
+    includedItemIds: [
+      'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+      'it_00000000-0000-767c-97eb-d0af46940f44',
+      'it_00000000-0000-7d5c-b364-336c2c54fdf3',
+      'it_00000000-0000-7a18-85bb-ebc66a6f69bc',
+    ],
     materialSelections: [
       {
         bindingMutationRequestId: 'req_bind_2',
         content: 'Second material.\n',
         contentDigest: sha256('Second material.\n'),
         inclusionReason: 'thread_binding',
-        materialId: 'mat_b',
+        materialId: 'mat_00000000-0000-71c3-b271-61d90d2cd29c',
         mediaType: 'text/plain',
         parentRevisionId: null,
         revisionId: 'rev_b1',
@@ -136,18 +170,18 @@ function createPackage(
         content: '# First material\n',
         contentDigest: sha256('# First material\n'),
         inclusionReason: 'thread_binding',
-        materialId: 'mat_a',
+        materialId: 'mat_00000000-0000-7dff-bea7-c084ff4fb19f',
         mediaType: 'text/markdown',
         parentRevisionId: 'rev_a0',
         revisionId: 'rev_a1',
         sensitivity: 'public',
       },
     ],
-    threadId: 'th_context',
+    threadId,
     turnId,
     workerRequestBytes: WORKER_REQUEST_BYTES,
-    workerRequestItemId: 'it_request',
-    workspaceId: 'ws_context',
+    workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+    workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
   });
 
   if (writeFiles) {
@@ -192,9 +226,9 @@ function createEnvironmentPackage(
         workspaceRoot: '/workspace',
       },
     },
-    agentSessionId: 'as_context',
+    agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
     agentSetup: createTestAgentSetup(),
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     backend: {
       kind: 'openshell',
     },
@@ -209,23 +243,23 @@ function createEnvironmentPackage(
       startedAt: TURN_STARTED_AT,
       status: 'running',
       threadId: packageFiles.threadId,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       workspaceId: packageFiles.workspaceId,
     },
     turnInput: WORKER_REQUEST_BYTES,
-    userId: 'user_context',
+    userId: 'usr_00000000-0000-7696-a706-77197ba0ca6d',
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
 
   return AgentEnvironmentPackageSchema.parse({
     ...unresolved,
-    scope: { ...unresolved.scope, itemId: 'it_request' },
+    scope: { ...unresolved.scope, itemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d' },
     workspace: {
       ...unresolved.workspace,
       inputs: [
         buildWorkerContextPackageWorkspaceInput({
-          agentSessionId: 'as_context',
+          agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
           packageRootDigest: packageFiles.packageRootDigest,
           threadId: packageFiles.threadId,
           turnId: packageFiles.turnId,
@@ -241,6 +275,7 @@ function createAcceptedFixture(
   options: {
     readonly requestId?: string;
     readonly turnId?: string;
+    readonly threadId?: string;
     readonly knowledge?: boolean;
   } = {}
 ): {
@@ -248,9 +283,10 @@ function createAcceptedFixture(
   packageFiles: WorkerContextPackageFiles;
   trace: WorkerContextPackageTrace;
 } {
+  const threadId = options.threadId ?? 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5';
   const requestId = options.requestId ?? 'req_context';
-  const turnId = options.turnId ?? 'tu_context';
-  let packageFiles = createPackage(workspaceRoot, !options.knowledge, turnId);
+  const turnId = options.turnId ?? 'tu_00000000-0000-71df-9e29-90f5b5578e47';
+  let packageFiles = createPackage(workspaceRoot, !options.knowledge, turnId, threadId);
   if (options.knowledge) {
     packageFiles = createWorkerContextPackageFiles({
       contextBudgetTokens: 4_096,
@@ -260,30 +296,38 @@ function createAcceptedFixture(
           content: KNOWLEDGE_PAGE_BYTES,
           contentDigest: sha256(KNOWLEDGE_PAGE_BYTES),
           knowledgePageId: 'lessons/task-mode',
-          sourceRefs: ['source:ks_alpha', 'source:ks_beta'],
+          sourceRefs: [
+            'source:ks_00000000-0000-7971-9553-9dd821fd7f55',
+            'source:ks_00000000-0000-7930-9f0d-0ed5d41a7410',
+          ],
         },
       ],
       materialSelections: packageFiles.materialSelections.map((selection) => ({
         ...selection,
-        content: selection.materialId === 'mat_a' ? '# First material\n' : 'Second material.\n',
+        content:
+          selection.materialId === 'mat_00000000-0000-7dff-bea7-c084ff4fb19f'
+            ? '# First material\n'
+            : 'Second material.\n',
       })),
-      threadId: 'th_context',
+      threadId,
       turnId,
       workerRequestBytes: WORKER_REQUEST_BYTES,
-      workerRequestItemId: 'it_request',
-      workspaceId: 'ws_context',
+      workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     });
     writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
   }
   const environmentPackage = createEnvironmentPackage(packageFiles, requestId);
   const trace = createWorkerContextPackageTrace({
-    agentSessionId: 'as_context',
-    excludedItems: [{ itemId: 'it_excluded', reason: 'policy_excluded' }],
+    agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
+    excludedItems: [
+      { itemId: 'it_00000000-0000-7c65-bb19-0a17869ca8da', reason: 'policy_excluded' },
+    ],
     goalId: options.knowledge ? null : 'goal_context',
     knowledgeSelectionInput: options.knowledge
       ? {
           retrievalTraceRef: {
-            scopeId: `retrieval-trace/turn/ws_context/th_context/${turnId}`,
+            scopeId: `retrieval-trace/turn/ws_00000000-0000-7990-bde7-4411160ea0db/${threadId}/${turnId}`,
             objectId: 'krt_0190f4c8-0000-7000-8000-000000000399',
           },
         }
@@ -299,7 +343,7 @@ function createAcceptedFixture(
       : [],
     materialExclusions: [
       {
-        materialId: 'mat_excluded',
+        materialId: 'mat_00000000-0000-7d3d-a336-0dbae085eb7e',
         reason: 'sensitive_content',
         revisionId: 'rev_excluded_1',
         sensitivity: 'restricted',
@@ -326,7 +370,7 @@ function createAcceptedFixture(
     resourceId: `context_${turnId}`,
     resourceKind: 'filesystem' as const,
     strategy: 'filesystem' as const,
-    workspaceId: 'ws_context',
+    workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     writableRoots: [],
   };
   const readinessEvidence = [
@@ -339,7 +383,7 @@ function createAcceptedFixture(
     createdAt: TURN_STARTED_AT,
     id: trace.workspaceMaterializationRecordId,
     inputSnapshotId: workspaceInputSnapshot.id,
-    materializedRootRef: '/openkit/sessions/as_context/context',
+    materializedRootRef: '/openkit/sessions/as_00000000-0000-77fe-a8c9-41ee91fa0b94/context',
     packageSnapshotId: environmentPackage.snapshotId,
     policyDigest: createWorkerContextPackagePolicyDigest({
       backendKind: 'openshell',
@@ -349,7 +393,7 @@ function createAcceptedFixture(
     readinessEvidence,
     strategy: 'filesystem' as const,
     workerSessionId: 'sandbox_context',
-    workspaceId: 'ws_context',
+    workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
   };
   const materials = new Map([
     ...packageFiles.materialSelections.map(
@@ -358,22 +402,25 @@ function createAcceptedFixture(
           `${selection.materialId}:${selection.revisionId}`,
           {
             ...selection,
-            content: selection.materialId === 'mat_a' ? '# First material\n' : 'Second material.\n',
-            workspaceId: 'ws_context',
+            content:
+              selection.materialId === 'mat_00000000-0000-7dff-bea7-c084ff4fb19f'
+                ? '# First material\n'
+                : 'Second material.\n',
+            workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
           },
         ] as const
     ),
     [
-      'mat_excluded:rev_excluded_1',
+      'mat_00000000-0000-7d3d-a336-0dbae085eb7e:rev_excluded_1',
       {
         content: 'Restricted material.\n',
         contentDigest: sha256('Restricted material.\n'),
-        materialId: 'mat_excluded',
+        materialId: 'mat_00000000-0000-7d3d-a336-0dbae085eb7e',
         mediaType: 'text/plain',
         parentRevisionId: null,
         revisionId: 'rev_excluded_1',
         sensitivity: 'restricted' as const,
-        workspaceId: 'ws_context',
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
       },
     ] as const,
   ]);
@@ -381,89 +428,90 @@ function createAcceptedFixture(
     readAdmission: () => ({
       requestId,
       status: 'admitted',
-      threadId: 'th_context',
+      threadId,
       turnId,
-      workspaceId: 'ws_context',
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     }),
     readAgentEnvironmentPackage: () => environmentPackage,
     readAgentSession: () => ({
       environmentPackageSnapshotId: environmentPackage.snapshotId,
-      id: 'as_context',
+      id: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
       stale: false,
-      threadId: 'th_context',
-      workspaceId: 'ws_context',
+      threadId,
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     }),
     readBackendHandoff: () => ({
-      agentSessionId: 'as_context',
+      agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
       backendKind: 'openshell',
       backendSessionId: 'sandbox_context',
       packageSnapshotId: environmentPackage.snapshotId,
       readinessEvidence,
-      threadId: 'th_context',
+      threadId,
       turnId,
       workspaceHandoffState: 'complete',
-      workspaceId: 'ws_context',
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     }),
     readMaterialRevision: (_workspaceId, materialId, revisionId) =>
       materials.get(`${materialId}:${revisionId}`) ?? null,
     readThreadItems: () => [
       {
-        id: 'it_prior',
+        id: 'it_00000000-0000-767c-97eb-d0af46940f44',
         status: 'completed',
         text: 'Prior context',
-        threadId: 'th_context',
-        turnId: 'tu_prior',
+        threadId,
+        turnId: 'tu_00000000-0000-744f-ab60-309003770eba',
         type: 'user-message',
-        actor: { kind: 'user', id: 'user_local' },
-        workspaceId: 'ws_context',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
       },
       {
-        id: 'it_excluded',
+        id: 'it_00000000-0000-7c65-bb19-0a17869ca8da',
         status: 'completed',
         text: 'Private diagnostic',
-        threadId: 'th_context',
-        turnId: 'tu_prior',
+        threadId,
+        turnId: 'tu_00000000-0000-744f-ab60-309003770eba',
         type: 'status',
-        workspaceId: 'ws_context',
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
       },
       {
-        id: 'it_gate_request',
+        id: 'it_00000000-0000-7d5c-b364-336c2c54fdf3',
         status: 'completed',
         text: 'Approve the next attempt?',
-        threadId: 'th_context',
-        turnId: 'tu_gate',
+        threadId,
+        turnId: 'tu_00000000-0000-7dbb-847c-c60d46fbd63a',
         type: 'approval-request',
-        workspaceId: 'ws_context',
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
       },
       {
-        id: 'it_gate_response',
+        id: 'it_00000000-0000-7a18-85bb-ebc66a6f69bc',
         status: 'completed',
         text: 'Approved',
-        threadId: 'th_context',
-        turnId: 'tu_gate',
+        threadId,
+        turnId: 'tu_00000000-0000-7dbb-847c-c60d46fbd63a',
         type: 'approval-decision',
-        actor: { kind: 'user', id: 'user_local' },
-        causationId: 'it_gate_request',
-        workspaceId: 'ws_context',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        causationId: 'it_00000000-0000-7d5c-b364-336c2c54fdf3',
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
       },
       {
-        id: 'it_request',
+        id: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
         status: 'completed',
         text: WORKER_REQUEST_BYTES,
-        threadId: 'th_context',
+        threadId,
         turnId,
         type: 'user-message',
-        actor: { kind: 'user', id: 'user_local' },
-        workspaceId: 'ws_context',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
       },
     ],
+    readThreadParent: () => null,
     readTurn: () => ({
-      agentSessionId: 'as_context',
+      agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
       id: turnId,
       startedAt: TURN_STARTED_AT,
-      threadId: 'th_context',
-      triggerActor: { kind: 'user', id: 'user_local' },
-      workspaceId: 'ws_context',
+      threadId,
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     }),
     readWorkspaceInputSnapshot: () => workspaceInputSnapshot,
     readWorkspaceImportedFrom: () => null,
@@ -491,7 +539,7 @@ function createImportedHistoryFixture(
   const accepted = createAcceptedFixture(workspaceRoot);
   const requestId = `import-lineage:sha256:${'a'.repeat(64)}`;
   const packageSnapshotId = 'aepsnap_imported_ws_context_1';
-  const agentSessionId = 'as_imported_ws_context_1';
+  const agentSessionId = 'as_00000000-0000-7f31-8c50-7698630923dd';
   const historicalWorkerSessionId = `import-history-worker_${packageSnapshotId}`;
   const importedTrace = createWorkerContextPackageTrace({
     agentSessionId,
@@ -586,7 +634,7 @@ function createImportedHistoryFixture(
         exportCreatedAt: TURN_STARTED_AT,
         manifestDigest: `sha256:${'b'.repeat(64)}`,
         sourceDeploymentId: 'deployment_source',
-        sourceWorkspaceId: 'ws_source',
+        sourceWorkspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
       }),
       readWorkspaceMaterializationRecord: () => workspaceMaterializationRecord,
     },
@@ -616,11 +664,22 @@ function createLiveNullKnowledgeFixture(
   authorities: WorkerContextPackageAuthorityReader;
   trace: WorkerContextPackageTrace;
 } {
-  const fixture = createAcceptedFixture(workspaceRoot, { turnId: options.turnId });
-  const triggerActor = options.triggerActor ?? { kind: 'user' as const, id: 'user_local' };
+  const originatingThreadId = 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5';
+  const threadId = conversationTaskThreadId(
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    'ws_00000000-0000-7990-bde7-4411160ea0db',
+    originatingThreadId,
+    'req_context'
+  );
+  const fixture = createAcceptedFixture(workspaceRoot, { turnId: options.turnId, threadId });
+  const triggerActor = options.triggerActor ?? {
+    kind: 'user' as const,
+    id: 'usr_00000000-0000-7000-8000-000000000001',
+  };
   return {
     authorities: {
       ...fixture.authorities,
+      readThreadParent: () => originatingThreadId,
       readTurn: (...args) => {
         const turn = fixture.authorities.readTurn(...args);
         return turn ? { ...turn, triggerActor } : null;
@@ -639,7 +698,7 @@ describe('worker Context Package owner', () => {
     const fixture = createAcceptedFixture(workspaceRoot, { knowledge });
     const packagePath = join(
       workspaceRoot,
-      'threads/th_context/turns/tu_context/context-package/package.json'
+      'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package/package.json'
     );
     const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
     manifest.annotation = 'manifest';
@@ -707,9 +766,9 @@ describe('worker Context Package owner', () => {
     expect(
       readWorkerContextPackageTrace({
         authorities: fixture.authorities,
-        workspaceId: 'ws_context',
-        threadId: 'th_context',
-        turnId: 'tu_context',
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
+        threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
         workspaceRoot,
       })
     ).toEqual(read);
@@ -725,24 +784,32 @@ describe('worker Context Package owner', () => {
     const first = createPackage(workspaceRoot);
     const second = createWorkerContextPackageFiles({
       contextBudgetTokens: 4_096,
-      includedItemIds: ['it_request', 'it_prior', 'it_gate_request', 'it_gate_response'],
+      includedItemIds: [
+        'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+        'it_00000000-0000-767c-97eb-d0af46940f44',
+        'it_00000000-0000-7d5c-b364-336c2c54fdf3',
+        'it_00000000-0000-7a18-85bb-ebc66a6f69bc',
+      ],
       materialSelections: first.materialSelections.map((selection) => ({
         ...selection,
-        content: selection.materialId === 'mat_a' ? '# First material\n' : 'Second material.\n',
+        content:
+          selection.materialId === 'mat_00000000-0000-7dff-bea7-c084ff4fb19f'
+            ? '# First material\n'
+            : 'Second material.\n',
       })),
-      threadId: 'th_context',
-      turnId: 'tu_context',
+      threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+      turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
       workerRequestBytes: WORKER_REQUEST_BYTES,
-      workerRequestItemId: 'it_request',
-      workspaceId: 'ws_context',
+      workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     });
 
     expect(second).toEqual(first);
     expect(first.fileInventory.map((entry) => entry.path)).toEqual([
       'instructions.md',
       'package.json',
-      'workspace/materials/mat_a/rev_a1.md',
-      'workspace/materials/mat_b/rev_b1.txt',
+      'workspace/materials/mat_00000000-0000-71c3-b271-61d90d2cd29c/rev_b1.txt',
+      'workspace/materials/mat_00000000-0000-7dff-bea7-c084ff4fb19f/rev_a1.md',
     ]);
     expect(
       first.fileInventory.every((entry) => /^sha256:[a-f0-9]{64}$/.test(entry.contentDigest))
@@ -753,13 +820,18 @@ describe('worker Context Package owner', () => {
     const manifestBytes = first.files.find((file) => file.path === 'package.json')?.bytes;
     const manifest = JSON.parse(Buffer.from(manifestBytes ?? []).toString('utf8'));
     expect(manifest).toMatchObject({
-      contextPackageId: 'ctxpkg_tu_context',
-      includedItemIds: ['it_request', 'it_prior', 'it_gate_request', 'it_gate_response'],
+      contextPackageId: 'ctxpkg_tu_00000000-0000-71df-9e29-90f5b5578e47',
+      includedItemIds: [
+        'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+        'it_00000000-0000-767c-97eb-d0af46940f44',
+        'it_00000000-0000-7d5c-b364-336c2c54fdf3',
+        'it_00000000-0000-7a18-85bb-ebc66a6f69bc',
+      ],
       policyVersion: 'worker-context-v1',
       schemaVersion: 1,
-      threadId: 'th_context',
-      turnId: 'tu_context',
-      workspaceId: 'ws_context',
+      threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+      turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     });
     expect(manifest).not.toHaveProperty('contextPackageDigest');
     expect(manifest.fileInventory.map((entry: { path: string }) => entry.path)).not.toContain(
@@ -767,14 +839,14 @@ describe('worker Context Package owner', () => {
     );
     expect(
       buildWorkerContextPackageWorkspaceInput({
-        agentSessionId: 'as_context',
+        agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
         packageRootDigest: first.packageRootDigest,
-        threadId: 'th_context',
-        turnId: 'tu_context',
+        threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
       })
     ).toEqual({
       access: 'read-only',
-      id: 'context_tu_context',
+      id: 'context_tu_00000000-0000-71df-9e29-90f5b5578e47',
       kind: 'generated',
       materialization: {
         contentDigest: first.packageRootDigest,
@@ -783,13 +855,17 @@ describe('worker Context Package owner', () => {
       },
       source: {
         kind: 'generated',
-        pathRef: 'threads/th_context/turns/tu_context/context-package',
+        pathRef:
+          'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package',
       },
-      target: '/openkit/sessions/as_context/context',
+      target: '/openkit/sessions/as_00000000-0000-77fe-a8c9-41ee91fa0b94/context',
     });
     expect(
       readFileSync(
-        join(workspaceRoot, 'threads/th_context/turns/tu_context/context-package/instructions.md'),
+        join(
+          workspaceRoot,
+          'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package/instructions.md'
+        ),
         'utf8'
       )
     ).toBe(WORKER_REQUEST_BYTES);
@@ -799,27 +875,31 @@ describe('worker Context Package owner', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-knowledge-'));
     const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000399';
     const retrievalTraceRef = {
-      scopeId: 'retrieval-trace/turn/ws_context/th_context/tu_context',
+      scopeId:
+        'retrieval-trace/turn/ws_00000000-0000-7990-bde7-4411160ea0db/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/tu_00000000-0000-71df-9e29-90f5b5578e47',
       objectId: retrievalTraceId,
     };
     const contentDigest = sha256(KNOWLEDGE_PAGE_BYTES);
     const packageFiles = createWorkerContextPackageFiles({
       contextBudgetTokens: 4_096,
-      includedItemIds: ['it_request'],
+      includedItemIds: ['it_00000000-0000-7a3c-ae74-d9d096838a5d'],
       knowledgeSelections: [
         {
           content: KNOWLEDGE_PAGE_BYTES,
           contentDigest,
           knowledgePageId: 'lessons/task-mode',
-          sourceRefs: ['source:ks_beta', 'source:ks_alpha'],
+          sourceRefs: [
+            'source:ks_00000000-0000-7930-9f0d-0ed5d41a7410',
+            'source:ks_00000000-0000-7971-9553-9dd821fd7f55',
+          ],
         },
       ],
       materialSelections: [],
-      threadId: 'th_context',
-      turnId: 'tu_context',
+      threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+      turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
       workerRequestBytes: WORKER_REQUEST_BYTES,
-      workerRequestItemId: 'it_request',
-      workspaceId: 'ws_context',
+      workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     });
     writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
 
@@ -827,7 +907,10 @@ describe('worker Context Package owner', () => {
       contentDigest,
       knowledgePageId: 'lessons/task-mode',
       packagePath: 'knowledge/pages/lessons/task-mode.md',
-      sourceRefs: ['source:ks_alpha', 'source:ks_beta'],
+      sourceRefs: [
+        'source:ks_00000000-0000-7930-9f0d-0ed5d41a7410',
+        'source:ks_00000000-0000-7971-9553-9dd821fd7f55',
+      ],
     };
     expect(packageFiles).toMatchObject({
       knowledgeSelections: [expectedSelection],
@@ -841,7 +924,7 @@ describe('worker Context Package owner', () => {
       readFileSync(
         join(
           workspaceRoot,
-          'threads/th_context/turns/tu_context/context-package/knowledge/pages/lessons/task-mode.md'
+          'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package/knowledge/pages/lessons/task-mode.md'
         ),
         'utf8'
       )
@@ -858,7 +941,7 @@ describe('worker Context Package owner', () => {
     );
 
     const traceInput = {
-      agentSessionId: 'as_context',
+      agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
       excludedItems: [],
       goalId: null,
       knowledgeExclusions: [],
@@ -880,7 +963,7 @@ describe('worker Context Package owner', () => {
           knowledgeSelectionInput: {
             retrievalTraceRef: {
               ...retrievalTraceRef,
-              scopeId: 'retrieval-trace/workspace/ws_context',
+              scopeId: 'retrieval-trace/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
             },
           },
         })
@@ -908,9 +991,32 @@ describe('worker Context Package owner', () => {
     });
   });
 
+  it('retains an explicitly prepared Knowledge selection on a receiving Chat Task Thread', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-chat-selection-'));
+    const origin = 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5';
+    const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+    const workspaceId = 'ws_00000000-0000-7990-bde7-4411160ea0db';
+    const requestId = 'req_context';
+    const threadId = conversationTaskThreadId(actor, workspaceId, origin, requestId);
+    const turnId = conversationTaskTurnId(actor, workspaceId, origin, threadId, requestId);
+    const fixture = createAcceptedFixture(workspaceRoot, { threadId, turnId, knowledge: true });
+    expect(
+      writeWorkerContextPackageTrace({
+        workspaceRoot,
+        trace: fixture.trace,
+        authorities: { ...fixture.authorities, readThreadParent: () => origin },
+      })
+    ).toEqual(fixture.trace);
+  });
+
   it('accepts null Knowledge only for the exact persisted user Chat-subordinate Turn', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-chat-task-'));
-    const turnId = chatTaskModeTurnId('user_local', 'ws_context', 'th_context', 'req_context');
+    const turnId = fixtureChatTaskTurnId(
+      'usr_00000000-0000-7000-8000-000000000001',
+      'ws_00000000-0000-7990-bde7-4411160ea0db',
+      'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+      'req_context'
+    );
     const fixture = createLiveNullKnowledgeFixture(workspaceRoot, { turnId });
 
     expect(
@@ -921,45 +1027,75 @@ describe('worker Context Package owner', () => {
       })
     ).toEqual(fixture.trace);
     expect(
-      existsSync(join(workspaceRoot, `threads/th_context/turns/${turnId}/context-package.json`))
+      existsSync(
+        join(
+          workspaceRoot,
+          `threads/${fixture.trace.threadId}/turns/${turnId}/context-package.json`
+        )
+      )
     ).toBe(true);
   });
 
   it.each([
     {
       name: 'ordinary direct Task',
-      turnId: `turn_req_context_${commandInputHash({
-        actorId: 'user_local',
+      turnId: deriveEntityId('tu', {
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
         command: 'task.start',
         requestId: 'req_context',
-        threadId: 'th_context',
-        workspaceId: 'ws_context',
-      }).slice(-16)}`,
+        threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
+      }),
     },
     {
-      name: 'non-user trigger',
+      name: 'trigger kind mismatch',
       triggerActor: {
         id: 'agent_context',
         kind: 'agent' as const,
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       },
-      turnId: chatTaskModeTurnId('agent_context', 'ws_context', 'th_context', 'req_context'),
+      turnId: fixtureChatTaskTurnId(
+        'agent_context',
+        'ws_00000000-0000-7990-bde7-4411160ea0db',
+        'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        'req_context'
+      ),
     },
     {
       name: 'actor mismatch',
-      turnId: chatTaskModeTurnId('user_other', 'ws_context', 'th_context', 'req_context'),
+      turnId: fixtureChatTaskTurnId(
+        'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+        'ws_00000000-0000-7990-bde7-4411160ea0db',
+        'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        'req_context'
+      ),
     },
     {
       name: 'Workspace mismatch',
-      turnId: chatTaskModeTurnId('user_local', 'ws_other', 'th_context', 'req_context'),
+      turnId: fixtureChatTaskTurnId(
+        'usr_00000000-0000-7000-8000-000000000001',
+        'ws_00000000-0000-71f5-922f-6fd42f52f580',
+        'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        'req_context'
+      ),
     },
     {
       name: 'Thread mismatch',
-      turnId: chatTaskModeTurnId('user_local', 'ws_context', 'th_other', 'req_context'),
+      turnId: fixtureChatTaskTurnId(
+        'usr_00000000-0000-7000-8000-000000000001',
+        'ws_00000000-0000-7990-bde7-4411160ea0db',
+        'th_00000000-0000-78ce-b458-8347d12d1da2',
+        'req_context'
+      ),
     },
     {
       name: 'request mismatch',
-      turnId: chatTaskModeTurnId('user_local', 'ws_context', 'th_context', 'req_other'),
+      turnId: fixtureChatTaskTurnId(
+        'usr_00000000-0000-7000-8000-000000000001',
+        'ws_00000000-0000-7990-bde7-4411160ea0db',
+        'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        'req_other'
+      ),
     },
   ])('rejects null Knowledge for $name before immutable trace write', ({
     triggerActor,
@@ -976,7 +1112,12 @@ describe('worker Context Package owner', () => {
       })
     ).toThrow();
     expect(
-      existsSync(join(workspaceRoot, `threads/th_context/turns/${turnId}/context-package.json`))
+      existsSync(
+        join(
+          workspaceRoot,
+          `threads/${fixture.trace.threadId}/turns/${turnId}/context-package.json`
+        )
+      )
     ).toBe(false);
   });
 
@@ -1010,9 +1151,9 @@ describe('worker Context Package owner', () => {
     expect(
       readWorkerContextPackageTrace({
         authorities: fixture.authorities,
-        threadId: 'th_context',
-        turnId: 'tu_context',
-        workspaceId: 'ws_context',
+        threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+        turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
+        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
         workspaceRoot,
       })
     ).toEqual(fixture.trace);
@@ -1024,17 +1165,25 @@ describe('worker Context Package owner', () => {
       })
     ).toEqual(fixture.trace);
     expect(
-      existsSync(join(workspaceRoot, 'threads/th_context/turns/tu_context/context-package.json'))
+      existsSync(
+        join(
+          workspaceRoot,
+          'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package.json'
+        )
+      )
     ).toBe(true);
     expect(
       readFileSync(
-        join(workspaceRoot, 'threads/th_context/turns/tu_context/context-package.json'),
+        join(
+          workspaceRoot,
+          'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package.json'
+        ),
         'utf8'
       )
     ).toBe(serializeWorkerContextPackageTrace(fixture.trace));
 
     const conflicting = createWorkerContextPackageTrace({
-      agentSessionId: 'as_context',
+      agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
       excludedItems: [],
       goalId: 'goal_context',
       packageFiles: fixture.packageFiles,
@@ -1102,7 +1251,10 @@ describe('worker Context Package owner', () => {
       })
     ).toEqual({ trace: fixture.trace, verification: 'imported-history' });
     writeFileSync(
-      join(workspaceRoot, 'threads/th_context/turns/tu_context/context-package.json'),
+      join(
+        workspaceRoot,
+        'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package.json'
+      ),
       serializeWorkerContextPackageTrace(fixture.trace)
     );
     expect(
@@ -1205,7 +1357,7 @@ describe('worker Context Package owner', () => {
         writeFileSync(
           join(
             workspaceRoot,
-            'threads/th_context/turns/tu_context/context-package/instructions.md'
+            'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package/instructions.md'
           ),
           'Tampered request.\n'
         );
@@ -1232,13 +1384,13 @@ describe('worker Context Package owner', () => {
         () =>
           createWorkerContextPackageFiles({
             contextBudgetTokens: 1,
-            includedItemIds: ['it_request'],
+            includedItemIds: ['it_00000000-0000-7a3c-ae74-d9d096838a5d'],
             materialSelections: [],
             threadId: '..',
-            turnId: 'tu_context',
+            turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
             workerRequestBytes: WORKER_REQUEST_BYTES,
-            workerRequestItemId: 'it_request',
-            workspaceId: 'ws_context',
+            workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+            workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
           }),
       ],
       [
@@ -1258,7 +1410,10 @@ describe('worker Context Package owner', () => {
           const linkedRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-link-'));
           const redirected = mkdtempSync(join(tmpdir(), 'openkit-worker-context-redirect-'));
           mkdirSync(join(linkedRoot, 'threads'));
-          symlinkSync(redirected, join(linkedRoot, 'threads/th_context'));
+          symlinkSync(
+            redirected,
+            join(linkedRoot, 'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5')
+          );
           writeWorkerContextPackageFiles(linkedRoot, createPackage(linkedRoot, false));
         },
       ],
@@ -1271,7 +1426,9 @@ describe('worker Context Package owner', () => {
               fixture.authorities
                 .readThreadItems(...args)
                 .map((item) =>
-                  item.id === 'it_request' ? { ...item, text: '{"task":"changed"}' } : item
+                  item.id === 'it_00000000-0000-7a3c-ae74-d9d096838a5d'
+                    ? { ...item, text: '{"task":"changed"}' }
+                    : item
                 ),
           }),
       ],
@@ -1282,7 +1439,9 @@ describe('worker Context Package owner', () => {
             ...fixture.authorities,
             readTurn: (...args) => {
               const turn = fixture.authorities.readTurn(...args);
-              return turn ? { ...turn, agentSessionId: 'as_other' } : null;
+              return turn
+                ? { ...turn, agentSessionId: 'as_00000000-0000-7436-9246-ac6dd3ca3fe4' }
+                : null;
             },
           }),
       ],
@@ -1385,7 +1544,9 @@ describe('worker Context Package owner', () => {
           verify({
             ...fixture.authorities,
             readMaterialRevision: (...args) =>
-              args[1] === 'mat_excluded' ? null : fixture.authorities.readMaterialRevision(...args),
+              args[1] === 'mat_00000000-0000-7d3d-a336-0dbae085eb7e'
+                ? null
+                : fixture.authorities.readMaterialRevision(...args),
           }),
       ],
       [
@@ -1393,7 +1554,7 @@ describe('worker Context Package owner', () => {
         () => {
           const packageRoot = join(
             workspaceRoot,
-            'threads/th_context/turns/tu_context/context-package'
+            'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package'
           );
           writeFileSync(join(packageRoot, 'unexpected.txt'), 'unexpected');
           symlinkSync(join(packageRoot, 'instructions.md'), join(packageRoot, 'unexpected-link'));

@@ -6,7 +6,7 @@ import {
   createAdministrationEnvironmentTools,
 } from './environment-tools.js';
 
-const actor = { kind: 'local', userId: 'user_admin' } as const;
+const actor = { kind: 'local', userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5' } as const;
 const prepareTool: AgentTool = {
   name: 'worker_environment.prepare',
   description: 'Prepare.',
@@ -25,11 +25,14 @@ describe('administration Worker environment Tools', () => {
     });
 
     await tools[0].execute(
-      { workspaceId: 'ws_target', limit: 20 },
+      { workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636', limit: 20 },
       { callId: 'call_list', signal: new AbortController().signal }
     );
 
-    expect(list).toHaveBeenCalledWith({ actor, workspaceId: 'ws_target' }, { limit: 20 });
+    expect(list).toHaveBeenCalledWith(
+      { actor, workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' },
+      { limit: 20 }
+    );
   });
 
   it('returns the operation owner denial as a typed Tool result', async () => {
@@ -51,7 +54,7 @@ describe('administration Worker environment Tools', () => {
     });
 
     const result = await tools[0].execute(
-      { workspaceId: 'ws_other' },
+      { workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
       { callId: 'call_denied', signal: new AbortController().signal }
     );
 
@@ -69,7 +72,7 @@ describe('administration Worker environment Tools', () => {
     const [prepareToolView, tool] = createAdministrationEnvironmentCandidateTools({
       actor,
       administrationThreadId: 'thread_admin',
-      administrationTurnId: 'turn_admin',
+      administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
       prepare,
     });
     expect(prepareToolView.inputSchema).toMatchObject({
@@ -90,7 +93,7 @@ describe('administration Worker environment Tools', () => {
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(prepare.mock.calls[0]).toEqual(prepare.mock.calls[1]);
     expect(prepare).toHaveBeenCalledWith(
-      { actor, administrationTurnId: 'turn_admin' },
+      { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
       expect.objectContaining({ ...args, mode: 'recover', administrationThreadId: 'thread_admin' })
     );
     expect(JSON.stringify(result)).toContain('recovery_required');
@@ -134,7 +137,7 @@ describe('administration Worker environment Tools', () => {
       const tools = createAdministrationEnvironmentCandidateTools({
         actor,
         administrationThreadId: 'thread_admin',
-        administrationTurnId: 'turn_admin',
+        administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         prepare,
       });
       const tool = tools[mode === 'prepare' ? 0 : 1];
@@ -143,7 +146,7 @@ describe('administration Worker environment Tools', () => {
       await tool.execute(args, context);
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(prepare).toHaveBeenCalledWith(
-        { actor, administrationTurnId: 'turn_admin' },
+        { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
         expect.objectContaining({ ...args, mode, administrationThreadId: 'thread_admin' })
       );
 
@@ -172,7 +175,7 @@ describe('administration Worker environment Tools', () => {
       const tools = createAdministrationEnvironmentCandidateTools({
         actor,
         administrationThreadId: 'thread_admin',
-        administrationTurnId: 'turn_admin',
+        administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         prepare,
       });
       const tool = tools[mode === 'prepare' ? 0 : 1];

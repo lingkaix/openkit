@@ -12,12 +12,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { CodexRuntimeProvenanceCapture } from './codex-runtime-provenance.js';
 
 const LINEAGE: WorkerLineage = {
-  agentSessionId: 'as_provenance_1',
+  agentSessionId: 'as_00000000-0000-77f0-b6b1-aa089270d9f1',
   packageSnapshotId: 'pkg_provenance_1',
   requestId: 'req_provenance_1',
-  threadId: 'th_outer_1',
-  turnId: 'turn_outer_1',
-  workspaceId: 'ws_provenance_1',
+  threadId: 'th_00000000-0000-7afc-979f-7b7e3b8d2192',
+  turnId: 'tu_00000000-0000-7db2-80a0-e11c10d46caf',
+  workspaceId: 'ws_00000000-0000-7d64-afd8-bc49f3d28a3c',
 };
 const ROLLOUT_CANDIDATE_HARD_CAP = 256;
 const RETAINED_FRAME_HARD_CAP = 4096;
@@ -77,13 +77,19 @@ describe('Codex runtime provenance capture', () => {
   it('preserves split primary bytes and indexes every physical frame', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
       rolloutLine('turn_context', { turn_id: 'native-turn-root' }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
     const bytes = Buffer.from(
       [
-        JSON.stringify({ thread_id: 'thread-root', type: 'thread.started' }),
+        JSON.stringify({
+          thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+          type: 'thread.started',
+        }),
         JSON.stringify({
           item: { text: 'split 💡', type: 'agent_message' },
           type: 'item.completed',
@@ -134,7 +140,7 @@ describe('Codex runtime provenance capture', () => {
         byteOffset: 0,
         eventKind: 'thread.started',
         frameSequence: 0,
-        nativeThreadId: 'thread-root',
+        nativeThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
         parseStatus: 'parsed',
         streamRef: 'stream-0000.jsonl',
       }),
@@ -143,7 +149,7 @@ describe('Codex runtime provenance capture', () => {
         byteOffset: firstFrameLength(bytes),
         eventKind: 'item.completed',
         frameSequence: 1,
-        nativeThreadId: 'thread-root',
+        nativeThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
         parseStatus: 'parsed',
         streamRef: 'stream-0000.jsonl',
       }),
@@ -154,17 +160,20 @@ describe('Codex runtime provenance capture', () => {
   it('copies only the stable rollout forest reachable from native spawn edges', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
       rolloutLine('turn_context', { turn_id: 'native-turn-root' }),
     ]);
     installRollout(fixture.codexHome, 'child-researcher.jsonl', [
       sessionMeta({
         depth: 1,
         nickname: 'Curie',
-        parentThreadId: 'thread-root',
+        parentThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
         role: 'researcher',
         sessionId: 'session-root',
-        threadId: 'thread-child-a',
+        threadId: 'th_00000000-0000-7fcc-8ba4-3e88a8618d66',
       }),
       rolloutLine('turn_context', { turn_id: 'native-turn-a' }),
     ]);
@@ -172,26 +181,35 @@ describe('Codex runtime provenance capture', () => {
       sessionMeta({
         depth: 1,
         nickname: 'Turing',
-        parentThreadId: 'thread-root',
+        parentThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
         role: 'reviewer',
         sessionId: 'session-root',
-        threadId: 'thread-child-b',
+        threadId: 'th_00000000-0000-74fb-a708-9ea812a24f31',
       }),
       rolloutLine('turn_context', { turn_id: 'native-turn-b' }),
     ]);
     installRollout(fixture.codexHome, 'unrelated.jsonl', [
-      sessionMeta({ sessionId: 'session-other', threadId: 'thread-unrelated' }),
+      sessionMeta({
+        sessionId: 'session-other',
+        threadId: 'th_00000000-0000-7538-ac54-1c80980f4a6f',
+      }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
     await capture.writePrimaryChunk(
       Buffer.from(
         [
-          JSON.stringify({ thread_id: 'thread-root', type: 'thread.started' }),
+          JSON.stringify({
+            thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+            type: 'thread.started',
+          }),
           JSON.stringify({
             item: {
-              receiver_thread_ids: ['thread-child-b', 'thread-child-a'],
-              sender_thread_id: 'thread-root',
+              receiver_thread_ids: [
+                'th_00000000-0000-74fb-a708-9ea812a24f31',
+                'th_00000000-0000-7fcc-8ba4-3e88a8618d66',
+              ],
+              sender_thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
               status: 'completed',
               tool: 'spawn_agent',
               type: 'collab_tool_call',
@@ -218,18 +236,18 @@ describe('Codex runtime provenance capture', () => {
       .slice(1)
       .map((stream) => readFileSync(join(fixture.rawStreamsRoot, stream.streamRef), 'utf8'))
       .join('\n');
-    expect(copiedText).toContain('thread-root');
-    expect(copiedText).toContain('thread-child-a');
-    expect(copiedText).toContain('thread-child-b');
-    expect(copiedText).not.toContain('thread-unrelated');
+    expect(copiedText).toContain('th_00000000-0000-7757-8ce0-9a1acf9aab47');
+    expect(copiedText).toContain('th_00000000-0000-7fcc-8ba4-3e88a8618d66');
+    expect(copiedText).toContain('th_00000000-0000-74fb-a708-9ea812a24f31');
+    expect(copiedText).not.toContain('th_00000000-0000-7538-ac54-1c80980f4a6f');
     const childEntries = readIndex(fixture.nativeOriginIndexPath).filter(
-      (entry) => entry.nativeThreadId === 'thread-child-a'
+      (entry) => entry.nativeThreadId === 'th_00000000-0000-7fcc-8ba4-3e88a8618d66'
     );
     expect(childEntries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           nativeSessionId: 'session-root',
-          parentNativeThreadId: 'thread-root',
+          parentNativeThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
           runtimeDepth: 1,
           runtimeNickname: 'Curie',
           runtimeRole: 'researcher',
@@ -242,20 +260,25 @@ describe('Codex runtime provenance capture', () => {
   it('marks malformed, partial, missing, and bounded captures incomplete', async () => {
     const missingFixture = provenanceFixture();
     installRollout(missingFixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     const missingCapture = new CodexRuntimeProvenanceCapture(missingFixture.options);
     await missingCapture.writePrimaryChunk(
       Buffer.from(
-        `${JSON.stringify({ thread_id: 'thread-root', type: 'thread.started' })}\n${JSON.stringify({
-          item: {
-            receiver_thread_ids: ['thread-missing'],
-            sender_thread_id: 'thread-root',
-            tool: 'spawn_agent',
-            type: 'collab_tool_call',
-          },
-          type: 'item.completed',
-        })}\n`
+        `${JSON.stringify({ thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47', type: 'thread.started' })}\n${JSON.stringify(
+          {
+            item: {
+              receiver_thread_ids: ['th_00000000-0000-7de5-a125-4a413168ea0a'],
+              sender_thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+              tool: 'spawn_agent',
+              type: 'collab_tool_call',
+            },
+            type: 'item.completed',
+          }
+        )}\n`
       )
     );
     await missingCapture.finalize();
@@ -265,11 +288,14 @@ describe('Codex runtime provenance capture', () => {
 
     const boundedFixture = provenanceFixture({ maxTotalBytes: 128 });
     installRollout(boundedFixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     const boundedCapture = new CodexRuntimeProvenanceCapture(boundedFixture.options);
     const oversized = Buffer.from(
-      `${JSON.stringify({ thread_id: 'thread-root', type: 'thread.started' })}\n{not-json}\n${'x'.repeat(160)}`
+      `${JSON.stringify({ thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47', type: 'thread.started' })}\n{not-json}\n${'x'.repeat(160)}`
     );
     await boundedCapture.writePrimaryChunk(oversized);
     await boundedCapture.finalize();
@@ -296,12 +322,15 @@ describe('Codex runtime provenance capture', () => {
   it('publishes incomplete manifests for terminal partial frames and contradictory parentage', async () => {
     const partialFixture = provenanceFixture();
     installRollout(partialFixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     const partialCapture = new CodexRuntimeProvenanceCapture(partialFixture.options);
     await partialCapture.writePrimaryChunk(
       Buffer.from(
-        `${JSON.stringify({ thread_id: 'thread-root', type: 'thread.started' })}\n{"type":"item.completed"`
+        `${JSON.stringify({ thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47', type: 'thread.started' })}\n{"type":"item.completed"`
       )
     );
 
@@ -315,28 +344,33 @@ describe('Codex runtime provenance capture', () => {
 
     const contradictoryFixture = provenanceFixture();
     installRollout(contradictoryFixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     installRollout(contradictoryFixture.codexHome, 'child.jsonl', [
       sessionMeta({
         depth: 1,
-        parentThreadId: 'thread-other-parent',
+        parentThreadId: 'th_00000000-0000-7052-816e-12588d601fd2',
         sessionId: 'session-other',
-        threadId: 'thread-child',
+        threadId: 'th_00000000-0000-7d57-b692-d73f38616be0',
       }),
     ]);
     const contradictoryCapture = new CodexRuntimeProvenanceCapture(contradictoryFixture.options);
     await contradictoryCapture.writePrimaryChunk(
       Buffer.from(
-        `${JSON.stringify({ thread_id: 'thread-root', type: 'thread.started' })}\n${JSON.stringify({
-          item: {
-            receiver_thread_ids: ['thread-child'],
-            sender_thread_id: 'thread-root',
-            tool: 'spawn_agent',
-            type: 'collab_tool_call',
-          },
-          type: 'item.completed',
-        })}\n`
+        `${JSON.stringify({ thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47', type: 'thread.started' })}\n${JSON.stringify(
+          {
+            item: {
+              receiver_thread_ids: ['th_00000000-0000-7d57-b692-d73f38616be0'],
+              sender_thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+              tool: 'spawn_agent',
+              type: 'collab_tool_call',
+            },
+            type: 'item.completed',
+          }
+        )}\n`
       )
     );
     await contradictoryCapture.finalize();
@@ -349,7 +383,10 @@ describe('Codex runtime provenance capture', () => {
   it('bounds rollout candidate discovery before inspecting candidates beyond the hard cap', async () => {
     const fixture = provenanceFixture({ maxStreamCount: 2 });
     installRollout(fixture.codexHome, '000-root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     for (let index = 0; index < ROLLOUT_CANDIDATE_HARD_CAP - 1; index += 1) {
       installRollout(fixture.codexHome, `100-unrelated-${String(index).padStart(3, '0')}.jsonl`, [
@@ -357,11 +394,14 @@ describe('Codex runtime provenance capture', () => {
       ]);
     }
     installRollout(fixture.codexHome, 'zzz-conflicting-root.jsonl', [
-      sessionMeta({ sessionId: 'session-conflict', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-conflict',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
-    await capture.writePrimaryChunk(primaryExec('thread-root'));
+    await capture.writePrimaryChunk(primaryExec('th_00000000-0000-7757-8ce0-9a1acf9aab47'));
     await capture.finalize();
 
     expect(readJson(fixture.streamManifestPath)).toMatchObject({
@@ -376,7 +416,10 @@ describe('Codex runtime provenance capture', () => {
   it('does not index bytes that a failed raw-file write never retained', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
     const probe = await open(join(fixture.codexHome, 'write-probe'), 'w');
@@ -384,9 +427,9 @@ describe('Codex runtime provenance capture', () => {
     await probe.close();
     writes.mockRejectedValueOnce(new Error('injected raw write failure'));
     try {
-      await expect(capture.writePrimaryChunk(primaryExec('thread-root'))).rejects.toThrow(
-        'injected raw write failure'
-      );
+      await expect(
+        capture.writePrimaryChunk(primaryExec('th_00000000-0000-7757-8ce0-9a1acf9aab47'))
+      ).rejects.toThrow('injected raw write failure');
     } finally {
       writes.mockRestore();
     }
@@ -405,10 +448,16 @@ describe('Codex runtime provenance capture', () => {
   it('stops retaining raw bytes at the global frame hard cap and indexes every retained frame', async () => {
     const fixture = provenanceFixture({ maxStreamCount: 2 });
     installRollout(fixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     const frames = [
-      JSON.stringify({ thread_id: 'thread-root', type: 'thread.started' }),
+      JSON.stringify({
+        thread_id: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+        type: 'thread.started',
+      }),
       ...Array.from({ length: RETAINED_FRAME_HARD_CAP }, () =>
         JSON.stringify({ type: 'turn.started' })
       ),
@@ -483,14 +532,14 @@ describe('Codex runtime provenance capture', () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
       sessionMeta({
-        parentThreadId: 'thread-foreign-parent',
+        parentThreadId: 'th_00000000-0000-7471-b3ec-7b8533272937',
         sessionId: 'session-root',
-        threadId: 'thread-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
       }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
-    await capture.writePrimaryChunk(primaryExec('thread-root'));
+    await capture.writePrimaryChunk(primaryExec('th_00000000-0000-7757-8ce0-9a1acf9aab47'));
     await capture.finalize();
 
     expect(readJson(fixture.streamManifestPath)).toMatchObject({
@@ -501,11 +550,15 @@ describe('Codex runtime provenance capture', () => {
   it('fails capture when the root rollout omits the pinned Codex CLI version', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
-      sessionMeta({ cliVersion: null, sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        cliVersion: null,
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
-    await capture.writePrimaryChunk(primaryExec('thread-root'));
+    await capture.writePrimaryChunk(primaryExec('th_00000000-0000-7757-8ce0-9a1acf9aab47'));
     await capture.finalize();
 
     expect(readJson(fixture.streamManifestPath)).toMatchObject({ captureStatus: 'failed' });
@@ -514,20 +567,27 @@ describe('Codex runtime provenance capture', () => {
   it('fails capture when a child rollout reports another Codex CLI version', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     installRollout(fixture.codexHome, 'child.jsonl', [
       sessionMeta({
         cliVersion: '0.145.0',
         depth: 1,
-        parentThreadId: 'thread-root',
+        parentThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
         sessionId: 'session-root',
-        threadId: 'thread-child',
+        threadId: 'th_00000000-0000-7d57-b692-d73f38616be0',
       }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
-    await capture.writePrimaryChunk(primaryExec('thread-root', ['thread-child']));
+    await capture.writePrimaryChunk(
+      primaryExec('th_00000000-0000-7757-8ce0-9a1acf9aab47', [
+        'th_00000000-0000-7d57-b692-d73f38616be0',
+      ])
+    );
     await capture.finalize();
 
     expect(readJson(fixture.streamManifestPath)).toMatchObject({ captureStatus: 'failed' });
@@ -536,15 +596,24 @@ describe('Codex runtime provenance capture', () => {
   it('rejects conflicting primary thread.started identities', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root-a.jsonl', [
-      sessionMeta({ sessionId: 'session-root-a', threadId: 'thread-root-a' }),
+      sessionMeta({
+        sessionId: 'session-root-a',
+        threadId: 'th_00000000-0000-76f5-8821-dc8ff676a8f4',
+      }),
     ]);
     installRollout(fixture.codexHome, 'root-b.jsonl', [
-      sessionMeta({ sessionId: 'session-root-b', threadId: 'thread-root-b' }),
+      sessionMeta({
+        sessionId: 'session-root-b',
+        threadId: 'th_00000000-0000-7974-8124-1b6ad3cf3c9e',
+      }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
     await capture.writePrimaryChunk(
-      Buffer.concat([primaryExec('thread-root-a'), primaryExec('thread-root-b')])
+      Buffer.concat([
+        primaryExec('th_00000000-0000-76f5-8821-dc8ff676a8f4'),
+        primaryExec('th_00000000-0000-7974-8124-1b6ad3cf3c9e'),
+      ])
     );
     await capture.finalize();
 
@@ -556,23 +625,33 @@ describe('Codex runtime provenance capture', () => {
   it('anchors child attribution to the first session_meta when inherited history repeats the root', async () => {
     const fixture = provenanceFixture();
     installRollout(fixture.codexHome, 'root.jsonl', [
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
     ]);
     installRollout(fixture.codexHome, 'child.jsonl', [
       sessionMeta({
         depth: 1,
         nickname: 'Curie',
-        parentThreadId: 'thread-root',
+        parentThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
         role: 'researcher',
         sessionId: 'session-root',
-        threadId: 'thread-child',
+        threadId: 'th_00000000-0000-7d57-b692-d73f38616be0',
       }),
-      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+      sessionMeta({
+        sessionId: 'session-root',
+        threadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
+      }),
       rolloutLine('turn_context', { turn_id: 'native-turn-child' }),
     ]);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
-    await capture.writePrimaryChunk(primaryExec('thread-root', ['thread-child']));
+    await capture.writePrimaryChunk(
+      primaryExec('th_00000000-0000-7757-8ce0-9a1acf9aab47', [
+        'th_00000000-0000-7d57-b692-d73f38616be0',
+      ])
+    );
     await capture.finalize();
 
     expect(readJson(fixture.streamManifestPath)).toMatchObject({
@@ -586,8 +665,8 @@ describe('Codex runtime provenance capture', () => {
       childEntries.map(() =>
         expect.objectContaining({
           nativeSessionId: 'session-root',
-          nativeThreadId: 'thread-child',
-          parentNativeThreadId: 'thread-root',
+          nativeThreadId: 'th_00000000-0000-7d57-b692-d73f38616be0',
+          parentNativeThreadId: 'th_00000000-0000-7757-8ce0-9a1acf9aab47',
           runtimeDepth: 1,
           runtimeNickname: 'Curie',
           runtimeRole: 'researcher',

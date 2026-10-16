@@ -113,7 +113,7 @@ describe('deepseek permission and bounds', () => {
   }) => {
     const roots = tempRoots();
     const session = await deepseekResidentAdapter.openSession({
-      agentSessionId: 'as-cause-boundary',
+      agentSessionId: 'as_00000000-0000-7086-a90d-2f256a93902c',
       controlRoot: roots.control,
       stateRoot: roots.state,
       environment: {},
@@ -187,7 +187,7 @@ describe('deepseek permission and bounds', () => {
   });
 
   it('counts session update bytes against the 16 MiB ceiling', () => {
-    const small = { sessionUpdate: 'usage_update', used: 1 };
+    const small = { sessionUpdate: 'use_00000000-0000-7858-8880-15d361f524ed', used: 1 };
     expect(deepseekSessionUpdateBytes(small)).toBeLessThan(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES);
     const huge = { text: 'y'.repeat(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES) };
     expect(deepseekSessionUpdateBytes(huge)).toBeGreaterThan(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES);
@@ -477,7 +477,7 @@ describe('deepseek resident adapter', () => {
   it('caps control requests at the shared ceiling and honors a shorter enclosing work deadline', async () => {
     const roots = tempRoots();
     const session = await deepseekResidentAdapter.openSession({
-      agentSessionId: 'as-request-deadline',
+      agentSessionId: 'as_00000000-0000-791e-b9d3-5b6827bbad97',
       controlRoot: roots.control,
       stateRoot: roots.state,
       environment: {},
@@ -932,7 +932,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const first = await session.startTurn(turn(roots, inference, 'FIRSTWORD', [], 'turn-1'));
+      const first = await session.startTurn(
+        turn(roots, inference, 'FIRSTWORD', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       const completed = await first.settled;
       expect(completed).toMatchObject({
         assistantText: 'hello world',
@@ -942,7 +944,9 @@ describe('deepseek resident adapter', () => {
       expect(completed.diagnostics?.compaction).toBe('unavailable');
       const handle = await session.nativeHandle();
       expect(handle.state).toBe('ready');
-      const empty = await session.startTurn(turn(roots, inference, 'second', [], 'turn-2'));
+      const empty = await session.startTurn(
+        turn(roots, inference, 'second', [], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
+      );
       expect(await empty.settled).toMatchObject({ assistantText: null, status: 'completed' });
       expect(requestTexts(inference.requests[1] as CapturedInference).join('\n')).toContain(
         'FIRSTWORD'
@@ -992,7 +996,9 @@ describe('deepseek resident adapter', () => {
       const reference = (handle as { reference: Uint8Array }).reference;
       const resumed = await open(roots, inference, reference);
       expect(await resumed.nativeHandle()).toEqual({ state: 'ready', reference });
-      const again = await resumed.startTurn(turn(roots, inference, 'again', [], 'turn-3'));
+      const again = await resumed.startTurn(
+        turn(roots, inference, 'again', [], 'tu_00000000-0000-701a-ab45-3210b32e0cff')
+      );
       expect(await again.settled).toMatchObject({
         assistantText: 'continued',
         status: 'completed',
@@ -1017,7 +1023,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const hanging = await session.startTurn(turn(roots, inference, 'hang', [], 'turn-1'));
+      const hanging = await session.startTurn(
+        turn(roots, inference, 'hang', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       await hanging.interrupt();
       expect(await hanging.settled).toMatchObject({
@@ -1025,7 +1033,9 @@ describe('deepseek resident adapter', () => {
         status: 'interrupted',
         stopReason: 'cancelled',
       });
-      const next = await session.startTurn(turn(roots, inference, 'next', [], 'turn-2'));
+      const next = await session.startTurn(
+        turn(roots, inference, 'next', [], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
+      );
       expect(await next.settled).toMatchObject({
         assistantText: 'after-cancel',
         status: 'completed',
@@ -1043,7 +1053,9 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       const turnResult = await (
-        await session.startTurn(turn(roots, inference, 'fail', [], 'turn-1'))
+        await session.startTurn(
+          turn(roots, inference, 'fail', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
       ).settled;
       expect(turnResult.assistantText).toBeNull();
       expect(turnResult.status).toBe('failed');
@@ -1063,8 +1075,11 @@ describe('deepseek resident adapter', () => {
       );
       const roots = tempRoots();
       const session = await open(roots, inference, null, mcp);
-      await (await session.startTurn(turn(roots, inference, 'FIRSTWORD', ['alpha'], 'turn-1')))
-        .settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'FIRSTWORD', ['alpha'], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       expect(toolNames(inference.requests[0] as CapturedInference)).toContain(
         'mcp__alpha__alpha_tool'
       );
@@ -1073,13 +1088,17 @@ describe('deepseek resident adapter', () => {
       const pid = Number(readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8'));
       const handle = await session.nativeHandle();
       await expect(
-        session.startTurn(turn(roots, inference, 'second', ['beta'], 'turn-2'))
+        session.startTurn(
+          turn(roots, inference, 'second', ['beta'], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
+        )
       ).rejects.toThrow(/supply does not match/);
       expect(inference.requests).toHaveLength(inferenceCount);
       expect(mcp.requests).toHaveLength(mcpCount);
       expect(Number(readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8'))).toBe(pid);
       expect(await session.nativeHandle()).toEqual(handle);
-      const again = await session.startTurn(turn(roots, inference, 'again', ['alpha'], 'turn-3'));
+      const again = await session.startTurn(
+        turn(roots, inference, 'again', ['alpha'], 'tu_00000000-0000-701a-ab45-3210b32e0cff')
+      );
       expect(await again.settled).toMatchObject({
         assistantText: 'tool-turn',
         status: 'completed',
@@ -1101,14 +1120,20 @@ describe('deepseek resident adapter', () => {
       const corrupt = await open(roots, inference, Uint8Array.from([0xff, 0xfe]));
       expect(await corrupt.nativeHandle()).toEqual({ state: 'unknown' });
       expect(corrupt.childState()).toBe('absent');
-      await expect(corrupt.startTurn(turn(roots, inference, 'nope', [], 'turn-x'))).rejects.toThrow(
-        /did not prove/
-      );
+      await expect(
+        corrupt.startTurn(
+          turn(roots, inference, 'nope', [], 'tu_00000000-0000-7a58-b74c-6b1d08ba0346')
+        )
+      ).rejects.toThrow(/did not prove/);
       const missing = await open(roots, inference, new TextEncoder().encode('missing-session-id'));
       expect(await missing.nativeHandle()).toEqual({ state: 'unknown' });
       expect(inference.requests).toHaveLength(0);
       const real = await open(roots, inference, null);
-      await (await real.startTurn(turn(roots, inference, 'seed', [], 'turn-1'))).settled;
+      await (
+        await real.startTurn(
+          turn(roots, inference, 'seed', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const handle = await real.nativeHandle();
       await real.close();
       const sidecar = join(roots.state, 'openkit-deepseek-binding.json');
@@ -1135,7 +1160,7 @@ describe('deepseek resident adapter', () => {
     closers.push(() => inference.close());
     const roots = tempRoots();
     const session = await open(roots, inference, null);
-    const input = turn(roots, inference, 'direct', [], 'turn-1');
+    const input = turn(roots, inference, 'direct', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c');
     const route: WorkerAdapterLlmRoute = {
       ...input.llmRoute,
       endpoint: { kind: 'openai-compatible', upstream: { kind: 'direct-provider' } },
@@ -1154,7 +1179,13 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const input = turn(roots, inference, 'bad-mcp', ['bad id'], 'turn-1');
+      const input = turn(
+        roots,
+        inference,
+        'bad-mcp',
+        ['bad id'],
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       await expect(session.startTurn(input)).rejects.toThrow(/not representable/);
       expect(session.childState()).toBe('absent');
       expect(inference.requests).toHaveLength(0);
@@ -1173,7 +1204,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const started = await session.startTurn(turn(roots, inference, 'FIRSTWORD', [], 'turn-1'));
+      const started = await session.startTurn(
+        turn(roots, inference, 'FIRSTWORD', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const handle = await session.nativeHandle();
       if (handle.state !== 'ready') throw new Error('expected ready handle');
@@ -1185,7 +1218,9 @@ describe('deepseek resident adapter', () => {
       expect(session.childState()).toBe('absent');
       expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
       const successor = await open(roots, inference, handle.reference);
-      const recovered = await successor.startTurn(turn(roots, inference, 'recover', [], 'turn-2'));
+      const recovered = await successor.startTurn(
+        turn(roots, inference, 'recover', [], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
+      );
       expect(await recovered.settled).toMatchObject({
         assistantText: 'recovered',
         status: 'completed',
@@ -1205,7 +1240,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const starting = session.startTurn(turn(roots, inference, 'race', [], 'turn-1'));
+      const starting = session.startTurn(
+        turn(roots, inference, 'race', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       const refused = starting.then(
         (turn) => turn,
         (error: unknown) => error
@@ -1247,7 +1284,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const hanging = await session.startTurn(turn(roots, inference, 'hang', [], 'turn-1'));
+      const hanging = await session.startTurn(
+        turn(roots, inference, 'hang', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const pid = Number(readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8'));
       process.kill(pid, 'SIGSTOP');
@@ -1287,7 +1326,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      await session.startTurn(turn(roots, inference, 'hang', [], 'turn-1'));
+      await session.startTurn(
+        turn(roots, inference, 'hang', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       await session.close();
       expect(session.childState()).toBe('absent');
@@ -1304,7 +1345,9 @@ describe('deepseek resident adapter', () => {
       const session = await open(roots, inference, null);
       mkdirSync(join(roots.state, 'openkit-deepseek-binding.json'));
       await expect(
-        session.startTurn(turn(roots, inference, 'seed', [], 'turn-1'))
+        session.startTurn(
+          turn(roots, inference, 'seed', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
       ).rejects.toThrow();
       expect((await session.nativeHandle()).state).not.toBe('ready');
       expect(session.childState()).toBe('absent');
@@ -1331,8 +1374,11 @@ describe('deepseek resident adapter', () => {
       );
       const roots = tempRoots();
       const session = await open(roots, inference, null, mcp);
-      await (await session.startTurn(turn(roots, inference, 'FIRSTWORD', ['alpha'], 'turn-1')))
-        .settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'FIRSTWORD', ['alpha'], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const handle = await session.nativeHandle();
       expect(handle.state).toBe('ready');
       await session.close();
@@ -1348,7 +1394,9 @@ describe('deepseek resident adapter', () => {
       expect(mcp.requests).toHaveLength(deniedAt);
       expect(resumed.childState()).toBe('running');
       allowCapability = true;
-      const mounted = await resumed.startTurn(turn(roots, inference, 'next', ['beta'], 'turn-2'));
+      const mounted = await resumed.startTurn(
+        turn(roots, inference, 'next', ['beta'], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
+      );
       expect(await mounted.settled).toMatchObject({
         assistantText: 'tool-turn',
         status: 'completed',
@@ -1371,10 +1419,20 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      await (await session.startTurn(turn(roots, inference, 'FIRSTWORD', [], 'turn-1'))).settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'FIRSTWORD', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const pid = Number(readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8'));
       const inferenceCount = inference.requests.length;
-      const changed = turn(roots, inference, 'skills', [], 'turn-2');
+      const changed = turn(
+        roots,
+        inference,
+        'skills',
+        [],
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      );
       await expect(
         session.startTurn({
           ...changed,
@@ -1400,12 +1458,22 @@ describe('deepseek resident adapter', () => {
         '---\nname: successor-skill\ndescription: Successor skill visible to the runtime\n---\nUse this skill for SECONDWORD.\n'
       );
       const first = await open(roots, inference, null);
-      await (await first.startTurn(turn(roots, inference, 'FIRSTWORD', [], 'turn-1'))).settled;
+      await (
+        await first.startTurn(
+          turn(roots, inference, 'FIRSTWORD', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const handle = await first.nativeHandle();
       if (handle.state !== 'ready') throw new Error('expected ready handle');
       await first.close();
       const successor = await open(roots, inference, handle.reference);
-      const changed = turn(roots, inference, 'SECONDWORD', [], 'turn-2');
+      const changed = turn(
+        roots,
+        inference,
+        'SECONDWORD',
+        [],
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      );
       const active = await successor.startTurn({
         ...changed,
         skillTargetPaths: [{ id: 'skill-1', targetPath: roots.work }],
@@ -1432,9 +1500,13 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const first = await session.startTurn(turn(roots, inference, 'one', [], 'turn-1'));
+      const first = await session.startTurn(
+        turn(roots, inference, 'one', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       expect(await first.settled).toMatchObject({ assistantText: 'done', status: 'completed' });
-      const second = await session.startTurn(turn(roots, inference, 'two', [], 'turn-2'));
+      const second = await session.startTurn(
+        turn(roots, inference, 'two', [], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
+      );
       await waitFor(() => inference.requests.length > 1);
       await first.interrupt();
       let settled = false;
@@ -1460,7 +1532,11 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      await (await session.startTurn(turn(roots, inference, 'seed', [], 'turn-1'))).settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'seed', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const handle = await session.nativeHandle();
       await session.close();
       const sidecar = join(roots.state, 'openkit-deepseek-binding.json');
@@ -1567,10 +1643,20 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      await (await session.startTurn(turn(roots, inference, 'FIRSTWORD', [], 'turn-1'))).settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'FIRSTWORD', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const pid = Number(readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8'));
       const inferenceCount = inference.requests.length;
-      const changed = turn(roots, inference, 'other-model', [], 'turn-2');
+      const changed = turn(
+        roots,
+        inference,
+        'other-model',
+        [],
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      );
       await expect(
         session.startTurn({
           ...changed,
@@ -1580,7 +1666,9 @@ describe('deepseek resident adapter', () => {
       expect(inference.requests).toHaveLength(inferenceCount);
       expect(Number(readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8'))).toBe(pid);
       expect(session.childState()).toBe('running');
-      const again = await session.startTurn(turn(roots, inference, 'still', [], 'turn-3'));
+      const again = await session.startTurn(
+        turn(roots, inference, 'still', [], 'tu_00000000-0000-701a-ab45-3210b32e0cff')
+      );
       expect(await again.settled).toMatchObject({ assistantText: 'kept', status: 'completed' });
     },
     LIVE
@@ -1601,7 +1689,9 @@ describe('deepseek resident adapter', () => {
         );
       };
       try {
-        const started = session.startTurn(turn(roots, inference, 'seed', [], 'turn-1'));
+        const started = session.startTurn(
+          turn(roots, inference, 'seed', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        );
         const active = await started;
         const sessionId = await nativeSessionId(session);
         deliver(
@@ -1646,7 +1736,9 @@ describe('deepseek resident adapter', () => {
         );
       };
       try {
-        const active = await session.startTurn(turn(roots, inference, 'seed', [], 'turn-1'));
+        const active = await session.startTurn(
+          turn(roots, inference, 'seed', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        );
         const sessionId = await nativeSessionId(session);
         deliver(
           session,
@@ -1670,7 +1762,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const single = await session.startTurn(turn(roots, inference, 'huge', [], 'turn-1'));
+      const single = await session.startTurn(
+        turn(roots, inference, 'huge', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const sessionId = await nativeSessionId(session);
       deliver(session, textChunk(sessionId, 'z'.repeat(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES)));
@@ -1683,7 +1777,7 @@ describe('deepseek resident adapter', () => {
       const aggregateRoots = tempRoots();
       const aggregateSession = await open(aggregateRoots, inference, null);
       const aggregate = await aggregateSession.startTurn(
-        turn(aggregateRoots, inference, 'more', [], 'turn-2')
+        turn(aggregateRoots, inference, 'more', [], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
       );
       const aggregateId = await nativeSessionId(aggregateSession);
       const overhead = Buffer.byteLength(
@@ -1715,7 +1809,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      await session.startTurn(turn(roots, inference, 'hang', [], 'turn-1'));
+      await session.startTurn(
+        turn(roots, inference, 'hang', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const sessionId = await nativeSessionId(session);
       const internals = session as unknown as {
@@ -1751,7 +1847,7 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null, mcp);
       const active = await session.startTurn(
-        turn(roots, inference, 'use-tool', ['alpha'], 'turn-1')
+        turn(roots, inference, 'use-tool', ['alpha'], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
       );
       await waitFor(() => mcp.requests.some((request) => request.method === 'tools/call'));
       await active.interrupt();
@@ -1772,7 +1868,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'drop', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'drop', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const interrupting = active.interrupt();
       for (const id of [nativePromptId(session)]) {
@@ -1800,7 +1898,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'drop', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'drop', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       deliver(
         session,
@@ -1824,7 +1924,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'drop', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'drop', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const native = session as unknown as {
         stderr: Buffer;
@@ -1924,7 +2026,7 @@ describe('deepseek resident adapter', () => {
                 method: 'session/update',
                 params: {
                   sessionId: native.sessionId,
-                  update: { sessionUpdate: 'usage_update', used: 1 },
+                  update: { sessionUpdate: 'use_00000000-0000-7858-8880-15d361f524ed', used: 1 },
                 },
               })
             ),
@@ -1956,7 +2058,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'drop', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'drop', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const internals = session as unknown as { stopProcess(): Promise<boolean> };
       const realStop = internals.stopProcess.bind(session);
@@ -1984,7 +2088,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'bad-frame', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'bad-frame', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       nativeStdout(session, Buffer.from('{broken-json\n'));
       const outcome = await Promise.race([
@@ -2008,7 +2114,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'unknown-core', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'unknown-core', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       deliver(
         session,
@@ -2036,7 +2144,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'contradict', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'contradict', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       nativeStdout(
         session,
@@ -2073,7 +2183,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'duplicate', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'duplicate', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       deliver(
         session,
@@ -2096,7 +2208,9 @@ describe('deepseek resident adapter', () => {
       expect((session as unknown as { unknownIdentity: boolean }).unknownIdentity).toBe(true);
       expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
       await expect(
-        session.startTurn(turn(roots, inference, 'later', [], 'turn-2'))
+        session.startTurn(
+          turn(roots, inference, 'later', [], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
+        )
       ).rejects.toThrow();
     },
     LIVE
@@ -2109,7 +2223,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'tail', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'tail', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const internals = session as unknown as { classifyNativeLine(line: string): string | null };
       const admitted: string[] = [];
@@ -2150,7 +2266,11 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      await (await session.startTurn(turn(roots, inference, 'first', [], 'turn-1'))).settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'first', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const internals = session as unknown as { agent: { closeSession(): Promise<unknown> } };
       internals.agent.closeSession = async () => {
         throw new Error('flush failure');
@@ -2170,7 +2290,11 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      await (await session.startTurn(turn(roots, inference, 'first', [], 'turn-1'))).settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'first', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       const internals = session as unknown as { agent: { closeSession(): Promise<unknown> } };
       internals.agent.closeSession = async () => new Promise(() => undefined);
       const closing = session.close();
@@ -2188,7 +2312,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'hang', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'hang', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       await waitFor(() => inference.requests.length > 0);
       const internals = session as unknown as { agent: { cancel(): Promise<unknown> } };
       internals.agent.cancel = async () => new Promise(() => undefined);
@@ -2224,7 +2350,9 @@ describe('deepseek resident adapter', () => {
         closers.push(() => inference.close());
         const roots = tempRoots();
         const session = await open(roots, inference, null);
-        const active = await session.startTurn(turn(roots, inference, 'utf8', [], 'turn-1'));
+        const active = await session.startTurn(
+          turn(roots, inference, 'utf8', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        );
         await waitFor(() => inference.requests.length > 0);
         const sessionId = await nativeSessionId(session);
         const bytes = Buffer.from(
@@ -2265,7 +2393,9 @@ describe('deepseek resident adapter', () => {
         );
       };
       try {
-        const active = await session.startTurn(turn(roots, inference, 'perm', [], 'turn-1'));
+        const active = await session.startTurn(
+          turn(roots, inference, 'perm', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        );
         await waitFor(() => inference.requests.length > 0);
         const sessionId = await nativeSessionId(session);
         const internals = session as unknown as { onPermission(params: unknown): unknown };
@@ -2328,7 +2458,9 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const active = await session.startTurn(turn(roots, inference, 'compact', [], 'turn-1'));
+      const active = await session.startTurn(
+        turn(roots, inference, 'compact', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+      );
       const sessionId = await nativeSessionId(session);
       deliver(
         session,
@@ -2374,12 +2506,12 @@ describe('deepseek resident adapter', () => {
       const canary = 'ambient-home-canary-deepseek-w5';
       writeFileSync(join(ambient, '.env'), `SECRET=${canary}\n`);
       writeFileSync(join(ambient, 'canary.txt'), canary);
-      writeFileSync(join(roots.work, '.env'), 'workspace-env-canary-deepseek-w5\n');
+      writeFileSync(join(roots.work, '.env'), 'ws_00000000-0000-719d-988d-9bd24340c63b\n');
       closers.push(async () => {
         rmSync(ambient, { force: true, recursive: true });
       });
       const input: WorkerResidentOpenInput = {
-        agentSessionId: 'as-deepseek-test',
+        agentSessionId: 'as_00000000-0000-7e7a-b29f-2cee4a8b27eb',
         controlRoot: roots.control,
         environment: {
           ACP_CLIENT_MODULE: '/tmp/not-the-production-client',
@@ -2398,7 +2530,11 @@ describe('deepseek resident adapter', () => {
       };
       const session = await deepseekResidentAdapter.openSession(input);
       sessions.push(session);
-      await (await session.startTurn(turn(roots, inference, 'home', [], 'turn-1'))).settled;
+      await (
+        await session.startTurn(
+          turn(roots, inference, 'home', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
+        )
+      ).settled;
       expect(treeHas(roots.state, canary)).toBe(false);
       expect(treeHas(roots.control, canary)).toBe(false);
     },
@@ -3383,7 +3519,7 @@ async function open(
   mcp?: SyntheticMcp
 ): Promise<WorkerResidentSession> {
   const input: WorkerResidentOpenInput = {
-    agentSessionId: 'as-deepseek-test',
+    agentSessionId: 'as_00000000-0000-7e7a-b29f-2cee4a8b27eb',
     controlRoot: roots.control,
     environment: {
       ACP_CLIENT_MODULE: '/tmp/not-the-production-client',

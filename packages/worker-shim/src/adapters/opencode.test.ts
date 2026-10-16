@@ -2819,19 +2819,25 @@ describe('OpenCode resident adapter', () => {
         sequence: sequence++,
       });
     const selector = {
-      agentSessionId: 'as-opencode',
+      agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
       agentSessionRuntimeBindingId: 'binding-as-opencode',
     };
     try {
-      const config = join(layout.root, 'sandbox', 'sessions', 'as-opencode', 'config');
+      const config = join(
+        layout.root,
+        'sandbox',
+        'sessions',
+        'as_00000000-0000-76f1-a900-7cc7b6acc18c',
+        'config'
+      );
       mkdirSync(config, { recursive: true });
       writeFileSync(
         join(config, 'package.json'),
         JSON.stringify({
           scope: {
-            agentSessionId: 'as-opencode',
-            threadId: 'thread-opencode',
-            workspaceId: 'workspace-opencode',
+            agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
+            threadId: 'th_00000000-0000-7ec0-b284-bff6fc8d1f4c',
+            workspaceId: 'ws_00000000-0000-7099-952e-2dc83159e133',
           },
           workspace: { root: join(layout.root, 'sandbox'), inputs: [] },
           extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
@@ -2845,8 +2851,8 @@ describe('OpenCode resident adapter', () => {
         effectiveSetupGeneration: 1,
         inferenceLoopbackCredential: credential('harness-inference'),
         resume: null,
-        threadId: 'thread-opencode',
-        workspaceId: 'workspace-opencode',
+        threadId: 'th_00000000-0000-7ec0-b284-bff6fc8d1f4c',
+        workspaceId: 'ws_00000000-0000-7099-952e-2dc83159e133',
       });
       expect(opened.disposition, JSON.stringify(opened.body)).toBe('succeeded');
       const inspected = await send('session.inspect', selector);
@@ -2862,14 +2868,14 @@ describe('OpenCode resident adapter', () => {
         ...selector,
         adapterId: 'opencode',
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'as-opencode-2',
+        agentSessionId: 'as_00000000-0000-71e9-8f55-478af7e213cc',
         agentSessionRuntimeBindingId: 'binding-as-opencode-2',
         capabilityLoopbackCredential: credential('harness-capability-2'),
         effectiveSetupGeneration: 1,
         inferenceLoopbackCredential: credential('harness-inference-2'),
         resume: null,
-        threadId: 'thread-opencode-2',
-        workspaceId: 'workspace-opencode',
+        threadId: 'th_00000000-0000-76ed-aef1-ce3441b44588',
+        workspaceId: 'ws_00000000-0000-7099-952e-2dc83159e133',
       });
       expect(second).toMatchObject({ body: { reasonCode: 'busy' }, disposition: 'refused' });
       const started = await send('turn.start', {
@@ -2882,14 +2888,16 @@ describe('OpenCode resident adapter', () => {
         inferenceToken: credential('inference-token'),
         leaseId: 'lease-opencode',
         packageSnapshotId: 'package-opencode',
-        threadId: 'thread-opencode',
-        turnId: 'turn-opencode',
+        threadId: 'th_00000000-0000-7ec0-b284-bff6fc8d1f4c',
+        turnId: 'tu_00000000-0000-791a-9172-907dfcca2783',
         turnSequence: 0,
         workerControlToken: credential('control-token'),
-        workspaceId: 'workspace-opencode',
+        workspaceId: 'ws_00000000-0000-7099-952e-2dc83159e133',
       });
       expect(started).toMatchObject({ body: { reasonCode: 'busy' }, disposition: 'refused' });
-      expect(integration.calls.includes('bind:as-opencode')).toBe(false);
+      expect(integration.calls.includes('bind:as_00000000-0000-76f1-a900-7cc7b6acc18c')).toBe(
+        false
+      );
       const closed = await send('session.close', selector);
       expect(closed.disposition).toBe('succeeded');
     } finally {
@@ -3754,7 +3762,7 @@ function openInput(
   resumeReference: Uint8Array | null = null
 ): WorkerResidentOpenInput {
   return {
-    agentSessionId: 'as-opencode',
+    agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
     controlRoot: layout.controlRoot,
     environment: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
     loopback: endpoints,
@@ -4725,7 +4733,11 @@ describe('W4 round-eight refused setup cleanup', () => {
           writeFileSync(
             join(config, 'package.json'),
             JSON.stringify({
-              scope: { agentSessionId: id, threadId: 'thread-r8', workspaceId: 'workspace-r8' },
+              scope: {
+                agentSessionId: id,
+                threadId: 'th_00000000-0000-7912-a2a7-b0a76905d908',
+                workspaceId: 'ws_00000000-0000-7533-a1af-6d78aa286488',
+              },
               workspace: { root: sandboxRoot, inputs: [] },
               extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
             })
@@ -4738,19 +4750,30 @@ describe('W4 round-eight refused setup cleanup', () => {
             effectiveSetupGeneration: 1,
             inferenceLoopbackCredential: credential(`inference-${id}`),
             resume,
-            threadId: 'thread-r8',
-            workspaceId: 'workspace-r8',
+            threadId: 'th_00000000-0000-7912-a2a7-b0a76905d908',
+            workspaceId: 'ws_00000000-0000-7533-a1af-6d78aa286488',
           });
         };
         try {
-          expect(await open('as-r8')).toMatchObject({
+          expect(await open('as_00000000-0000-72e9-8940-31943ef35325')).toMatchObject({
             disposition: 'succeeded',
             body: { nativeHandleState: 'ready' },
           });
           const reference = readFileSync(
-            join(nativeRoot, 'thread-r8', 'opencode', 'agent-session-references', 'as-r8')
+            join(
+              nativeRoot,
+              'th_00000000-0000-7912-a2a7-b0a76905d908',
+              'opencode',
+              'agent-session-references',
+              'as_00000000-0000-72e9-8940-31943ef35325'
+            )
           );
-          const config = join(sandboxRoot, 'sessions', 'as-r8', 'config');
+          const config = join(
+            sandboxRoot,
+            'sessions',
+            'as_00000000-0000-72e9-8940-31943ef35325',
+            'config'
+          );
           mkdirSync(config, { recursive: true });
           const packagePath = join(config, 'package.json');
           writeFileSync(
@@ -4795,33 +4818,41 @@ describe('W4 round-eight refused setup cleanup', () => {
                 command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot },
               },
               scope: {
-                agentSessionId: 'as-r8',
-                threadId: 'thread-r8',
-                turnId: 'turn-r8',
-                workspaceId: 'workspace-r8',
+                agentSessionId: 'as_00000000-0000-72e9-8940-31943ef35325',
+                threadId: 'th_00000000-0000-7912-a2a7-b0a76905d908',
+                turnId: 'tu_00000000-0000-7c53-aad0-9a7bec541f99',
+                workspaceId: 'ws_00000000-0000-7533-a1af-6d78aa286488',
               },
               snapshotId: 'package-r8',
               supply: { mcpServers: [] },
             })
           );
           const started = await send('turn.start', {
-            ...selector('as-r8'),
+            ...selector('as_00000000-0000-72e9-8940-31943ef35325'),
             aepRef: packagePath,
             capabilityToken: credential('capability-turn'),
-            contextPackageId: 'ctxpkg_turn-r8',
-            contextRef: join(sandboxRoot, 'sessions', 'as-r8', 'context'),
+            contextPackageId: 'ctxpkg_tu_00000000-0000-7c53-aad0-9a7bec541f99',
+            contextRef: join(
+              sandboxRoot,
+              'sessions',
+              'as_00000000-0000-72e9-8940-31943ef35325',
+              'context'
+            ),
             deadline: '2099-01-01T00:00:00.000Z',
             inferenceToken: credential('inference-turn'),
             leaseId: 'lease-r8',
             packageSnapshotId: 'package-r8',
-            threadId: 'thread-r8',
-            turnId: 'turn-r8',
+            threadId: 'th_00000000-0000-7912-a2a7-b0a76905d908',
+            turnId: 'tu_00000000-0000-7c53-aad0-9a7bec541f99',
             turnSequence: 0,
             workerControlToken: credential('control-turn'),
-            workspaceId: 'workspace-r8',
+            workspaceId: 'ws_00000000-0000-7533-a1af-6d78aa286488',
           });
           for (let attempt = 0; attempt < 100; attempt += 1) {
-            const inspection = await send('session.inspect', selector('as-r8'));
+            const inspection = await send(
+              'session.inspect',
+              selector('as_00000000-0000-72e9-8940-31943ef35325')
+            );
             const nativeWorkFinished =
               stop !== 'forced' || (await send('harness.drain', {})).body.activeTurns === 0;
             if (
@@ -4841,20 +4872,27 @@ describe('W4 round-eight refused setup cleanup', () => {
                 startupFailure: { stage: 'native_spawn', reason: 'failed' },
               },
             });
-            expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
+            expect(
+              (await send('session.inspect', selector('as_00000000-0000-72e9-8940-31943ef35325')))
+                .body
+            ).toMatchObject({
               childState: 'absent',
               cleanupState: 'clean',
             });
-            expect(await send('session.close', selector('as-r8'))).toMatchObject({
+            expect(
+              await send('session.close', selector('as_00000000-0000-72e9-8940-31943ef35325'))
+            ).toMatchObject({
               disposition: 'succeeded',
               body: { state: 'closed', privateState: 'absent' },
             });
-            expect(existsSync(join(sandboxRoot, 'sessions', 'as-r8'))).toBe(false);
-            expect(integration.calls).toContain('destroy:as-r8');
             expect(
-              await open('as-r8-successor', {
+              existsSync(join(sandboxRoot, 'sessions', 'as_00000000-0000-72e9-8940-31943ef35325'))
+            ).toBe(false);
+            expect(integration.calls).toContain('destroy:as_00000000-0000-72e9-8940-31943ef35325');
+            expect(
+              await open('as_00000000-0000-769f-a853-e982e631bc69', {
                 digest: createHash('sha256').update(reference).digest('hex'),
-                locator: 'as-r8',
+                locator: 'as_00000000-0000-72e9-8940-31943ef35325',
               })
             ).toMatchObject({ disposition: 'succeeded', body: { nativeHandleState: 'ready' } });
             const resumed = await residents[1]!.nativeHandle();
@@ -4865,14 +4903,16 @@ describe('W4 round-eight refused setup cleanup', () => {
               readFileSync(
                 join(
                   nativeRoot,
-                  'thread-r8',
+                  'th_00000000-0000-7912-a2a7-b0a76905d908',
                   'opencode',
                   'agent-session-references',
-                  'as-r8-successor'
+                  'as_00000000-0000-769f-a853-e982e631bc69'
                 )
               )
             ).toEqual(reference);
-            expect(await send('session.close', selector('as-r8-successor'))).toMatchObject({
+            expect(
+              await send('session.close', selector('as_00000000-0000-769f-a853-e982e631bc69'))
+            ).toMatchObject({
               disposition: 'succeeded',
             });
             expect((await send('harness.drain', {})).body).toMatchObject({
@@ -4881,16 +4921,24 @@ describe('W4 round-eight refused setup cleanup', () => {
             });
           } else {
             expect(started).toMatchObject({ disposition: 'succeeded', body: { state: 'started' } });
-            expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
+            expect(
+              (await send('session.inspect', selector('as_00000000-0000-72e9-8940-31943ef35325')))
+                .body
+            ).toMatchObject({
               state: 'failed',
               cleanupState: stop === 'unproved' ? 'unknown' : 'clean',
               childState: stop === 'unproved' ? 'unknown' : 'absent',
             });
-            expect(await send('session.close', selector('as-r8'))).toMatchObject({
+            expect(
+              await send('session.close', selector('as_00000000-0000-72e9-8940-31943ef35325'))
+            ).toMatchObject({
               disposition: 'refused',
               body: { reasonCode: 'cleanup_required' },
             });
-            expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
+            expect(
+              (await send('session.inspect', selector('as_00000000-0000-72e9-8940-31943ef35325')))
+                .body
+            ).toMatchObject({
               cleanupState: 'unknown',
               state: 'failed',
             });
@@ -4905,7 +4953,10 @@ describe('W4 round-eight refused setup cleanup', () => {
             kill('SIGKILL');
             await residents[0]!.exited;
           }
-          for (const id of ['as-r8', 'as-r8-successor'])
+          for (const id of [
+            'as_00000000-0000-72e9-8940-31943ef35325',
+            'as_00000000-0000-769f-a853-e982e631bc69',
+          ])
             await send('session.close', selector(id)).catch(() => undefined);
         }
       },

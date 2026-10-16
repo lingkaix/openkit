@@ -6,14 +6,12 @@ import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
 import { expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
 import { listServerAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -22,6 +20,8 @@ import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { readWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -36,7 +36,7 @@ it('sends unexpected lifecycle admission-read failures to the HTTP error handler
   const onError = vi.fn(() => Response.json({ code: 'framework_failure' }, { status: 500 }));
   app.onError(onError);
   app.use('*', async (c, next) => {
-    c.set('actor', { kind: 'session', userId: 'user_local' });
+    c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
     await next();
   });
   registerOperationJsonRoutes({
@@ -58,7 +58,7 @@ it('sends unexpected lifecycle admission-read failures to the HTTP error handler
     const response = await app.request(
       ...operationRequest(
         'workspace.my-invitation-accept',
-        { invitationId: 'inv_fixture' },
+        { invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4' },
         {
           body: JSON.stringify({ requestId: randomUUID(), expectedRevision: 1 }),
         }
@@ -106,7 +106,7 @@ it('allows the administrator recovery-state read through a closed mutation gate 
     expect(expected).toEqual({
       recovery: {
         workspaceId: f.workspaceId,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         administratorRole: null,
         registryRevision: 1,
       },
@@ -172,7 +172,11 @@ function fixture(
       .run(id, id, `${id}@example.com`, now, now);
   const store = new FsStore({ dataRoot });
   const workspaceId = store.createWorkspace('Lifecycle cutover').id;
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId,
+  });
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(
@@ -181,7 +185,7 @@ function fixture(
     .run(workspaceId, timestamp, timestamp, timestamp);
   coreDb.sqlite
     .prepare(
-      "INSERT INTO workspace_invitations (invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id, status, expires_at, revision, created_at, updated_at) VALUES ('inv_fixture', ?, 'user_local', 'viewer', 'user_local', 'pending', ?, 1, ?, ?)"
+      "INSERT INTO workspace_invitations (invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id, status, expires_at, revision, created_at, updated_at) VALUES ('inv_00000000-0000-79cc-be8a-99985c4c44e4', ?, 'usr_00000000-0000-7000-8000-000000000001', 'viewer', 'usr_00000000-0000-7000-8000-000000000001', 'pending', ?, 1, ?, ?)"
     )
     .run(workspaceId, new Date(Date.now() + 86400000).toISOString(), timestamp, timestamp);
   const admission = new WorkspaceMutationAdmission();
@@ -234,21 +238,21 @@ const cases = [
   [
     'workspace.my-invitation-accept',
     'POST',
-    '/api/app/workspace-invitations/inv_fixture/accept',
+    '/api/app/workspace-invitations/inv_00000000-0000-79cc-be8a-99985c4c44e4/accept',
     { expectedRevision: 1 },
     200,
   ],
   [
     'workspace.my-invitation-decline',
     'POST',
-    '/api/app/workspace-invitations/inv_fixture/decline',
+    '/api/app/workspace-invitations/inv_00000000-0000-79cc-be8a-99985c4c44e4/decline',
     { expectedRevision: 1 },
     200,
   ],
   [
     'workspace.invitation-revoke',
     'POST',
-    '/api/app/workspaces/$workspace/invitations/inv_fixture/revoke',
+    '/api/app/workspaces/$workspace/invitations/inv_00000000-0000-79cc-be8a-99985c4c44e4/revoke',
     { expectedRevision: 1 },
     200,
   ],
@@ -333,7 +337,7 @@ it.each(
         ? { workspaceId: state.workspaceId }
         : {}),
       ...('invitationId' in WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS[id].inputSchema.shape
-        ? { invitationId: 'inv_fixture' }
+        ? { invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4' }
         : {}),
       ...(id === 'workspace.member-access-change' || id === 'workspace.member-remove'
         ? { targetUserId: 'member' }
@@ -390,7 +394,7 @@ it.each([
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
         .get(f.workspaceId)
-    ).toEqual({ owner_user_id: 'user_local' });
+    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
@@ -400,16 +404,20 @@ it.each([
       listServerAuditEvents(f.coreDb).filter((event) => event.requestId === requestId)
     ).toEqual([
       expect.objectContaining({
-        actor: { kind: 'user', id: 'target' },
-        subject: { kind: 'user', id: 'member' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7e74-a359-c1b196ff8ccb' },
+        subject: { kind: 'user', id: 'usr_00000000-0000-7e9d-8ec8-69386ebe4dc2' },
       }),
     ]);
     f.coreDb.sqlite
       .prepare('UPDATE workspace_invitations SET invitee_user_id = ? WHERE invitation_id = ?')
-      .run('member', 'inv_fixture');
+      .run('member', 'inv_00000000-0000-79cc-be8a-99985c4c44e4');
     const accepted = await f.invoke(
       'workspace.my-invitation-accept',
-      { invitationId: 'inv_fixture', expectedRevision: 1, requestId: randomUUID() },
+      {
+        invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4',
+        expectedRevision: 1,
+        requestId: randomUUID(),
+      },
       { kind: 'public', actor }
     );
     expect(accepted.invitation).toMatchObject({
@@ -490,10 +498,14 @@ it.each([
               expectedRegistryRevision: 1,
               requestId,
             }
-          : { invitationId: 'inv_fixture', expectedRevision: 1, requestId };
+          : {
+              invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4',
+              expectedRevision: 1,
+              requestId,
+            };
     const beforeInvitation = f.coreDb.sqlite
       .prepare('SELECT * FROM workspace_invitations WHERE invitation_id = ?')
-      .get('inv_fixture');
+      .get('inv_00000000-0000-79cc-be8a-99985c4c44e4');
     const beforeMembers = f.coreDb.sqlite
       .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? ORDER BY user_id')
       .all(f.workspaceId);
@@ -505,7 +517,7 @@ it.each([
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_invitations WHERE invitation_id = ?')
-        .get('inv_fixture')
+        .get('inv_00000000-0000-79cc-be8a-99985c4c44e4')
     ).toEqual(beforeInvitation);
     expect(
       f.coreDb.sqlite
@@ -555,7 +567,11 @@ it('refuses HTTP user.disable during closed product admission without disabling 
       f.store.getCommandRequest(
         'user.disable',
         requestId,
-        { coreId: 'server', actorId: 'user_local', targetUserId: 'target' },
+        {
+          coreId: 'server',
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          targetUserId: 'target',
+        },
         f.coreDb
       )
     ).toBeNull();
@@ -580,7 +596,10 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
         requestId: randomUUID(),
         intent: 'Preserve the original Goal responsibility',
       },
-      { kind: 'public', actor: { kind: 'session', userId: 'user_local' } }
+      {
+        kind: 'public',
+        actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      }
     );
     const requestId = randomUUID();
     const input = {
@@ -601,12 +620,16 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
       deletion: { phase: 'cleaned', status: 'deleted' },
     });
     const record = readWorkspaceDeletionRequest(f.dataRoot, f.workspaceId, requestId);
-    expect(record.originalOwnerUserId).toBe('user_local');
+    expect(record.originalOwnerUserId).toBe('usr_00000000-0000-7000-8000-000000000001');
     expect(
       listServerAuditEvents(f.coreDb).filter((event) => event.action === 'workspace.delete')
-    ).toEqual([expect.objectContaining({ actor: { kind: 'user', id: 'target' } })]);
+    ).toEqual([
+      expect.objectContaining({
+        actor: { kind: 'user', id: 'usr_00000000-0000-7e74-a359-c1b196ff8ccb' },
+      }),
+    ]);
     const ownerToken = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
       workspaceIds: [f.workspaceId],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -665,8 +688,11 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
       }>;
       expect(rows).toHaveLength(1);
       expect(JSON.parse(rows[0]!.payload_json)).toMatchObject({
-        responsibleUserId: 'user_local',
-        responsibleActorContext: { kind: 'session', userId: 'user_local' },
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        responsibleActorContext: {
+          kind: 'session',
+          userId: 'usr_00000000-0000-7000-8000-000000000001',
+        },
       });
     } finally {
       restoredDb.sqlite.close();
@@ -675,14 +701,14 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id,status FROM workspace_registry WHERE workspace_id = ?')
         .get(body.recovery.import.importedWorkspaceId)
-    ).toEqual({ owner_user_id: 'user_local', status: 'active' });
+    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' });
     expect(
       f.coreDb.sqlite
         .prepare(
           'SELECT user_id,status FROM workspace_members WHERE workspace_id = ? ORDER BY user_id'
         )
         .all(body.recovery.import.importedWorkspaceId)
-    ).toEqual([{ user_id: 'user_local', status: 'active' }]);
+    ).toEqual([{ user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' }]);
   } finally {
     f.close();
   }
@@ -692,7 +718,7 @@ it('keeps a readonly Workspace credential from changing members or creating a co
   const f = fixture();
   try {
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
       workspaceIds: [f.workspaceId],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -715,7 +741,7 @@ it('keeps a readonly Workspace credential from changing members or creating a co
           kind: 'public',
           actor: {
             kind: 'token',
-            userId: 'user_local',
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
             tokenId: token.record.tokenId,
             tokenScope: 'workspace-readonly',
             tokenWorkspaceIds: [f.workspaceId],
@@ -743,7 +769,7 @@ it('preserves private-history export refusal during administrator Workspace dele
   try {
     f.store.createThread(f.workspaceId, 'Retained private history', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'target',
@@ -770,18 +796,21 @@ it('preserves private-history export refusal during administrator Workspace dele
     expect(await response.json()).toMatchObject({ code: 'recovery_required' });
     expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspaceId, requestId)).toMatchObject({
       phase: 'deleting',
-      originalOwnerUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       recoveryExportId: null,
       closureId: null,
     });
     expect(f.store.listThreads(f.workspaceId)).toEqual([
-      expect.objectContaining({ visibility: 'private', privateOwnerUserId: 'user_local' }),
+      expect.objectContaining({
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      }),
     ]);
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id,status FROM workspace_registry WHERE workspace_id = ?')
         .get(f.workspaceId)
-    ).toEqual({ owner_user_id: 'user_local', status: 'deleting' });
+    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'deleting' });
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')

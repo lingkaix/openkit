@@ -42,13 +42,13 @@ async function createChangedFileFixture(name: string, workerContent: string | nu
     createdAt: timestamp,
     resourceId: 'fs_default',
     rootPath: targetRoot,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const after = await createFilesystemSnapshotManifest({
     createdAt: timestamp,
     resourceId: 'fs_default',
     rootPath: workerRoot,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const changeSet = buildFilesystemWorkspaceChangeSet({
     after,
@@ -64,7 +64,11 @@ async function createChangedFileFixture(name: string, workerContent: string | nu
 }
 
 /** Derives the private rollback root for one staged review. */
-function rollbackRootFor(stagingRoot: string, reviewId: string, workspaceId = 'ws_demo'): string {
+function rollbackRootFor(
+  stagingRoot: string,
+  reviewId: string,
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
+): string {
   return join(
     stagingRoot,
     `.openkit-workspace-rollback-${createHash('sha256')
@@ -77,7 +81,7 @@ function rollbackRootFor(stagingRoot: string, reviewId: string, workspaceId = 'w
 function rollbackPreparationRootFor(
   stagingRoot: string,
   reviewId: string,
-  workspaceId = 'ws_demo'
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
 ): string {
   return `${rollbackRootFor(stagingRoot, reviewId, workspaceId)}.prepare`;
 }
@@ -87,7 +91,7 @@ function replacementRootFor(
   targetRoot: string,
   reviewId: string,
   relativePath: string,
-  workspaceId = 'ws_demo'
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
 ): string {
   return join(
     targetRoot,
@@ -171,13 +175,13 @@ describe('filesystem workspace synchronization', () => {
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: targetRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const after = await createFilesystemSnapshotManifest({
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: workerRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const changeSet = buildFilesystemWorkspaceChangeSet({
       after,
@@ -202,7 +206,7 @@ describe('filesystem workspace synchronization', () => {
       stagingRootIdentity: await rootIdentity(stagingRoot),
       targetRoot,
       targetRootIdentity: await rootIdentity(targetRoot),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(before.contentDigest).toMatch(/^sha256:/);
@@ -243,13 +247,13 @@ describe('filesystem workspace synchronization', () => {
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: targetRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const after = await createFilesystemSnapshotManifest({
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: workerRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const changeSet = buildFilesystemWorkspaceChangeSet({
       after,
@@ -273,7 +277,7 @@ describe('filesystem workspace synchronization', () => {
       stagingRootIdentity: await rootIdentity(stagingRoot),
       targetRoot,
       targetRootIdentity: await rootIdentity(targetRoot),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(result).toMatchObject({
@@ -303,13 +307,13 @@ describe('filesystem workspace synchronization', () => {
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: targetRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const after = await createFilesystemSnapshotManifest({
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: workerRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const changeSet = buildFilesystemWorkspaceChangeSet({
       after,
@@ -334,7 +338,7 @@ describe('filesystem workspace synchronization', () => {
       stagingRootIdentity: await rootIdentity(stagingRoot),
       targetRoot,
       targetRootIdentity: await rootIdentity(targetRoot),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(result).toMatchObject({
@@ -363,13 +367,13 @@ describe('filesystem workspace synchronization', () => {
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: targetRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const after = await createFilesystemSnapshotManifest({
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: workerRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const changeSet = buildFilesystemWorkspaceChangeSet({
       after,
@@ -393,7 +397,7 @@ describe('filesystem workspace synchronization', () => {
       stagingRootIdentity: await rootIdentity(stagingRoot),
       targetRoot,
       targetRootIdentity: await rootIdentity(targetRoot),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(result).toMatchObject({
@@ -424,13 +428,13 @@ describe('filesystem workspace synchronization', () => {
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: targetRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const after = await createFilesystemSnapshotManifest({
       createdAt: timestamp,
       resourceId: 'fs_default',
       rootPath: workerRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const changeSet = buildFilesystemWorkspaceChangeSet({
       after,
@@ -465,7 +469,7 @@ describe('filesystem workspace synchronization', () => {
       stagingRootIdentity: await rootIdentity(stagingRoot),
       targetRoot,
       targetRootIdentity: await rootIdentity(targetRoot),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(result).toMatchObject({
@@ -500,13 +504,13 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const after = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: workerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const changeSet = buildFilesystemWorkspaceChangeSet({
         after,
@@ -535,7 +539,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(stagingRoot),
         targetRoot,
         targetRootIdentity: await rootIdentity(targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(result).toMatchObject({ appliedPaths: [], status: 'conflicted' });
@@ -569,13 +573,13 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const after = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: workerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const changeSet = buildFilesystemWorkspaceChangeSet({
         after,
@@ -600,7 +604,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity: await rootIdentity(stagingRoot),
           targetRoot,
           targetRootIdentity: await rootIdentity(targetRoot),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow('durable persistence failed');
 
@@ -637,7 +641,7 @@ describe('filesystem workspace synchronization', () => {
         rollbackRoot,
         stagingRoot: fixture.stagingRoot,
         targetRoot: fixture.targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await mkdir(ownedRoot);
       if (orphanState === 'content') {
@@ -664,7 +668,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity,
         targetRoot: fixture.targetRoot,
         targetRootIdentity,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect({
@@ -718,7 +722,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
           targetRoot: fixture.targetRoot,
           targetRootIdentity: await rootIdentity(fixture.targetRoot),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow();
 
@@ -754,7 +758,7 @@ describe('filesystem workspace synchronization', () => {
         rollbackRoot,
         stagingRoot: fixture.stagingRoot,
         targetRoot: fixture.targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await mkdir(join(rollbackRoot, 'files'), { recursive: true });
       await writeFile(join(rollbackRoot, 'files', relativePath), 'base\n');
@@ -772,7 +776,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity,
           targetRoot: fixture.targetRoot,
           targetRootIdentity,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow();
       expect({
@@ -812,13 +816,13 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const after = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: workerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const changeSet = buildFilesystemWorkspaceChangeSet({
         after,
@@ -866,7 +870,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity: await rootIdentity(stagingRoot),
           targetRoot,
           targetRootIdentity: await rootIdentity(targetRoot),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow();
       expect({
@@ -923,25 +927,25 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_outer',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const innerBefore = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_inner',
         rootPath: innerTargetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const outerAfter = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_outer',
         rootPath: outerWorkerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const innerAfter = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_inner',
         rootPath: innerWorkerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const outerChangeSet = buildFilesystemWorkspaceChangeSet({
         after: outerAfter,
@@ -1000,7 +1004,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(firstInput.stagingRoot),
         targetRoot: firstInput.targetRoot,
         targetRootIdentity: await rootIdentity(firstInput.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await firstPersistEntered.promise;
       const secondApply = applyStagedFilesystemChanges({
@@ -1015,7 +1019,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(secondInput.stagingRoot),
         targetRoot: secondInput.targetRoot,
         targetRootIdentity: await rootIdentity(secondInput.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const probeResult = await applyStagedFilesystemChanges({
         appliedAt: probe.timestamp,
@@ -1027,7 +1031,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(probe.stagingRoot),
         targetRoot: probe.targetRoot,
         targetRootIdentity: await rootIdentity(probe.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const secondPersistedBeforeFirstRelease = secondPersistedBeforeRelease;
 
@@ -1104,37 +1108,37 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_a',
         rootPath: targetARoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const beforeB = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_b',
         rootPath: sharedRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const beforeC = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_c',
         rootPath: targetCRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const afterA = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_a',
         rootPath: workerARoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const afterB = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_b',
         rootPath: workerBRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const afterC = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_c',
         rootPath: workerCRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const changeSetA = buildFilesystemWorkspaceChangeSet({
         after: afterA,
@@ -1190,7 +1194,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(stagingARoot),
         targetRoot: targetARoot,
         targetRootIdentity: await rootIdentity(targetARoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await aPersistEntered.promise;
       const applyB = applyStagedFilesystemChanges({
@@ -1213,7 +1217,7 @@ describe('filesystem workspace synchronization', () => {
           }
           return sharedRootIdentity;
         },
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await bReservationRegistered.promise;
       const applyC = applyStagedFilesystemChanges({
@@ -1228,7 +1232,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(stagingCRoot),
         targetRoot: targetCRoot,
         targetRootIdentity: await rootIdentity(targetCRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const probeResult = await applyStagedFilesystemChanges({
         appliedAt: probe.timestamp,
@@ -1240,7 +1244,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(probe.stagingRoot),
         targetRoot: probe.targetRoot,
         targetRootIdentity: await rootIdentity(probe.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const orderBeforeARelease = [...persistOrder];
 
@@ -1294,7 +1298,7 @@ describe('filesystem workspace synchronization', () => {
         createdAt: first.timestamp,
         resourceId: 'fs_default',
         rootPath: secondWorkerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const secondChangeSet = buildFilesystemWorkspaceChangeSet({
         after: secondAfter,
@@ -1324,7 +1328,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(first.stagingRoot),
         targetRoot: first.targetRoot,
         targetRootIdentity: targetIdentity,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await firstPersistEntered.promise;
       const secondApply = applyStagedFilesystemChanges({
@@ -1339,7 +1343,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(secondStagingRoot),
         targetRoot: targetAlias,
         targetRootIdentity: targetIdentity,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const probeResult = await applyStagedFilesystemChanges({
         appliedAt: probe.timestamp,
@@ -1351,7 +1355,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(probe.stagingRoot),
         targetRoot: probe.targetRoot,
         targetRootIdentity: await rootIdentity(probe.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const beforeRelease = {
         secondPersistedBeforeRelease,
@@ -1409,7 +1413,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
         targetRoot: fixture.targetRoot,
         targetRootIdentity: await rootIdentity(fixture.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const firstOutcome = firstApply.then(
         () => null,
@@ -1428,7 +1432,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
         targetRoot: fixture.targetRoot,
         targetRootIdentity: await rootIdentity(fixture.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const probeResult = await applyStagedFilesystemChanges({
         appliedAt: probe.timestamp,
@@ -1440,7 +1444,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(probe.stagingRoot),
         targetRoot: probe.targetRoot,
         targetRootIdentity: await rootIdentity(probe.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const beforeRelease = {
         secondPersistedBeforeRelease,
@@ -1492,7 +1496,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(first.stagingRoot),
         targetRoot: first.targetRoot,
         targetRootIdentity: await rootIdentity(first.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await firstPersistEntered.promise;
       const secondApply = applyStagedFilesystemChanges({
@@ -1507,7 +1511,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(second.stagingRoot),
         targetRoot: second.targetRoot,
         targetRootIdentity: await rootIdentity(second.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       await secondPersistEntered.promise;
@@ -1549,13 +1553,13 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const after = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: workerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const changeSet = buildFilesystemWorkspaceChangeSet({
         after,
@@ -1581,7 +1585,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity,
           targetRoot,
           targetRootIdentity,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
       } finally {
         process.umask(previousUmask);
@@ -1615,13 +1619,13 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const after = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: workerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const changeSet = buildFilesystemWorkspaceChangeSet({
         after,
@@ -1666,7 +1670,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity: await rootIdentity(stagingRoot),
           targetRoot,
           targetRootIdentity: await rootIdentity(targetRoot),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
       } catch (error) {
         applyError = error;
@@ -1713,13 +1717,13 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const after = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: workerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(() =>
@@ -1767,7 +1771,7 @@ describe('filesystem workspace synchronization', () => {
           redaction: { notes: [], status: 'no-sensitive-content-found' },
           resourceId: 'fs_default',
           strategy: 'filesystem',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         sourceRoot: workerRoot,
         stagingRoot,
@@ -1808,7 +1812,7 @@ describe('filesystem workspace synchronization', () => {
             redaction: { notes: [], status: 'no-sensitive-content-found' },
             resourceId: 'fs_default',
             strategy: 'filesystem',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           sourceRoot: workerRoot,
           stagingRoot,
@@ -1835,13 +1839,13 @@ describe('filesystem workspace synchronization', () => {
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const after = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
         resourceId: 'fs_default',
         rootPath: workerRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const changeSet = buildFilesystemWorkspaceChangeSet({
         after,
@@ -1865,7 +1869,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(stagingRoot),
         targetRoot,
         targetRootIdentity: await rootIdentity(targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(result).toMatchObject({
@@ -1901,7 +1905,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
         targetRoot: fixture.targetRoot,
         targetRootIdentity: await rootIdentity(fixture.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(result).toMatchObject({
@@ -1934,7 +1938,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
         targetRoot: fixture.targetRoot,
         targetRootIdentity: await rootIdentity(fixture.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(result).toMatchObject({ appliedPaths: [], status: 'conflicted' });
@@ -1971,7 +1975,7 @@ describe('filesystem workspace synchronization', () => {
             .digest('hex')}`,
           targetRootIdentity,
           version: 1,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })}\n`
       );
       await mkdir(otherReviewRoot);
@@ -1989,7 +1993,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity,
         targetRoot: fixture.targetRoot,
         targetRootIdentity,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect({
@@ -2046,7 +2050,7 @@ describe('filesystem workspace synchronization', () => {
               .digest('hex')}`,
             targetRootIdentity,
             version: 1,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })}\n`
         );
       }
@@ -2062,7 +2066,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity,
           targetRoot: fixture.targetRoot,
           targetRootIdentity,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow();
       expect({
@@ -2097,7 +2101,7 @@ describe('filesystem workspace synchronization', () => {
         rollbackRoot,
         stagingRoot: fixture.stagingRoot,
         targetRoot: fixture.targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await mkdir(join(rollbackRoot, 'files'), { recursive: true });
       await writeFile(backupPath, 'base\n');
@@ -2115,7 +2119,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity,
           targetRoot: fixture.targetRoot,
           targetRootIdentity,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow();
       expect(readFileSync(join(fixture.targetRoot, 'notes.txt'), 'utf8')).toBe('human edit\n');
@@ -2141,7 +2145,7 @@ describe('filesystem workspace synchronization', () => {
         rollbackRoot,
         stagingRoot: fixture.stagingRoot,
         targetRoot: fixture.targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await mkdir(join(rollbackRoot, 'files'), { recursive: true });
       await writeFile(backupPath, 'base\n');
@@ -2159,7 +2163,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity,
           targetRoot: fixture.targetRoot,
           targetRootIdentity,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow();
       expect(readFileSync(join(fixture.targetRoot, 'notes.txt'), 'utf8')).toBe('human edit\n');
@@ -2197,7 +2201,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity,
         targetRoot: fixture.targetRoot,
         targetRootIdentity,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await applyPersistEntered.promise;
       const cleanup = cleanupCommittedFilesystemRollback({
@@ -2207,7 +2211,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity,
         targetRoot: fixture.targetRoot,
         targetRootIdentity,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }).then(() => {
         cleanupCompletedBeforeRelease ||= !applyReleased;
       });
@@ -2221,7 +2225,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(probe.stagingRoot),
         targetRoot: probe.targetRoot,
         targetRootIdentity: await rootIdentity(probe.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const beforeRelease = {
         cleanupCompletedBeforeRelease,
@@ -2248,7 +2252,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity,
           targetRoot: fixture.targetRoot,
           targetRootIdentity,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).resolves.toBeUndefined();
     } finally {
@@ -2268,7 +2272,11 @@ describe('filesystem workspace synchronization', () => {
     const targetRoot = createRoot('openkit-fs-target-cleanup-workspace-lineage-');
     const reviewId = 'swr_fs_cleanup_workspace_lineage';
     const changeSetId = 'wcs_fs_cleanup_workspace_lineage';
-    const rollbackRoot = rollbackRootFor(stagingRoot, reviewId, 'ws_owner');
+    const rollbackRoot = rollbackRootFor(
+      stagingRoot,
+      reviewId,
+      'ws_00000000-0000-764a-ac14-15573e6f8983'
+    );
     const backupPath = join(rollbackRoot, 'files', 'notes.txt');
 
     try {
@@ -2279,7 +2287,7 @@ describe('filesystem workspace synchronization', () => {
         rollbackRoot,
         stagingRoot,
         targetRoot,
-        workspaceId: 'ws_owner',
+        workspaceId: 'ws_00000000-0000-764a-ac14-15573e6f8983',
       });
       await mkdir(join(rollbackRoot, 'files'), { recursive: true });
       await writeFile(backupPath, 'base\n');
@@ -2290,7 +2298,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity,
         targetRoot,
         targetRootIdentity,
-        workspaceId: 'ws_other',
+        workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
       };
 
       await expect(cleanupCommittedFilesystemRollback(cleanupInput)).resolves.toBeUndefined();
@@ -2323,7 +2331,7 @@ describe('filesystem workspace synchronization', () => {
         rollbackRoot,
         stagingRoot,
         targetRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await mkdir(join(rollbackRoot, 'files'), { recursive: true });
       await writeFile(backupPath, 'base\n');
@@ -2334,7 +2342,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity,
         targetRoot,
         targetRootIdentity,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       };
 
       await expect(cleanupCommittedFilesystemRollback(cleanupInput)).rejects.toThrow(
@@ -2365,7 +2373,7 @@ describe('filesystem workspace synchronization', () => {
         stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
         targetRoot: fixture.targetRoot,
         targetRootIdentity: await rootIdentity(fixture.targetRoot),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect({
@@ -2412,7 +2420,7 @@ describe('filesystem workspace synchronization', () => {
           stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
           targetRoot: fixture.targetRoot,
           targetRootIdentity: await rootIdentity(fixture.targetRoot),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toThrow();
       expect(readFileSync(backupPath, 'utf8')).toBe('base\n');

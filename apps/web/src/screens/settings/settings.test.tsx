@@ -17,7 +17,7 @@ const TIMESTAMP = '2026-07-21T12:00:00.000Z';
 const POISON_SECRET = 'sk-secret-should-never-render';
 
 const WORKSPACE = {
-  id: 'ws1',
+  id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   name: 'Market research',
   kind: 'general',
   status: 'active',
@@ -233,7 +233,7 @@ const VAULT_REFERENCES = {
       backendKind: 'encrypted-file',
       currentVersion: 2,
       ownerScope: 'workspace',
-      referenceId: 'vault_ref_repository',
+      referenceId: 'vault_00000000-0000-7fce-81f5-bbcd6886eec4',
       secretKind: `repository-credential ${POISON_SECRET}`,
       status: 'active',
       workspaceId: WORKSPACE.id,
@@ -243,7 +243,7 @@ const VAULT_REFERENCES = {
       backendKind: 'encrypted-file',
       currentVersion: 1,
       ownerScope: 'workspace',
-      referenceId: 'vault_ref_archive',
+      referenceId: 'vault_00000000-0000-79ba-85de-cbbc8f50e6fa',
       secretKind: 'repository-credential',
       status: 'revoked',
       workspaceId: WORKSPACE.id,
@@ -252,7 +252,7 @@ const VAULT_REFERENCES = {
       backendKind: 'encrypted-file',
       currentVersion: 0,
       ownerScope: 'workspace',
-      referenceId: 'vault_ref_pending',
+      referenceId: 'vault_00000000-0000-771c-a997-47522da0dafe',
       secretKind: 'provider-credential',
       status: 'unbound',
       workspaceId: WORKSPACE.id,
@@ -265,8 +265,8 @@ const VAULT_GRANTS = {
   password: 'grant-field-poison-should-never-render',
   items: [
     {
-      grantId: 'grant_release_worker',
-      vaultReferenceId: 'vault_ref_repository',
+      grantId: 'grant_00000000-0000-7904-88dd-6de9f2d54a4e',
+      vaultReferenceId: 'vault_00000000-0000-7fce-81f5-bbcd6886eec4',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       userId: null,
@@ -284,8 +284,8 @@ const VAULT_GRANTS = {
       clientSecret: 'grant-row-poison-should-never-render',
     },
     {
-      grantId: 'grant_archive_worker',
-      vaultReferenceId: 'vault_ref_archive',
+      grantId: 'grant_00000000-0000-7c55-9dd6-1f23541f7e01',
+      vaultReferenceId: 'vault_00000000-0000-79ba-85de-cbbc8f50e6fa',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       userId: null,
@@ -302,8 +302,8 @@ const VAULT_GRANTS = {
       expiresAt: null,
     },
     {
-      grantId: 'grant_history_worker',
-      vaultReferenceId: 'vault_ref_pending',
+      grantId: 'grant_00000000-0000-7c68-9bfa-8e5aaf9abfe9',
+      vaultReferenceId: 'vault_00000000-0000-771c-a997-47522da0dafe',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       userId: null,
@@ -327,14 +327,14 @@ const VAULT_USE_RECORDS = {
   secret: 'use-field-poison-should-never-render',
   vaultUseRecords: [
     {
-      useId: 'vault_use_release',
+      useId: 'vault_00000000-0000-7c5c-b6b6-c91fe7477020',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
-      vaultReferenceId: 'vault_ref_repository',
+      vaultReferenceId: 'vault_00000000-0000-7fce-81f5-bbcd6886eec4',
       materialVersion: 2,
       backendKind: 'encrypted-file',
       resolvingPath: 'grant',
-      grantId: 'grant_release_worker',
+      grantId: 'grant_00000000-0000-7904-88dd-6de9f2d54a4e',
       planId: null,
       receiptId: null,
       agentSessionId: null,
@@ -346,10 +346,10 @@ const VAULT_USE_RECORDS = {
       authorization: 'use-row-poison-should-never-render',
     },
     {
-      useId: 'vault_use_policy',
+      useId: 'vault_00000000-0000-7af9-a8a7-9251d3e8c990',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
-      vaultReferenceId: 'vault_ref_policy',
+      vaultReferenceId: 'vault_00000000-0000-7a31-b0e1-45f0875d4f6f',
       materialVersion: null,
       backendKind: 'encrypted-file',
       resolvingPath: 'grant',
@@ -364,10 +364,10 @@ const VAULT_USE_RECORDS = {
       usedAt: TIMESTAMP,
     },
     {
-      useId: 'vault_use_transport',
+      useId: 'vault_00000000-0000-7d04-bf1c-d040cf5ab373',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
-      vaultReferenceId: 'vault_ref_transport',
+      vaultReferenceId: 'vault_00000000-0000-718b-bed8-d5cdaac28798',
       materialVersion: null,
       backendKind: 'encrypted-file',
       resolvingPath: 'provider',
@@ -390,7 +390,7 @@ const VAULT_INJECTION_PLANS = {
   items: [
     {
       planId: 'plan_release_worker',
-      grantId: 'grant_release_worker',
+      grantId: 'grant_00000000-0000-7904-88dd-6de9f2d54a4e',
       packageSnapshotId: 'aepsnap_1',
       capabilityId: null,
       injectionVisibility: 'gateway-only',
@@ -414,8 +414,8 @@ const VAULT_INJECTION_RECEIPTS = {
     {
       receiptId: 'receipt_release_worker',
       planId: 'plan_release_worker',
-      grantId: 'grant_release_worker',
-      agentSessionId: 'as_debug_1',
+      grantId: 'grant_00000000-0000-7904-88dd-6de9f2d54a4e',
+      agentSessionId: 'as_00000000-0000-7603-8225-d488b91d9938',
       capabilityCallId: null,
       backendSummary: `OpenShell attach ${POISON_SECRET}`,
       injectedAt: TIMESTAMP,
@@ -427,8 +427,8 @@ const VAULT_INJECTION_RECEIPTS = {
     {
       receiptId: 'receipt_stale_worker',
       planId: 'plan_release_worker',
-      grantId: 'grant_release_worker',
-      agentSessionId: 'as_debug_1',
+      grantId: 'grant_00000000-0000-7904-88dd-6de9f2d54a4e',
+      agentSessionId: 'as_00000000-0000-7603-8225-d488b91d9938',
       capabilityCallId: null,
       backendSummary: 'OpenShell attach remains reachable after revoke.',
       injectedAt: TIMESTAMP,
@@ -458,13 +458,13 @@ const CAPABILITY_USAGE = {
   password: 'usage-response-poison-should-never-render',
   capabilityCalls: [
     {
-      id: 'cap_1',
+      id: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
       workspaceId: WORKSPACE.id,
-      threadId: 'thread_1',
-      turnId: 'turn_1',
+      threadId: 'th_00000000-0000-7c5c-9c79-5b0771f81e38',
+      turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
       itemId: null,
       agentId: 'agent_1',
-      agentSessionId: 'session_1',
+      agentSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
       packageSnapshotId: null,
       runtimeOriginRef: null,
       runtimeCacheLineageRef: null,
@@ -486,16 +486,16 @@ const CAPABILITY_USAGE = {
   ],
   usageRecords: [
     {
-      id: 'usage_1',
+      id: 'use_00000000-0000-7bad-8061-11b8ce86e984',
       workspaceId: WORKSPACE.id,
-      responsibleUserId: 'user_1',
-      threadId: 'thread_1',
-      turnId: 'turn_1',
+      responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+      threadId: 'th_00000000-0000-7c5c-9c79-5b0771f81e38',
+      turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
       itemId: null,
-      capabilityCallId: 'cap_1',
+      capabilityCallId: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
       requestId: null,
       agentId: 'agent_1',
-      agentSessionId: 'session_1',
+      agentSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
       sourceIds: [],
       category: 'llm',
       unit: 'tokens',
@@ -514,20 +514,20 @@ const WORKSPACE_AUDIT_EVENTS = {
   token: 'audit-response-poison-should-never-render',
   auditEvents: [
     {
-      id: 'audit_1',
+      id: 'aud_00000000-0000-70e2-abff-6e1084ebf069',
       workspaceId: WORKSPACE.id,
-      protocolVersion: '0.5.0',
-      threadId: 'thread_1',
-      turnId: 'turn_1',
+      protocolVersion: '0.6.0',
+      threadId: 'th_00000000-0000-7c5c-9c79-5b0771f81e38',
+      turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
       itemId: null,
-      capabilityCallId: 'cap_1',
+      capabilityCallId: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
       permissionDecisionId: null,
       vaultGrantId: null,
       requestId: null,
       actor: null,
       subject: null,
       agentId: 'agent_1',
-      agentSessionId: 'session_1',
+      agentSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
       category: 'capability',
       action: 'llm.chat_completions',
       resource: 'model:gpt-5',
@@ -552,17 +552,17 @@ const WORKSPACE_PERMISSION_DECISIONS = {
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       policyEngineVersion: 'policy:v1',
-      policySnapshotId: 'workspace-policy',
+      policySnapshotId: 'ws_00000000-0000-7c05-80b7-985198b83d37',
       subjectSummary: { kind: 'agent', id: 'agent_1' },
       action: 'llm.gateway.use',
       resourceSummary: { kind: 'model', id: 'gpt-5' },
-      contextSummary: { turnId: 'turn_1' },
+      contextSummary: { turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' },
       result: 'allow',
-      reasonCode: 'workspace_policy_allowed',
+      reasonCode: 'ws_00000000-0000-7f19-9709-6e706779a8a8',
       enforcementPoint: 'llm.gateway.policy',
       requiredApprovalKind: null,
       approvalId: null,
-      auditEventId: 'audit_1',
+      auditEventId: 'aud_00000000-0000-70e2-abff-6e1084ebf069',
       createdAt: TIMESTAMP,
       cookie: 'decision-row-poison-should-never-render',
     },
@@ -572,7 +572,7 @@ const WORKSPACE_PERMISSION_DECISIONS = {
 const SERVER_AUDIT_EVENTS = {
   auditEvents: [
     {
-      id: 'audit_server_1',
+      id: 'aud_00000000-0000-76f6-9eb1-b44f53e46f96',
       workspaceId: null,
       action: 'server.config.update',
       outcome: 'succeeded',
@@ -594,13 +594,13 @@ const USAGE_FIELD_POISONS = [
 ] as const;
 
 const USAGE_NON_DISPLAY_FIELDS = [
-  'thread_1',
-  'session_1',
+  'th_00000000-0000-7c5c-9c79-5b0771f81e38',
+  'as_00000000-0000-7fee-81f4-cfcfc003f25f',
   'provider_openai',
   'gateway-reported:input',
   'policy:v1',
-  'workspace-policy',
-  'workspace_policy_allowed',
+  'ws_00000000-0000-7c05-80b7-985198b83d37',
+  'ws_00000000-0000-7f19-9709-6e706779a8a8',
   'llm.gateway.policy',
 ] as const;
 
@@ -611,17 +611,17 @@ const EVIDENCE_BUNDLES = {
     {
       id: 'evb_debug_1',
       workspaceId: WORKSPACE.id,
-      threadId: 'thread_debug',
+      threadId: 'th_00000000-0000-76d3-a603-91157f81e5c0',
       goalId: null,
-      turnId: 'turn_debug',
-      agentSessionId: 'as_debug_1',
+      turnId: 'tu_00000000-0000-734d-b2a2-e75b248313a6',
+      agentSessionId: 'as_00000000-0000-7603-8225-d488b91d9938',
       backendType: null,
       sourceKind: 'manual',
       summary: `Goal evidence is ready with ${POISON_SECRET}.`,
       rawEvidenceRefs: [{ kind: 'backend-log', ref: 'raw-evidence-locator-should-never-render' }],
-      redactedEvidenceRefs: [{ kind: 'artifact', ref: 'artifact_debug' }],
+      redactedEvidenceRefs: [{ kind: 'artifact', ref: 'ar_00000000-0000-7b7e-8526-70bc66fa3094' }],
       contentDigests: ['sha256:evidence'],
-      retentionClass: 'turn-evidence',
+      retentionClass: 'tu_00000000-0000-7ef6-b7cd-03de9c89c58e',
       sensitivityClass: 'product-safe',
       importStatus: 'collected',
       requiredFeatures: [],
@@ -638,11 +638,11 @@ const RUNTIME_EVIDENCE = {
     {
       id: 'rte_debug_1',
       workspaceId: WORKSPACE.id,
-      threadId: 'thread_debug',
-      turnId: 'turn_debug',
+      threadId: 'th_00000000-0000-76d3-a603-91157f81e5c0',
+      turnId: 'tu_00000000-0000-734d-b2a2-e75b248313a6',
       goalId: null,
       taskId: null,
-      agentSessionId: 'as_debug_1',
+      agentSessionId: 'as_00000000-0000-7603-8225-d488b91d9938',
       backendType: 'openshell',
       backendVersion: null,
       placement: 'local',
@@ -680,9 +680,9 @@ const RUNTIME_EVIDENCE = {
 const AEP_SNAPSHOT_LIST_ITEM = {
   snapshotId: 'aepsnap_1',
   workspaceId: WORKSPACE.id,
-  turnId: 'turn_debug',
-  threadId: 'thread_debug',
-  agentSessionId: 'as_debug_1',
+  turnId: 'tu_00000000-0000-734d-b2a2-e75b248313a6',
+  threadId: 'th_00000000-0000-76d3-a603-91157f81e5c0',
+  agentSessionId: 'as_00000000-0000-7603-8225-d488b91d9938',
   agentId: 'agent_1',
   packageId: 'aepkg_1',
   runtimeKind: 'coder',
@@ -703,9 +703,9 @@ const AEP_SNAPSHOT_DETAIL = {
     packageId: 'aepkg_1',
     scope: {
       workspaceId: WORKSPACE.id,
-      threadId: 'thread_debug',
-      turnId: 'turn_debug',
-      agentSessionId: 'as_debug_1',
+      threadId: 'th_00000000-0000-76d3-a603-91157f81e5c0',
+      turnId: 'tu_00000000-0000-734d-b2a2-e75b248313a6',
+      agentSessionId: 'as_00000000-0000-7603-8225-d488b91d9938',
     },
     agent: {
       agentId: 'agent_1',
@@ -724,7 +724,7 @@ const DEBUG_FIELD_POISONS = [
   'raw-evidence-locator-should-never-render',
   'runtime-response-poison-should-never-render',
   'runtime-row-poison-should-never-render',
-  'as_debug_1',
+  'as_00000000-0000-7603-8225-d488b91d9938',
 ] as const;
 
 type MethodOverrides = Partial<Record<string, unknown>>;
@@ -876,7 +876,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -891,7 +891,7 @@ function makeClient(
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -1107,7 +1107,7 @@ describe('Vault settings (board 15)', () => {
     const plans = screen.getByRole('region', { name: 'Injection plans' });
     const receipts = screen.getByRole('region', { name: 'Injection receipts' });
     expect(
-      within(references).getByText('vault_ref_repository', { exact: true })
+      within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
     expect(within(plans).getByText('plan_release_worker', { exact: true })).toBeInTheDocument();
     expect(within(plans).getByText('gateway-only', { exact: true })).toBeInTheDocument();
@@ -1122,7 +1122,7 @@ describe('Vault settings (board 15)', () => {
     ).toBeInTheDocument();
 
     const renderedText = document.body.textContent ?? '';
-    expect(renderedText).toContain('vault_ref_repository');
+    expect(renderedText).toContain('vault_00000000-0000-7fce-81f5-bbcd6886eec4');
     expect(renderedText).toContain('Release worker [redacted]');
     expect(screen.queryByText('Vault backend', { exact: true })).not.toBeInTheDocument();
     expect(
@@ -1136,12 +1136,12 @@ describe('Vault settings (board 15)', () => {
     expect(screen.queryByText('Error', { exact: true })).not.toBeInTheDocument();
     expect({
       references: [
-        within(references).getByText('vault_ref_repository').parentElement!.parentElement!
-          .lastElementChild?.textContent,
-        within(references).getByText('vault_ref_archive').parentElement!.parentElement!
-          .lastElementChild?.textContent,
-        within(references).getByText('vault_ref_pending').parentElement!.parentElement!
-          .lastElementChild?.textContent,
+        within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4').parentElement!
+          .parentElement!.lastElementChild?.textContent,
+        within(references).getByText('vault_00000000-0000-79ba-85de-cbbc8f50e6fa').parentElement!
+          .parentElement!.lastElementChild?.textContent,
+        within(references).getByText('vault_00000000-0000-771c-a997-47522da0dafe').parentElement!
+          .parentElement!.lastElementChild?.textContent,
       ],
       grants: [
         within(grants).getByText('Release worker [redacted]', { exact: true }).parentElement!
@@ -1152,12 +1152,12 @@ describe('Vault settings (board 15)', () => {
           ?.textContent,
       ],
       uses: [
-        within(uses).getByText('vault_ref_repository').parentElement!.parentElement!
-          .lastElementChild?.textContent,
-        within(uses).getByText('vault_ref_policy').parentElement!.parentElement!.lastElementChild
-          ?.textContent,
-        within(uses).getByText('vault_ref_transport').parentElement!.parentElement!.lastElementChild
-          ?.textContent,
+        within(uses).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4').parentElement!
+          .parentElement!.lastElementChild?.textContent,
+        within(uses).getByText('vault_00000000-0000-7a31-b0e1-45f0875d4f6f').parentElement!
+          .parentElement!.lastElementChild?.textContent,
+        within(uses).getByText('vault_00000000-0000-718b-bed8-d5cdaac28798').parentElement!
+          .parentElement!.lastElementChild?.textContent,
       ],
       plans: [
         within(plans).getByText('plan_release_worker').parentElement!.parentElement!
@@ -1221,10 +1221,10 @@ describe('Vault settings (board 15)', () => {
 
   it('validates a persisted Workspace selection before Vault reads after discovery retry', async () => {
     const user = userEvent.setup();
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_stale' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-72a2-a815-916a363a02e2' });
     const listWorkspaces = vi
       .fn()
-      .mockRejectedValueOnce(new Error('workspace-store-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-758f-ad51-c7addeabda71 failure'))
       .mockResolvedValue({
         items: [WORKSPACE].map((workspace) => ({
           membershipStatus: 'active' as const,
@@ -1232,7 +1232,7 @@ describe('Vault settings (board 15)', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -1241,7 +1241,7 @@ describe('Vault settings (board 15)', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load workspaces/i);
-    expect(alert).not.toHaveTextContent('workspace-store-private failure');
+    expect(alert).not.toHaveTextContent('ws_00000000-0000-758f-ad51-c7addeabda71 failure');
     expect(screen.queryByText('No workspace selected')).not.toBeInTheDocument();
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
@@ -1316,7 +1316,7 @@ describe('Vault settings (board 15)', () => {
     const user = userEvent.setup();
     const listWorkspaceVaultReferences = vi
       .fn()
-      .mockRejectedValueOnce(new Error('workspace-vault-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-70ee-aa39-ad23b095f65e failure'))
       .mockResolvedValue(VAULT_REFERENCES);
     renderApp(
       '/workspace/vault',
@@ -1324,12 +1324,12 @@ describe('Vault settings (board 15)', () => {
     );
 
     const alert = await screen.findByRole('alert');
-    expect(alert).not.toHaveTextContent('workspace-vault-private failure');
+    expect(alert).not.toHaveTextContent('ws_00000000-0000-70ee-aa39-ad23b095f65e failure');
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaceVaultReferences).toHaveBeenCalledTimes(2));
     const references = await screen.findByRole('region', { name: 'References' });
     expect(
-      within(references).getByText('vault_ref_repository', { exact: true })
+      within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
   });
 
@@ -1363,7 +1363,7 @@ describe('Vault settings (board 15)', () => {
     expect(within(plans).getByText('plan_release_worker', { exact: true })).toBeInTheDocument();
     const references = screen.getByRole('region', { name: 'References' });
     expect(
-      within(references).getByText('vault_ref_repository', { exact: true })
+      within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Grants' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Recent use' })).toBeInTheDocument();
@@ -1378,7 +1378,7 @@ describe('Vault settings (board 15)', () => {
 
     const references = await screen.findByRole('region', { name: 'References' });
     expect(
-      within(references).getByText('vault_ref_repository', { exact: true })
+      within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
     expect(await screen.findByText('Status may be stale', { exact: true })).toBeInTheDocument();
   });
@@ -1512,7 +1512,7 @@ describe('Debug settings (board 11)', () => {
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           }),
@@ -1529,7 +1529,11 @@ describe('Debug settings (board 11)', () => {
 
   it('clears the selected AEP snapshot when the Workspace switches and does not reread the old id', async () => {
     const user = userEvent.setup();
-    const workspaceB = { ...WORKSPACE, id: 'ws2', name: 'Second workspace' };
+    const workspaceB = {
+      ...WORKSPACE,
+      id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      name: 'Second workspace',
+    };
     const listEnvironmentSnapshots = vi
       .fn()
       .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
@@ -1552,7 +1556,7 @@ describe('Debug settings (board 11)', () => {
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -1701,10 +1705,10 @@ describe('Usage and audit settings (board 17)', () => {
 
   it('validates a persisted Workspace selection before the three reads after discovery retry', async () => {
     const user = userEvent.setup();
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_stale' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-72a2-a815-916a363a02e2' });
     const listWorkspaces = vi
       .fn()
-      .mockRejectedValueOnce(new Error('workspace-discovery-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-7641-ba4a-a1306b8c904a failure'))
       .mockResolvedValue({
         items: [WORKSPACE].map((workspace) => ({
           membershipStatus: 'active' as const,
@@ -1712,7 +1716,7 @@ describe('Usage and audit settings (board 17)', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -1721,7 +1725,7 @@ describe('Usage and audit settings (board 17)', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load workspaces/i);
-    expect(alert).not.toHaveTextContent('workspace-discovery-private failure');
+    expect(alert).not.toHaveTextContent('ws_00000000-0000-7641-ba4a-a1306b8c904a failure');
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('chat_completions', { exact: true })).toBeInTheDocument();
@@ -1800,7 +1804,7 @@ describe('Usage and audit settings (board 17)', () => {
     const user = userEvent.setup();
     const listWorkspaceAuditEvents = vi
       .fn()
-      .mockRejectedValueOnce(new Error('workspace-audit-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-74d0-a117-676ff6917be8 failure'))
       .mockResolvedValue(WORKSPACE_AUDIT_EVENTS);
     const client = makeClient({
       app: {},
@@ -1810,7 +1814,7 @@ describe('Usage and audit settings (board 17)', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load usage and audit/i);
-    expect(alert).not.toHaveTextContent('workspace-audit-private failure');
+    expect(alert).not.toHaveTextContent('ws_00000000-0000-74d0-a117-676ff6917be8 failure');
     expect(screen.queryByText('chat_completions', { exact: true })).not.toBeInTheDocument();
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaceAuditEvents).toHaveBeenCalledTimes(2));
@@ -1881,7 +1885,10 @@ describe('General settings (board 10)', () => {
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() =>
       expect(updateWorkspace).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId: 'ws1', name: 'Team workspace' })
+        expect.objectContaining({
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          name: 'Team workspace',
+        })
       )
     );
   });
@@ -2081,7 +2088,7 @@ describe('Gateway (board 20)', () => {
     const poisonedAccount = {
       ...CODEX_ACCOUNT,
       accessToken: POISON_SECRET,
-      vaultReferenceId: 'vault-reference-should-never-render',
+      vaultReferenceId: 'vault_00000000-0000-7e73-9b11-a88139e7b328',
       rawProviderAccountId: 'raw-provider-id-should-never-render',
       accountLabel: `team ${POISON_SECRET}`,
       message: `credential ${POISON_SECRET}`,

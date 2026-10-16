@@ -1,4 +1,4 @@
-import { generateUuidV7 } from '../runtime/session-id.js';
+import { allocateEntityId } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import {
   createOpenKitAccessTokenSecret,
@@ -121,7 +121,7 @@ export function createOpenKitAccessTokenRecord(
   input: CreateOpenKitAccessTokenRecordInput
 ): OpenKitAccessTokenIssueResult {
   const binding = normalizeOpenKitAccessTokenScope(input.scope, input.workspaceIds);
-  const tokenId = input.tokenId ?? generateUuidV7();
+  const tokenId = input.tokenId ?? allocateEntityId('tok');
   const secret = input.secret ?? createOpenKitAccessTokenSecret();
   const now = (input.now ?? new Date()).toISOString();
 

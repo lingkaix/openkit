@@ -253,7 +253,7 @@ describe('Settings diagnostics app API', () => {
     const app = createApp({
       auth: createAuthStub({
         session: { id: 'session_secret_value' },
-        user: { id: 'user_1' },
+        user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
       }),
       mode: 'server',
       providerRegistry: new ProviderRegistry([]),

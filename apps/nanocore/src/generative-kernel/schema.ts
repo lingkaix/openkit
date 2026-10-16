@@ -1,11 +1,10 @@
-import { randomUUID } from 'node:crypto';
-
 import {
   type LightAppAdmittedSchema,
   LightAppAdmittedSchemaSchema,
   type LightAppSchemaInput,
   LightAppSchemaInputSchema,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 
 import { KernelCommandError } from './errors.js';
 import { parseStrictJsonObject } from './json.js';
@@ -149,7 +148,7 @@ function resolveEntityId(
     }
     return requestedId;
   }
-  return previous?.id ?? randomUUID();
+  return previous?.id ?? allocateEntityId('col');
 }
 
 /**
@@ -178,7 +177,7 @@ function resolveFieldId(
         'Existing field IDs cannot be omitted.'
       );
     }
-    return randomUUID();
+    return allocateEntityId('fld');
   }
   if (requestedId) {
     if (
@@ -190,7 +189,7 @@ function resolveFieldId(
     return requestedId;
   }
   const previous = previousCollection?.fields.find((field) => field.name === name);
-  return previous?.id ?? randomUUID();
+  return previous?.id ?? allocateEntityId('fld');
 }
 
 /**

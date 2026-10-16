@@ -1,3 +1,4 @@
+import { isEntityId } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import type {
   VaultGrantLifetime,
@@ -12,6 +13,8 @@ import { getVaultReference } from './vault-references.js';
 export interface VaultGrantRecord {
   /** Stable vault grant id. */
   readonly grantId: string;
+  /** Immutable issuance provenance; imported history never authorizes target effects. */
+  readonly issuance: 'target' | 'imported-history';
   /** Vault reference authorized by this grant. */
   readonly vaultReferenceId: string;
   /** Scope that owns this grant metadata. */
@@ -47,6 +50,7 @@ export interface VaultGrantRecord {
 /** Raw SQLite row for one vault grant. */
 interface VaultGrantRow {
   readonly grant_id: string;
+  readonly issuance: 'target' | 'imported-history';
   readonly vault_reference_id: string;
   readonly owner_scope: VaultGrantOwnerScope;
   readonly workspace_id: string | null;
@@ -235,12 +239,14 @@ export function narrowVaultGrant(
  * @param coreDb Open Core database handle.
  * @param input Grant metadata to store.
  * @returns Stored vault grant record.
- * @throws Error when the grant id is reserved for imported history or referenced Vault and scope fields are invalid.
+ * @throws Error when the id is malformed, a retained grant is imported, or reference and scope fields are invalid.
  */
 export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): VaultGrantRecord {
-  if (!isTargetIssuedEffectAuthority(input.grantId)) {
-    throw new Error('Vault grant id uses the reserved portable-import authority namespace.');
-  }
+  if (!isEntityId('grant', input.grantId))
+    throw new Error('Vault grant identifier is not canonical.');
+  const existing = getVaultGrant(coreDb, input.grantId);
+  if (existing && existing.issuance !== 'target')
+    throw new Error('Imported VaultGrant cannot become target-issued.');
 
   assertVaultGrantScope(input);
   assertAllowedInjectionPaths(input.allowedInjectionPaths);
@@ -255,6 +261,7 @@ export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): 
     .prepare(
       `INSERT OR IGNORE INTO vault_grants (
         grant_id,
+        issuance,
         vault_reference_id,
         owner_scope,
         workspace_id,
@@ -270,10 +277,11 @@ export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): 
         status,
         created_at,
         expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.grantId,
+      'target',
       input.vaultReferenceId,
       input.ownerScope,
       input.workspaceId ?? null,
@@ -369,10 +377,17 @@ export function importWorkspaceVaultGrants(
   grants: readonly VaultGrantRecord[]
 ): void {
   for (const grant of grants) {
+    assertIssuance(grant.issuance);
+    const existing = getVaultGrant(coreDb, grant.grantId);
+    if (existing && existing.issuance !== 'imported-history')
+      throw new Error('Imported grant collides with target authority.');
+  }
+  for (const grant of grants) {
     coreDb.sqlite
       .prepare(
         `INSERT OR IGNORE INTO vault_grants (
           grant_id,
+          issuance,
           vault_reference_id,
           owner_scope,
           workspace_id,
@@ -388,10 +403,11 @@ export function importWorkspaceVaultGrants(
           status,
           created_at,
           expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         grant.grantId,
+        'imported-history',
         grant.vaultReferenceId,
         grant.ownerScope,
         grant.workspaceId,
@@ -495,6 +511,7 @@ function assertAllowedInjectionPaths(allowedInjectionPaths: readonly string[]): 
 function vaultGrantSelectSql(): string {
   return `SELECT
     grant_id,
+    issuance,
     vault_reference_id,
     owner_scope,
     workspace_id,
@@ -520,7 +537,11 @@ function vaultGrantSelectSql(): string {
  * @returns Vault grant record.
  */
 function mapVaultGrantRow(row: VaultGrantRow): VaultGrantRecord {
+  if (!isEntityId('grant', row.grant_id) || !isEntityId('vault', row.vault_reference_id))
+    throw new Error('Invalid canonical VaultGrant identity.');
+  assertIssuance(row.issuance);
   return {
+    issuance: row.issuance,
     allowedInjectionPaths: parseAllowedInjectionPaths(row.allowed_injection_paths),
     approvalId: row.approval_id,
     createdAt: row.created_at,
@@ -555,4 +576,10 @@ function parseAllowedInjectionPaths(value: string): string[] {
   }
 
   return parsed;
+}
+
+/** Fails closed rather than assigning target authority to missing or unknown retained provenance. */
+function assertIssuance(value: unknown): asserts value is VaultGrantRecord['issuance'] {
+  if (value !== 'target' && value !== 'imported-history')
+    throw new Error('Invalid canonical VaultGrant issuance.');
 }

@@ -3,8 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
-
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
@@ -14,6 +12,7 @@ import {
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -25,8 +24,15 @@ describe('scheduler admission routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const thread = store.createThread('ws_demo', 'Scheduler admission database lifecycle');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Scheduler admission database lifecycle'
+    );
 
     for (const queueEntryId of [
       'queue_retry_close',
@@ -35,10 +41,10 @@ describe('scheduler admission routes', () => {
     ]) {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
         requestId: `request_${queueEntryId}`,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         turnId: `turn_${queueEntryId}`,
         turnInput: 'Exercise scheduler admission database lifecycle.',
@@ -54,12 +60,12 @@ describe('scheduler admission routes', () => {
     let failAudit = false;
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
         effectiveRole: 'owner',
         kind: 'workspace',
         policyOperation: 'turn.run',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await next();
     });
@@ -70,7 +76,7 @@ describe('scheduler admission routes', () => {
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
-        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         applyScopedMigrations(workspaceDb);
 
         if (failAudit) {
@@ -88,14 +94,20 @@ describe('scheduler admission routes', () => {
       const retried = await app.request(
         ...operationRequest(
           'scheduler.retry',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_retry_close' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            queueEntryId: 'queue_retry_close',
+          },
           { method: 'POST' }
         )
       );
       const cancelled = await app.request(
         ...operationRequest(
           'scheduler.cancel',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_cancel_close' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            queueEntryId: 'queue_cancel_close',
+          },
           { method: 'POST' }
         )
       );
@@ -103,7 +115,10 @@ describe('scheduler admission routes', () => {
       const auditFailed = await app.request(
         ...operationRequest(
           'scheduler.retry',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_retry_audit_failure' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            queueEntryId: 'queue_retry_audit_failure',
+          },
           { method: 'POST' }
         )
       );
@@ -132,15 +147,19 @@ describe('scheduler admission routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
         effectiveRole: 'owner',
         kind: 'workspace',
         policyOperation: 'turn.run',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await next();
     });
@@ -148,10 +167,10 @@ describe('scheduler admission routes', () => {
     for (const queueEntryId of ['queue_foreign_retry', 'queue_foreign_cancel']) {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
         requestId: `request_${queueEntryId}`,
-        workspaceId: 'ws_foreign',
+        workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405',
         threadId: 'thread_foreign',
         turnId: `turn_${queueEntryId}`,
         turnInput: 'Keep foreign scheduler admission existence private.',
@@ -179,14 +198,14 @@ describe('scheduler admission routes', () => {
       const missingRetry = await app.request(
         ...operationRequest(
           'scheduler.retry',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
           { method: 'POST' }
         )
       );
       const missingCancel = await app.request(
         ...operationRequest(
           'scheduler.cancel',
-          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
           { method: 'POST' }
         )
       );
@@ -196,12 +215,12 @@ describe('scheduler admission routes', () => {
       expect(missingRetry.status).toBe(404);
       expect(missingCancel.status).toBe(404);
       expect(JSON.parse(missingRetryText)).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'not_found',
         message: 'Thread not found.',
       });
       expect(JSON.parse(missingCancelText)).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'not_found',
         message: 'Thread not found.',
       });
@@ -210,7 +229,10 @@ describe('scheduler admission routes', () => {
         ['queue_foreign_cancel', 'cancel', 'queued'],
       ] as const) {
         const foreign = await app.request(
-          ...operationRequest(`scheduler.${action}`, { workspaceId: 'ws_demo', queueEntryId })
+          ...operationRequest(`scheduler.${action}`, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            queueEntryId,
+          })
         );
         const foreignText = await foreign.text();
 
@@ -236,16 +258,23 @@ describe('scheduler admission routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const shared = store.createThread('ws_demo', 'Shared other-user admission');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const shared = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Shared other-user admission'
+    );
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'user_local' });
+      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
         effectiveRole: 'owner',
         kind: 'workspace',
         policyOperation: 'turn.run',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await next();
     });
@@ -255,8 +284,8 @@ describe('scheduler admission routes', () => {
         backendId: 'nanohost',
         queueEntryId,
         requestId: `request_${queueEntryId}`,
-        triggerActor: { kind: 'user', id: 'user_victim' },
-        workspaceId: 'ws_demo',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed6-81e5-051501208741' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: shared.id,
         turnId: `turn_${queueEntryId}`,
         turnInput: 'Shared workspace admission from another actor.',
@@ -275,7 +304,7 @@ describe('scheduler admission routes', () => {
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
-        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         applyScopedMigrations(workspaceDb);
         return workspaceDb;
       },
@@ -283,7 +312,9 @@ describe('scheduler admission routes', () => {
 
     try {
       const listed = await app.request(
-        ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+        ...operationRequest('scheduler.list', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
       );
 
       expect(listed.status).toBe(200);
@@ -299,7 +330,10 @@ describe('scheduler admission routes', () => {
         ['queue_victim_cancel', 'cancel', 'cancelled'],
       ] as const) {
         const response = await app.request(
-          ...operationRequest(`scheduler.${action}`, { workspaceId: 'ws_demo', queueEntryId })
+          ...operationRequest(`scheduler.${action}`, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            queueEntryId,
+          })
         );
 
         expect(response.status).toBe(200);

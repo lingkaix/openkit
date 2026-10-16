@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { KernelCommandError } from '../generative-kernel/errors.js';
@@ -53,16 +54,16 @@ const ConversationCommandReceiptMetadataSchema = z
   .object({
     targetRef: z.string().min(1),
     logicalModelId: z.string().min(1).nullable(),
-    receivingWorkspaceId: z.string().min(1),
-    receivingThreadId: z.string().min(1),
+    receivingWorkspaceId: WorkspaceIdSchema,
+    receivingThreadId: ThreadIdSchema,
     downstream: z
       .discriminatedUnion('kind', [
-        z.object({ kind: z.literal('task'), turnId: z.string().min(1) }).strict(),
+        z.object({ kind: z.literal('task'), turnId: TurnIdSchema }).strict(),
         z
           .object({
             kind: z.literal('goal'),
             goalId: z.string().min(1),
-            turnId: z.string().min(1),
+            turnId: TurnIdSchema,
           })
           .strict(),
       ])

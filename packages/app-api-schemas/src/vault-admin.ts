@@ -1,4 +1,5 @@
 import { AgentIdSchema, AgentSessionIdSchema } from '@openkit/protocol';
+import { VaultGrantIdSchema, VaultReferenceIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 import { InjectionVisibilitySchema, WorkspaceVaultGrantSchema } from './vault-injection.js';
@@ -40,9 +41,9 @@ export const VaultAdminBootstrapCodexAuthJsonRequestSchema = z
 export const VaultAdminBootstrapCodexAuthJsonResponseSchema = z
   .object({
     backendKind: VaultAdminBackendKindSchema,
-    grantId: z.literal('grant_codex_auth_json'),
+    grantId: VaultGrantIdSchema,
     grantScope: z.literal('agent-session'),
-    referenceId: z.literal('vault_codex_auth_json'),
+    referenceId: VaultReferenceIdSchema,
     secretKind: z.literal('codex-auth-json'),
     targetPath: z.literal('/sandbox/.codex/auth.json'),
     expiresAt: z.string().datetime().nullable(),
@@ -93,10 +94,10 @@ export const VaultAdminRebindWorkspaceReferenceResponseSchema = z
     backendKind: VaultAdminBackendKindSchema,
     currentVersion: z.number().int().positive(),
     ownerScope: z.literal('workspace'),
-    referenceId: z.string().min(1),
+    referenceId: VaultReferenceIdSchema,
     secretKind: z.string().min(1),
     status: z.literal('active'),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -109,10 +110,10 @@ export const VaultAdminWorkspaceReferenceSchema = z
     backendKind: VaultAdminBackendKindSchema,
     currentVersion: z.number().int().nonnegative(),
     ownerScope: z.literal('workspace'),
-    referenceId: z.string().min(1),
+    referenceId: VaultReferenceIdSchema,
     secretKind: z.string().min(1),
     status: z.enum(['active', 'revoked', 'unbound']),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -123,7 +124,7 @@ export const VaultAdminWorkspaceReferenceSchema = z
 export const VaultAdminListWorkspaceReferencesResponseSchema = z
   .object({
     items: z.array(VaultAdminWorkspaceReferenceSchema),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -209,7 +210,7 @@ const WorkspaceVaultGrantTargets = {
 /** Create a Workspace-lifetime grant for a supported sink with optional exact restrictions. */
 export const CreateWorkspaceVaultGrantRequestSchema = z
   .object({
-    referenceId: z.string().regex(/^vault_[A-Za-z0-9_-]+$/),
+    referenceId: VaultReferenceIdSchema,
     expiresAt: z.string().datetime().optional(),
     injectionPath: z.enum(['gateway-only', 'runtime-env']).optional(),
     ...WorkspaceVaultGrantTargets,

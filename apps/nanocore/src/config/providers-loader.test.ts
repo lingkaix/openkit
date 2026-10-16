@@ -29,7 +29,7 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'anthropic-worker-direct.provider.jsonc',
     id: 'anthropic',
     kind: 'direct',
-    secretRef: 'vault://provider_anthropic',
+    secretRef: 'vault://vault_00000000-0000-7830-8ac0-b5ad7c96fbc8',
   },
   {
     baseUrl: 'https://api.openai.com/v1',
@@ -37,7 +37,7 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'openai-default.provider.jsonc',
     id: 'openai',
     kind: 'direct',
-    secretRef: 'vault://provider_openai',
+    secretRef: 'vault://vault_00000000-0000-73c8-9c32-792694898d5d',
   },
   {
     baseUrl: 'https://openrouter.ai/api/v1',
@@ -45,7 +45,7 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'openrouter-default.provider.jsonc',
     id: 'openrouter',
     kind: 'gateway',
-    secretRef: 'vault://provider_openrouter',
+    secretRef: 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0',
   },
   {
     baseUrl: 'https://api.x.ai/v1',
@@ -53,7 +53,7 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'xai-grok-default.provider.jsonc',
     id: 'xai',
     kind: 'direct',
-    secretRef: 'vault://provider_xai',
+    secretRef: 'vault://vault_00000000-0000-7957-886a-3a7ef2745044',
   },
   {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
@@ -61,7 +61,7 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'google-gemini-default.provider.jsonc',
     id: 'google',
     kind: 'direct',
-    secretRef: 'vault://provider_google',
+    secretRef: 'vault://vault_00000000-0000-7652-9153-59e509aca382',
   },
 ] as const;
 
@@ -71,7 +71,7 @@ const EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE = {
   fileName: 'openai-compatible-custom.provider.jsonc.example',
   id: 'openai-compatible-custom',
   kind: 'custom',
-  secretRef: 'vault://provider_openai_compatible_custom',
+  secretRef: 'vault://vault_00000000-0000-7b1d-88cb-f75d3058afdf',
 } as const;
 
 /**

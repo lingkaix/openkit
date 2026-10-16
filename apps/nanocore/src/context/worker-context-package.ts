@@ -28,7 +28,7 @@ import {
   STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
   StructuredWorkerDelegationRequestSchema,
 } from '../internal-agents/delegation.js';
-import { chatTaskModeTurnId } from '../runtime/idempotent-command.js';
+import { conversationTaskThreadId, conversationTaskTurnId } from '../runtime/idempotent-command.js';
 import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-requests.js';
 import {
   assertCanonicalDirectory,
@@ -359,6 +359,8 @@ export interface WorkerContextPackageTrace {
 
 /** Minimal durable authorities consumed by the shared trace verifier. */
 export interface WorkerContextPackageAuthorityReader {
+  /** Reads canonical causal Thread lineage without granting access through it. */
+  readonly readThreadParent: (workspaceId: string, threadId: string) => string | null;
   /** Reads the accepted scheduler admission for one Turn. */
   readonly readAdmission: (
     workspaceId: string,
@@ -518,6 +520,7 @@ export interface CreateWorkerContextPackageTraceInput {
  * @returns Whether the Turn is subordinate to that exact Chat command tuple.
  */
 export function isChatSubordinateTaskTurn(input: {
+  readonly originatingThreadId: string | null;
   readonly requestId: string;
   readonly turn: {
     readonly id: string;
@@ -526,11 +529,25 @@ export function isChatSubordinateTaskTurn(input: {
     readonly triggerActor: ActorRef;
   };
 }): boolean {
-  const { turn } = input;
+  const { turn, originatingThreadId } = input;
   return (
-    turn.triggerActor.kind === 'user' &&
+    originatingThreadId !== null &&
+    originatingThreadId !== turn.threadId &&
+    turn.threadId ===
+      conversationTaskThreadId(
+        turn.triggerActor,
+        turn.workspaceId,
+        originatingThreadId,
+        input.requestId
+      ) &&
     turn.id ===
-      chatTaskModeTurnId(turn.triggerActor.id, turn.workspaceId, turn.threadId, input.requestId)
+      conversationTaskTurnId(
+        turn.triggerActor,
+        turn.workspaceId,
+        originatingThreadId,
+        turn.threadId,
+        input.requestId
+      )
   );
 }
 
@@ -1110,13 +1127,17 @@ function verifyWorkerContextPackagePortableOwners(
     workerRequest.requestKind === 'structured-delegation' && trace.goalId === null;
   const isChatSubordinateTask =
     !importedHistory && isDirectTask
-      ? isChatSubordinateTaskTurn({ requestId: trace.requestId, turn })
+      ? isChatSubordinateTaskTurn({
+          originatingThreadId: authorities.readThreadParent(trace.workspaceId, trace.threadId),
+          requestId: trace.requestId,
+          turn,
+        })
       : false;
   if (
     (!importedHistory &&
       isDirectTask &&
-      ((isChatSubordinateTask && trace.knowledgeSelectionInput !== null) ||
-        (!isChatSubordinateTask && trace.knowledgeSelectionInput === null))) ||
+      !isChatSubordinateTask &&
+      trace.knowledgeSelectionInput === null) ||
     (!isDirectTask && trace.knowledgeSelectionInput !== null)
   ) {
     throw new Error('Worker Context Package Task Knowledge selection authority is contradictory.');

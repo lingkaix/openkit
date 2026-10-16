@@ -8,11 +8,11 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const STAMP = '2026-09-14T00:00:00.000Z';
@@ -34,18 +34,18 @@ function createSharedStreamFixture() {
   const workspace = store.createWorkspace('Team');
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: workspace.id,
   });
   const now = Date.now();
   coreDb.sqlite
     .prepare(
-      `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('user_other', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
+      `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
     )
     .run(now, now);
   coreDb.sqlite
     .prepare(
-      `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+      `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(workspace.id, STAMP, STAMP, STAMP);
   const thread = store.createThread(workspace.id, 'shared stream', undefined, 'conversation', {
@@ -53,7 +53,7 @@ function createSharedStreamFixture() {
   });
   const turn = store.createTurn(workspace.id, thread.id, 'Stream while a member', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   store.createItem({
     completedAt: null,
@@ -88,7 +88,7 @@ function createSharedStreamFixture() {
   });
   const issued = createOpenKitAccessTokenRecord(coreDb, {
     expiresAt: TOKEN_EXPIRY,
-    ownerUserId: 'user_other',
+    ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     scope: 'workspace-readonly',
     workspaceIds: [workspace.id],
   });
@@ -131,7 +131,7 @@ function revokeOtherMembership(coreDb: ReturnType<typeof openCoreDb>, workspaceI
     .prepare(
       `UPDATE workspace_members
        SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
-       WHERE workspace_id = ? AND user_id = 'user_other'`
+       WHERE workspace_id = ? AND user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c'`
     )
     .run(STAMP, STAMP, workspaceId);
 }
