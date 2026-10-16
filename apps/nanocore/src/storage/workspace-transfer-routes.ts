@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
-import { isDeepStrictEqual } from 'node:util';
 import { createZstdCompress } from 'node:zlib';
 
 import {
@@ -68,7 +67,7 @@ import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
 } from '../runtime/mcp-tool-schema-snapshots.js';
-import { recurringTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
+import { recurringCanonicalTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
 import {
   importWorkspaceRuntimeEvidence,
   listWorkspaceRuntimeEvidence,
@@ -1042,7 +1041,19 @@ export function createVerifiedWorkspaceExport({
         workspaceId,
       })
     : false;
-  const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
+  const canonicalItemRevisions: Item[] = [];
+  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
+  const turns = threads.flatMap((thread) =>
+    store.listThreadTurns(workspaceId, thread.id).map(({ id }) => {
+      const published = readPublishedTurnFileRecords(dataRoot, workspaceId, thread.id, id);
+      if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
+      // A failed persistence call can leave the cache ahead of its canonical Turn and Items.
+      canonicalItemRevisions.push(...published.itemRevisions);
+      if (published.captureCoverage) turnCaptureCoverage.set(id, published.captureCoverage);
+      return published.turn;
+    })
+  );
+  const canonicalTurns = new Map(turns.map((turn) => [turn.id, turn]));
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   assertCanonicalDirectory(workspaceRoot);
   const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
@@ -1079,10 +1090,7 @@ export function createVerifiedWorkspaceExport({
   }
   const exportRoot = join(workspaceExportsRoot, exportId);
   const turnObservations = new Map<string, string>();
-  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   for (const turn of turns) {
-    const coverage = store.getTurnCaptureCoverage(turn.id);
-    if (coverage) turnCaptureCoverage.set(turn.id, coverage);
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
     const rawTurn = JSON.parse(readCanonicalTextFile(join(root, 'turn.json')));
     const declared =
@@ -1156,16 +1164,6 @@ export function createVerifiedWorkspaceExport({
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
   const portableFileState = retainedPortableState;
-  const canonicalItemRevisions: Item[] = [];
-  const retainedTurns = turns.map((turn) => {
-    const published = readPublishedTurnFileRecords(dataRoot, workspaceId, turn.threadId, turn.id);
-    if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
-    // Serialize only the exact published Turn and Items, never an in-memory write that failed.
-    if (!isDeepStrictEqual(turn, published.turn))
-      throw new Error('Workspace export requires canonical Turn publication before export.');
-    for (const item of published.itemRevisions) canonicalItemRevisions.push(item);
-    return { id: published.turn.id, threadId: published.turn.threadId };
-  });
   // A missing current file cannot establish that a reserved Turn was never published.
   if (coreDb) {
     const accepted = coreDb.sqlite
@@ -1174,13 +1172,13 @@ export function createVerifiedWorkspaceExport({
       )
       .all(workspaceId) as { queue_entry_id: string | null }[];
     for (const row of accepted) {
+      const entry = row.queue_entry_id
+        ? requireSchedulerAdmissionEntry(coreDb, row.queue_entry_id)
+        : null;
       if (
-        !row.queue_entry_id ||
-        !findAcceptedRecurringOccurrenceForQueue(coreDb, row.queue_entry_id) ||
-        recurringTurnPublicationIssue(
-          store,
-          requireSchedulerAdmissionEntry(coreDb, row.queue_entry_id)
-        )
+        !entry ||
+        !findAcceptedRecurringOccurrenceForQueue(coreDb, entry.queueEntryId) ||
+        recurringCanonicalTurnPublicationIssue(entry, canonicalTurns.get(entry.turnId) ?? null)
       )
         throw new Error('Recurring publication requires inspection before portable export.');
     }
@@ -1189,7 +1187,7 @@ export function createVerifiedWorkspaceExport({
     coreDb,
     workspaceId,
     retainedPortableState.recurringHistory ?? null,
-    retainedTurns
+    turns
   );
   if (
     portableFileState.retrievalTraceFiles.size > 0 &&
@@ -1245,7 +1243,20 @@ export function createVerifiedWorkspaceExport({
       });
       for (const [, trace] of workerContextTraces) {
         verifyPortableWorkerContextPackageTrace({
-          authorities,
+          authorities: {
+            ...authorities,
+            // Historical validation must consume the same canonical records that export serializes.
+            readTurn: (requestedWorkspaceId, threadId, turnId) => {
+              const turn = canonicalTurns.get(turnId);
+              return requestedWorkspaceId === workspaceId && turn?.threadId === threadId
+                ? { ...turn, agentSessionId: turn.agentSessionId ?? null }
+                : null;
+            },
+            readThreadItems: (requestedWorkspaceId, threadId) =>
+              requestedWorkspaceId === workspaceId
+                ? turns.filter((turn) => turn.threadId === threadId).flatMap((turn) => turn.items)
+                : [],
+          },
           trace,
           workspaceRoot,
         });
