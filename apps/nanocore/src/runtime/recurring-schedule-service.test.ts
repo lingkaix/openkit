@@ -348,3 +348,46 @@ it('holds mutation admission through bounded preparation so backup waits for the
     n: 0,
   });
 });
+
+it('owns one scanner across distinct Core handles for the same data root', async () => {
+  const { root, store, gate, start } = fixture();
+  const first = start();
+  await first.service.runOnce();
+  const otherDb = openCoreDb(root);
+  let duplicate: RecurringScheduleService | undefined;
+  try {
+    expect(() => {
+      duplicate = startRecurringScheduleService({
+        schedules: new AutomationStore(otherDb, gate),
+        store,
+        prepare: async () => structuredClone(ready),
+        setInterval: () => 'duplicate',
+        clearInterval: () => {},
+      });
+    }).toThrow('Recurring scanner already owns this Core');
+  } finally {
+    duplicate?.stop();
+    first.service.stop();
+    otherDb.sqlite.close();
+  }
+});
+
+it('reconciles an already accepted queue without attempting initial file publication again', async () => {
+  const { db, schedules, schedule, store, clock, start } = fixture();
+  const occurrence = schedules.collectScanCandidates(clock())[0]!;
+  const accepted = schedules.commitAttempt(occurrence.id, 2, structuredClone(ready))!;
+  // Reuse the owner's exact-replay fixture: accepted attempt evidence stays intact.
+  db.sqlite
+    .prepare('UPDATE recurring_occurrences SET state = ?, record_json = ? WHERE id = ?')
+    .run(
+      'pending',
+      JSON.stringify({ ...accepted, state: 'pending', terminalAt: null }),
+      occurrence.id
+    );
+  const create = vi.spyOn(store, 'createTurn');
+  const { service } = start();
+  await service.runOnce();
+  expect(schedules.getOccurrence(occurrence.id)).toMatchObject({ state: 'admission-accepted' });
+  expect(create).not.toHaveBeenCalled();
+  expect(store.listThreadTurns(schedule.workspaceId, schedule.threadId)).toEqual([]);
+});

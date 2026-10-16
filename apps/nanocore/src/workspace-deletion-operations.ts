@@ -16,7 +16,11 @@ import {
   WorkspaceDeletionResponseSchema,
   type WorkspaceDeletionState,
 } from '@openkit/app-api-schemas';
-import { listServerAuditEvents, recordServerAuditEvent } from './audit-events.js';
+import {
+  listServerAuditEvents,
+  listSqliteAuditEvents,
+  recordServerAuditEvent,
+} from './audit-events.js';
 import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { FsStore } from './lib/store.js';
@@ -411,6 +415,7 @@ async function advanceWorkspaceDeletion(input: {
     verifyDeletionArtifacts(input.dataRoot, request);
     removeSupersededWorkspaceExports(input.dataRoot, request);
     const terminal = input.coreDb.sqlite.transaction(() => {
+      const recurringAudit = listSqliteAuditEvents(input.coreDb.sqlite, input.workspaceId, true);
       const registry = completeWorkspaceDeletion({
         coreDb: input.coreDb,
         workspaceId: input.workspaceId,
@@ -427,9 +432,10 @@ async function advanceWorkspaceDeletion(input: {
         input.coreDb.sqlite
           .prepare(`DELETE FROM ${table} WHERE workspace_id = ?`)
           .run(input.workspaceId);
-      input.coreDb.sqlite
-        .prepare("DELETE FROM audit_events WHERE workspace_id = ? AND action LIKE 'recurring.%'")
-        .run(input.workspaceId);
+      for (const event of recurringAudit)
+        input.coreDb.sqlite
+          .prepare('DELETE FROM audit_events WHERE workspace_id = ? AND audit_event_id = ?')
+          .run(input.workspaceId, event.id);
       const audit = recordServerAuditEvent({
         action: 'workspace.delete',
         actor: { id: input.actorId, kind: 'user' },

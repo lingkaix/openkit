@@ -67,6 +67,7 @@ import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
 } from '../runtime/mcp-tool-schema-snapshots.js';
+import { recurringTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
 import {
   importWorkspaceRuntimeEvidence,
   listWorkspaceRuntimeEvidence,
@@ -95,6 +96,7 @@ import {
   importWorkspaceSyncRecords,
   listExportableWorkspaceSyncRecords,
 } from '../runtime/workspace-sync-records.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   importWorkspaceVaultGrants,
   listExportableWorkspaceVaultGrants,
@@ -135,6 +137,7 @@ import {
 import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
 import { exportRecurringPortableHistory } from './recurring-portable-history.js';
+import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
 import {
   artifactReviews,
   threadMaterialBindings,
@@ -162,6 +165,7 @@ import {
   type CaptureCoverageBinding,
   readCanonicalFile,
   readCanonicalTextFile,
+  readPublishedTurnRecord,
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
@@ -1150,14 +1154,37 @@ export function createVerifiedWorkspaceExport({
     threads: threads.map(({ id }) => ({ threadId: id })),
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
-  const portableFileState = {
-    ...retainedPortableState,
-    recurringHistory: exportRecurringPortableHistory(
-      coreDb,
-      workspaceId,
-      retainedPortableState.recurringHistory ?? null
-    ),
-  };
+  const portableFileState = retainedPortableState;
+  const retainedTurns = turns.map((turn) => {
+    const published = readPublishedTurnRecord(dataRoot, workspaceId, turn.threadId, turn.id);
+    if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
+    return { id: published.id, threadId: published.threadId };
+  });
+  // A missing current file cannot establish that a reserved Turn was never published.
+  if (coreDb) {
+    const accepted = coreDb.sqlite
+      .prepare(
+        "SELECT queue_entry_id FROM recurring_occurrences WHERE workspace_id = ? AND state = 'admission-accepted'"
+      )
+      .all(workspaceId) as { queue_entry_id: string | null }[];
+    for (const row of accepted) {
+      if (
+        !row.queue_entry_id ||
+        !findAcceptedRecurringOccurrenceForQueue(coreDb, row.queue_entry_id) ||
+        recurringTurnPublicationIssue(
+          store,
+          requireSchedulerAdmissionEntry(coreDb, row.queue_entry_id)
+        )
+      )
+        throw new Error('Recurring publication requires inspection before portable export.');
+    }
+  }
+  const recurringHistory = exportRecurringPortableHistory(
+    coreDb,
+    workspaceId,
+    retainedPortableState.recurringHistory ?? null,
+    retainedTurns
+  );
   if (
     portableFileState.retrievalTraceFiles.size > 0 &&
     !deletionRecoveryAuthorized &&
@@ -1243,6 +1270,7 @@ export function createVerifiedWorkspaceExport({
     agentSessions: store.listWorkspaceAgentSessions(workspaceId),
     turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
     portableFileState,
+    recurringHistory,
     ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
     agentResourceCatalog: projectWorkspaceCatalogExport(dataRoot, workspaceId),
     auditEvents: [...workspaceRowFamilies.auditEvents, ...lightApps.auditEvents],

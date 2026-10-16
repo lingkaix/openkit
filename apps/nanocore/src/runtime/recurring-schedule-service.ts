@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { AutomationStore } from '../lib/automation-store.js';
@@ -25,16 +26,16 @@ export interface RecurringScheduleService {
   readonly runOnce: () => Promise<void>;
   readonly stop: () => void;
 }
-const owners = new WeakSet<AutomationStore['coreDb']['sqlite']>();
+const owners = new Set<string>();
 
 /** Starts the one five-second scan only after the caller has completed storage and scheduler recovery. */
 export function startRecurringScheduleService(
   input: RecurringScheduleServiceInput
 ): RecurringScheduleService {
   const db = input.schedules.coreDb;
-  if (owners.has(db.sqlite))
-    throw new Error('Recurring scanner already owns this Core connection.');
-  owners.add(db.sqlite);
+  const ownerKey = resolve(db.dataRoot);
+  if (owners.has(ownerKey)) throw new Error('Recurring scanner already owns this Core connection.');
+  owners.add(ownerKey);
   const now = input.now ?? (() => new Date().toISOString());
   let stopped = false;
   let running: Promise<void> | undefined;
@@ -64,13 +65,22 @@ export function startRecurringScheduleService(
           }
         }
         if (stopped) return;
+        // Existing queue acceptance can be reconciled, but cannot authorize another initial publication attempt.
+        // The data-root scanner owner and synchronous Core commit keep this read and insertion in one local invocation.
+        const queueAlreadyAccepted = db.sqlite
+          .prepare('SELECT 1 FROM scheduler_admission_entries WHERE request_id = ? LIMIT 1')
+          .get(occurrence.requestId);
         const accepted = input.schedules.commitAttempt(
           occurrence.id,
           occurrence.definitionRevision,
           preparation,
           () => validateCurrent(occurrence)
         );
-        if (accepted?.state === 'admission-accepted' && accepted.queueEntryId) {
+        if (
+          !queueAlreadyAccepted &&
+          accepted?.state === 'admission-accepted' &&
+          accepted.queueEntryId
+        ) {
           // Attempt initial file publication once while this source admission holds the
           // Workspace fence. Acceptance stays terminal if publication is interrupted.
           const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId);
@@ -125,8 +135,8 @@ export function startRecurringScheduleService(
         input.clearInterval ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>))
       )(timer);
       // Retain ownership while an old scan is awaiting preparation; it cannot commit after stop.
-      if (running) void running.finally(() => owners.delete(db.sqlite));
-      else owners.delete(db.sqlite);
+      if (running) void running.finally(() => owners.delete(ownerKey));
+      else owners.delete(ownerKey);
     },
   };
 

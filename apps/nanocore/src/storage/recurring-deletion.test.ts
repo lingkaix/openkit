@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { recordServerAuditEvent } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { createApp } from '../test-support/app.js';
@@ -64,6 +65,14 @@ it('seals the complete recurring graph before deletion removes its Core rows and
         ).map((row) => JSON.parse(row.record_json))
     );
     expect(before.every((records) => records.length > 0)).toBe(true);
+    const retainedCoreAudit = recordServerAuditEvent({
+      coreDb,
+      workspaceId: workspace.id,
+      action: 'recurring.unrecognized-core-action',
+      resource: schedule.id,
+      outcome: 'succeeded',
+      summary: 'Non-portable Core action remains under its existing disposition.',
+    });
     const requestId = randomUUID();
     const app = createApp({ coreDb, dataRoot, store, automationStore });
     const response = await app.request(
@@ -106,6 +115,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     ]);
     const audit = readFileSync(join(root, 'records', 'core-audit-events.jsonl'), 'utf8');
     expect(audit).toContain('recurring.expired-range.record');
+    expect(audit).toContain(retainedCoreAudit.id);
     for (const table of [
       'recurring_schedules',
       'recurring_occurrences',
@@ -119,10 +129,10 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     expect(
       coreDb.sqlite
         .prepare(
-          "SELECT count(*) AS n FROM audit_events WHERE workspace_id = ? AND action LIKE 'recurring.%'"
+          "SELECT audit_event_id FROM audit_events WHERE workspace_id = ? AND action LIKE 'recurring.%'"
         )
-        .get(workspace.id)
-    ).toEqual({ n: 0 });
+        .all(workspace.id)
+    ).toEqual([{ audit_event_id: retainedCoreAudit.id }]);
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
