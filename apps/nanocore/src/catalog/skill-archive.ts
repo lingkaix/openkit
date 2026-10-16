@@ -42,10 +42,11 @@ export async function readSkillArchive(
     }
     return path;
   };
-  const readContent = async (stream: AsyncIterable<Uint8Array>, expected: number) => {
+  const readContent = async (stream: AsyncIterable<unknown>, expected: number) => {
     const chunks: Buffer[] = [];
     let actual = 0;
     for await (const chunk of stream) {
+      if (!(chunk instanceof Uint8Array)) throw new SkillSourceInputError();
       actual += chunk.byteLength;
       if (actual > expected) throw new SkillSourceInputError();
       chunks.push(Buffer.from(chunk));
@@ -67,7 +68,12 @@ export async function readSkillArchive(
         if (entry.generalPurposeBitFlag & 0x800)
           new TextDecoder('utf-8', { fatal: true }).decode(entry.fileNameRaw);
         for (const field of entry.extraFields) {
-          if (field.id === 0x7075 && field.data.length >= 5)
+          if (
+            field.id === 0x7075 &&
+            field.data.length >= 5 &&
+            field.data[0] === 1 &&
+            field.data.readUInt32LE(1) === crc32(entry.fileNameRaw)
+          )
             new TextDecoder('utf-8', { fatal: true }).decode(field.data.subarray(5));
         }
         const mode = entry.externalFileAttributes >>> 16;

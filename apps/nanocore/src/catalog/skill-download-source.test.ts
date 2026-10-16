@@ -18,6 +18,11 @@ const unsafeZip = Buffer.from(
   'UEsDBBQAAAAIAGIeUV16SNOCPwAAAD8AAAAOAAAAc2tpbGwvU0tJTEwubWTT1dXlykvMTbVSCE5MS+VKSS1OLsosKMnMzwOKpOakJpcolGRkFisUJCZnJ6an6nHpAjU4lpZk5BelpuhxAQBQSwMEFAAAAAgAYh5RXYqo6mwyAAAAMQAAAA4AAAAuLi9vdXRzaWRlLnR4dAvNK05MS1VILErOyCxLVShILMlQyC8tKc5MSVUoyUhVKE7NSU0uSU0ByiRnJ6an6gEAUEsBAhQDFAAAAAgAYh5RXXpI04I/AAAAPwAAAA4AAAAAAAAAAAAAAIABAAAAAHNraWxsL1NLSUxMLm1kUEsBAhQDFAAAAAgAYh5RXYqo6mwyAAAAMQAAAA4AAAAAAAAAAAAAAIABawAAAC4uL291dHNpZGUudHh0UEsFBgAAAAACAAIAeAAAAMkAAAAAAA==',
   'base64'
 );
+// Invalid UTF-8 in both stored ZIP filename records; payload bytes and CRC remain valid.
+const malformedNameZip = Buffer.from(
+  'UEsDBBQAAAAIAIkgUV16SNOCPwAAAD8AAAAOAAAAc2tpbGwvU0tJTEwubWTT1dXlykvMTbVSCE5MS+VKSS1OLsosKMnMzwOKpOakJpcolGRkFisUJCZnJ6an6nHpAjU4lpZk5BelpuhxAQBQSwMEFAAACAgAiSBRXaEznCESAAAAEAAAAA4AAABvdXRzaWRlL/+pLnR4dPNOTS1QKEgsyVBIqixJLdYDAFBLAQIUAxQAAAAIAIkgUV16SNOCPwAAAD8AAAAOAAAAAAAAAAAAAACAAQAAAABza2lsbC9TS0lMTC5tZFBLAQIUAxQAAAgIAIkgUV2hM5whEgAAABAAAAAOAAAAAAAAAAAAAACAAWsAAABvdXRzaWRlL/+pLnR4dFBLBQYAAAAAAgACAHgAAACpAAAAAAA=',
+  'base64'
+);
 const duplicateZip = Buffer.from(
   'UEsDBBQAAAAIAAAAIQCnBx0TWwAAAF4AAAAIAAAAU0tJTEwubWQdy7ENgCAQBdCehB1uAbRnBRujE5zwNRfxNEDjbBaO5Aoa65f3XLdzzhrlDZ76xKI0rpKSNRElZDmq7OqpAw7asyyinGg6K0pjzV8HcKSMGRkaUNrIlZtJ9PMXUEsDBBQAAAAIAAAAIQCnBx0TWwAAAF4AAAAIAAAAU0tJTEwubWQdy7ENgCAQBdCehB1uAbRnBRujE5zwNRfxNEDjbBaO5Aoa65f3XLdzzhrlDZ76xKI0rpKSNRElZDmq7OqpAw7asyyinGg6K0pjzV8HcKSMGRkaUNrIlZtJ9PMXUEsBAhQDFAAAAAgAAAAhAKcHHRNbAAAAXgAAAAgAAAAAAAAAAAAAAKSBAAAAAFNLSUxMLm1kUEsBAhQDFAAAAAgAAAAhAKcHHRNbAAAAXgAAAAgAAAAAAAAAAAAAAKSBgQAAAFNLSUxMLm1kUEsFBgAAAAACAAIAbAAAAAIBAAAAAA==',
   'base64'
@@ -60,7 +65,10 @@ async function tar(
   const archive = pack();
   const chunks: Buffer[] = [];
   const collected = (async () => {
-    for await (const chunk of archive) chunks.push(Buffer.from(chunk));
+    for await (const chunk of archive) {
+      if (!(chunk instanceof Uint8Array)) throw new Error('TAR fixture emitted non-byte content.');
+      chunks.push(Buffer.from(chunk));
+    }
     return Buffer.concat(chunks);
   })();
   for (const entry of entries) archive.entry(entry.header, entry.body ?? Buffer.alloc(0));
@@ -164,6 +172,10 @@ describe('downloaded ecosystem Skill acquisition', () => {
     const unsafe = await serve(unsafeZip);
     await expect(
       acquireDownloadedEcosystemSkill({ ...unsafe.source, subpath: 'skill' })
+    ).rejects.toThrow(new SkillSourceInputError());
+    const malformedName = await serve(malformedNameZip);
+    await expect(
+      acquireDownloadedEcosystemSkill({ ...malformedName.source, subpath: 'skill' })
     ).rejects.toThrow(new SkillSourceInputError());
     const duplicate = await serve(duplicateZip);
     await expect(acquireDownloadedEcosystemSkill(duplicate.source)).rejects.toThrow(
