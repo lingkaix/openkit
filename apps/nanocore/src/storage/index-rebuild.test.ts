@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -745,6 +746,8 @@ describe('workspace derived index rebuild', () => {
     const pagesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'notebook.git');
     const outsidePagesRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-pages-'));
 
+    // A valid repository makes this a symlink refusal rather than an invalid-Git refusal.
+    cpSync(pagesRoot, outsidePagesRoot, { recursive: true });
     writeFileSync(join(outsidePagesRoot, 'outside.md'), 'External content must not be indexed.\n');
     rmSync(pagesRoot, { recursive: true });
     fixtureRoots.push(outsidePagesRoot);
