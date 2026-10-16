@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { isThreadId, isUserId, isWorkspaceId } from '@openkit/protocol';
+import { ApprovalRequestIdSchema, isThreadId, isUserId, isWorkspaceId, RequestIdSchema, UserInputRequestIdSchema } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-
-export { ATTENTION_SCHEMA_SQL } from './schema.js';
 
 const ChannelSchema = z.enum(['discord', 'email']);
 const AttemptStatusSchema = z.enum(['sending', 'sent', 'failed-no-send', 'delivery-unknown']);
@@ -18,7 +16,7 @@ const SourceSchema = z
     workspaceId: z.string().refine(isWorkspaceId),
     threadId: z.string().refine(isThreadId),
     kind: z.enum(['approval-request', 'user-input-request']),
-    requestId: z.string().min(1),
+    requestId: z.union([ApprovalRequestIdSchema, UserInputRequestIdSchema]),
   })
   .strict();
 const EnqueueSchema = z
@@ -26,7 +24,7 @@ const EnqueueSchema = z
   .strict();
 const DeliverSchema = z
   .object({
-    deliveryId: z.string().uuid(),
+    deliveryId: RequestIdSchema,
     recipientUserId: z.string().refine(isUserId),
     channel: ChannelSchema,
     retry: z.boolean().optional(),
@@ -34,11 +32,11 @@ const DeliverSchema = z
   })
   .strict();
 const RowSchema = z.object({
-  id: z.string().uuid(),
+  id: RequestIdSchema,
   workspaceId: z.string().refine(isWorkspaceId),
   threadId: z.string().refine(isThreadId),
   sourceKind: SourceSchema.shape.kind,
-  requestId: z.string().min(1),
+  requestId: SourceSchema.shape.requestId,
   recipientUserId: z.string().refine(isUserId),
   channel: ChannelSchema.nullable(),
   createdAt: z.string().datetime(),
@@ -196,7 +194,7 @@ export class AttentionNotifications {
 
   /** Reads an internal reference; callers must use current admission before exposing it. */
   get(id: string): AttentionDelivery | null {
-    if (!z.string().uuid().safeParse(id).success)
+    if (!RequestIdSchema.safeParse(id).success)
       throw new AttentionError('invalid_attention_input');
     const row = this.sqlite.prepare(`${SELECT} WHERE a.id = ?`).get(id);
     return row ? decodeRow(row) : null;
@@ -208,7 +206,7 @@ export class AttentionNotifications {
     userId: string,
     isEligible: AttentionEligibility
   ): AttentionDelivery | null {
-    if (!z.string().uuid().safeParse(id).success)
+    if (!RequestIdSchema.safeParse(id).success)
       throw new AttentionError('invalid_attention_input');
     const row = this.sqlite
       .prepare(`${SELECT} WHERE a.id = ? AND a.recipient_user_id = ?`)
@@ -221,7 +219,7 @@ export class AttentionNotifications {
   /** Reads at most limit recipient rows before current source/audience filtering. */
   listForActor(
     userId: string,
-    options: { limit?: number },
+    options: { limit?: number | undefined },
     isEligible: AttentionEligibility
   ): AttentionDelivery[] {
     const limit = options.limit ?? 50;
