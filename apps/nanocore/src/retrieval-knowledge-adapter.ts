@@ -17,6 +17,7 @@ import {
 import { isThreadVisible } from './auth/thread-visibility.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   type KnowledgePageReferenceProof,
   parseOkfDocument,
   resolveRegisteredKnowledgeSourceReference,
@@ -99,19 +100,18 @@ export function admitKnowledgeRetrieval(input: Pick<Target, 'workspaceId' | 'acc
   if (access.requestActor && access.requestActor.userId !== responsibleUserIdForActor(access.actor))
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
   const allowed = access.coreDb
-    ? currentWorkspaceAuthority(
-        access.coreDb,
-        workspaceId,
-        access.actor,
-        'knowledge.read',
-        true,
-        access.requestActor
-      ) !== null &&
-      (!access.requestActor ||
-        isWorkspaceOperationAuthorized(access.coreDb, access.requestActor, workspaceId, {
+    ? access.requestActor
+      ? isWorkspaceOperationAuthorized(access.coreDb, access.requestActor, workspaceId, {
           mutating: false,
           policyOperation: 'knowledge.read',
-        }))
+        })
+      : currentWorkspaceAuthority(
+          access.coreDb,
+          workspaceId,
+          access.actor,
+          'knowledge.read',
+          true
+        ) !== null
     : access.actor.kind === 'user' &&
       access.actor.id === LOCAL_USER_ID &&
       access.requestActor?.kind === 'local';
@@ -252,6 +252,14 @@ function pinnedPageReadable(
   if (visiting.has(pageId) || pinnedPage(input, pageId) !== content) return false;
   const parsed = parseOkfDocument({ path: `knowledge/pages/${pageId}.md`, content });
   if (!parsed.ok) return false;
+  const sensitivity = stringFrontmatterField(parsed.document, 'sensitivity');
+  if (
+    parsed.document.frontmatter.sensitivity !== undefined &&
+    (sensitivity === null ||
+      (!DEFAULT_SCOPE_KNOWLEDGE_SCHEMA.allowedSensitivities.includes(sensitivity) &&
+        sensitivity !== 'restricted'))
+  )
+    return false;
   const refs = stringListFrontmatterField(parsed.document, 'source_refs');
   if (refs === null && !parsed.document.reserved) return false;
   return pinnedSourcesReadable(input, refs ?? [], new Set([...visiting, pageId]));
@@ -290,6 +298,7 @@ function pinnedSourcesReadable(
         const source = store.getKnowledgeSource(input.workspaceId, resolution.targetId);
         const material = store.readKnowledgeSourceMaterial(input.workspaceId, source.id);
         if (material === null || digest(material) !== source.contentDigest) return false;
+        if (!knowledgeSourceAudienceReadable(input, source.id)) return false;
       } else if (reference.startsWith('knowledge:')) {
         const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
         if (!match) return false;
@@ -391,8 +400,19 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
     ...pinned,
     pageIds: pages.map(({ id }) => id),
   });
+  // Source/work verification can observe changed owners; old disclosure eligibility is never a return grant.
+  const currentPages = pages.filter(({ id, content }) =>
+    pinnedPageReadable(pinned, id, content, new Set())
+  );
+  if (input.pageIds && currentPages.length !== pages.length)
+    throw new OperationError('workspace_access_denied', 'Knowledge page is unavailable.', 403);
+  const currentIds = new Set(currentPages.map(({ id }) => id));
   admitKnowledgeRetrieval(pinned);
-  return { notebookRevision: pinned.notebookRevision, pages, referenceProofs };
+  return {
+    notebookRevision: pinned.notebookRevision,
+    pages: currentPages,
+    referenceProofs: new Map([...referenceProofs].filter(([id]) => currentIds.has(id))),
+  };
 }
 /** Source-bound conflict state stays an authoritative ledger decision, never an index flag. */
 export function knowledgePageConflicted(workspaceRoot: string, pageId: string): boolean {
