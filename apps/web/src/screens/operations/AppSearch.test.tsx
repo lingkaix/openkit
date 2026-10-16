@@ -65,7 +65,7 @@ describe('current search observations', () => {
     await act(async () => {
       await queryClient.refetchQueries({ queryKey: operationsKeys.search(QUERY), exact: true });
     });
-    expect(screen.getByText("Couldn't search.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't search.")).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
     expect(screen.queryByText('No search results')).not.toBeInTheDocument();
     const current = deferred<typeof RESPONSE>();
