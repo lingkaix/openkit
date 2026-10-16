@@ -6632,6 +6632,17 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
+    const timeline = store.createThread(
+      'ws_demo',
+      'Goal proposal Timeline',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
+    );
+    const originalThreadIds = new Set(store.listThreads('ws_demo').map((thread) => thread.id));
     const gatewayConfig = createTestGatewayConfig();
     const intent = 'Prepare a reviewed release plan. Do not deploy anything.';
     let assistantCalls = 0;
@@ -6682,7 +6693,7 @@ describe('nanocore server', () => {
       app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          { workspaceId: 'ws_demo', threadId: timeline.id },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -6696,7 +6707,7 @@ describe('nanocore server', () => {
       expect(submitted.status, await submitted.clone().text()).toBe(202);
       const original = SubmitConversationResponseSchema.parse(await submitted.json());
       const pending = store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems('ws_demo', timeline.id)
         .find((item) => item.type === 'user-input-request');
       if (pending?.type !== 'user-input-request')
         throw new Error('Missing canonical Goal selection.');
@@ -6705,8 +6716,8 @@ describe('nanocore server', () => {
         targetWorkspaceId: 'ws_demo',
         intent,
       });
-      expect(store.listThreads('ws_demo')).toHaveLength(1);
-      expect(listGoalsForThread(workspaceDb, 'th_demo')).toEqual([]);
+      expect(store.listThreads('ws_demo')).toHaveLength(originalThreadIds.size);
+      expect(listGoalsForThread(workspaceDb, timeline.id)).toEqual([]);
       expect(executor.startContexts).toHaveLength(0);
       expect(assistantCalls).toBe(2);
       const selection = await app.request(
@@ -6718,7 +6729,7 @@ describe('nanocore server', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              threadId: timeline.id,
               requestId: '0190f4c8-0000-7000-8000-000000000306',
               answers: { [pending.questions[0]!.id]: ['Confirm exact handoff'] },
             }),
@@ -6726,21 +6737,24 @@ describe('nanocore server', () => {
         )
       );
       expect(selection.status, await selection.clone().text()).toBe(200);
-      await vi.waitFor(() => expect(store.listThreads('ws_demo')).toHaveLength(2));
+      await vi.waitFor(() =>
+        expect(store.listThreads('ws_demo')).toHaveLength(originalThreadIds.size + 1)
+      );
       const shared = store
         .listThreads('ws_demo')
-        .find((thread) => thread.visibility === 'workspace')!;
+        .find((thread) => !originalThreadIds.has(thread.id))!;
       await vi.waitFor(() => expect(listGoalsForThread(workspaceDb, shared.id)).toHaveLength(1));
+      expect(shared).toMatchObject({ visibility: 'workspace', parentThreadId: timeline.id });
       expect(listGoalsForThread(workspaceDb, shared.id)[0]).toMatchObject({
         intent,
         workspaceId: 'ws_demo',
       });
-      expect(store.getThread('ws_demo', 'th_demo').visibility).toBe('private');
+      expect(store.getThread('ws_demo', timeline.id).visibility).toBe('private');
       expect(assistantCalls).toBe(2);
       const replay = await submit();
       expect(replay.status).toBe(submitted.status);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(original);
-      expect(store.listThreads('ws_demo')).toHaveLength(2);
+      expect(store.listThreads('ws_demo')).toHaveLength(originalThreadIds.size + 1);
       expect(listGoalsForThread(workspaceDb, shared.id)).toHaveLength(1);
       expect(assistantCalls).toBe(2);
     } finally {
@@ -6754,7 +6768,16 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const thread = store.createThread('ws_quick_chat', 'Live Goal Web report');
+    const thread = store.createThread(
+      'ws_quick_chat',
+      'Live Goal Web report',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
+    );
     const artifact = createImportedMarkdownArtifact(store, {
       id: 'ar_live_goal_web_report',
       workspaceId: 'ws_quick_chat',
@@ -6816,7 +6839,10 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const thread = store.createThread('ws_quick_chat', 'Topic mention');
+    const thread = store.createThread('ws_quick_chat', 'Topic mention', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    });
     const app = createApp({
       coreDb,
       store,
