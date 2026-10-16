@@ -392,7 +392,7 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:tu_00000000-0000-784a-b5cd-eb5f8f622c05',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: 'session_demo',
+        workerSessionId: testEntityId('as', 'session_demo'),
         contextDigest: 'sha256:ctx_demo',
         diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics({
           itemIds: ['it_00000000-0000-7a37-91be-d019992bbed5'],
@@ -509,7 +509,7 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:tu_00000000-0000-7a0d-b527-6df9c8763406',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: 'session_backend',
+        workerSessionId: testEntityId('as', 'session_backend'),
         now: () => '2026-05-31T00:00:00.000Z',
       });
       recordWorkerBackendTeardownEvidence(workspaceDb, {

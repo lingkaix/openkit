@@ -15,6 +15,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -386,7 +387,7 @@ function mutations(workspaceId: string) {
     },
     'catalog.skill-candidate-decide': {
       workspaceId,
-      candidateId: 'candidate',
+      candidateId: testEntityId('cand', 'candidate'),
       decision: 'promoted',
       expectedRevision: 0,
       requestId,

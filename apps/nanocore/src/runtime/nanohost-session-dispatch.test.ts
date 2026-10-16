@@ -1241,7 +1241,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).rejects.toThrow(/physical Epoch changed/i);
       const requestId = 'e'.repeat(64);
       const imageSettlement = {
-        authoredArtifactId: 'artifact_settlement',
+        authoredArtifactId: testEntityId('ar', 'artifact_settlement'),
         authoredArtifactVersion: 1,
         authoredContentDigest: `sha256:${'a'.repeat(64)}`,
         inputDigest: `sha256:${'b'.repeat(64)}`,
