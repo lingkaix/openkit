@@ -32,7 +32,7 @@ updated: 2026-10-16
 
 Skills are first-class, independently versioned worker resources. A Skill may arrive alone, through an Agent Plugin, or as an agent-submitted candidate; its version and selection must not depend on publishing a new community plugin. OpenKit retains exact immutable content so a later comparison, promotion, or rollback identifies the actual instructions, scripts, and supporting files supplied to a worker.
 
-This contract replaces the earlier future-only entry conditions with the requested target. Real Skill consumption and version changes are acceptance observations to deliver, not prerequisites preventing design work. The existing MCP Gateway is an available dependency; catalog and native Skill loading implementation remains Not Started.
+This contract replaces the earlier future-only entry conditions with the requested target. Real Skill consumption and version changes are acceptance observations to deliver, not prerequisites preventing design work. The existing MCP Gateway is an available dependency. Catalog lifecycle and native Skill loading remain partially implemented; the current projection below names the remaining integration and acceptance work.
 
 ## Goals / Non-goals
 
@@ -185,7 +185,7 @@ Experiment scheduling, statistical analysis, held-back evaluation suites, autono
 
 ## Internal Assistant Consumer
 
-`20260909-internal_agent_resource_integration.md` owns metadata-first selection and bounded `skill.read` for the internal Assistant. It resolves this catalog's exact retained versions/pins and source restrictions directly without an AEP or another version authority. Current removal/eligibility changes invalidate later reads even when bytes remain retained for evidence. Reading an immutable snapshot does not install or execute its scripts; Worker execution and materialization retain their existing owners. The consumer is Not Started and does not expand other internal roles' Tool sets automatically.
+`20260909-internal_agent_resource_integration.md` owns metadata-first selection and bounded `skill.read` for the internal Assistant. It resolves this catalog's exact retained versions/pins and source restrictions directly without an AEP or another version authority. Current removal/eligibility changes invalidate later reads even when bytes remain retained for evidence. Reading an immutable snapshot does not install or execute its scripts; Worker execution and materialization retain their existing owners. The consumer uses the catalog's verified retained snapshot reader for metadata-first selection and bounded file reads, with current removal and payload-availability checks. This does not expand other internal roles' Tool sets or establish Worker delivery acceptance.
 
 ## Related Specifications And Sources
 
