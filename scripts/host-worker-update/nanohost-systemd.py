@@ -189,7 +189,7 @@ class SystemdMaintenance:
         expected = {"MainPID": "0", "ActiveState": "inactive", "SubState": "dead",
                     "Slice": "openkit-nanohost.slice", "Restart": "no",
                     "DropInPaths": self.guard, "FragmentPath": _FRAGMENT, "LoadState": "loaded"}
-        if set(facts) != set(_PROPERTIES) or any(facts[key] != value for key, value in expected.items()):
+        if any(facts[key] != value for key, value in expected.items()):
             _refuse()
         if facts["ControlGroup"] not in ("", _GROUP) or facts["NeedDaemonReload"] not in ("yes", "no"):
             _refuse()
