@@ -439,7 +439,7 @@ Gateway account rows clear cached quota while pending or logged out, including l
 
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
-Account membership controls permit every active member to invite, revoke, remove non-owner members and transfer ownership, subject to current server Policy and conflicts. Every invitation grants full membership; there is no access-tier selector. Actual owner identity keeps transfer-before-owner-leave controls separate from operation eligibility. Administrator-only access remains visibly separate from actual membership.
+Account membership controls permit every active member to invite, revoke, remove non-owner members and transfer ownership, subject to current server Policy and conflicts. Every invitation grants full membership; there is no access-tier selector. Actual owner identity keeps transfer-before-owner-leave controls separate from operation eligibility. Administrator-only access remains visibly separate from actual membership. Remove and Transfer confirmation belongs to one exact Workspace/member pair. Switching the selected Workspace closes the old confirmation, including when both Workspaces contain the same member.
 
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
 

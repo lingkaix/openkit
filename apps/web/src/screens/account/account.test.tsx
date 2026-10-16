@@ -5,7 +5,7 @@ import {
   parseWorkspaceSharingError,
 } from '@openkit/core-client';
 import { focusManager, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { type ReactNode, useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -1849,6 +1849,39 @@ describe('email/password session operations', () => {
 });
 
 describe('selected-Workspace member management', () => {
+  it.each([
+    ['Remove', /remove member/i],
+    ['Transfer', /transfer ownership/i],
+  ] as const)('closes %s confirmation when the same member is selected in another cached Workspace', async (_operation, action) => {
+    const listWorkspaceMembers = vi.fn().mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+      items: [
+        { ...OWNER_MEMBER, workspaceId },
+        { ...EDITOR_MEMBER, workspaceId },
+      ],
+    }));
+    const { client, methods } = makeSharingClient({ methods: { listWorkspaceMembers } });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    const { queryClient } = renderApp('/settings/account', client);
+    const members = await screen.findByRole('region', { name: 'Workspace members' });
+    const member = await within(members).findByRole('row', { name: /user-editor.*member/i });
+    queryClient.setQueryData(['account', 'workspace-members', 'ws2'], {
+      items: [
+        { ...OWNER_MEMBER, workspaceId: 'ws2' },
+        { ...EDITOR_MEMBER, workspaceId: 'ws2' },
+      ],
+    });
+    queryClient.setQueryData(['account', 'workspace-invitations', 'ws2'], { items: [] });
+    const user = userEvent.setup();
+    await user.click(await revealRowAction(user, member, action));
+    const oldDialog = screen.getByRole('dialog', { name: /confirm/i });
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await waitFor(() => expect(listWorkspaceMembers).toHaveBeenCalledWith({ workspaceId: 'ws2' }));
+    expect(methods.removeWorkspaceMember).not.toHaveBeenCalled();
+    expect(methods.transferWorkspaceOwnership).not.toHaveBeenCalled();
+    await waitFor(() => expect(oldDialog).not.toBeInTheDocument());
+    expect(screen.queryByRole('dialog', { name: /confirm/i })).not.toBeInTheDocument();
+  });
+
   it('reads only the selected Workspace and renders ownership identity and invitation lifecycle without email', async () => {
     const memberRead = deferred<typeof WORKSPACE_MEMBERS>();
     const invitationRead = deferred<typeof WORKSPACE_INVITATIONS>();

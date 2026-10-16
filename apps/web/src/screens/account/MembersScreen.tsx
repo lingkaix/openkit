@@ -212,7 +212,7 @@ export function MembersScreen() {
                         const isOwner = member.userId === workspace.ownerUserId;
                         const activeNonOwner = member.status === 'active' && !isOwner;
                         return (
-                          <tr key={member.userId} className="align-top">
+                          <tr key={JSON.stringify([workspaceId, member.userId])} className="align-top">
                             <td className="min-w-0 py-3 pr-3">
                               <p className="text-sm font-bold text-fg-strong">{member.userId}</p>
                               <div className="mt-1 flex items-center gap-2">
