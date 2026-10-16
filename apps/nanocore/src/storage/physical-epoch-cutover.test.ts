@@ -539,12 +539,15 @@ describe('physical Epoch cutover', () => {
       mkdtempSync(join(tmpdir(), 'openkit-physical-epoch-backup-')),
       'backup'
     );
-    writeFileSync(join(fixture.dataRoot, 'server', 'runtime', 'nanocore.lock'), 'running\n');
-
-    expect(() =>
-      migratePhysicalEpochs({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
-    ).toThrow(/NanoCore appears to be running/);
-    expect(existsSync(backupRoot)).toBe(false);
+    const lock = acquireDataRootLock(fixture.dataRoot, { bootId: 'boot_running' });
+    try {
+      expect(() =>
+        migratePhysicalEpochs({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow(/NanoCore appears to be running/);
+      expect(existsSync(backupRoot)).toBe(false);
+    } finally {
+      lock.release();
+    }
   });
 
   it('refuses an incomplete predecessor backup before database mutation', () => {
