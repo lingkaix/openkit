@@ -48,7 +48,7 @@ import {
 import {
   listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
-  resolveWorkspaceRole,
+  resolveWorkspaceMembershipRelation,
 } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { beginWorkspaceDeletion, completeWorkspaceDeletion } from './workspace-sharing.js';
@@ -1547,6 +1547,17 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     expect(priorExportResponse.status, await priorExportResponse.clone().text()).toBe(200);
     const priorExport = (await priorExportResponse.json()) as { exportId: string };
 
+    // Deletion's exact internal export must preserve private owners without granting the caller private access.
+    const privateThread = store.createThread(
+      workspace.id,
+      'Private recovery history',
+      undefined,
+      'administration',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'user_local',
+      }
+    );
     const now = Date.now();
     for (const [userId, email] of [
       ['user_member', 'member@example.com'],
@@ -1564,22 +1575,23 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, 'user_member', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES (?, 'user_member', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, nowIso, nowIso, nowIso);
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_invitations (
-          invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+          invitation_id, workspace_id, invitee_user_id, inviter_user_id,
           status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
         ) VALUES (
-          'inv_workspace_deletion', ?, 'user_invitee', 'editor', 'user_local',
+          'inv_workspace_deletion', ?, 'user_invitee', 'user_local',
           'pending', '2099-01-01T00:00:00.000Z', NULL, NULL, NULL, 1, ?, ?
         )`
       )
       .run(workspace.id, nowIso, nowIso);
+    expect(privateThread.privateOwnerUserId).toBe('user_local');
     const canonicalWorkspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const workspaceBackupRoot = join(workspaceBackupParent, 'workspace');
     cpSync(canonicalWorkspaceRoot, workspaceBackupRoot, { recursive: true });
@@ -1630,11 +1642,11 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     expect(
       coreDb.sqlite
         .prepare(
-          `SELECT status, access_level
+          `SELECT status
            FROM workspace_members WHERE workspace_id = ? AND user_id = 'user_local'`
         )
         .get(workspace.id)
-    ).toEqual({ access_level: 'editor', status: 'active' });
+    ).toEqual({ status: 'active' });
     expect(
       coreDb.sqlite
         .prepare(
@@ -1664,7 +1676,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
         .prepare('SELECT COUNT(*) AS count FROM idempotency_requests WHERE request_id = ?')
         .get(requestId)
     ).toEqual({ count: 1 });
-    expect(resolveWorkspaceRole(coreDb, workspace.id, 'user_local')).toBeNull();
+    expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, 'user_local')).toBeNull();
     expect(listActiveWorkspaceIdsForActor(coreDb, 'user_local')).not.toContain(workspace.id);
 
     const deletionRequestPath = join(
@@ -1935,11 +1947,11 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     expect(
       coreDb.sqlite
         .prepare(
-          `SELECT user_id, status, access_level FROM workspace_members
+          `SELECT user_id, status FROM workspace_members
            WHERE workspace_id = ? ORDER BY user_id`
         )
         .all(recovered.recovery.import.importedWorkspaceId)
-    ).toEqual([{ access_level: 'editor', status: 'active', user_id: 'user_local' }]);
+    ).toEqual([{ status: 'active', user_id: 'user_local' }]);
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });

@@ -58,8 +58,8 @@ function fixture() {
     .run(Date.now(), Date.now());
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
-    (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-    VALUES (?, 'skill-reader', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`)
+    (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+    VALUES (?, 'skill-reader', 'active', NULL, ?, NULL, 1, ?, ?)`)
     .run(workspace.id, timestamp, timestamp, timestamp);
   const thread = store.createThread(workspace.id, 'Use selected resources');
   const turn = store.createTurn(workspace.id, thread.id, 'Use selected resources', {

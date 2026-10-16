@@ -7,7 +7,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { chatKeys, useWorkspaceSummaries, workspaceBelongsToCaller } from '../chat/data';
 import { useWorkspaceStore, WORKSPACE_SELECTION_STORAGE_KEY } from '../workspace-store';
 import * as accountData from './data';
-import { type AccountWorkspaceSummary, useSelfLeave, useWorkspaceOwnerManagement } from './data';
+import { type AccountWorkspaceSummary, useSelfLeave, useWorkspaceMemberManagement } from './data';
 import { MembersScreen } from './MembersScreen';
 import { accountAdmissionKey } from './session';
 
@@ -38,12 +38,9 @@ const USER_B_QUICK_CHAT: WorkspaceRecord = {
   name: 'Quick Chat',
 };
 
-function summary(
-  workspace: WorkspaceRecord,
-  effectiveRole: 'owner' | 'editor' | 'viewer'
-): AccountWorkspaceSummary {
+function summary(workspace: WorkspaceRecord, isOwner: boolean): AccountWorkspaceSummary {
   return {
-    effectiveRole,
+    isOwner,
     membershipStatus: 'active',
     accessCause: 'membership',
     membershipRevision: 17,
@@ -54,9 +51,8 @@ function summary(
 }
 
 const REMOVED_MEMBER = {
-  accessLevel: 'editor' as const,
   createdAt: '2026-08-01T00:00:00.000Z',
-  effectiveRole: null,
+  isOwner: false,
   invitationId: 'inv-current',
   joinedAt: '2026-08-01T00:00:00.000Z',
   removedAt: '2026-08-04T00:00:00.000Z',
@@ -97,7 +93,7 @@ function AccountSelectionProbe() {
 
 /** Reads Account selection through owner management so project owner reads are observable. */
 function AccountOwnerSelectionProbe() {
-  const { selectedWorkspaceId } = useWorkspaceOwnerManagement();
+  const { selectedWorkspaceId } = useWorkspaceMemberManagement();
   return <output aria-label="Account workspace">{selectedWorkspaceId ?? ''}</output>;
 }
 
@@ -112,7 +108,7 @@ function renderAccountSelection(options: {
       (workspace) =>
         options.admission.find((item) => item.workspace.id === workspace.id) ?? {
           workspace,
-          effectiveRole: 'owner' as const,
+          isOwner: true,
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           membershipRevision: 1,
@@ -158,7 +154,7 @@ beforeEach(() => {
 
 describe('account selected Workspace', () => {
   it('requires a membership revision for Leave and submits the exact admitted revision', async () => {
-    const selectedWorkspace = { ...summary(PROJECT_WORKSPACE, 'editor'), membershipRevision: null };
+    const selectedWorkspace = { ...summary(PROJECT_WORKSPACE, false), membershipRevision: null };
     const mutate = vi.fn();
     const selfLeave = {
       // Keep hook eligibility true so this check decides the screen's revision guard.
@@ -172,9 +168,9 @@ describe('account selected Workspace', () => {
       effectiveWorkspace: selectedWorkspace,
       selectedWorkspaceId: PROJECT_WORKSPACE.id,
       transferOwnership: { data: undefined, error: null, isError: false },
-    } as ReturnType<typeof useWorkspaceOwnerManagement>;
+    } as ReturnType<typeof useWorkspaceMemberManagement>;
     const leaveHook = vi.spyOn(accountData, 'useSelfLeave').mockReturnValue(selfLeave);
-    const ownerHook = vi.spyOn(accountData, 'useWorkspaceOwnerManagement').mockReturnValue(owner);
+    const ownerHook = vi.spyOn(accountData, 'useWorkspaceMemberManagement').mockReturnValue(owner);
     try {
       const view = render(<MembersScreen />);
       expect(screen.getByText(PROJECT_WORKSPACE.name)).toBeInTheDocument();
@@ -203,7 +199,7 @@ describe('account selected Workspace', () => {
     useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
     useWorkspaceStore.getState().setCurrentWorkspaceId(PROJECT_WORKSPACE.id);
     renderAccountSelection({
-      admission: [summary(PROJECT_WORKSPACE, 'editor'), summary(OTHER_WORKSPACE, 'viewer')],
+      admission: [summary(PROJECT_WORKSPACE, false), summary(OTHER_WORKSPACE, false)],
       items: [PROJECT_WORKSPACE, USER_A_QUICK_CHAT],
     });
     await waitFor(() => {
@@ -220,7 +216,7 @@ describe('account selected Workspace', () => {
             resolve({
               items: items.map((workspace) => ({
                 workspace,
-                effectiveRole: 'owner' as const,
+                isOwner: true,
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 membershipRevision: 1,
@@ -247,7 +243,7 @@ describe('account selected Workspace', () => {
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
     queryClient.setQueryData(accountAdmissionKey, {
-      items: [summary(PROJECT_WORKSPACE, 'owner'), summary(USER_B_QUICK_CHAT, 'owner')],
+      items: [summary(PROJECT_WORKSPACE, true), summary(USER_B_QUICK_CHAT, true)],
     });
     useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
     useWorkspaceStore.getState().setCurrentWorkspaceId(PROJECT_WORKSPACE.id);
@@ -277,7 +273,7 @@ describe('account selected Workspace', () => {
     useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
     useWorkspaceStore.getState().setCurrentWorkspaceId(PROJECT_WORKSPACE.id);
     const { queryClient, setDiscovery } = renderAccountSelection({
-      admission: [summary(PROJECT_WORKSPACE, 'editor'), summary(OTHER_WORKSPACE, 'viewer')],
+      admission: [summary(PROJECT_WORKSPACE, false), summary(OTHER_WORKSPACE, false)],
       items: [PROJECT_WORKSPACE, OTHER_WORKSPACE, USER_A_QUICK_CHAT],
       leaveWorkspace,
     });
@@ -310,7 +306,7 @@ describe('account selected Workspace', () => {
     useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
     useWorkspaceStore.getState().setCurrentWorkspaceId(PROJECT_WORKSPACE.id);
     const { listWorkspaces, queryClient } = renderAccountSelection({
-      admission: [summary(PROJECT_WORKSPACE, 'editor'), summary(OTHER_WORKSPACE, 'viewer')],
+      admission: [summary(PROJECT_WORKSPACE, false), summary(OTHER_WORKSPACE, false)],
       items: [PROJECT_WORKSPACE, OTHER_WORKSPACE, USER_A_QUICK_CHAT],
       leaveWorkspace,
     });

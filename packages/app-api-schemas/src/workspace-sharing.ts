@@ -8,12 +8,6 @@ import {
 import { z } from 'zod';
 import { WorkspaceImportResponseSchema } from './storage.js';
 
-/** Workspace access level granted by one active membership. */
-export const WorkspaceAccessLevelSchema = z.enum(['editor', 'viewer']);
-
-/** Effective Workspace role after ownership and membership are combined. */
-export const WorkspaceEffectiveRoleSchema = z.enum(['owner', 'editor', 'viewer']);
-
 /** Durable lifecycle state of one Workspace membership. */
 export const WorkspaceMembershipStatusSchema = z.enum(['active', 'removed']);
 
@@ -66,7 +60,7 @@ export const UserLifecycleSummarySchema = z
 /** Authorized Workspace projection returned to one current caller. */
 export const AuthorizedWorkspaceSummarySchema = WorkspaceAccessRelationSchema.safeExtend({
   workspace: WorkspaceRecordSchema,
-  effectiveRole: WorkspaceEffectiveRoleSchema.nullable(),
+  isOwner: z.boolean(),
   registryRevision: WorkspaceRevisionSchema,
   membershipRevision: WorkspaceRevisionSchema.nullable(),
 });
@@ -76,7 +70,7 @@ export const WorkspaceAccessRecoveryStateSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     ownerUserId: z.string().min(1),
-    administratorRole: WorkspaceEffectiveRoleSchema.nullable(),
+    administratorMembershipStatus: WorkspaceMembershipStatusSchema.nullable(),
     registryRevision: WorkspaceRevisionSchema,
   })
   .strict();
@@ -96,26 +90,12 @@ const WorkspaceMemberBaseSchema = z.object({
 export const WorkspaceMemberSchema = z.union([
   WorkspaceMemberBaseSchema.extend({
     status: z.literal('active'),
-    accessLevel: z.literal('editor'),
-    effectiveRole: z.literal('owner'),
-    removedAt: z.null(),
-  }).strict(),
-  WorkspaceMemberBaseSchema.extend({
-    status: z.literal('active'),
-    accessLevel: z.literal('editor'),
-    effectiveRole: z.literal('editor'),
-    removedAt: z.null(),
-  }).strict(),
-  WorkspaceMemberBaseSchema.extend({
-    status: z.literal('active'),
-    accessLevel: z.literal('viewer'),
-    effectiveRole: z.literal('viewer'),
+    isOwner: z.boolean(),
     removedAt: z.null(),
   }).strict(),
   WorkspaceMemberBaseSchema.extend({
     status: z.literal('removed'),
-    accessLevel: WorkspaceAccessLevelSchema,
-    effectiveRole: z.null(),
+    isOwner: z.literal(false),
     removedAt: TimestampSchema,
   }).strict(),
 ]);
@@ -125,7 +105,6 @@ const WorkspaceInvitationBaseSchema = z.object({
   invitationId: z.string().min(1),
   workspaceId: WorkspaceIdSchema,
   inviteeUserId: z.string().min(1),
-  proposedAccessLevel: WorkspaceAccessLevelSchema,
   inviterUserId: z.string().min(1),
   expiresAt: TimestampSchema,
   revision: WorkspaceRevisionSchema,
@@ -195,7 +174,6 @@ export const CreateWorkspaceInvitationRequestSchema = z
   .object({
     requestId: RequestIdSchema,
     inviteeEmail: z.string().email(),
-    proposedAccessLevel: WorkspaceAccessLevelSchema,
   })
   .strict();
 
@@ -216,15 +194,6 @@ export const DeclineWorkspaceInvitationRequestSchema = WorkspaceInvitationTransi
 /** Request that revokes one pending Workspace invitation. */
 export const RevokeWorkspaceInvitationRequestSchema = WorkspaceInvitationTransitionRequestSchema;
 
-/** Request that changes one active member's Workspace access level. */
-export const ChangeWorkspaceMemberAccessRequestSchema = z
-  .object({
-    requestId: RequestIdSchema,
-    expectedRevision: WorkspaceRevisionSchema,
-    accessLevel: WorkspaceAccessLevelSchema,
-  })
-  .strict();
-
 /** Shared request body for removing one current Workspace membership. */
 const WorkspaceMembershipRemovalRequestSchema = z
   .object({
@@ -239,7 +208,7 @@ export const RemoveWorkspaceMemberRequestSchema = WorkspaceMembershipRemovalRequ
 /** Request that removes the current caller's non-owner Workspace membership. */
 export const LeaveWorkspaceRequestSchema = WorkspaceMembershipRemovalRequestSchema;
 
-/** Request that transfers Workspace ownership to one active editor. */
+/** Request that transfers Workspace ownership to one active member. */
 export const TransferWorkspaceOwnershipRequestSchema = z
   .object({
     requestId: RequestIdSchema,
@@ -251,7 +220,7 @@ export const TransferWorkspaceOwnershipRequestSchema = z
 /** Administrator-only bounded action for restoring the caller's Workspace access. */
 export const RecoverWorkspaceAccessRequestSchema = z
   .object({
-    action: z.enum(['add-self-as-editor', 'transfer-ownership-to-self']),
+    action: z.enum(['add-self-as-member', 'transfer-ownership-to-self']),
     requestId: RequestIdSchema,
     expectedRegistryRevision: WorkspaceRevisionSchema,
   })
@@ -465,9 +434,7 @@ export const WorkspaceSharingErrorSchema = z.union([
 ]);
 
 /** Workspace access level granted by one active membership. */
-export type WorkspaceAccessLevel = z.infer<typeof WorkspaceAccessLevelSchema>;
 /** Effective Workspace role after ownership and membership are combined. */
-export type WorkspaceEffectiveRole = z.infer<typeof WorkspaceEffectiveRoleSchema>;
 /** Durable lifecycle state of one Workspace membership. */
 export type WorkspaceMembershipStatus = z.infer<typeof WorkspaceMembershipStatusSchema>;
 /** Current invitation outcome, including the computed expired projection. */
@@ -501,14 +468,11 @@ export type RevokeWorkspaceInvitationRequest = z.infer<
   typeof RevokeWorkspaceInvitationRequestSchema
 >;
 /** Request that changes one active member's Workspace access level. */
-export type ChangeWorkspaceMemberAccessRequest = z.infer<
-  typeof ChangeWorkspaceMemberAccessRequestSchema
->;
 /** Request that removes one non-owner Workspace member. */
 export type RemoveWorkspaceMemberRequest = z.infer<typeof RemoveWorkspaceMemberRequestSchema>;
 /** Request that removes the current caller's non-owner Workspace membership. */
 export type LeaveWorkspaceRequest = z.infer<typeof LeaveWorkspaceRequestSchema>;
-/** Request that transfers Workspace ownership to one active editor. */
+/** Request that transfers Workspace ownership to one active member. */
 export type TransferWorkspaceOwnershipRequest = z.infer<
   typeof TransferWorkspaceOwnershipRequestSchema
 >;

@@ -136,7 +136,7 @@ function authorizedWorkspaceSummary() {
   return {
     membershipStatus: 'active',
     accessCause: 'membership',
-    effectiveRole: 'owner',
+    isOwner: true,
     membershipRevision: 1,
     ownerUserId: 'user_1',
     registryRevision: 1,
@@ -147,9 +147,8 @@ function authorizedWorkspaceSummary() {
 /** Returns one current Workspace member projection for sharing-client tests. */
 function workspaceMember(status: 'active' | 'removed' = 'active') {
   return {
-    accessLevel: 'editor',
     createdAt: timestamp,
-    effectiveRole: status === 'active' ? ('editor' as const) : null,
+    isOwner: false,
     invitationId: 'invitation_1',
     joinedAt: timestamp,
     removedAt: status === 'removed' ? timestamp : null,
@@ -172,7 +171,7 @@ function workspaceInvitation() {
     invitationId: 'invitation_1',
     inviteeUserId: 'user_2',
     inviterUserId: 'user_1',
-    proposedAccessLevel: 'editor',
+
     revision: 1,
     revokedAt: null,
     updatedAt: timestamp,
@@ -183,7 +182,7 @@ function workspaceInvitation() {
 /** Returns one administrator-safe Workspace recovery projection. */
 function workspaceAccessRecovery() {
   return {
-    administratorRole: null,
+    administratorMembershipStatus: null,
     ownerUserId: 'user_1',
     registryRevision: 1,
     workspaceId: 'ws_demo',
@@ -1597,7 +1596,7 @@ describe('createCoreClient', () => {
               workspace: workspace(),
               membershipStatus: 'active',
               accessCause: 'membership',
-              effectiveRole: 'owner',
+              isOwner: true,
               membershipRevision: 1,
               ownerUserId: 'user_local',
               registryRevision: 1,
@@ -2517,14 +2516,13 @@ describe('createCoreClient', () => {
         body: {
           workspaceId: 'ws_demo',
           inviteeEmail: 'invitee@example.com',
-          proposedAccessLevel: 'editor',
         },
         invoke: (client) =>
           client.operations['workspace.invitation-create']({
             workspaceId: 'ws_demo',
             ...{
               inviteeEmail: 'invitee@example.com',
-              proposedAccessLevel: 'editor',
+
               requestId,
             },
           }),
@@ -2579,26 +2577,6 @@ describe('createCoreClient', () => {
         response: { invitation },
       },
       {
-        body: {
-          workspaceId: 'ws_demo',
-          targetUserId: 'user_2',
-          accessLevel: 'viewer',
-          expectedRevision: 1,
-        },
-        invoke: (client) =>
-          client.operations['workspace.member-access-change']({
-            workspaceId: 'ws_demo',
-            targetUserId: 'user_2',
-            ...{
-              accessLevel: 'viewer',
-              expectedRevision: 1,
-              requestId,
-            },
-          }),
-        methodPath: 'POST /api/app/operations/workspace.member-access-change',
-        response: { member },
-      },
-      {
         body: { workspaceId: 'ws_demo', targetUserId: 'user_2', expectedRevision: 1 },
         invoke: (client) =>
           client.operations['workspace.member-remove']({
@@ -2644,12 +2622,12 @@ describe('createCoreClient', () => {
         response: { recovery },
       },
       {
-        body: { workspaceId: 'ws_demo', action: 'add-self-as-editor', expectedRegistryRevision: 1 },
+        body: { workspaceId: 'ws_demo', action: 'add-self-as-member', expectedRegistryRevision: 1 },
         invoke: (client) =>
           client.operations['workspace.access-recover']({
             workspaceId: 'ws_demo',
             ...{
-              action: 'add-self-as-editor',
+              action: 'add-self-as-member',
               expectedRegistryRevision: 1,
               requestId,
             },

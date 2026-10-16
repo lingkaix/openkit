@@ -115,10 +115,9 @@ import {
   importVaultInjectionReceipts,
   listExportableVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
-import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
+import { assertWorkspaceDeletionRecoveryExportAuthority } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -963,36 +962,6 @@ export function workspaceDeletionRecoveryExportId(requestId: string): string {
   return `wsexp_delete_${requestId}`;
 }
 
-/** Proves the narrow durable authority for one deletion recovery export. */
-function assertDeletionRecoveryExportAuthority(input: {
-  readonly authorityUserId: string;
-  readonly coreDb: CoreDb | undefined;
-  readonly dataRoot: string;
-  readonly exportId: string;
-  readonly requestId: string;
-  readonly workspaceId: string;
-}): true {
-  if (!input.coreDb) {
-    throw new Error('Workspace deletion recovery export requires durable authority.');
-  }
-  const request = readWorkspaceDeletionRequest(input.dataRoot, input.workspaceId, input.requestId);
-  const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
-  if (
-    request.phase !== 'deleting' ||
-    request.workspaceId !== input.workspaceId ||
-    request.originalOwnerUserId !== input.authorityUserId ||
-    request.recoveryExportId !== null ||
-    request.recoveryExportManifestDigest !== null ||
-    input.exportId !== workspaceDeletionRecoveryExportId(request.requestId) ||
-    registry?.status !== 'deleting' ||
-    registry.ownerUserId !== request.originalOwnerUserId ||
-    registry.registryRevision !== request.expectedRegistryRevision + 1
-  ) {
-    throw new Error('Workspace deletion recovery export authority is inconsistent.');
-  }
-  return true;
-}
-
 /** Creates and verifies one server-managed portable Workspace export. */
 export function createVerifiedWorkspaceExport({
   authorityActor,
@@ -1021,21 +990,37 @@ export function createVerifiedWorkspaceExport({
   readonly store: FsStore;
   readonly workspaceId: string;
 }) {
+  const deletionRecoveryContext =
+    deletionRecoveryRequestId !== undefined
+      ? {
+          authorityUserId,
+          coreDb,
+          dataRoot,
+          exportId,
+          requestId: deletionRecoveryRequestId,
+          workspaceId,
+        }
+      : undefined;
+  const deletionRecoveryAuthorized =
+    deletionRecoveryRequestId !== undefined
+      ? assertWorkspaceDeletionRecoveryExportAuthority({
+          authorityUserId,
+          coreDb,
+          dataRoot,
+          exportId,
+          requestId: deletionRecoveryRequestId,
+          workspaceId,
+        })
+      : false;
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
-  if (!administratorEligible && threads.some((thread) => thread.visibility === 'private')) {
+  if (
+    !administratorEligible &&
+    !deletionRecoveryAuthorized &&
+    threads.some((thread) => thread.visibility === 'private')
+  ) {
     throw new Error('Private Thread history requires a separately authorized export.');
   }
-  const deletionRecoveryAuthorized = deletionRecoveryRequestId
-    ? assertDeletionRecoveryExportAuthority({
-        authorityUserId,
-        coreDb,
-        dataRoot,
-        exportId,
-        requestId: deletionRecoveryRequestId,
-        workspaceId,
-      })
-    : false;
   const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   assertCanonicalDirectory(workspaceRoot);
@@ -1215,6 +1200,7 @@ export function createVerifiedWorkspaceExport({
   const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
   const exported = writeWorkspaceExportTree({
     administratorEligible,
+    ...(deletionRecoveryContext ? { deletionRecoveryContext } : {}),
     exportRoot,
     exportId,
     sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
@@ -1304,7 +1290,7 @@ export function createVerifiedWorkspaceExport({
 
     try {
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: authorityUserId },
+        authorityActor: authorityActor ?? { kind: 'user', id: authorityUserId },
         workspaceDb,
         callId: `cap_storage_export_${exportId}`,
         workspaceId,

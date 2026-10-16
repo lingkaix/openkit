@@ -29,7 +29,6 @@ const SHARING_OPERATION_IDS = [
   'workspace.my-invitation-accept',
   'workspace.my-invitation-decline',
   'workspace.invitation-revoke',
-  'workspace.member-access-change',
   'workspace.member-remove',
   'workspace.leave',
   'workspace.ownership-transfer',
@@ -75,21 +74,16 @@ function insertUser(coreDb: CoreDb, userId: string, email: string): void {
 }
 
 /** Inserts one active non-owner membership. */
-function insertMember(
-  coreDb: CoreDb,
-  workspaceId: string,
-  userId: string,
-  accessLevel: 'editor' | 'viewer'
-): void {
+function insertMember(coreDb: CoreDb, workspaceId: string, userId: string): void {
   const now = '2026-07-19T00:00:00.000Z';
   coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
-        workspace_id, user_id, status, access_level, invitation_id,
+        workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, ?, 'active', ?, NULL, ?, NULL, 1, ?, ?)`
+      ) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`
     )
-    .run(workspaceId, userId, accessLevel, now, now, now);
+    .run(workspaceId, userId, now, now, now);
 }
 
 /** Creates one direct route fixture without duplicating central-authorizer tests. */
@@ -119,8 +113,8 @@ function createFixture(): RouteFixture {
     ownerUserId: 'user_owner',
     workspaceId: foreignWorkspaceId,
   });
-  insertMember(coreDb, workspaceId, 'user_editor', 'editor');
-  insertMember(coreDb, workspaceId, 'user_viewer', 'viewer');
+  insertMember(coreDb, workspaceId, 'user_editor');
+  insertMember(coreDb, workspaceId, 'user_viewer');
 
   const actorState: ActorState = { current: { kind: 'session', userId: 'user_owner' } };
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
@@ -130,7 +124,7 @@ function createFixture(): RouteFixture {
     const pathWorkspaceId = /^\/api\/app\/workspaces\/([^/]+)/.exec(context.req.path)?.[1];
     if (pathWorkspaceId) {
       context.set('workspaceAccess', {
-        effectiveRole: 'owner',
+        isOwner: true,
         kind: 'workspace',
         policyOperation: 'workspace.read',
         workspaceId: pathWorkspaceId,
@@ -220,7 +214,7 @@ describe('Workspace sharing routes', () => {
     );
 
     expect(body).toMatchObject({
-      items: [{ effectiveRole: 'owner', workspace: { id: fixture.workspaceId } }],
+      items: [{ isOwner: true, workspace: { id: fixture.workspaceId } }],
     });
   });
 
@@ -252,7 +246,7 @@ describe('Workspace sharing routes', () => {
         ownerUserId: 'user_owner',
         membershipStatus: null,
         accessCause: 'administrator',
-        effectiveRole: null,
+        isOwner: false,
         membershipRevision: null,
         workspace: expect.objectContaining({ id: fixture.workspaceId }),
       }),
@@ -269,9 +263,9 @@ describe('Workspace sharing routes', () => {
       fixture.coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
-            invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+            invitation_id, workspace_id, invitee_user_id, inviter_user_id,
             status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
-          ) VALUES (?, ?, 'user_invitee', 'viewer', 'user_owner', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES (?, ?, 'user_invitee', 'user_owner', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(invitationId, workspaceId, '2026-07-26T00:00:00.000Z', now, now);
     }
@@ -298,7 +292,7 @@ describe('Workspace sharing routes', () => {
     const requestId = '00000000-0000-4000-8000-000000000001';
     const input = {
       inviteeEmail: 'invitee@example.com',
-      proposedAccessLevel: 'viewer',
+
       requestId,
     } as const;
 
@@ -333,7 +327,6 @@ describe('Workspace sharing routes', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             ...input,
-            proposedAccessLevel: 'editor',
           }),
         }
       )
@@ -371,14 +364,12 @@ describe('Workspace sharing routes', () => {
     const fixture = createFixture();
     const noOp = await fixture.app.request(
       ...operationRequest(
-        'workspace.member-access-change',
-        { workspaceId: fixture.workspaceId, targetUserId: 'user_editor' },
+        { workspaceId: fixture.workspaceId, targetUserId: 'user_owner' },
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            accessLevel: 'editor',
-            expectedRevision: 1,
+            expectedRegistryRevision: 1,
             requestId: '00000000-0000-4000-8000-000000000002',
           }),
         }
@@ -386,14 +377,12 @@ describe('Workspace sharing routes', () => {
     );
     const conflict = await fixture.app.request(
       ...operationRequest(
-        'workspace.member-access-change',
-        { workspaceId: fixture.workspaceId, targetUserId: 'user_editor' },
+        { workspaceId: fixture.workspaceId, targetUserId: 'user_owner' },
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            accessLevel: 'viewer',
-            expectedRevision: 9,
+            expectedRegistryRevision: 9,
             requestId: '00000000-0000-4000-8000-000000000003',
           }),
         }
@@ -410,7 +399,10 @@ describe('Workspace sharing routes', () => {
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({
       code: 'revision_conflict',
-      details: { current: { revision: 1, userId: 'user_editor' }, resource: 'membership' },
+      details: {
+        current: { registryRevision: 1, ownerUserId: 'user_owner' },
+        resource: 'workspace',
+      },
     });
   });
 
@@ -421,9 +413,9 @@ describe('Workspace sharing routes', () => {
       fixture.coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
-            invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+            invitation_id, workspace_id, invitee_user_id, inviter_user_id,
             status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
-          ) VALUES ('inv_foreign', ?, 'user_invitee', 'viewer', 'user_owner', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES ('inv_foreign', ?, 'user_invitee', 'user_owner', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(fixture.foreignWorkspaceId, '2026-07-26T00:00:00.000Z', now, now);
       return 'inv_foreign';
@@ -577,7 +569,7 @@ describe('Workspace sharing routes', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            action: 'add-self-as-editor',
+            action: 'add-self-as-member',
             expectedRegistryRevision: 1,
             requestId: '00000000-0000-4000-8000-000000000008',
           }),
@@ -613,7 +605,7 @@ describe('Workspace sharing routes', () => {
     expect(read.status).toBe(200);
     await expect(read.json()).resolves.toEqual({
       recovery: {
-        administratorRole: null,
+        administratorMembershipStatus: null,
         ownerUserId: 'user_owner',
         registryRevision: 1,
         workspaceId: fixture.workspaceId,
@@ -621,7 +613,7 @@ describe('Workspace sharing routes', () => {
     });
     expect(recovered.status).toBe(200);
     await expect(recovered.json()).resolves.toMatchObject({
-      recovery: { administratorRole: 'editor', registryRevision: 2 },
+      recovery: { administratorMembershipStatus: 'active', registryRevision: 2 },
     });
     expect(disabled.status).toBe(200);
     expect(disabledNoOp.status).toBe(200);
@@ -662,7 +654,7 @@ describe('Workspace sharing routes', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            action: 'add-self-as-editor',
+            action: 'add-self-as-member',
             expectedRegistryRevision: 1,
             requestId: '00000000-0000-4000-8000-000000000011',
           }),
@@ -693,7 +685,7 @@ it('keeps safe sharing request field detail in the common validation projection'
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           inviteeEmail: 42,
-          proposedAccessLevel: 'viewer',
+
           requestId: '00000000-0000-4000-8000-000000000001',
         }),
       }

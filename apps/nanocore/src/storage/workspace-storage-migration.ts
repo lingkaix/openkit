@@ -1103,13 +1103,12 @@ function verifyCoreWorkspaceConstraints(
          ON member.workspace_id = registry.workspace_id
         AND member.user_id = registry.owner_user_id
         AND member.status = 'active'
-        AND member.access_level = 'editor'
        WHERE member.user_id IS NULL
        ORDER BY registry.workspace_id`
     )
     .all();
   if (missingOwnerMemberships.length > 0) {
-    throw new Error('Migrated Core database is missing an active editor owner membership.');
+    throw new Error('Migrated Core database is missing an active owner membership.');
   }
 
   const registryIds = (

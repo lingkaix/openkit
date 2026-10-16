@@ -107,7 +107,7 @@ it('allows the administrator recovery-state read through a closed mutation gate 
       recovery: {
         workspaceId: f.workspaceId,
         ownerUserId: 'user_local',
-        administratorRole: null,
+        administratorMembershipStatus: null,
         registryRevision: 1,
       },
     });
@@ -132,7 +132,7 @@ it('allows the administrator recovery-state read through a closed mutation gate 
         {
           headers,
           body: JSON.stringify({
-            action: 'add-self-as-editor',
+            action: 'add-self-as-member',
             expectedRegistryRevision: 1,
             requestId: randomUUID(),
           }),
@@ -176,12 +176,12 @@ function fixture(
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(
-      "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, joined_at, revision, created_at, updated_at) VALUES (?, 'member', 'active', 'editor', ?, 1, ?, ?)"
+      "INSERT INTO workspace_members (workspace_id, user_id, status, joined_at, revision, created_at, updated_at) VALUES (?, 'member', 'active', ?, 1, ?, ?)"
     )
     .run(workspaceId, timestamp, timestamp, timestamp);
   coreDb.sqlite
     .prepare(
-      "INSERT INTO workspace_invitations (invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id, status, expires_at, revision, created_at, updated_at) VALUES ('inv_fixture', ?, 'user_local', 'viewer', 'user_local', 'pending', ?, 1, ?, ?)"
+      "INSERT INTO workspace_invitations (invitation_id, workspace_id, invitee_user_id, inviter_user_id, status, expires_at, revision, created_at, updated_at) VALUES ('inv_fixture', ?, 'user_local', 'user_local', 'pending', ?, 1, ?, ?)"
     )
     .run(workspaceId, new Date(Date.now() + 86400000).toISOString(), timestamp, timestamp);
   const admission = new WorkspaceMutationAdmission();
@@ -227,7 +227,7 @@ const cases = [
     'workspace.invitation-create',
     'POST',
     '/api/app/workspaces/$workspace/invitations',
-    { inviteeEmail: 'target@example.com', proposedAccessLevel: 'viewer' },
+    { inviteeEmail: 'target@example.com' },
     201,
   ],
   ['workspace.my-invitation-list', 'GET', '/api/app/workspace-invitations', {}, 200],
@@ -250,13 +250,6 @@ const cases = [
     'POST',
     '/api/app/workspaces/$workspace/invitations/inv_fixture/revoke',
     { expectedRevision: 1 },
-    200,
-  ],
-  [
-    'workspace.member-access-change',
-    'PATCH',
-    '/api/app/workspaces/$workspace/members/member',
-    { accessLevel: 'viewer', expectedRevision: 1 },
     200,
   ],
   [
@@ -285,7 +278,7 @@ const cases = [
     'workspace.access-recover',
     'POST',
     '/api/app/workspaces/$workspace/access-recovery',
-    { action: 'add-self-as-editor', expectedRegistryRevision: 1 },
+    { action: 'add-self-as-member', expectedRegistryRevision: 1 },
     200,
   ],
   ['user.disable', 'POST', '/api/app/users/target/disable', {}, 200],
@@ -335,7 +328,7 @@ it.each(
       ...('invitationId' in WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS[id].inputSchema.shape
         ? { invitationId: 'inv_fixture' }
         : {}),
-      ...(id === 'workspace.member-access-change' || id === 'workspace.member-remove'
+      ...(id === 'workspace.member-remove'
         ? { targetUserId: 'member' }
         : id === 'user.disable'
           ? { targetUserId: 'target' }
@@ -377,15 +370,15 @@ it.each([
     const input = {
       workspaceId: f.workspaceId,
       targetUserId: 'member',
-      accessLevel: 'viewer' as const,
+
       expectedRevision: 1,
       requestId,
     };
-    const output = await f.invoke('workspace.member-access-change', input, {
+    const output = await f.invoke('workspace.member-remove', input, {
       kind: 'public',
       actor,
     });
-    expect(output.member).toMatchObject({ userId: 'member', accessLevel: 'viewer', revision: 2 });
+    expect(output.member).toMatchObject({ userId: 'member', status: 'removed', revision: 2 });
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
@@ -439,8 +432,8 @@ it.each([
       .get(f.workspaceId, 'member');
     await expect(
       f.invoke(
-        'workspace.member-access-change',
-        { ...input, accessLevel: 'editor', expectedRevision: 2, requestId: deniedId },
+        'workspace.member-remove',
+        { ...input, expectedRevision: 3, requestId: deniedId },
         { kind: 'public', actor }
       )
     ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
@@ -451,7 +444,7 @@ it.each([
     ).toEqual(before);
     expect(
       f.store.getCommandRequest(
-        'workspace.member.access.change',
+        'workspace.member.remove',
         deniedId,
         {
           coreId: 'server',
@@ -486,7 +479,7 @@ it.each([
         : id === 'workspace.access-recover'
           ? {
               workspaceId: f.workspaceId,
-              action: 'add-self-as-editor',
+              action: 'add-self-as-member',
               expectedRegistryRevision: 1,
               requestId,
             }
@@ -703,12 +696,12 @@ it('keeps a readonly Workspace credential from changing members or creating a co
       .get(f.workspaceId, 'member');
     await expect(
       f.invoke(
-        'workspace.member-access-change',
+        'workspace.member-remove',
         {
           workspaceId: f.workspaceId,
           targetUserId: 'member',
           expectedRevision: 1,
-          accessLevel: 'viewer',
+
           requestId,
         },
         {
@@ -790,6 +783,57 @@ it('preserves private-history export refusal during administrator Workspace dele
     expect(
       listServerAuditEvents(f.coreDb).filter((event) => event.action === 'workspace.delete')
     ).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+it('lets a non-owner member transfer ownership and replay after another member transfers it back', async () => {
+  const f = fixture();
+  try {
+    const first = {
+      workspaceId: f.workspaceId,
+      targetUserId: 'member',
+      expectedRegistryRevision: 1,
+      requestId: randomUUID(),
+    };
+    const actor = {
+      kind: 'public' as const,
+      actor: { kind: 'session' as const, userId: 'member' },
+    };
+    const transferred = await f.invoke('workspace.ownership-transfer', first, actor);
+    expect(transferred.workspace).toMatchObject({
+      ownerUserId: 'member',
+      isOwner: true,
+      registryRevision: 2,
+    });
+    const returned = await f.invoke(
+      'workspace.ownership-transfer',
+      {
+        workspaceId: f.workspaceId,
+        targetUserId: 'user_local',
+        expectedRegistryRevision: 2,
+        requestId: randomUUID(),
+      },
+      { kind: 'public', actor: { kind: 'session', userId: 'user_local' } }
+    );
+    expect(returned.workspace).toMatchObject({ ownerUserId: 'user_local', registryRevision: 3 });
+    const replay = await f.invoke('workspace.ownership-transfer', first, actor);
+    expect(replay.workspace).toMatchObject({
+      ownerUserId: 'user_local',
+      isOwner: false,
+      registryRevision: 3,
+    });
+    expect(
+      f.coreDb.sqlite
+        .prepare(
+          'SELECT user_id, status, revision FROM workspace_members WHERE workspace_id = ? ORDER BY user_id'
+        )
+        .all(f.workspaceId)
+    ).toEqual([
+      { user_id: 'member', status: 'active', revision: 1 },
+      { user_id: 'user_local', status: 'active', revision: 1 },
+    ]);
   } finally {
     f.close();
   }

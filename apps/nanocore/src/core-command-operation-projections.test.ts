@@ -272,7 +272,7 @@ it('keeps workspace.update lifecycle admission and refuses an editor before row 
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_owner', workspaceId: 'ws_demo' });
     coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'user_editor', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'user_editor', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(timestamp, timestamp, timestamp);
     const app = createAppWithWorkspaceAuthority({

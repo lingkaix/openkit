@@ -1,26 +1,11 @@
 import { type FormEvent, useState } from 'react';
-import {
-  Button,
-  Card,
-  Dialog,
-  ErrorBanner,
-  Modal,
-  Select,
-  StatusChip,
-  TextField,
-} from '../../primitives';
+import { Button, Card, Dialog, ErrorBanner, Modal, StatusChip, TextField } from '../../primitives';
 import {
   type AccountWorkspaceInvitation,
   type AccountWorkspaceMember,
   useSelfLeave,
-  useWorkspaceOwnerManagement,
+  useWorkspaceMemberManagement,
 } from './data';
-
-/** Access levels offered by both owner-managed account controls. */
-const accessLevelOptions = [
-  { id: 'editor', label: 'Editor' },
-  { id: 'viewer', label: 'Viewer' },
-];
 
 /** Compact collection placeholder labelled for its independently loading owner read. */
 function CollectionLoading({ label }: { label: string }) {
@@ -74,7 +59,7 @@ function LeaveConfirmation({
   );
 }
 
-/** Confirmation surface for one destructive owner command. */
+/** Confirmation surface for one destructive member command. */
 function ConfirmAction({
   label,
   message,
@@ -111,13 +96,11 @@ function ConfirmAction({
 
 /** Selected-Workspace owner projection for members and issued invitations. */
 export function MembersScreen() {
-  const owner = useWorkspaceOwnerManagement();
+  const management = useWorkspaceMemberManagement();
   const selfLeave = useSelfLeave();
   const [inviteeEmail, setInviteeEmail] = useState('');
-  const [inviteAccess, setInviteAccess] = useState<'editor' | 'viewer'>('editor');
-  const [accessDrafts, setAccessDrafts] = useState<Record<string, 'editor' | 'viewer'>>({});
-  const workspaceId = owner.selectedWorkspaceId;
-  const workspace = owner.effectiveWorkspace;
+  const workspaceId = management.selectedWorkspaceId;
+  const workspace = management.effectiveWorkspace;
   const selectedWorkspace = selfLeave.selectedWorkspace;
   const membershipRevision = selectedWorkspace?.membershipRevision ?? null;
 
@@ -125,21 +108,21 @@ export function MembersScreen() {
   function createInvitation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!workspaceId) return;
-    owner.createInvitation.mutate(
-      { inviteeEmail, proposedAccessLevel: inviteAccess, workspaceId },
+    management.createInvitation.mutate(
+      { inviteeEmail, workspaceId },
       { onSettled: () => setInviteeEmail('') }
     );
   }
 
-  const transferSuccess = owner.transferOwnership.data?.workspace;
+  const transferSuccess = management.transferOwnership.data?.workspace;
   const transferConflict =
-    owner.transferOwnership.error?.resource === 'workspace'
-      ? owner.transferOwnership.error.current
+    management.transferOwnership.error?.resource === 'workspace'
+      ? management.transferOwnership.error.current
       : undefined;
 
   return (
     <div className="flex flex-col gap-6">
-      <section aria-label="Current Workspace role">
+      <section aria-label="Current Workspace access">
         <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           {workspace ? (
             <>
@@ -147,7 +130,9 @@ export function MembersScreen() {
                 <p className="text-sm font-bold text-fg-strong">{workspace.workspace.name}</p>
                 <p className="mt-1 text-xs text-fg-muted">{workspace.workspace.id}</p>
                 <p className="mt-2 text-sm text-fg-muted">
-                  Current Workspace role: {workspace.effectiveRole}
+                  Workspace access:{' '}
+                  {workspace.membershipStatus === 'active' ? 'Active member' : 'Administrator'}
+                  {workspace.isOwner ? ' · Owner' : ''}
                 </p>
               </div>
               {selfLeave.canLeave &&
@@ -180,19 +165,21 @@ export function MembersScreen() {
           aria-label="Workspace ownership transfer"
           className="text-sm text-positive-fg"
         >
-          Ownership transferred to {transferSuccess.ownerUserId}. Owner role uses editor access.
+          Ownership transferred to {transferSuccess.ownerUserId}. All active members have full
+          Workspace eligibility.
         </p>
       ) : null}
       {transferConflict && 'ownerUserId' in transferConflict ? (
         <p role="status" aria-label="Workspace sharing conflict" className="text-sm text-notice-fg">
-          Current owner: {transferConflict.ownerUserId}. Owner role uses editor access.
+          Current owner: {transferConflict.ownerUserId}. All active members have full Workspace
+          eligibility.
         </p>
       ) : null}
-      {owner.transferOwnership.isError ? (
-        <ErrorBanner message={owner.transferOwnership.error.message} />
+      {management.transferOwnership.isError ? (
+        <ErrorBanner message={management.transferOwnership.error.message} />
       ) : null}
 
-      {owner.canManage && workspaceId && workspace ? (
+      {management.canManage && workspaceId && workspace ? (
         <>
           <section aria-label="Workspace members">
             <Card className="flex flex-col gap-3">
@@ -200,31 +187,27 @@ export function MembersScreen() {
                 <h2 className="text-lg font-extrabold text-fg-strong">Workspace members</h2>
                 <p className="mt-1 text-xs text-fg-muted">Current owner: {workspace.ownerUserId}</p>
               </div>
-              {owner.members.isPending ? <CollectionLoading label="Workspace members" /> : null}
-              {owner.members.isError ? (
+              {management.members.isPending ? (
+                <CollectionLoading label="Workspace members" />
+              ) : null}
+              {management.members.isError ? (
                 <ErrorBanner
                   message="Couldn't load Workspace members."
-                  onRetry={() => void owner.members.refetch()}
+                  onRetry={() => void management.members.refetch()}
                 />
               ) : null}
-              {owner.changeMemberAccess.isError ? (
-                <ErrorBanner message={owner.changeMemberAccess.error.message} />
+              {management.removeMember.isError ? (
+                <ErrorBanner message={management.removeMember.error.message} />
               ) : null}
-              {owner.removeMember.isError ? (
-                <ErrorBanner message={owner.removeMember.error.message} />
-              ) : null}
-              {owner.members.isSuccess ? (
-                owner.members.data.items.length > 0 ? (
+              {management.members.isSuccess ? (
+                management.members.data.items.length > 0 ? (
                   <table
                     aria-label="Workspace member records"
                     className="w-full divide-y divide-separator"
                   >
                     <tbody>
-                      {owner.members.data.items.map((member: AccountWorkspaceMember) => {
-                        const activeNonOwner =
-                          member.status === 'active' &&
-                          (member.effectiveRole === 'editor' || member.effectiveRole === 'viewer');
-                        const draft = accessDrafts[member.userId] ?? member.accessLevel;
+                      {management.members.data.items.map((member: AccountWorkspaceMember) => {
+                        const activeNonOwner = member.status === 'active' && !member.isOwner;
                         return (
                           <tr key={member.userId} className="align-top">
                             <td className="min-w-0 py-3 pr-3">
@@ -236,62 +219,25 @@ export function MembersScreen() {
                                   {member.status === 'removed' ? (
                                     'removed'
                                   ) : (
-                                    <span role="status" aria-label={member.effectiveRole}>
-                                      {member.effectiveRole === 'editor'
-                                        ? 'Can edit'
-                                        : member.effectiveRole === 'viewer'
-                                          ? 'Read only'
-                                          : member.effectiveRole}
+                                    <span
+                                      role="status"
+                                      aria-label={member.isOwner ? 'owner' : 'member'}
+                                    >
+                                      {member.isOwner ? 'Owner' : 'Active member'}
                                     </span>
                                   )}
                                 </StatusChip>
-                                {member.status === 'active' ? (
-                                  <span className="text-xs text-fg-muted">
-                                    Stored access:{' '}
-                                    {member.accessLevel === 'editor' ? 'edit' : 'view'}
-                                  </span>
-                                ) : null}
                               </div>
                             </td>
                             {activeNonOwner ? (
                               <td className="py-3">
                                 <div className="flex flex-wrap items-end justify-end gap-2">
-                                  <Select
-                                    label="Access level"
-                                    items={accessLevelOptions}
-                                    selectedKey={draft}
-                                    isDisabled={owner.changeMemberAccess.isPending}
-                                    onSelectionChange={(key) =>
-                                      setAccessDrafts((current) => ({
-                                        ...current,
-                                        [member.userId]: key === 'viewer' ? 'viewer' : 'editor',
-                                      }))
-                                    }
-                                  />
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    isDisabled={
-                                      owner.changeMemberAccess.isPending ||
-                                      draft === member.accessLevel
-                                    }
-                                    onPress={() =>
-                                      owner.changeMemberAccess.mutate({
-                                        accessLevel: draft,
-                                        expectedRevision: member.revision,
-                                        userId: member.userId,
-                                        workspaceId,
-                                      })
-                                    }
-                                  >
-                                    Save access
-                                  </Button>
                                   <ConfirmAction
                                     label="Remove member"
                                     message={`Remove ${member.userId} from this Workspace?`}
-                                    pending={owner.removeMember.isPending}
+                                    pending={management.removeMember.isPending}
                                     onConfirm={() =>
-                                      owner.removeMember.mutate({
+                                      management.removeMember.mutate({
                                         expectedRevision: member.revision,
                                         userId: member.userId,
                                         workspaceId,
@@ -301,9 +247,9 @@ export function MembersScreen() {
                                   <ConfirmAction
                                     label="Transfer ownership"
                                     message={`Transfer Workspace ownership to ${member.userId}?`}
-                                    pending={owner.transferOwnership.isPending}
+                                    pending={management.transferOwnership.isPending}
                                     onConfirm={() =>
-                                      owner.transferOwnership.mutate({
+                                      management.transferOwnership.mutate({
                                         expectedRegistryRevision: workspace.registryRevision,
                                         targetUserId: member.userId,
                                         workspaceId,
@@ -338,57 +284,48 @@ export function MembersScreen() {
                   type="email"
                   value={inviteeEmail}
                   onChange={setInviteeEmail}
-                  isDisabled={owner.createInvitation.isPending}
+                  isDisabled={management.createInvitation.isPending}
                   isRequired
-                />
-                <Select
-                  label="Access level"
-                  items={accessLevelOptions}
-                  selectedKey={inviteAccess}
-                  isDisabled={owner.createInvitation.isPending}
-                  onSelectionChange={(key) =>
-                    setInviteAccess(key === 'viewer' ? 'viewer' : 'editor')
-                  }
                 />
                 <Button
                   type="submit"
-                  isDisabled={owner.createInvitation.isPending || !inviteeEmail}
+                  isDisabled={management.createInvitation.isPending || !inviteeEmail}
                 >
                   Create invitation
                 </Button>
               </form>
-              {owner.createInvitation.isPending ? (
+              {management.createInvitation.isPending ? (
                 <p role="status" aria-live="polite" className="mt-3 text-sm text-fg-muted">
                   Creating invitation…
                 </p>
               ) : null}
-              {owner.createInvitation.isError ? (
+              {management.createInvitation.isError ? (
                 <div className="mt-3">
-                  <ErrorBanner message={owner.createInvitation.error.message} />
+                  <ErrorBanner message={management.createInvitation.error.message} />
                 </div>
               ) : null}
-              {owner.revokeInvitation.isError ? (
+              {management.revokeInvitation.isError ? (
                 <div className="mt-3">
-                  <ErrorBanner message={owner.revokeInvitation.error.message} />
+                  <ErrorBanner message={management.revokeInvitation.error.message} />
                 </div>
               ) : null}
-              {owner.invitations.isPending ? (
+              {management.invitations.isPending ? (
                 <CollectionLoading label="Workspace invitations" />
               ) : null}
-              {owner.invitations.isError ? (
+              {management.invitations.isError ? (
                 <ErrorBanner
                   message="Couldn't load Workspace invitations."
-                  onRetry={() => void owner.invitations.refetch()}
+                  onRetry={() => void management.invitations.refetch()}
                 />
               ) : null}
-              {owner.invitations.isSuccess ? (
-                owner.invitations.data.items.length > 0 ? (
+              {management.invitations.isSuccess ? (
+                management.invitations.data.items.length > 0 ? (
                   <table
                     aria-label="Workspace invitation records"
                     className="mt-3 w-full divide-y divide-separator"
                   >
                     <tbody>
-                      {owner.invitations.data.items.map(
+                      {management.invitations.data.items.map(
                         (invitation: AccountWorkspaceInvitation) => (
                           <tr key={invitation.invitationId}>
                             <td className="min-w-0 py-3 pr-3">
@@ -403,9 +340,7 @@ export function MembersScreen() {
                                 >
                                   {invitation.effectiveStatus}
                                 </StatusChip>
-                                <span className="text-xs text-fg-muted">
-                                  {invitation.proposedAccessLevel}
-                                </span>
+                                <span className="text-xs text-fg-muted">Full member access</span>
                               </div>
                             </td>
                             {invitation.effectiveStatus === 'pending' ? (
@@ -413,9 +348,9 @@ export function MembersScreen() {
                                 <ConfirmAction
                                   label="Revoke invitation"
                                   message={`Revoke the invitation for ${invitation.inviteeUserId}?`}
-                                  pending={owner.revokeInvitation.isPending}
+                                  pending={management.revokeInvitation.isPending}
                                   onConfirm={() =>
-                                    owner.revokeInvitation.mutate({
+                                    management.revokeInvitation.mutate({
                                       expectedRevision: invitation.revision,
                                       invitationId: invitation.invitationId,
                                       workspaceId,

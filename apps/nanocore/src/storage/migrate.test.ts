@@ -281,7 +281,6 @@ describe('database setup', () => {
         'workspace_id',
         'user_id',
         'status',
-        'access_level',
         'invitation_id',
         'joined_at',
         'removed_at',
@@ -293,7 +292,6 @@ describe('database setup', () => {
         'invitation_id',
         'workspace_id',
         'invitee_user_id',
-        'proposed_access_level',
         'inviter_user_id',
         'status',
         'expires_at',
@@ -750,11 +748,11 @@ describe('database setup', () => {
       });
       const insertInvitation = coreDb.sqlite.prepare(
         `INSERT INTO workspace_invitations (
-          invitation_id, workspace_id, invitee_user_id, proposed_access_level,
+          invitation_id, workspace_id, invitee_user_id,
           inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
           revision, created_at, updated_at
         ) VALUES (
-          ?, 'ws_invitation_constraints', 'user_invitee', 'editor', 'user_owner', ?,
+          ?, 'ws_invitation_constraints', 'user_invitee', 'user_owner', ?,
           '2026-07-26T00:00:00.000Z', ?, NULL, NULL, 1, ?, ?
         )`
       );

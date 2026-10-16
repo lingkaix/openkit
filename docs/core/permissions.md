@@ -344,7 +344,7 @@ Detailed audit semantics belong to `docs/core/audit.md`.
 - Permission-sensitive actions SHOULD leave audit records or enough metadata for future audit projection.
 - Approval records MUST NOT be treated as a complete permission engine unless a policy requirement explicitly links the approval to an authorization decision.
 - Product UI summaries MUST NOT become the policy source of truth.
-- Workspace membership and any future product-role vocabulary MUST be projected into the Policy Kernel rather than enforced by a second handler-local role engine; current fixed roles are pre-cutover adapter facts, not the target membership ceiling.
+- Workspace membership and any future product-role vocabulary MUST be projected into the Policy Kernel rather than enforced by a second handler-local role engine; the current adapter uses one active-member association, while ownership is a lifecycle identity rather than a permission ceiling.
 - Invitation state, filesystem presence, owner-nested paths, and token scope alone MUST NOT grant Workspace access.
 - A currently usable administrator credential is eligible for every operation under Administrator Eligibility. Credential validation, per-effect authority objects, truthful attribution, read-only limits, revocation, expiry, and the sandbox boundary stay in force. Merely owning an administrator Token, without authenticating through the administrator's current Web session or presenting an administrator bearer, supplies no administrator-derived eligibility.
 - Missing actor, responsible-user, required membership or currently usable administrator credential, resource, token-binding, or required policy facts MUST fail closed.

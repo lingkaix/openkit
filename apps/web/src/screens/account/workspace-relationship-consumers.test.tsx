@@ -45,7 +45,7 @@ function administratorOnly(
 ): AuthorizedWorkspaceSummary {
   return {
     accessCause: 'administrator',
-    effectiveRole: null,
+    isOwner: false,
     membershipRevision: membershipStatus === 'removed' ? 7 : null,
     membershipStatus,
     ownerUserId: 'user_other',
@@ -57,15 +57,15 @@ function administratorOnly(
 /** Active membership is independent of the current credential's administrator eligibility. */
 function activeMembership(
   record: WorkspaceRecord,
-  effectiveRole: 'owner' | 'editor' | 'viewer',
+  isOwner: boolean,
   accessCause: 'membership' | 'administrator' = 'administrator'
 ): AuthorizedWorkspaceSummary {
   return {
     accessCause,
-    effectiveRole,
+    isOwner,
     membershipRevision: 5,
     membershipStatus: 'active',
-    ownerUserId: effectiveRole === 'owner' ? CALLER_ID : 'user_other',
+    ownerUserId: isOwner ? CALLER_ID : 'user_other',
     registryRevision: 3,
     workspace: record,
   };
@@ -77,10 +77,10 @@ const RELATIONSHIPS = [
   administratorOnly(FOREIGN_QUICK_CHAT),
   administratorOnly(FOREIGN_PROJECT),
   administratorOnly(REMOVED_PROJECT, 'removed'),
-  activeMembership(OWN_QUICK_CHAT, 'owner'),
-  activeMembership(OWN_PROJECT, 'owner'),
-  activeMembership(SHARED_EDITOR, 'editor'),
-  activeMembership(SHARED_VIEWER, 'viewer'),
+  activeMembership(OWN_QUICK_CHAT, true),
+  activeMembership(OWN_PROJECT, true),
+  activeMembership(SHARED_EDITOR, false),
+  activeMembership(SHARED_VIEWER, false),
 ];
 
 /** Observes the real selection hook and router without duplicating relationship classification. */
@@ -182,10 +182,10 @@ describe('Workspace relationship consumers', () => {
     const user = userEvent.setup();
     const view = renderConsumers({
       items: [
-        activeMembership(OWN_QUICK_CHAT, 'owner', 'membership'),
-        activeMembership(OWN_PROJECT, 'owner', 'membership'),
-        activeMembership(SHARED_EDITOR, 'editor', 'membership'),
-        activeMembership(SHARED_VIEWER, 'viewer', 'membership'),
+        activeMembership(OWN_QUICK_CHAT, true, 'membership'),
+        activeMembership(OWN_PROJECT, true, 'membership'),
+        activeMembership(SHARED_EDITOR, false, 'membership'),
+        activeMembership(SHARED_VIEWER, false, 'membership'),
       ],
     });
     await view.discoveryReady();
@@ -293,7 +293,7 @@ describe('Workspace relationship consumers', () => {
   it('does not borrow a foreign Quick Chat for Administration or selection identity when the caller Quick Chat is absent', async () => {
     const view = renderConsumers({
       administration: true,
-      items: [administratorOnly(FOREIGN_QUICK_CHAT), activeMembership(SHARED_EDITOR, 'editor')],
+      items: [administratorOnly(FOREIGN_QUICK_CHAT), activeMembership(SHARED_EDITOR, false)],
     });
     await view.discoveryReady();
     expect(await screen.findByRole('region', { name: 'Private conversation' })).toBeInTheDocument();

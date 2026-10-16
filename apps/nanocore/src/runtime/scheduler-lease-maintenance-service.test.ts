@@ -48,8 +48,8 @@ function createMigratedCoreDb() {
     VALUES ('user_server', 'Server worker owner', 'server@example.invalid', 0, ?, ?, 'human', 'active')`)
     .run(Date.now(), Date.now());
   coreDb.sqlite
-    .prepare(`INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-    VALUES ('ws_demo', 'user_server', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+    .prepare(`INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+    VALUES ('ws_demo', 'user_server', 'active', NULL, ?, NULL, 1, ?, ?)`)
     .run(new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
   return coreDb;
 }

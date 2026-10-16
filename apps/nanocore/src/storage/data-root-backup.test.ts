@@ -234,11 +234,11 @@ describe('data-root backup manifest', () => {
     sourceDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
         ) VALUES
-          (?, 'user_backup_editor', 'active', 'editor', NULL, ?, NULL, 2, ?, ?),
-          (?, 'user_backup_removed', 'removed', 'viewer', NULL, ?, ?, 3, ?, ?)`
+          (?, 'user_backup_editor', 'active', NULL, ?, NULL, 2, ?, ?),
+          (?, 'user_backup_removed', 'removed', NULL, ?, ?, 3, ?, ?)`
       )
       .run(
         workspaceId,
@@ -254,10 +254,10 @@ describe('data-root backup manifest', () => {
     sourceDb.sqlite
       .prepare(
         `INSERT INTO workspace_invitations (
-          invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+          invitation_id, workspace_id, invitee_user_id, inviter_user_id,
           status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
         ) VALUES (
-          'inv_backup_pending', ?, 'user_backup_invitee', 'viewer', 'user_backup_owner',
+          'inv_backup_pending', ?, 'user_backup_invitee', 'user_backup_owner',
           'pending', '2026-07-13T00:00:00.000Z', NULL, NULL, NULL, 4, ?, ?
         )`
       )

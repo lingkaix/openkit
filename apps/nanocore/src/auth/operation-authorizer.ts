@@ -7,7 +7,10 @@ import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
 import type { FsStore } from '../lib/store.js';
 import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
-import { evaluateWorkspaceRoleAccess, type ProductOperation } from '../policy/workspace-access.js';
+import {
+  evaluateWorkspaceMemberAccess,
+  type ProductOperation,
+} from '../policy/workspace-access.js';
 import {
   findSchedulerAdmissionForTurn,
   findSchedulerAdmissionForWorkerLineage,
@@ -15,12 +18,12 @@ import {
   type SchedulerExecutionLineage,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import {
   ensureUserQuickChatWorkspace,
   listActiveWorkspaceIds,
   listActiveWorkspaceIdsForActor,
-  resolveWorkspaceRole,
-  type WorkspaceRole,
+  resolveWorkspaceMembershipRelation,
 } from '../workspace-membership.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
@@ -54,6 +57,9 @@ const GatewayWorkspaceAttributionSchema = z
   })
   .passthrough();
 
+/** Current eligibility cause; ownership remains a separate registry identity. */
+export type WorkspaceAuthority = 'member' | 'administrator';
+
 /** Authorized Workspace context exposed to one guarded handler. */
 export type WorkspaceAccess =
   | {
@@ -61,8 +67,8 @@ export type WorkspaceAccess =
       readonly kind: 'workspace';
       /** Canonical authorized Workspace id. */
       readonly workspaceId: string;
-      /** Effective fixed role derived from current Core facts. */
-      readonly effectiveRole: WorkspaceRole;
+      /** Whether the actor is the actual registry owner; eligibility has no owner ceiling. */
+      readonly isOwner: boolean;
       /** Product operation allowed by the policy adapter. */
       readonly policyOperation: ProductOperation;
     }
@@ -160,8 +166,8 @@ interface OperationRoute {
 
 /** One successful single-Workspace policy result. */
 interface AuthorizedWorkspace {
-  /** Effective fixed role. */
-  readonly effectiveRole: WorkspaceRole;
+  /** Actual ownership identity; this does not grant a permission tier. */
+  readonly isOwner: boolean;
   /** Canonical Workspace id. */
   readonly workspaceId: string;
 }
@@ -259,15 +265,15 @@ export function isWorkspaceOperationAuthorized(
 }
 
 /**
- * Composes current Workspace authority from one actor, fixed role, policy operation, and caller-owned effect authority.
+ * Composes current Workspace authority from one actor, active membership, policy operation, and caller-owned effect authority.
  *
  * @param coreDb Core Workspace authority.
  * @param workspaceId Canonical target Workspace id.
  * @param actor Immutable actor responsible for the effect.
  * @param operation Concrete product operation, including unknown values that must fail closed.
  * @param effectAuthority Whether the caller's existing effect-specific authority remains valid.
- * @param requestActor Optional authenticating request actor; a presented usable server-admin bearer grants owner authority without membership.
- * @returns The current effective Workspace role, or null when any authority component denies the effect.
+ * @param requestActor Optional authenticating request actor; a presented usable server-admin bearer grants administrator eligibility without membership.
+ * @returns The current effective Workspace eligibility, or null when any authority component denies the effect.
  */
 export function currentWorkspaceAuthority(
   coreDb: CoreDb,
@@ -276,7 +282,7 @@ export function currentWorkspaceAuthority(
   operation: string,
   effectAuthority: boolean,
   requestActor?: Actor
-): WorkspaceRole | null {
+): WorkspaceAuthority | null {
   if (!effectAuthority) {
     return null;
   }
@@ -289,18 +295,17 @@ export function currentWorkspaceAuthority(
     ) {
       return null;
     }
-    const role: WorkspaceRole = 'owner';
-    return evaluateWorkspaceRoleAccess({ operation, role }).effect === 'allow' ? role : null;
+    return evaluateWorkspaceMemberAccess({ operation }).effect === 'allow' ? 'administrator' : null;
   }
   const responsibleUserId = responsibleUserIdForActor(actor);
   if (!responsibleUserId) {
     return null;
   }
-  const role = resolveWorkspaceRole(coreDb, workspaceId, responsibleUserId);
-  if (!role || evaluateWorkspaceRoleAccess({ operation, role }).effect !== 'allow') {
+  const role = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
+  if (!role || evaluateWorkspaceMemberAccess({ operation }).effect !== 'allow') {
     return null;
   }
-  return role;
+  return 'member';
 }
 
 /**
@@ -310,7 +315,7 @@ export function currentWorkspaceAuthority(
  * @param admission Exact originating admission context.
  * @param operation Product operation being attempted now.
  * @param effectAuthority Caller-owned effect authority.
- * @returns Current Workspace role, or null if a recorded token is no longer usable.
+ * @returns Current Workspace eligibility, or null if a recorded token is no longer usable.
  */
 export function currentSchedulerAdmissionWorkspaceAuthority(
   coreDb: CoreDb,
@@ -320,7 +325,7 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
   >,
   operation: string,
   effectAuthority: boolean
-): WorkspaceRole | null {
+): WorkspaceAuthority | null {
   if (admission.serverAdminTokenId === null) {
     return currentWorkspaceAuthority(
       coreDb,
@@ -356,14 +361,14 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
  * @param lineage Worker package lineage and its immutable trigger actor.
  * @param operation Product operation being attempted now.
  * @param effectAuthority Caller-owned effect authority.
- * @returns Current Workspace role, or null when lineage or current authority is invalid.
+ * @returns Current Workspace eligibility, or null when lineage or current authority is invalid.
  */
 export function currentWorkerLineageWorkspaceAuthority(
   coreDb: CoreDb,
   lineage: SchedulerExecutionLineage & { readonly triggerActor: ActorRef },
   operation: string,
   effectAuthority: boolean
-): WorkspaceRole | null {
+): WorkspaceAuthority | null {
   const admission = findSchedulerAdmissionForWorkerLineage(coreDb, lineage);
   if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
     return null;
@@ -378,7 +383,7 @@ export function currentWorkerLineageWorkspaceAuthority(
  * @param lineage Exact product Turn and trigger actor.
  * @param operation Product operation being attempted now.
  * @param effectAuthority Caller-owned effect authority.
- * @returns Current Workspace role, or null when the live admission or actor differs.
+ * @returns Current Workspace eligibility, or null when the live admission or actor differs.
  */
 export function currentScheduledTurnWorkspaceAuthority(
   coreDb: CoreDb,
@@ -390,7 +395,7 @@ export function currentScheduledTurnWorkspaceAuthority(
   },
   operation: string,
   effectAuthority: boolean
-): WorkspaceRole | null {
+): WorkspaceAuthority | null {
   const admission = findSchedulerAdmissionForTurn(coreDb, lineage);
   if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
     return null;
@@ -540,7 +545,7 @@ async function authorizeWorkspaceOperation(
   const authorized = authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
   if (
     !authorized ||
-    (route.access.resolver === 'actor-quick-chat-workspace' && authorized.effectiveRole !== 'owner')
+    (route.access.resolver === 'actor-quick-chat-workspace' && !authorized.isOwner)
   ) {
     return workspaceAccessDenied();
   }
@@ -556,7 +561,8 @@ async function authorizeWorkspaceOperation(
 export function hasWorkspaceDeletionRetryAuthority(
   coreDb: CoreDb,
   actor: Actor,
-  workspaceId: string
+  workspaceId: string,
+  request: { dataRoot: string; requestId: string }
 ): boolean {
   if (!isCanonicalUserActive(coreDb, actor.userId) || !isUsablePresentedAccessToken(coreDb, actor))
     return false;
@@ -575,8 +581,16 @@ export function hasWorkspaceDeletionRetryAuthority(
     .get(workspaceId) as
     | { ownerUserId: string; status: 'active' | 'deleting' | 'deleted'; userStatus: string }
     | undefined;
+  let deletion: ReturnType<typeof readWorkspaceDeletionRequest>;
+  try {
+    deletion = readWorkspaceDeletionRequest(request.dataRoot, workspaceId, request.requestId);
+  } catch {
+    return false;
+  }
   return (
-    (row?.ownerUserId === actor.userId || isCurrentDeploymentAdministrator(coreDb, actor)) &&
+    deletion.originalOwnerUserId === row?.ownerUserId &&
+    ((deletion.initiatingUserId ?? deletion.originalOwnerUserId) === actor.userId ||
+      isCurrentDeploymentAdministrator(coreDb, actor)) &&
     row?.userStatus === 'active' &&
     (row.status === 'deleting' || row.status === 'deleted')
   );
@@ -631,7 +645,7 @@ async function resolveWorkspaceId(
  * @param actor Authenticated request actor.
  * @param workspaceId Canonical target Workspace id.
  * @param access Exact operation metadata.
- * @returns Authorized Workspace and effective role, or null on any denial.
+ * @returns Authorized Workspace and ownership identity, or null on any denial.
  */
 export function authorizeWorkspace(
   coreDb: CoreDb,
@@ -648,7 +662,10 @@ export function authorizeWorkspace(
     if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) {
       return null;
     }
-    return { effectiveRole: 'owner', workspaceId };
+    return {
+      isOwner: resolveWorkspaceMembershipRelation(coreDb, workspaceId, actor.userId) === 'owner',
+      workspaceId,
+    };
   }
   if (!isUsablePresentedAccessToken(coreDb, actor)) {
     return null;
@@ -656,17 +673,20 @@ export function authorizeWorkspace(
   if (!tokenIncludesWorkspace(actor, workspaceId, access.authentication)) {
     return null;
   }
-  const effectiveRole = currentWorkspaceAuthority(
+  const membershipRelation = currentWorkspaceAuthority(
     coreDb,
     workspaceId,
     { kind: 'user', id: actor.userId },
     access.policyOperation,
     true
   );
-  if (!effectiveRole) {
+  if (!membershipRelation) {
     return null;
   }
-  return { effectiveRole, workspaceId };
+  return {
+    isOwner: resolveWorkspaceMembershipRelation(coreDb, workspaceId, actor.userId) === 'owner',
+    workspaceId,
+  };
 }
 
 /**

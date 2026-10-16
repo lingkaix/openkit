@@ -48,7 +48,7 @@ function makeClient(): CoreClient {
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           workspace,
-          effectiveRole: 'owner',
+          isOwner: true,
           membershipRevision: 1,
           ownerUserId: 'user_local',
           registryRevision: 1,

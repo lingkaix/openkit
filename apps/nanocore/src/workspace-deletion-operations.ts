@@ -17,7 +17,12 @@ import {
   type WorkspaceDeletionState,
 } from '@openkit/app-api-schemas';
 import { listServerAuditEvents, recordServerAuditEvent } from './audit-events.js';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import type { Actor } from './auth/identity.js';
+import {
+  hasWorkspaceDeletionRetryAuthority,
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { FsStore } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
@@ -54,6 +59,7 @@ import {
   workspaceDeletionStagingRelativePath,
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
+import { resolveWorkspaceMembershipRelation } from './workspace-membership.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
   beginWorkspaceDeletion,
@@ -102,6 +108,7 @@ export function createWorkspaceDeletionOperationImplementations(
           async () => {
             const result = await advanceWorkspaceDeletion({
               actorId: context.actor.userId,
+              actor: context.actor,
               administratorEligible: isCurrentDeploymentAdministrator(coreDb, context.actor),
               closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions!,
               coreDb,
@@ -200,6 +207,7 @@ export function createWorkspaceDeletionOperationImplementations(
 /** Advances only the exact request-owned deletion phases; no ordinary Workspace content authority survives fencing. */
 async function advanceWorkspaceDeletion(input: {
   actorId: string;
+  actor: Actor;
   administratorEligible: boolean;
   closeWorkspaceMcpSessions: (workspaceId: string) => Promise<void>;
   coreDb: CoreDb;
@@ -223,6 +231,14 @@ async function advanceWorkspaceDeletion(input: {
   }
   await input.mutationAdmission.close(input.workspaceId);
   await input.closeWorkspaceMcpSessions(input.workspaceId);
+  if (
+    !['requested', 'fenced'].includes(request.phase) &&
+    !hasWorkspaceDeletionRetryAuthority(input.coreDb, input.actor, input.workspaceId, {
+      dataRoot: input.dataRoot,
+      requestId: request.requestId,
+    })
+  )
+    throw recoveryRequired();
   if (!isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)) {
     if (['requested', 'fenced'].includes(request.phase)) {
       request = persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
@@ -285,6 +301,13 @@ async function advanceWorkspaceDeletion(input: {
     return { body: deletionResponse(request), status: 202 };
   }
   if (request.phase === 'fenced') {
+    if (
+      !isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'workspace.lifecycle',
+      })
+    )
+      throw recoveryRequired();
     const deleting = input.coreDb.sqlite.transaction(() =>
       beginWorkspaceDeletion({
         coreDb: input.coreDb,
@@ -317,6 +340,7 @@ async function advanceWorkspaceDeletion(input: {
         })
       : createVerifiedWorkspaceExport({
           authorityUserId: request.originalOwnerUserId,
+          authorityActor: { kind: 'user', id: input.actorId },
           coreDb: input.coreDb,
           dataRoot: input.dataRoot,
           deletionRecoveryRequestId: request.requestId,
@@ -495,7 +519,8 @@ function selectDeletionRequest(input: {
   const existing = records.find((record) => record.requestId === input.request.requestId);
   if (existing) {
     if (
-      (!input.administratorEligible && existing.originalOwnerUserId !== input.actorId) ||
+      (!input.administratorEligible &&
+        (existing.initiatingUserId ?? existing.originalOwnerUserId) !== input.actorId) ||
       existing.expectedRegistryRevision !== input.request.expectedRegistryRevision ||
       existing.confirmation !== input.request.confirmation
     ) {
@@ -519,7 +544,8 @@ function selectDeletionRequest(input: {
   if (
     !registry ||
     registry.status !== 'active' ||
-    (!input.administratorEligible && registry.ownerUserId !== input.actorId) ||
+    (!input.administratorEligible &&
+      !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorId)) ||
     registry.registryRevision !== input.request.expectedRegistryRevision
   ) {
     throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
@@ -538,6 +564,7 @@ function selectDeletionRequest(input: {
     createdAt: new Date().toISOString(),
     expectedRegistryRevision: input.request.expectedRegistryRevision,
     originalOwnerUserId: registry.ownerUserId,
+    initiatingUserId: input.actorId,
     requestId: input.request.requestId,
     workspaceId: input.workspaceId,
   });

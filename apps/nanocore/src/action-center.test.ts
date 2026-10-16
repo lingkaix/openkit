@@ -689,13 +689,13 @@ describe('action center app API', () => {
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
         ) VALUES
-          ('ws_demo', 'user_responsible', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
-          ('ws_demo', 'user_editor', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
-          ('ws_demo', 'user_viewer', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
-          ('ws_demo', 'user_removed', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+          ('ws_demo', 'user_responsible', 'active', NULL, ?, NULL, 1, ?, ?),
+          ('ws_demo', 'user_editor', 'active', NULL, ?, NULL, 1, ?, ?),
+          ('ws_demo', 'user_viewer', 'active', NULL, ?, NULL, 1, ?, ?),
+          ('ws_demo', 'user_removed', 'removed', NULL, ?, ?, 2, ?, ?)`
       )
       .run(
         timestamp,

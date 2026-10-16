@@ -12,7 +12,7 @@ const RECOVERY = {
   recovery: {
     workspaceId: 'ws_fixture',
     ownerUserId: 'user_owner',
-    administratorRole: null,
+    administratorMembershipStatus: null,
     registryRevision: 7,
     secret: POISON,
   },
@@ -35,7 +35,11 @@ function makeClient(): CoreClient {
       'token.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.access-recovery-read': vi.fn().mockResolvedValue(RECOVERY),
       'workspace.access-recover': vi.fn().mockResolvedValue({
-        recovery: { ...RECOVERY.recovery, administratorRole: 'editor', registryRevision: 8 },
+        recovery: {
+          ...RECOVERY.recovery,
+          administratorMembershipStatus: 'active',
+          registryRevision: 8,
+        },
       }),
       'user.disable': vi.fn().mockResolvedValue(DISABLED),
     },
@@ -100,7 +104,7 @@ describe('Web admin recovery and user disable', () => {
     expect(client.operations['workspace.access-recover']).toHaveBeenCalledExactlyOnceWith({
       workspaceId: 'ws_fixture',
       ...{
-        action: 'add-self-as-editor',
+        action: 'add-self-as-member',
         expectedRegistryRevision: 7,
         requestId: expect.any(String),
       },

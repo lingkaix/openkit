@@ -165,9 +165,9 @@ function addOtherMember(fixture: Fixture): void {
   fixture.coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
-        workspace_id, user_id, status, access_level, invitation_id,
+        workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+      ) VALUES (?, 'user_other', 'active', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(fixture.workspaceId, NOW, NOW, NOW);
 }
@@ -513,9 +513,9 @@ describe('Worker environment operations', () => {
     fixture.coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES (?, 'user_other', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(fixture.workspaceId, NOW, NOW, NOW);
     createOpenKitAccessTokenRecord(fixture.coreDb, {

@@ -1172,15 +1172,14 @@ describe('workspace portable authority boundaries', () => {
       });
       const insertMember = sourceCoreDb.sqlite.prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, 1, ?, ?)`
+        ) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?)`
       );
       insertMember.run(
         sourceWorkspace.id,
         'user_source_active',
         'active',
-        'editor',
         timestamp,
         null,
         timestamp,
@@ -1190,7 +1189,6 @@ describe('workspace portable authority boundaries', () => {
         sourceWorkspace.id,
         'user_source_removed',
         'removed',
-        'viewer',
         timestamp,
         timestamp,
         timestamp,
@@ -1199,10 +1197,10 @@ describe('workspace portable authority boundaries', () => {
       sourceCoreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
-            invitation_id, workspace_id, invitee_user_id, proposed_access_level,
+            invitation_id, workspace_id, invitee_user_id,
             inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
             revision, created_at, updated_at
-          ) VALUES (?, ?, ?, 'viewer', ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(
           'inv_source_importer',
@@ -1322,15 +1320,13 @@ describe('workspace portable authority boundaries', () => {
       expect(
         targetCoreDb.sqlite
           .prepare(
-            `SELECT workspace_id AS workspaceId, user_id AS userId, status,
-                    access_level AS accessLevel
+            `SELECT workspace_id AS workspaceId, user_id AS userId, status
              FROM workspace_members
              ORDER BY workspace_id, user_id`
           )
           .all()
       ).toEqual([
         {
-          accessLevel: 'editor',
           status: 'active',
           userId: 'user_target_importer',
           workspaceId: imported.importedWorkspaceId,

@@ -176,7 +176,7 @@ function makeClient(
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
-            effectiveRole: 'owner',
+            isOwner: true,
             membershipRevision: 1,
             ownerUserId: 'user_local',
             registryRevision: 1,
@@ -191,7 +191,7 @@ function makeClient(
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
-                effectiveRole: 'owner',
+                isOwner: true,
                 membershipRevision: 1,
                 ownerUserId: 'user_local',
                 registryRevision: 1,
@@ -253,7 +253,7 @@ describe('Material route identity', () => {
           items: [
             {
               workspace: { id: workspaceId, name: 'Exact Workspace' },
-              effectiveRole: 'owner',
+              isOwner: true,
               membershipRevision: 1,
               ownerUserId: 'user_local',
               registryRevision: 1,
@@ -351,7 +351,7 @@ describe('S19-F Material Workspace discovery barrier', () => {
       discovery.resolve({
         items: workspaces.map((workspace) => ({
           workspace,
-          effectiveRole: 'owner' as const,
+          isOwner: true,
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           membershipRevision: 1,
