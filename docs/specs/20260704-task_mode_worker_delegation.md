@@ -359,3 +359,7 @@ Previously open questions are resolved by accepted V1 defaults: Task Mode perfor
 - `docs/specs/20260703-worker_context_package.md`
 - `docs/specs/20260703-durable_scheduler_design.md`
 - `docs/specs/20260703-workspace_synchronization.md`
+
+## Retained Task-to-Goal Identifier Projection
+
+A retained Task-to-Goal receipt keeps its existing completed, sessionless Task Turn and one completed status Item as its durable authority. The immutable Goal reference is the status Item goalId field; identifiers never encode or supply that reference. The canonical Turn uses UUIDv5 in the tu namespace over the exact JCS object {"command":"task.start.goal","actorId":actorUserId,"workspaceId":workspaceId,"threadId":threadId,"requestId":requestId}. Its status Item uses UUIDv5 in the it namespace over ["task-goal",turnId,goalId]. The actor, containing Workspace/Thread/Turn, completion, single reference and both complete derivations must agree with the existing command receipt before replay. An incomplete, duplicated or contradictory tuple is recovery_required. Replay reads the retained reference without creating a Goal, Worker, receiving Thread or receipt; absence of the Goal does not remint the reference or relaunch work. This representation preserves the existing escalation replay contract and introduces no new escalation trigger. Pre-cutover encoded identifiers are not converted or admitted by a compatibility reader.

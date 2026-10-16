@@ -104,13 +104,13 @@ async function fixture(selected = true, description?: string) {
   coreDb.sqlite
     .prepare(`INSERT INTO users
       (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-      VALUES ('skill-reader', 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
-    .run(Date.now(), Date.now());
+      VALUES (?, 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
+    .run(testEntityId('usr', 'skill-reader'), Date.now(), Date.now());
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
       (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-      VALUES (?, 'skill-reader', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
-    .run(workspace.id, timestamp, timestamp, timestamp);
+      VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+    .run(workspace.id, testEntityId('usr', 'skill-reader'), timestamp, timestamp, timestamp);
   const actor: Actor = { kind: 'session', userId: testEntityId('usr', 'skill-reader') };
   const thread = store.createThread(workspace.id, 'Assistant command');
   const turn = store.createTurn(
@@ -451,9 +451,9 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const f = await fixture();
     f.coreDb.sqlite
       .prepare(
-        "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = 'skill-reader'"
+        "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
       )
-      .run(f.workspaceId);
+      .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
     expect(
       authorizeWorkspace(f.coreDb, f.actor, f.workspaceId, {
         mutating: false,
@@ -493,15 +493,15 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       if (condition === 'downgraded')
         f.coreDb.sqlite
           .prepare(
-            "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = 'skill-reader'"
+            "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
           )
-          .run(f.workspaceId);
+          .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
       else
         f.coreDb.sqlite
           .prepare(
-            "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = 'skill-reader'"
+            "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
           )
-          .run(f.workspaceId);
+          .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
       return result;
     });
 
@@ -797,9 +797,9 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     if (condition === 'revoked')
       f.coreDb.sqlite
         .prepare(
-          "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ? AND user_id = 'skill-reader'"
+          "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ? AND user_id = ?"
         )
-        .run(f.workspaceId);
+        .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
     if (condition === 'removed' || condition === 'missing-version') {
       const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
       if (condition === 'removed') catalog.skills.entries[0]!.availability = 'removed';

@@ -925,11 +925,11 @@ describe('native Drizzle migrate', () => {
       insert('agent_session_runtime_bindings', {
         agent_session_runtime_binding_id: 'retained-binding',
         harness_instance_id: 'retained-harness',
-        agent_session_id: 'retained-session',
-        workspace_id: 'retained-workspace',
-        thread_id: 'retained-thread',
-        current_turn_id: 'retained-turn',
-        current_attempt_id: 'retained-attempt',
+        agent_session_id: testEntityId('as', 'retained-session'),
+        workspace_id: testEntityId('ws', 'retained-workspace'),
+        thread_id: testEntityId('th', 'retained-thread'),
+        current_turn_id: testEntityId('tu', 'retained-turn'),
+        current_attempt_id: testEntityId('attempt', 'retained-attempt'),
         native_handle_digest: 'a'.repeat(64),
         next_turn_sequence: 3,
       });

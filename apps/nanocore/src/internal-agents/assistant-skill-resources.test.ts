@@ -61,13 +61,13 @@ function fixture() {
   coreDb.sqlite
     .prepare(`INSERT INTO users
     (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-    VALUES ('skill-reader', 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
-    .run(Date.now(), Date.now());
+    VALUES (?, 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
+    .run(testEntityId('usr', 'skill-reader'), Date.now(), Date.now());
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
     (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-    VALUES (?, 'skill-reader', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`)
-    .run(workspace.id, timestamp, timestamp, timestamp);
+    VALUES (?, ?, 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`)
+    .run(workspace.id, testEntityId('usr', 'skill-reader'), timestamp, timestamp, timestamp);
   const thread = store.createThread(workspace.id, 'Use selected resources');
   const turn = store.createTurn(workspace.id, thread.id, 'Use selected resources', {
     kind: 'user',

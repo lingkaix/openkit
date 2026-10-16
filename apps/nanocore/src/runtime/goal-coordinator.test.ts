@@ -110,7 +110,7 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
       expect.arrayContaining([
         'thread_items',
         'artifact_read',
-        'tu_00000000-0000-77a7-a194-9ad9d8661498',
+        'turn_read',
         'evidence_runtime_list',
       ])
     );

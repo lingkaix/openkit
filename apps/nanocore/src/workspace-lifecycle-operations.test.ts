@@ -170,7 +170,7 @@ function fixture(
       .prepare(
         "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES (?, ?, ?, 0, ?, ?, 'human', 'active')"
       )
-      .run(id, id, `${id}@example.com`, now, now);
+      .run(testEntityId('usr', id), id, `${id}@example.com`, now, now);
   const store = new FsStore({ dataRoot });
   const workspaceId = store.createWorkspace('Lifecycle cutover').id;
   recordWorkspaceOwnerMembership({
@@ -181,9 +181,9 @@ function fixture(
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(
-      "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, joined_at, revision, created_at, updated_at) VALUES (?, 'member', 'active', 'editor', ?, 1, ?, ?)"
+      "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, joined_at, revision, created_at, updated_at) VALUES (?, ?, 'active', 'editor', ?, 1, ?, ?)"
     )
-    .run(workspaceId, timestamp, timestamp, timestamp);
+    .run(workspaceId, testEntityId('usr', 'member'), timestamp, timestamp, timestamp);
   coreDb.sqlite
     .prepare(
       "INSERT INTO workspace_invitations (invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id, status, expires_at, revision, created_at, updated_at) VALUES ('inv_00000000-0000-79cc-be8a-99985c4c44e4', ?, 'usr_00000000-0000-7000-8000-000000000001', 'viewer', 'usr_00000000-0000-7000-8000-000000000001', 'pending', ?, 1, ?, ?)"
@@ -276,7 +276,7 @@ const cases = [
     'workspace.ownership-transfer',
     'POST',
     '/api/app/workspaces/$workspace/ownership/transfer',
-    { targetUserId: 'member', expectedRegistryRevision: 1 },
+    { targetUserId: testEntityId('usr', 'member'), expectedRegistryRevision: 1 },
     200,
   ],
   [
@@ -341,9 +341,9 @@ it.each(
         ? { invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4' }
         : {}),
       ...(id === 'workspace.member-access-change' || id === 'workspace.member-remove'
-        ? { targetUserId: 'member' }
+        ? { targetUserId: testEntityId('usr', 'member') }
         : id === 'user.disable'
-          ? { targetUserId: 'target' }
+          ? { targetUserId: testEntityId('usr', 'target') }
           : {}),
     };
     const canonical = await state.app.request(
@@ -381,7 +381,7 @@ it.each([
     const requestId = randomUUID();
     const input = {
       workspaceId: f.workspaceId,
-      targetUserId: 'member',
+      targetUserId: testEntityId('usr', 'member'),
       accessLevel: 'viewer' as const,
       expectedRevision: 1,
       requestId,
@@ -415,7 +415,7 @@ it.each([
     ]);
     f.coreDb.sqlite
       .prepare('UPDATE workspace_invitations SET invitee_user_id = ? WHERE invitation_id = ?')
-      .run('member', 'inv_00000000-0000-79cc-be8a-99985c4c44e4');
+      .run(testEntityId('usr', 'member'), 'inv_00000000-0000-79cc-be8a-99985c4c44e4');
     const accepted = await f.invoke(
       'workspace.my-invitation-accept',
       {
@@ -426,7 +426,7 @@ it.each([
       { kind: 'public', actor }
     );
     expect(accepted.invitation).toMatchObject({
-      inviteeUserId: 'member',
+      inviteeUserId: testEntityId('usr', 'member'),
       effectiveStatus: 'accepted',
     });
     expect(
@@ -438,18 +438,18 @@ it.each([
       'workspace.ownership-transfer',
       {
         workspaceId: f.workspaceId,
-        targetUserId: 'member',
+        targetUserId: testEntityId('usr', 'member'),
         expectedRegistryRevision: 1,
         requestId: randomUUID(),
       },
       { kind: 'public', actor }
     );
-    expect(transfer.workspace.ownerUserId).toBe('member');
+    expect(transfer.workspace.ownerUserId).toBe(testEntityId('usr', 'member'));
     revokeOpenKitAccessTokenRecord(f.coreDb, admin.record.tokenId);
     const deniedId = randomUUID();
     const before = f.coreDb.sqlite
       .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-      .get(f.workspaceId, 'member');
+      .get(f.workspaceId, testEntityId('usr', 'member'));
     await expect(
       f.invoke(
         'workspace.member-access-change',
@@ -460,7 +460,7 @@ it.each([
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, 'member')
+        .get(f.workspaceId, testEntityId('usr', 'member'))
     ).toEqual(before);
     expect(
       f.store.getCommandRequest(
@@ -470,7 +470,7 @@ it.each([
           coreId: 'server',
           actorId: 'target',
           targetWorkspaceId: f.workspaceId,
-          targetUserId: 'member',
+          targetUserId: testEntityId('usr', 'member'),
         },
         f.coreDb
       )
@@ -559,7 +559,7 @@ it('refuses HTTP user.disable during closed product admission without disabling 
     const response = await f.app.request(
       ...operationRequest(
         'user.disable',
-        { targetUserId: 'target' },
+        { targetUserId: testEntityId('usr', 'target') },
         { body: JSON.stringify({ requestId }) }
       )
     );
@@ -575,7 +575,7 @@ it('refuses HTTP user.disable during closed product admission without disabling 
         {
           coreId: 'server',
           actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          targetUserId: 'target',
+          targetUserId: testEntityId('usr', 'target'),
         },
         f.coreDb
       )
@@ -731,13 +731,13 @@ it('keeps a readonly Workspace credential from changing members or creating a co
     const requestId = randomUUID();
     const before = f.coreDb.sqlite
       .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-      .get(f.workspaceId, 'member');
+      .get(f.workspaceId, testEntityId('usr', 'member'));
     await expect(
       f.invoke(
         'workspace.member-access-change',
         {
           workspaceId: f.workspaceId,
-          targetUserId: 'member',
+          targetUserId: testEntityId('usr', 'member'),
           expectedRevision: 1,
           accessLevel: 'viewer',
           requestId,
@@ -757,7 +757,7 @@ it('keeps a readonly Workspace credential from changing members or creating a co
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, 'member')
+        .get(f.workspaceId, testEntityId('usr', 'member'))
     ).toEqual(before);
     expect(
       f.coreDb.sqlite

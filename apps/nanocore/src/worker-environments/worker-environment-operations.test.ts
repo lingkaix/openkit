@@ -159,17 +159,17 @@ function addOtherMember(fixture: Fixture): void {
     .prepare(
       `INSERT INTO users (
         id, display_name, email, email_verified, created_at, updated_at, kind, status
-      ) VALUES ('user_other', 'Other Member', 'other@example.com', false, ?, ?, 'human', 'active')`
+      ) VALUES (?, 'Other Member', 'other@example.com', false, ?, ?, 'human', 'active')`
     )
-    .run(now, now);
+    .run(testEntityId('usr', 'user_other'), now, now);
   fixture.coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
         workspace_id, user_id, status, access_level, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+      ) VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
     )
-    .run(fixture.workspaceId, NOW, NOW, NOW);
+    .run(fixture.workspaceId, testEntityId('usr', 'user_other'), NOW, NOW, NOW);
 }
 
 /** Prepares a live shared attachment so another authorized caller can contribute during inspection. */

@@ -862,12 +862,12 @@ function createResidentFixture(): ResidentFixture {
          effective_setup_generation, native_handle_state, lifecycle_state,
          next_turn_sequence, cleanup_state, created_at, updated_at, image_digest
        ) VALUES (
-         'binding_activation', 'harness_activation', 'agent_session_activation',
+         'binding_activation', 'harness_activation', ?,
          ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?,
          'sha256:${'a'.repeat(64)}'
        )`
     )
-    .run(workspace.id, thread.id, NOW, NOW);
+    .run(testEntityId('as', 'agent_session_activation'), workspace.id, thread.id, NOW, NOW);
   return {
     ...fixture,
     bindingRevision: attached.revision,

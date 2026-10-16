@@ -309,7 +309,9 @@ describe('caller operation projections', () => {
     });
     expect(Number.isFinite(Date.parse(session.workspace.observedAt))).toBe(true);
     expect(JSON.stringify(session)).not.toMatch(/private-content|Other private|caller@example/);
-    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain('th_other');
+    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain(
+      testEntityId('th', 'th_other')
+    );
     const admin = f.token();
     const client = clientFor(f, { authorization: `Bearer ${admin.secret}` });
     const read = Reflect.get(client.operations, 'caller.read');

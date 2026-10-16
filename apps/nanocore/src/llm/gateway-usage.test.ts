@@ -97,8 +97,8 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         error_code: 'usage_record_failed',
         request_id: requestId,
         status: 'failed',
-        thread_id: 'th_usage',
-        turn_id: 'turn_usage',
+        thread_id: testEntityId('th', 'th_usage'),
+        turn_id: testEntityId('tu', 'turn_usage'),
         workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(
@@ -118,8 +118,8 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           outcome: 'failed',
           request_id: expectedRequestId,
           severity: 'error',
-          thread_id: 'th_usage',
-          turn_id: 'turn_usage',
+          thread_id: testEntityId('th', 'th_usage'),
+          turn_id: testEntityId('tu', 'turn_usage'),
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
@@ -176,8 +176,8 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           quantity: 12,
           request_id: null,
           source: 'gateway-reported',
-          thread_id: 'th_usage',
-          turn_id: 'turn_usage',
+          thread_id: testEntityId('th', 'th_usage'),
+          turn_id: testEntityId('tu', 'turn_usage'),
           unit: 'tokens',
           usage_id: usageIds[0],
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',

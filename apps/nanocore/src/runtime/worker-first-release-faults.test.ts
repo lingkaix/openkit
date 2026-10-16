@@ -290,7 +290,7 @@ async function faultFixture() {
       threadId: 'th_00000000-0000-7000-8000-000000000001',
     },
     inputHash: 'fault-fixture',
-    response: { kind: 'turn', id: 'fault-turn' },
+    response: { kind: 'turn', id: testEntityId('tu', 'fault-turn') },
   });
   createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -331,8 +331,8 @@ async function faultFixture() {
   const running = runSchedulerDispatchLoop({
     agentManifests: [setup.manifest],
     coreDb,
-    createAgentSessionId: () => 'fault-session',
-    createAttemptId: () => 'fault-lease',
+    createAgentSessionId: () => testEntityId('as', 'fault-session'),
+    createAttemptId: () => testEntityId('attempt', 'fault-lease'),
     executionBackend: runtime.turnExecutor.executionBackend!,
     gatewayConfig: createTestGatewayConfig(),
     maxDispatches: 1,
@@ -701,7 +701,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(f.isSettled()).toBe(false);
       expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('running');
       expect(
-        f.store.getTurnEvents('fault-turn').filter((event) => event.event === 'turn.completed')
+        f.store
+          .getTurnEvents(testEntityId('tu', 'fault-turn'))
+          .filter((event) => event.event === 'turn.completed')
       ).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
       await expect(f.running).rejects.toThrow(

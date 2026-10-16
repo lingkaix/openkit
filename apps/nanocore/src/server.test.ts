@@ -8375,14 +8375,19 @@ describe('nanocore server', () => {
     }
   });
 
-  it('replays an existing Task-to-Goal receipt without creating a Goal or worker', async () => {
+  it.each([
+    'retained',
+    'missing-goal',
+    'wrong-goal',
+    'duplicate-reference',
+  ] as const)('replays only an exact canonical Task-to-Goal receipt without new work: %s', async (mutation) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const requestId = '0190f4c8-0000-7000-8000-000000000604';
     const input = 'Plan a multi-step release goal for NanoCore.';
-    // Reconstruct the exact retained tuple produced by the removed keyword escalation branch.
+    // Retained escalation keeps its Goal reference outside the opaque Item identity.
     const turn = store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -8391,7 +8396,7 @@ describe('nanocore server', () => {
       null,
       {
         turnId: deriveEntityId('tu', {
-          command: 'task.start',
+          command: 'task.start.goal',
           actorId: LOCAL_USER_ID,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -8401,7 +8406,13 @@ describe('nanocore server', () => {
     );
     const at = new Date().toISOString();
     store.createItem({
-      id: testEntityId('it', `it_task_goal_goal_retained_${turn.id}`),
+      id: deriveEntityId('it', ['task-goal', turn.id, 'goal_retained']),
+      goalId:
+        mutation === 'missing-goal'
+          ? undefined
+          : mutation === 'wrong-goal'
+            ? 'goal_other'
+            : 'goal_retained',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
@@ -8413,6 +8424,10 @@ describe('nanocore server', () => {
       createdAt: at,
       completedAt: at,
     });
+    if (mutation === 'duplicate-reference') {
+      const handoff = store.getTurnById(turn.id).items[0]!;
+      store.createItem({ ...handoff, id: testEntityId('it', 'duplicate-task-goal-reference') });
+    }
     store.updateTurn(turn.id, { status: 'completed', completedAt: at });
     store.recordCommandRequest({
       command: 'task.start',
@@ -8425,6 +8440,11 @@ describe('nanocore server', () => {
       inputHash: commandInputHash({ input }),
       response: { kind: 'turn', id: turn.id },
     });
+    const retainedTurns = store.listThreadTurns(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    );
+    const retainedCommands = store.listCommandRequests();
     try {
       const response = await app.request(
         ...operationRequest(
@@ -8440,12 +8460,17 @@ describe('nanocore server', () => {
           }
         )
       );
-      expect(response.status, await response.clone().text()).toBe(202);
-      expect(StartTaskModeResponseSchema.parse(await response.json())).toMatchObject({
-        state: 'escalated-to-goal',
-        turn: { id: turn.id },
-        escalation: { targetMode: 'goal', goalId: 'goal_retained' },
-      });
+      if (mutation === 'retained') {
+        expect(response.status, await response.clone().text()).toBe(202);
+        expect(StartTaskModeResponseSchema.parse(await response.json())).toMatchObject({
+          state: 'escalated-to-goal',
+          turn: { id: turn.id },
+          escalation: { targetMode: 'goal', goalId: 'goal_retained' },
+        });
+      } else {
+        expect(response.status, await response.clone().text()).toBe(409);
+        expect(await response.json()).toMatchObject({ code: 'recovery_required' });
+      }
       expect(executor.startContexts).toHaveLength(0);
       expect(
         store.listThreadTurns(
@@ -8453,7 +8478,13 @@ describe('nanocore server', () => {
           'th_00000000-0000-7000-8000-000000000001'
         )
       ).toHaveLength(1);
-      expect(store.listCommandRequests()).toHaveLength(1);
+      expect(store.listCommandRequests()).toEqual(retainedCommands);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual(retainedTurns);
     } finally {
       coreDb.sqlite.close();
     }

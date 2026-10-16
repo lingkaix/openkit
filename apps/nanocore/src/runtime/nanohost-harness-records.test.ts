@@ -43,7 +43,7 @@ describe('private NanoHost Harness records', () => {
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', `agent-session-${index}`),
-          agentSessionRuntimeBindingId: testEntityId('as', `agent-session-binding-${index}`),
+          agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-1',
           threadId: testEntityId('th', `thread-${index}`),
@@ -160,9 +160,9 @@ describe('private NanoHost Harness records', () => {
       expect(
         coreDb.sqlite
           .prepare(
-            "SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = 'agent-session-20'"
+            'SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
           )
-          .get()
+          .get(testEntityId('as', 'agent-session-20'))
       ).toEqual({ attempt: testEntityId('attempt', 'lease-20') });
     } finally {
       coreDb.sqlite.close();
@@ -191,7 +191,7 @@ describe('private NanoHost Harness records', () => {
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', `agent-session-${index}`),
-          agentSessionRuntimeBindingId: testEntityId('as', `agent-session-binding-${index}`),
+          agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
           effectiveSetupGeneration: 1,
           harnessInstanceId: index === 2 ? 'harness-2' : 'harness-1',
           threadId: testEntityId('th', `thread-${index}`),
@@ -877,12 +877,14 @@ describe('private NanoHost Harness records', () => {
                effective_setup_generation, native_handle_state, native_handle_digest,
                lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
                created_at, updated_at, image_digest
-             ) VALUES (?, 'harness-1', ?, 'workspace-1', 'thread-1', ?, 1, 'pending', NULL,
+             ) VALUES (?, 'harness-1', ?, ?, ?, ?, 1, 'pending', NULL,
                        'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
         )
         .run(
           'agent-session-binding-2',
           testEntityId('as', 'agent-session-2'),
+          testEntityId('ws', 'workspace-1'),
+          testEntityId('th', 'thread-1'),
           'c'.repeat(64),
           now,
           now,
@@ -2645,7 +2647,7 @@ function concurrentTurnStartBody(index: number): Readonly<Record<string, unknown
     aepRef: `sandbox://aep/${index}`,
     contextRef: `sandbox://context/${index}`,
     agentSessionId: testEntityId('as', `agent-session-${index}`),
-    agentSessionRuntimeBindingId: testEntityId('as', `agent-session-binding-${index}`),
+    agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
     contextPackageId: `context-package-${index}`,
     deadline: '2099-01-01T00:00:00.000Z',
     leaseId: testEntityId('attempt', `lease-${index}`),

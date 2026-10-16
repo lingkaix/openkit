@@ -401,7 +401,7 @@ it.each([
               truncated: false,
               content: [
                 call('items', 'thread_items', { threadId: completed.id }),
-                call('terminal', 'tu_00000000-0000-77a7-a194-9ad9d8661498', {
+                call('terminal', 'turn_read', {
                   threadId: completed.id,
                   turnId: taskTurn.id,
                 }),
@@ -525,7 +525,7 @@ it.each([
     });
     expect(
       (
-        await read('tu_00000000-0000-77a7-a194-9ad9d8661498', {
+        await read('turn_read', {
           threadId: completed.id,
           turnId: failedTurn.id,
         })
@@ -539,7 +539,7 @@ it.each([
     });
     expect(
       (
-        await read('tu_00000000-0000-77a7-a194-9ad9d8661498', {
+        await read('turn_read', {
           threadId: completed.id,
           turnId: privateTurn.id,
         })
@@ -565,7 +565,7 @@ it.each([
     for (const [name, args] of [
       ['thread_items', { threadId: completed.id }],
       ['artifact_read', { artifactId: artifact.id }],
-      ['tu_00000000-0000-77a7-a194-9ad9d8661498', { threadId: completed.id, turnId: taskTurn.id }],
+      ['turn_read', { threadId: completed.id, turnId: taskTurn.id }],
       ['evidence_runtime_list', {}],
     ] as const)
       expect((await read(name, args)).output).toMatchObject({ code: 'workspace_access_denied' });

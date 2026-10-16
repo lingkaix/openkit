@@ -923,7 +923,49 @@ function replayTaskModeCommand(
       }
     }
 
-    throw new Error('Task receipt does not name its canonical direct Task owner.');
+    const escalationTurnId = deriveEntityId('tu', {
+      command: 'task.start.goal',
+      actorId,
+      workspaceId,
+      threadId,
+      requestId: record.requestId,
+    });
+    const handoffs = currentTurn.items.filter(
+      (item) => item.type === 'status' && item.goalId !== undefined
+    );
+    const handoff = handoffs[0];
+    if (
+      currentTurn.id !== escalationTurnId ||
+      currentTurn.status !== 'completed' ||
+      !currentTurn.completedAt ||
+      currentTurn.agentSessionId !== null ||
+      currentTurn.triggerActor.kind !== 'user' ||
+      currentTurn.triggerActor.id !== actorId ||
+      handoffs.length !== 1 ||
+      handoff?.type !== 'status' ||
+      !handoff.goalId ||
+      handoff.id !== deriveEntityId('it', ['task-goal', currentTurn.id, handoff.goalId]) ||
+      handoff.workspaceId !== workspaceId ||
+      handoff.threadId !== threadId ||
+      handoff.turnId !== currentTurn.id ||
+      handoff.status !== 'completed' ||
+      !handoff.completedAt ||
+      !handoff.summary ||
+      !coreDb
+    ) {
+      throw new Error('Task escalation owner contradiction.');
+    }
+    const workspaceDb = repositoryWorkspaceDb(workspaceId);
+    try {
+      return StartTaskModeResponseSchema.parse({
+        state: 'escalated-to-goal',
+        turn: currentTurn,
+        evidence: taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, currentTurn),
+        escalation: { targetMode: 'goal', goalId: handoff.goalId, reason: handoff.summary },
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   } catch {
     throw new TurnStartValidationError(
       'recovery_required',

@@ -547,10 +547,17 @@ describe('execution backend port through real Core coordination', () => {
         attemptId,
         agentSessionId: sessionId,
       });
-      await acquire(f.db, candidateFor(control, 'control-attempt', 'control-session'));
+      await acquire(
+        f.db,
+        candidateFor(
+          control,
+          testEntityId('attempt', 'control-attempt'),
+          testEntityId('as', 'control-session')
+        )
+      );
       expect(attempts(f.db)).toContainEqual(
         expect.objectContaining({
-          attempt_id: 'control-attempt',
+          attempt_id: testEntityId('attempt', 'control-attempt'),
           phase: 'open',
           turn_id: control.turnId,
         })
@@ -566,8 +573,10 @@ describe('execution backend port through real Core coordination', () => {
               );
         const candidate = candidateFor(
           entry,
-          `competing-${collision}`,
-          collision === 'session' ? String(held.agent_session_id) : `other-session-${collision}`
+          testEntityId('attempt', `competing-${collision}`),
+          collision === 'session'
+            ? String(held.agent_session_id)
+            : testEntityId('as', `other-session-${collision}`)
         );
         const before = attempts(f.db);
         expect(() => acquire(f.db, candidate)).toThrow(
