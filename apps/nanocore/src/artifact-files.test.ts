@@ -15,6 +15,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -261,7 +262,7 @@ describe('exact Artifact file import and download', () => {
           expectedDigest: digest,
           reservation,
         });
-    const artifactId = 'review-file-output';
+    const artifactId = testEntityId('ar', 'review-file-output');
     const recordedAt = new Date().toISOString();
     try {
       store.createArtifact(
