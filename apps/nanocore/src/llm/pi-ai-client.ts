@@ -8,6 +8,7 @@ import {
   calculateCost,
   createModels,
   createProvider,
+  type ImageContent,
   type JsonObject,
   lazyStream,
   type Model,
@@ -20,6 +21,7 @@ import {
   type ProviderHeaders,
   type ProviderStreams,
   type StreamOptions,
+  type TextContent,
   type ToolCall,
   type Usage,
 } from '@earendil-works/pi-ai';
@@ -2382,11 +2384,15 @@ function toPiResponsesContext(
       if (!call || call.kind !== kind) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type} lineage`);
       }
+      const output =
+        record.type === 'function_call_output' && containsResponsesImage(record.output)
+          ? responsesInputContent(record.output, model, native)
+          : readResponsesTextContent(record.output);
       messages.push({
         role: 'toolResult',
         toolCallId: call.carrierId,
         toolName: call.name,
-        content: [{ type: 'text', text: readResponsesTextContent(record.output) }],
+        content: typeof output === 'string' ? [{ type: 'text', text: output }] : output,
         isError: false,
         timestamp,
       });
@@ -2429,7 +2435,7 @@ function toPiResponsesContext(
     if (record.role === 'user') {
       messages.push({
         role: 'user',
-        content: responsesUserContent(record.content),
+        content: responsesInputContent(record.content, model, native),
         timestamp,
       });
       continue;
@@ -2599,7 +2605,11 @@ function admitPiResponsesNativeRequest(
       ) ||
       input.some((value) => {
         const item = readRecord(value);
-        return item?.phase !== undefined && item.id === undefined;
+        return (
+          (item?.phase !== undefined && item.id === undefined) ||
+          (item?.role === 'user' && containsResponsesImage(item.content)) ||
+          (item?.type === 'function_call_output' && containsResponsesImage(item.output))
+        );
       })
         ? { nativeInput: lowered }
         : {}),
@@ -2997,7 +3007,9 @@ function lowerResponsesNativeInput(
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
       }
-      readExactResponsesTextContent(item.output, !native);
+      if (native && item.type === 'function_call_output')
+        assertResponsesImageInputContent(item.output);
+      else readExactResponsesTextContent(item.output, !native);
       lowered.push(item);
       continue;
     }
@@ -3050,7 +3062,8 @@ function assertExactPreservedResponsesItem(item: Record<string, unknown>, native
     ) {
       throw new GatewayUnsupportedFeatureError('pi-ai Responses message item');
     }
-    readExactResponsesTextContent(item.content, !native);
+    if (native && item.role === 'user') assertResponsesImageInputContent(item.content);
+    else readExactResponsesTextContent(item.content, !native);
     return;
   }
   throw new GatewayUnsupportedFeatureError('pi-ai Responses input role');
@@ -3124,12 +3137,18 @@ function assertExactResponsesKeys(
 }
 
 /**
- * Converts Responses user content into pi-ai text blocks without flattening an authored array.
+ * Maps Responses user or image-bearing native function-result content to stock blocks.
  *
  * @param value Responses message content.
- * @returns A string or text-block array accepted by pi-ai.
+ * @param model Selected model with effective input modalities.
+ * @param native Whether the selected member supports native Responses.
+ * @returns A string or stock text/image block array.
  */
-function responsesUserContent(value: unknown): string | Array<{ type: 'text'; text: string }> {
+function responsesInputContent(
+  value: unknown,
+  model: AssistantModel,
+  native: boolean
+): string | Array<TextContent | ImageContent> {
   if (typeof value === 'string') {
     return value;
   }
@@ -3139,6 +3158,12 @@ function responsesUserContent(value: unknown): string | Array<{ type: 'text'; te
 
   return value.map((part) => {
     const record = readRecord(part);
+    if (record?.type === 'input_image') {
+      const image = readResponsesImageContent(record);
+      if (!native || !model.input?.includes('image'))
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses model image input');
+      return image;
+    }
     if (
       !record ||
       (record.type !== 'input_text' && record.type !== 'output_text') ||
@@ -3148,6 +3173,41 @@ function responsesUserContent(value: unknown): string | Array<{ type: 'text'; te
     }
     return { type: 'text', text: record.text };
   });
+}
+
+/** Detects only the explicitly admitted image block, without treating other structured content as an image. */
+function containsResponsesImage(value: unknown): boolean {
+  return Array.isArray(value) && value.some((part) => readRecord(part)?.type === 'input_image');
+}
+
+/** Validates native user and function-result content while retaining the existing exact text admission. */
+function assertResponsesImageInputContent(value: unknown): void {
+  if (!Array.isArray(value)) {
+    readExactResponsesTextContent(value);
+    return;
+  }
+  for (const part of value) {
+    const record = readRecord(part);
+    if (record?.type === 'input_image') readResponsesImageContent(record);
+    else readExactResponsesTextContent([part]);
+  }
+}
+
+/** Maps inline PNG/JPEG bytes without decoding or re-encoding; native detail remains in the envelope. */
+function readResponsesImageContent(part: Record<string, unknown>): ImageContent {
+  const image =
+    typeof part.image_url === 'string'
+      ? /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/.exec(part.image_url)
+      : null;
+  if (
+    Object.keys(part).some((key) => !['type', 'image_url', 'detail'].includes(key)) ||
+    !image ||
+    image[2]!.length % 4 !== 0 ||
+    (part.detail !== undefined &&
+      !['auto', 'low', 'high', 'original'].includes(part.detail as string))
+  )
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses inline PNG/JPEG image');
+  return { type: 'image', mimeType: image[1]!, data: image[2]! };
 }
 
 /**
@@ -4118,6 +4178,8 @@ interface AssistantModel {
   id: string;
   /** pi-ai provider id. */
   provider: string;
+  /** Effective selected-model modalities; an absent declaration grants no image input. */
+  input?: readonly string[];
 }
 
 /**
