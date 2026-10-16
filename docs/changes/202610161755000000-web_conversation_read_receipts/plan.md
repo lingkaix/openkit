@@ -4,7 +4,7 @@ status: in-progress
 date: "2026-10-16"
 branch: lane/web-p26
 ---
-# Conversation Read Receipts
+# Conversation Read Receipts and Goal Navigation
 
 ## Intent Revision 1
 
@@ -35,3 +35,13 @@ While exact D02 checks and the P14 landing boundary wait, prepare the accepted D
 The corrected source08384fb1 passed all21 native cases in four complete files and all14 Web cases in three complete files; NanoCore types passed. Web types found only two existing typed navigation fixtures missing the new unreadCount. The next change adds unreadCount:0 to those two fixtures without changing assertions. The normally merged browser helper adds one real public-API case: prefetch remains unread, actual foreground body display records its exact Item identity, and Core-only restart retains the receipt after the browser leaves the body. Its complete new file passed1/1, direct NanoCore build passed and focused lint passed. Original failed compiler and integration outputs remain external evidence.
 
 At8d23c96f the matching dependency build, OpenAPI generation and validation, CLI generation and byte check, existing root Web-operation coverage guard, all272 App API tests in25files, all194 Chat and effort cases in two complete files, and Web types completed0. The existing coverage inventory names both receipt operations and exact catalog counts. Generated outputs travel with this feature. Evidence is evidence/L-WEB/p26/generation-and-typed-fixtures.log and read-receipts-browser/{browser,build-retry,lint}.log in the assigned backlog. Full changed-module and browser local gate, final independent approval and P14/P19 dependency reconciliation remain open. This evidence does not claim a deployed acceptance or an Express landing.
+
+## Goal Navigation and Broader Integration Evidence
+
+D02 source c34711833339ccf9a9d5c986c1b34cab9f47f114 passed all 1,329 Web tests in 47 files, all 22 database and layout-report tests in two files, and all 100 Core Client tests in eight files. Actual output is p26/full-web-and-receipt-consumers.log in the assigned backlog. This broad check found no shared-renderer or remaining database-consumer regression. It does not replace the final merged Native, root and browser gate.
+
+D03 joins existing Goal/card/Task links and current visible Threads. Its old-Sidebar regression failed on the missing group control after successful setup. The implemented complete grouping and Sidebar files passed all nine cases, including all attempts, archived and missing Tasks, collapse, unrelated work, read-only behavior and failed-source suppression. That run exposed three unsupported Testing Library exact options; only those options were removed because string role names already match exactly. The original failed type output is retained. A later matching direct Web build passed tsc-b and Vite. No receipt or work mutation belongs to grouping.
+
+The existing long-preview browser case now also checks a Goal expander at its two existing widths. Its first complete shell file run passed three cases and failed the new layout predicate: the control's right edge was 277 while navigation ended at 264. The parent changed only the Goal row's shrinkable flex wrapper, preserving every browser assertion and timeout. At exact source 0827bac36cf891e38d1bedfb1cb259bd6e77e292, the same complete four-case shell file passed in 43.9 seconds with one worker; direct Web build, focused lint and diff check passed. Both original and corrected logs/traces remain under goal-layout/ in the assigned backlog. The later main merge changed three Markdown paths only.
+
+D02 and initial D03 each have independent source approval. Final combined source review, actual P14/P19 reconciliation, Assistant/member navigation and complete merged-module/browser local-gate remain open. Recovery and Administration remain separate cuts. No deployed authentication or whole-server backup claim follows from local simulator evidence.
