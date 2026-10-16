@@ -13,6 +13,7 @@ import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -130,7 +131,7 @@ function createRestorableWorkerControlFixture(
 
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_restore_1',
+    attemptId: testEntityId('attempt', 'lease_restore_1'),
     agentSessionId: options.attemptAgentSessionId ?? environmentPackage.scope.agentSessionId,
     inputRef: environmentPackage.snapshotId,
     bindingRef: sandboxBindingRef,
@@ -139,7 +140,7 @@ function createRestorableWorkerControlFixture(
     now: () => '2026-07-13T00:00:04.000Z',
   });
   bindNanoHostAttemptRouteTokenHashes(coreDb, {
-    attemptId: 'lease_restore_1',
+    attemptId: testEntityId('attempt', 'lease_restore_1'),
     now: () => '2026-07-13T00:00:05.000Z',
     sandboxBindingRef,
     workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),

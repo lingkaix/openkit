@@ -18,6 +18,7 @@ import {
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -387,7 +388,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
                 operation: 'session.inspect',
                 timestamp: new Date().toISOString(),
                 body: {
-                  agentSessionId: 'diag-session',
+                  agentSessionId: testEntityId('as', 'diag-session'),
                   agentSessionRuntimeBindingId: 'diag-session-binding',
                 },
               });
@@ -434,27 +435,27 @@ describe('Harness delivery localization through real Core and shim owners', () =
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: 'diag-session',
+        agentSessionId: testEntityId('as', 'diag-session'),
         agentSessionRuntimeBindingId: 'diag-session-binding',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'diag-harness',
-        threadId: 'diag-thread',
+        threadId: testEntityId('th', 'diag-thread'),
         timestamp: now,
-        workspaceId: 'diag-workspace',
+        workspaceId: testEntityId('ws', 'diag-workspace'),
       });
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
-        workspaceId: 'diag-workspace',
+        workspaceId: testEntityId('ws', 'diag-workspace'),
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       });
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'diag-queue',
         requestId: 'diag-request',
-        workspaceId: 'diag-workspace',
-        threadId: 'diag-thread',
-        turnId: 'diag-turn',
+        workspaceId: testEntityId('ws', 'diag-workspace'),
+        threadId: testEntityId('th', 'diag-thread'),
+        turnId: testEntityId('tu', 'diag-turn'),
         turnInput: 'Exercise exact private Harness transport delivery',
         requestedAgentId: 'agent_diag',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -462,8 +463,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
       });
       recordTestExecutionAttempt(coreDb, {
         entry,
-        attemptId: 'diag-lease',
-        agentSessionId: 'diag-session',
+        attemptId: testEntityId('attempt', 'diag-lease'),
+        agentSessionId: testEntityId('as', 'diag-session'),
         inputRef: 'diag-package',
         bindingRef: 'diag-turn-binding',
         sessionCompatibilityKey: 'c'.repeat(64),
@@ -476,17 +477,17 @@ describe('Harness delivery localization through real Core and shim owners', () =
         timestamp: now,
         body: {
           aepRef: '/openkit/package.json',
-          agentSessionId: 'diag-session',
+          agentSessionId: testEntityId('as', 'diag-session'),
           agentSessionRuntimeBindingId: 'diag-session-binding',
           contextPackageId: 'ctxpkg_diag-turn',
           contextRef: '/openkit/context',
           deadline: '2099-01-01T00:00:00.000Z',
-          leaseId: 'diag-lease',
+          leaseId: testEntityId('attempt', 'diag-lease'),
           packageSnapshotId: 'diag-package',
-          threadId: 'diag-thread',
-          turnId: 'diag-turn',
+          threadId: testEntityId('th', 'diag-thread'),
+          turnId: testEntityId('tu', 'diag-turn'),
           turnSequence: 0,
-          workspaceId: 'diag-workspace',
+          workspaceId: testEntityId('ws', 'diag-workspace'),
         },
       });
       if (sampledDelay) {
@@ -533,7 +534,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
           operation: 'session.inspect',
           timestamp: new Date().toISOString(),
           body: {
-            agentSessionId: 'diag-session',
+            agentSessionId: testEntityId('as', 'diag-session'),
             agentSessionRuntimeBindingId: 'diag-session-binding',
           },
         });
@@ -586,7 +587,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
             operation: 'session.inspect',
             timestamp: new Date().toISOString(),
             body: {
-              agentSessionId: 'diag-session',
+              agentSessionId: testEntityId('as', 'diag-session'),
               agentSessionRuntimeBindingId: 'diag-session-binding',
             },
           });

@@ -229,7 +229,7 @@ function prepareCredentialAttemptFixture(
 ): void {
   recordTestExecutionAttempt(coreDb, {
     entry: requireSchedulerAdmissionEntry(coreDb, `queue_${turn.id}`),
-    attemptId: `lease_${turn.id}`,
+    attemptId: testEntityId('attempt', `lease_${turn.id}`),
     agentSessionId,
     inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
     bindingRef: `lease-token:${turn.id}`,
@@ -1609,18 +1609,18 @@ describe('agent environment package resolver', () => {
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
       // A submitted Native process awaiting exact adoption has revoked mediated route authority.
       recordSchedulerExecutionOperation(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         operationId: `submit:${turn.id}`,
         submission: true,
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
         heartbeatTimeoutMs: 30_000,
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         workerSequence: 1,
         heartbeatTimeoutMs: 30_000,
       });
@@ -1648,7 +1648,7 @@ describe('agent environment package resolver', () => {
       ).toEqual({ status: 'rejected', reason: 'reconnect-required' });
       // Native mediated routes reject adoption independently; the generic AEP resolver owns Core phase authority.
       markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         cause: 'authority-revoked',
       });
       expect(resolve).toThrow(TurnStartValidationError);
