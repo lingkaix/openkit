@@ -326,6 +326,15 @@ describe('Turn-owned conversation originals', () => {
     );
     expect(replay.status, await replay.clone().text()).toBe(202);
     expect((await replay.json()).turn.id).toBe(accepted.turn.id);
+    if (targetRef === 'new-task-worker') {
+      const {fileHandoffConfirmed: _consent, ...unconfirmed} = input;
+      const changed = await app.request(...operationRequest('conversation.submit', {}, {body:JSON.stringify(unconfirmed)}));
+      expect(changed.status, await changed.clone().text()).toBe(409);
+      expect((await changed.json()).code).toBe('idempotency_key_conflict');
+      const changedBrief = await app.request(...operationRequest('conversation.submit', {}, {body:JSON.stringify({...input,input:'Changed disclosure'})}));
+      expect(changedBrief.status, await changedBrief.clone().text()).toBe(409);
+      expect((await changedBrief.json()).code).toBe('idempotency_key_conflict');
+    }
   });
 
   it('refuses files before an automatic Goal operation with no receiving input Turn', async () => {
