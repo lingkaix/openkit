@@ -6708,6 +6708,104 @@
         }
       }
     },
+    "/api/app/operations/artifact.folder-read": {
+      "post": {
+        "operationId": "artifact.folder-read",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Read a verified paged folder inventory.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.folder-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read a verified paged folder inventory.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.folder-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.folder-extract": {
+      "post": {
+        "operationId": "artifact.folder-extract",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Explicitly extract a bounded ZIP folder snapshot; preserve the original.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.folder-extract.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Explicitly extract a bounded ZIP folder snapshot; preserve the original.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.folder-extract.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/artifact.introduce": {
       "post": {
         "operationId": "artifact.introduce",
@@ -8402,6 +8500,13 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/conversation.submit.input"
+              }
+            },
+            "application/vnd.openkit.conversation-files": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "Four-byte unsigned big-endian UTF-8 JSON length (1 through 1,048,576), that many strict conversation.submit input bytes, then one exact payload per ordered fileInputs entry. No extra bytes. Combined payload limit: 1,000,000,000 bytes. JSON-only nonempty inventory reconciles an existing receipt; a new command returns file_input_bytes_required before effects."
               }
             }
           }
@@ -37479,6 +37584,41 @@
                     ]
                   }
                 },
+                "fileInputs": {
+                  "maxItems": 10000,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
+                      },
+                      "mediaType": {
+                        "type": "string",
+                        "maxLength": 255,
+                        "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                      },
+                      "sizeBytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000000
+                      },
+                      "contentDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "mediaType",
+                      "sizeBytes",
+                      "contentDigest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "error": {
                   "anyOf": [
                     {
@@ -40178,6 +40318,41 @@
               ]
             }
           },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
+            }
+          },
           "error": {
             "anyOf": [
               {
@@ -42430,6 +42605,41 @@
                   "additionalProperties": false
                 }
               ]
+            }
+          },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
             }
           },
           "error": {
@@ -44773,6 +44983,41 @@
                   "additionalProperties": false
                 }
               ]
+            }
+          },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
             }
           },
           "error": {
@@ -49281,6 +49526,374 @@
           "updatedAt"
         ],
         "additionalProperties": false
+      },
+      "artifact.folder-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "workspaceId",
+          "artifactId",
+          "artifactVersion",
+          "offset"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.folder-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "const": "ready"
+              },
+              "artifactId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifactVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "originalDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "originalRetained": {
+                "type": "boolean",
+                "const": true
+              },
+              "processor": {
+                "type": "string",
+                "const": "openkit.zip.v1"
+              },
+              "representationDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "expandedBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4000000000
+              },
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000
+              },
+              "directoryCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 131072
+              },
+              "entries": {
+                "maxItems": 100,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "relativePath": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "byteLength": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "relativePath",
+                    "byteLength",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "nextOffset": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "artifactId",
+              "artifactVersion",
+              "originalDigest",
+              "originalRetained",
+              "processor",
+              "representationDigest",
+              "expandedBytes",
+              "fileCount",
+              "directoryCount",
+              "entries",
+              "nextOffset"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "const": "unavailable"
+              },
+              "artifactId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifactVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "originalDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "originalRetained": {
+                "type": "boolean",
+                "const": true
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "not_extracted",
+                  "extraction_failed"
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "artifactId",
+              "artifactVersion",
+              "originalDigest",
+              "originalRetained",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "artifact.folder-extract.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "workspaceId",
+          "artifactId",
+          "artifactVersion",
+          "offset"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.folder-extract.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "const": "ready"
+              },
+              "artifactId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifactVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "originalDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "originalRetained": {
+                "type": "boolean",
+                "const": true
+              },
+              "processor": {
+                "type": "string",
+                "const": "openkit.zip.v1"
+              },
+              "representationDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "expandedBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4000000000
+              },
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000
+              },
+              "directoryCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 131072
+              },
+              "entries": {
+                "maxItems": 100,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "relativePath": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "byteLength": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "relativePath",
+                    "byteLength",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "nextOffset": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "artifactId",
+              "artifactVersion",
+              "originalDigest",
+              "originalRetained",
+              "processor",
+              "representationDigest",
+              "expandedBytes",
+              "fileCount",
+              "directoryCount",
+              "entries",
+              "nextOffset"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "const": "unavailable"
+              },
+              "artifactId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifactVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "originalDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "originalRetained": {
+                "type": "boolean",
+                "const": true
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "not_extracted",
+                  "extraction_failed"
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "artifactId",
+              "artifactVersion",
+              "originalDigest",
+              "originalRetained",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "artifact.introduce.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -61230,6 +61843,9 @@
                       "type": "null"
                     }
                   ]
+                },
+                "requiresFileHandoffConfirmation": {
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -61442,6 +62058,45 @@
               ],
               "additionalProperties": false
             }
+          },
+          "fileInputs": {
+            "maxItems": 10000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "mediaType": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "name",
+                "mediaType",
+                "sizeBytes",
+                "contentDigest"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fileHandoffConfirmed": {
+            "type": "boolean",
+            "const": true
           },
           "workerStorageChoice": {
             "oneOf": [
@@ -63488,6 +64143,41 @@
                       "additionalProperties": false
                     }
                   ]
+                }
+              },
+              "fileInputs": {
+                "maxItems": 10000,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "mediaType",
+                    "sizeBytes",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "error": {
@@ -67768,6 +68458,41 @@
                       "additionalProperties": false
                     }
                   ]
+                }
+              },
+              "fileInputs": {
+                "maxItems": 10000,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "mediaType",
+                    "sizeBytes",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "error": {
@@ -79952,6 +80677,41 @@
                       "additionalProperties": false
                     }
                   ]
+                }
+              },
+              "fileInputs": {
+                "maxItems": 10000,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    },
+                    "contentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "mediaType",
+                    "sizeBytes",
+                    "contentDigest"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "error": {
@@ -94971,5 +95731,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d3809cf2b387b0632053527c8759cadf375dd51b261eaa893fccb76189da24e3"
+  "x-openkit-source-digest": "sha256:db0c78375a3433f7354e102fea66dac5354eb05f67b31549379ec50c91a275d8"
 }

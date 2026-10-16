@@ -62,8 +62,10 @@ import { ensureTurnFeedback } from '../runtime/feedback.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js';
+import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import {
   getCommandRequestRecord,
   getCommandRequestRecordFromDb,
@@ -558,6 +560,14 @@ export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
 };
 
 interface CreateTurnOptions {
+  /** Exact ordered metadata and verified private payload sources published with this Turn. */
+  fileInputs?: Turn['fileInputs'];
+  /** Private same-filesystem sources; never serialized into protocol records. */
+  filePayloadPaths?: readonly string[];
+  /** Shared runtime disk owner for exact serialized writes of a fresh file Turn. */
+  fileWriteAdmission?: FileStorageAdmission;
+  /** Entry-owned final synchronous request, authority and capacity check. */
+  assertFileInputAdmission?: () => void;
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
@@ -1313,11 +1323,13 @@ export class FsStore {
    * @param workspaceId Workspace to persist.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
+   * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    */
   private persist(
     workspaceId: string,
     updateWorkspaceConfigName = false,
-    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map(),
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1328,7 +1340,8 @@ export class FsStore {
       workspaceId,
       workspaceRoot,
       updateWorkspaceConfigName,
-      exactKnowledgePageBytes
+      exactKnowledgePageBytes,
+      turnFilePayloads
     );
   }
 
@@ -1393,12 +1406,14 @@ export class FsStore {
    * @param workspaceRoot Resolved workspace root.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
+   * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
     updateWorkspaceConfigName = false,
-    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map(),
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
   ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
@@ -1410,6 +1425,7 @@ export class FsStore {
     writeWorkspaceFileRecords(
       workspaceRoot,
       {
+        ...(turnFilePayloads ? { turnFilePayloads } : {}),
         workspace,
         knowledge: this.getWorkspaceResources(workspaceId).knowledge,
         threads: this.listThreads(workspaceId),
@@ -2632,6 +2648,7 @@ export class FsStore {
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
+      ...(options.fileInputs?.length ? { fileInputs: options.fileInputs } : {}),
       ...(options.reasoningEffort !== undefined
         ? { reasoningEffort: options.reasoningEffort }
         : {}),
@@ -2639,6 +2656,7 @@ export class FsStore {
       ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
       ...(options.triggerSource !== undefined ? { triggerSource: options.triggerSource } : {}),
     });
+    if (options.fileInputs?.length) options.assertFileInputAdmission?.();
     this.turns.set(turn.id, turn);
     if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
     this.threads.set(threadId, {
@@ -2653,7 +2671,45 @@ export class FsStore {
       timers: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
-    this.persist(workspaceId);
+    try {
+      const publish = () =>
+        this.persist(
+          workspaceId,
+          false,
+          new Map(),
+          options.filePayloadPaths ? new Map([[turn.id, options.filePayloadPaths]]) : undefined
+        );
+      if (options.fileInputs?.length) {
+        if (!options.fileWriteAdmission)
+          throw new Error('File Turn publication admission is unavailable.');
+        withCanonicalFileWriteAdmission(options.fileWriteAdmission, publish);
+      } else publish();
+    } catch (error) {
+      if (options.fileInputs?.length && this.dataRoot) {
+        let unpublished = false;
+        try {
+          const turnRoot = join(
+            this.workspaceRootPath(workspaceId),
+            'threads',
+            threadId,
+            'turns',
+            turn.id
+          );
+          assertCanonicalDirectory(dirname(turnRoot));
+          unpublished = lstatSync(turnRoot, { throwIfNoEntry: false }) === undefined;
+        } catch {
+          // A present or uninspectable canonical owner remains with existing recovery; absence is never inferred from an I/O refusal.
+        }
+        if (unpublished) {
+          this.turns.delete(turn.id);
+          this.turnExecutors.delete(turn.id);
+          this.streams.delete(turn.id);
+          this.turnCaptureCoverage.delete(turn.id);
+          this.threads.set(threadId, thread);
+        }
+      }
+      throw error;
+    }
     this.turnAdmissionHooks?.onAdmitted?.(turn);
     return this.getTurnById(turn.id);
   }

@@ -7,6 +7,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  ArtifactFolderSnapshotResponseSchema,
   ImportWorkspaceArtifactRequestSchema,
   ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactRequestSchema,
@@ -87,6 +88,46 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     target: { kind: 'workspace' },
     policyOperation: 'artifact.read',
     mutating: false,
+  },
+  'artifact.folder-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Read a verified paged folder inventory.',
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        artifactId: ArtifactIdSchema,
+        artifactVersion: z.number().int().positive(),
+        offset: z.number().int().min(0).max(100_000).default(0),
+      })
+      .strict(),
+    outputSchema: ArtifactFolderSnapshotResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.folder-extract': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Explicitly extract a bounded ZIP folder snapshot; preserve the original.',
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        artifactId: ArtifactIdSchema,
+        artifactVersion: z.number().int().positive(),
+        offset: z.number().int().min(0).max(100_000).default(0),
+      })
+      .strict(),
+    outputSchema: ArtifactFolderSnapshotResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: true,
   },
   'artifact.introduce': {
     binding: 'json',

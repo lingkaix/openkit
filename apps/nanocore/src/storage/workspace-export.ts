@@ -51,6 +51,8 @@ import {
   projectWorkspaceSystemRecord,
   readCanonicalFile,
   readCanonicalTextFile,
+  turnFilePayloadPath,
+  verifyTurnFileInputs,
 } from './workspace-file-records.js';
 import {
   parseWorkspaceRetrievalTraceFile,
@@ -158,7 +160,7 @@ export interface VerifiedWorkspaceExportTree {
   fileContents: ReadonlyMap<string, string>;
   /** Exact restricted original bytes, kept separate from canonical UTF-8 records. */
   binaryFileContents: ReadonlyMap<string, Uint8Array>;
-  /** Verified large Artifact payload paths, never loaded into UTF-8 or binary body maps. */
+  /** Verified original payload paths for Artifacts and Turn inputs; never loaded into UTF-8 or binary body maps. */
   artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Digest of the exact manifest bytes parsed by this verification. */
   manifestDigest: string;
@@ -412,6 +414,20 @@ export function writeWorkspaceExportTree(
         };
       })
     );
+    for (const turn of history.turns) {
+      if (!turn.fileInputs?.length) continue;
+      if (!input.sourceWorkspaceRoot) throw new Error('Turn input payload source is unavailable.');
+      verifyTurnFileInputs(input.sourceWorkspaceRoot, turn);
+      for (const ordinal of turn.fileInputs.keys()) {
+        const target = turnFilePayloadPath(input.exportRoot, turn.threadId, turn.id, ordinal);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(
+          turnFilePayloadPath(input.sourceWorkspaceRoot, turn.threadId, turn.id, ordinal),
+          target,
+          constants.COPYFILE_EXCL
+        );
+      }
+    }
     for (const [turnId, text] of input.turnObservations ?? []) {
       const turn = history.turns.find((candidate) => candidate.id === turnId);
       if (!turn) {
@@ -952,7 +968,10 @@ export function verifyWorkspaceExportTree(
   }
 
   for (const entry of manifest.contentInventory) {
-    if (/^artifacts\/[^/]+\/versions\/[1-9][0-9]*\/payload$/.test(entry.path)) {
+    if (
+      /^artifacts\/[^/]+\/versions\/[1-9][0-9]*\/payload$/.test(entry.path) ||
+      /^threads\/[^/]+\/turns\/[^/]+\/inputs\/(0|[1-9][0-9]*)\/payload$/.test(entry.path)
+    ) {
       const path = join(input.exportRoot, entry.path);
       const measured = measureCanonicalFile(path);
       if (measured.byteLength !== entry.bytes || measured.contentDigest !== entry.digest) {
@@ -988,6 +1007,18 @@ export function verifyWorkspaceExportTree(
           .split('\n')
           .map((line) => ItemSchema.parse(JSON.parse(line)));
   const unresolvedUserInputRequestIds = listUnresolvedUserInputRequestItemIds(itemRevisions);
+  const inputPaths = new Set<string>();
+  for (const value of (fileContents.get('records/turns.jsonl') ?? '').split('\n').filter(Boolean)) {
+    const turn = TurnSchema.parse(JSON.parse(value));
+    verifyTurnFileInputs(input.exportRoot, turn);
+    for (const ordinal of (turn.fileInputs ?? []).keys()) {
+      inputPaths.add(`threads/${turn.threadId}/turns/${turn.id}/inputs/${ordinal}/payload`);
+    }
+  }
+  for (const path of artifactPayloadFiles.keys()) {
+    if (path.startsWith('threads/') && !inputPaths.has(path))
+      throw new Error('Export has an unowned Turn input payload.');
+  }
 
   if (unresolvedUserInputRequestIds.length > 0) {
     throw new Error(

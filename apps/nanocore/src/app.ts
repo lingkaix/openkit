@@ -72,6 +72,7 @@ import {
   RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
+import { registerConversationFileRoutes } from './conversation-file-routes.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { AutomationStore } from './lib/automation-store.js';
@@ -1233,6 +1234,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+    readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
+    readonly filePayloadPaths?: readonly string[];
+    /** Shared runtime disk owner; never persisted or projected. */
+    readonly fileWriteAdmission?: FileStorageAdmission;
+    /** Synchronous live file-input admission immediately before publication. */
+    readonly assertFileInputAdmission?: () => void;
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
@@ -1254,6 +1261,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       requestedAgentId: input.requestedAgentId,
       ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
       ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
+      ...(input.fileInputs?.length
+        ? {
+            fileInputs: input.fileInputs,
+            filePayloadPaths: input.filePayloadPaths,
+            fileWriteAdmission: input.fileWriteAdmission,
+            assertFileInputAdmission: input.assertFileInputAdmission,
+          }
+        : {}),
       ...(input.requestActor ? { requestActor: input.requestActor } : {}),
       snapshot,
       store: input.store,
@@ -1879,7 +1894,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     fileAdmission,
   });
 
+  registerConversationFileRoutes({
+    app,
+    coreDb: options.coreDb,
+    requestStore,
+    workspaceMutationAdmission,
+    conversationService: chatService,
+    fileAdmission,
+    dataRoot,
+  });
+
   registerOperationJsonRoutes({
+    fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
     administrationServices,
@@ -1934,6 +1960,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
     administrationServices,

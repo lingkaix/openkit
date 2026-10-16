@@ -452,3 +452,7 @@ New API-key Provider profiles allocate one canonical Vault reference through the
 The Web end-to-end suite runs with one worker to keep the shared development machine within its test resource bound. The root test:e2e:web command builds and runs the complete suite.
 
 The local Web E2E simulator image fixture reuses its recorded Artifact identity for the same request and allocates canonical ar UUIDv7 only for a new settlement.
+
+ZIP Artifacts expose an explicit Extract ZIP as folder action beside their original download. The panel shows bounded inventory pages and extraction status. ZIP import alone does not extract. Failed current reads hide cached names, and failed or uncertain processing retains a retry against the same original. `src/screens/artifacts/ZipFolderPanel.test.tsx` covers explicit choice, source identity and unavailable states.
+
+Conversation file selections remain client drafts in Composer state and retained submission mutation variables. Attach and remove have no server effect. Send hashes exact originals in sequential bounded slices, first reconciles the same canonical conversation command through JSON, and transfers bytes only when a fresh command requires them. Failed or uncertain sends retain the same File objects and request identity. Accepted files belong to the receiving Turn and create no Workspace Artifact. Existing Artifact chips retain exact-version reference semantics.

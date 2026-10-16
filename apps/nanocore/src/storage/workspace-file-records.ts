@@ -851,6 +851,8 @@ export function readCanonicalFile(path: string): Buffer {
 
 /** Complete canonical file records for one workspace. */
 export interface WorkspaceFileRecords {
+  /** Request-private verified originals consumed only while publishing their new receiving Turn. */
+  readonly turnFilePayloads?: ReadonlyMap<string, readonly string[]>;
   /** Workspace metadata. */
   readonly workspace: WorkspaceRecord;
   /** Protocol knowledge entries represented by owned OKF pages. */
@@ -1340,6 +1342,7 @@ function loadWorkspace(
 
       const loadedItems = loadItemRevisions(itemsPath, workspaceId, threadId, turnId);
       const turn = TurnReaderSchema.parse({ ...turnWithoutItems, items: loadedItems.current });
+      verifyTurnFileInputs(workspaceRoot, turn);
       const runtimeRoot = join(turnsRoot, turnId, 'runtime');
       if (lstatSync(runtimeRoot, { throwIfNoEntry: false })) {
         assertCanonicalDirectory(runtimeRoot);
@@ -2319,7 +2322,7 @@ function publishNewRecordDirectory(
 }
 
 /**
- * Writes one Turn directory's metadata, item log, and optional event log.
+ * Writes one Turn directory's metadata, item log, optional event log, and exact original inputs before first publication.
  *
  * @param turnRoot Existing Turn directory, either canonical or staged.
  * @param turn Turn record to write.
@@ -2332,6 +2335,22 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
 
   ensureCanonicalDirectory(turnRoot);
   const turnPath = join(turnRoot, 'turn.json');
+  const newTurn = !existsSync(turnPath);
+  const sources = records.turnFilePayloads?.get(turn.id);
+  if (sources && sources.length !== turn.fileInputs?.length)
+    throw new Error('Turn input publication inventory is inconsistent.');
+  for (const [ordinal, input] of (turn.fileInputs ?? []).entries()) {
+    const payload = join(turnRoot, 'inputs', String(ordinal), 'payload');
+    ensureCanonicalDirectory(dirname(payload));
+    if (sources) publishCanonicalPath(sources[ordinal]!, payload);
+    const measured =
+      sources || newTurn
+        ? measureCanonicalFile(payload)
+        : { byteLength: lstatSync(payload).size, contentDigest: input.contentDigest };
+    assertCanonicalRegularFile(payload);
+    if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
+      throw new Error('Turn original input is recovery_required.');
+  }
   const previousRaw = existsSync(turnPath)
     ? (readJson(turnPath) as Record<string, unknown>)
     : undefined;
@@ -2380,6 +2399,47 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
     }
   } else {
     assertCanonicalRegularFile(eventsPath);
+  }
+}
+
+/** Resolves one stable input ordinal under its exact receiving Turn. Names are never path segments. */
+export function turnFilePayloadPath(
+  workspaceRoot: string,
+  threadId: string,
+  turnId: string,
+  ordinal: number
+): string {
+  assertSafeWorkspacePathSegment(threadId, 'Input Thread id');
+  assertSafeWorkspacePathSegment(turnId, 'Input Turn id');
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0)
+    throw new Error('Turn input ordinal is invalid.');
+  return join(
+    workspaceRoot,
+    'threads',
+    threadId,
+    'turns',
+    turnId,
+    'inputs',
+    String(ordinal),
+    'payload'
+  );
+}
+
+/** Proves retained originals before replay, restart, export, or imported publication can use their inventory. */
+export function verifyTurnFileInputs(workspaceRoot: string, turn: Turn): void {
+  for (const [ordinal, input] of (turn.fileInputs ?? []).entries()) {
+    const path = turnFilePayloadPath(workspaceRoot, turn.threadId, turn.id, ordinal);
+    let parent = dirname(path);
+    for (let level = 0; level < 7; level += 1) {
+      assertCanonicalDirectory(parent);
+      parent = dirname(parent);
+    }
+    assertCanonicalRegularFile(path);
+    if (lstatSync(path).nlink !== 1)
+      throw new Error('Turn input original must have one canonical owner.');
+    const measured = measureCanonicalFile(path);
+    if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
+      throw new Error('Turn original input is recovery_required.');
   }
 }
 

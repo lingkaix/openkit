@@ -6,9 +6,15 @@ import {
   ReasoningEffortSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
+  TurnFileInputsSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
+
+/** Binary carriage of the same conversation.submit command, with ordered exact originals. */
+export const CONVERSATION_FILE_MEDIA_TYPE = 'application/vnd.openkit.conversation-files';
+/** Maximum strict UTF-8 operation metadata bytes before original file streaming begins. */
+export const MAX_CONVERSATION_FILE_METADATA_BYTES = 1_048_576;
 
 /** One immutable Artifact version referenced by a conversation submission. */
 export const ConversationArtifactReferenceSchema = z
@@ -49,6 +55,8 @@ export const ConversationTargetSchema = z
     profileId: z.string().min(1).nullable(),
     logicalModels: z.array(ConversationModelChoiceSchema),
     defaultLogicalModelId: z.string().min(1).nullable(),
+    /** This target discloses selected files and the exact brief into new shared Worker work. */
+    requiresFileHandoffConfirmation: z.boolean().optional(),
   })
   .strict();
 
@@ -71,13 +79,21 @@ export const SubmitConversationRequestSchema = z
     /** Explicit immutable Turn preference and command identity input. */
     reasoningEffort: ReasoningEffortSchema.optional(),
     artifactRefs: z.array(ConversationArtifactReferenceSchema).default([]),
+    /** Ordered exact input identity; the file-body binding supplies matching verified originals. */
+    fileInputs: z
+      .array(TurnFileInputsSchema.element.strict())
+      .max(10_000)
+      .pipe(TurnFileInputsSchema)
+      .optional(),
+    /** Confirmation is bound to the exact submitted payload by the existing command receipt. */
+    fileHandoffConfirmed: z.literal(true).optional(),
     requestId: z.string().min(1),
     /** Explicit retained-storage choice forwarded only to new Task Worker starts. */
     workerStorageChoice: WorkerEnvironmentStorageChoiceSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (!value.input.trim() && value.artifactRefs.length === 0) {
+    if (!value.input.trim() && value.artifactRefs.length === 0 && !value.fileInputs?.length) {
       ctx.addIssue({ code: 'custom', message: 'Conversation input or an Artifact is required.' });
     }
     const refs = new Set<string>();

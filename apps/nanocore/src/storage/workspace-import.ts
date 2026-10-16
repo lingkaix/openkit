@@ -961,6 +961,25 @@ export function readWorkspaceImportSnapshot(
     [...context.artifactIds].map(([sourceId, targetId]) => [targetId, sourceId])
   );
   const artifactPayloadFiles = new Map<string, string>();
+  const sourceTurnIds = new Map([...context.turnIds].map(([source, target]) => [target, source]));
+  const sourceThreadIds = new Map(
+    [...context.threadIds].map(([source, target]) => [target, source])
+  );
+  for (const turn of canonical.turns) {
+    const sourceTurnId = sourceTurnIds.get(turn.id);
+    const sourceThreadId = sourceThreadIds.get(turn.threadId);
+    for (const ordinal of (turn.fileInputs ?? []).keys()) {
+      const sourcePath = input.verified.artifactPayloadFiles.get(
+        `threads/${sourceThreadId}/turns/${sourceTurnId}/inputs/${ordinal}/payload`
+      );
+      if (!sourceTurnId || !sourceThreadId || !sourcePath)
+        throw new Error('Imported Turn input payload is unavailable.');
+      artifactPayloadFiles.set(
+        `threads/${turn.threadId}/turns/${turn.id}/inputs/${ordinal}/payload`,
+        sourcePath
+      );
+    }
+  }
   for (const artifact of canonical.artifacts) {
     if (artifact.content.format !== 'file') continue;
     const sourceId = sourceArtifactIds.get(artifact.id);

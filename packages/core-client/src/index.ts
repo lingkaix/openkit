@@ -3,6 +3,7 @@ export * from './artifact-files.js';
 export * from './auth.js';
 export * from './capabilities.js';
 export * from './client.js';
+export * from './conversation-files.js';
 export * from './core.js';
 export * from './errors.js';
 export * from './events.js';

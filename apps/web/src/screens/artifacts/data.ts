@@ -326,45 +326,6 @@ export function useImportWorkspaceArtifact() {
 }
 
 /**
- * Imports a Composer text file through the caller's existing Artifact mutation.
- *
- * @param workspaceId Selected Workspace, required before reading the file.
- * @param file File whose case-sensitive suffix selects Markdown, JSON, or plain text.
- * @param importArtifact Existing mutation retaining failed input for an exact explicit retry; list refresh stays with the caller.
- * @returns The exact imported attachment; read and mutation failures propagate unchanged.
- */
-export async function importComposerFile(
-  workspaceId: string | null,
-  file: File,
-  importArtifact: ReturnType<typeof useImportWorkspaceArtifact>
-): Promise<{ id: string; version: number; label: string }> {
-  if (!workspaceId) throw new Error('Workspace is required.');
-  const mediaType = file.name.endsWith('.md')
-    ? 'text/markdown'
-    : file.name.endsWith('.json')
-      ? 'application/json'
-      : 'text/plain';
-  const content = await file.text();
-  const previous = importArtifact.isError ? importArtifact.variables : undefined;
-  // Response loss can follow a committed import; retry only identical input with its retained identity.
-  const requestId =
-    previous?.workspaceId === workspaceId &&
-    previous.title === file.name &&
-    previous.mediaType === mediaType &&
-    previous.content === content
-      ? previous.requestId
-      : createRequestId();
-  const imported = await importArtifact.mutateAsync({
-    workspaceId,
-    title: file.name,
-    mediaType,
-    content,
-    requestId,
-  });
-  return { id: imported.artifactId, version: imported.artifactVersion, label: file.name };
-}
-
-/**
  * Introduces one exact Artifact version, then reads the authoritative completed Turn.
  *
  * @returns Mutation over `client.operations['artifact.introduce']` plus `client.operations['turn.read']`.
@@ -397,4 +358,71 @@ export function useIntroduceWorkspaceArtifact() {
     },
     retry: false,
   });
+}
+
+/** Exact original selected for explicit ZIP folder processing. */
+export interface ArtifactFolderInput {
+  readonly workspaceId: string;
+  readonly artifactId: string;
+  readonly artifactVersion: number;
+  readonly originalDigest: string;
+}
+
+/** Reads one bounded inventory page; stale or failed reads never supply cached protected names. */
+export function useArtifactFolder(input: ArtifactFolderInput, offset: number) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: [
+      'artifact-folder',
+      input.workspaceId,
+      input.artifactId,
+      input.artifactVersion,
+      input.originalDigest,
+      offset,
+    ],
+    queryFn: async () => {
+      const result = await client.operations['artifact.folder-read']({
+        workspaceId: input.workspaceId,
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        offset,
+      });
+      assertFolderSource(input, result);
+      return result;
+    },
+    retry: false,
+  });
+}
+
+/** Explicit extraction is retryable from the exact retained original; it creates no new import. */
+export function useExtractArtifactFolder() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: async (input: ArtifactFolderInput) => {
+      const result = await client.operations['artifact.folder-extract']({
+        workspaceId: input.workspaceId,
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        offset: 0,
+      });
+      assertFolderSource(input, result);
+      return result;
+    },
+    retry: false,
+  });
+}
+
+/** Prevents a current or unrelated source response from replacing the selected exact original. */
+function assertFolderSource(
+  input: ArtifactFolderInput,
+  result: { artifactId: string; artifactVersion: number; originalDigest: string }
+): void {
+  if (
+    result.artifactId !== input.artifactId ||
+    result.artifactVersion !== input.artifactVersion ||
+    result.originalDigest !== input.originalDigest
+  )
+    throw new ApiCallError(409, 'The folder snapshot source is inconsistent.', {
+      code: 'recovery_required',
+    });
 }
