@@ -7,7 +7,7 @@ import {
   SchedulerAdmissionReadModelSchema,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
@@ -18,7 +18,7 @@ import { isSurfaceLive } from '../../app/flags';
 import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
-import { pathForSearchHit } from './data';
+import { operationsKeys, pathForSearchHit } from './data';
 
 const TIMESTAMP = '2026-07-21T12:00:00.000Z';
 const HOST_PATH = '/Users/secret/openkit-runtime';
@@ -409,8 +409,13 @@ function LocationProbe({ onChange }: { onChange: (pathname: string) => void }) {
   return null;
 }
 
-function renderApp(path: string, client: CoreClient, onLocation?: (pathname: string) => void) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** Renders production routes with a caller-selected query freshness policy. */
+function renderApp(
+  path: string,
+  client: CoreClient,
+  onLocation?: (pathname: string) => void,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
@@ -556,6 +561,620 @@ beforeEach(() => {
 });
 
 describe('Recovery and search', () => {
+  it.each([
+    401, 403,
+  ])('hides cached private recovery rows and blocks actions after a %s current read', async (status) => {
+    const user = userEvent.setup();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockRejectedValue(
+        new ApiCallError(status, 'private read denial', {
+          code: 'workspace_access_denied',
+          details: { secret: POISON_SECRET },
+        })
+      );
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockRejectedValue(
+        new ApiCallError(status, 'private read denial', {
+          code: 'workspace_access_denied',
+          details: { secret: POISON_SECRET },
+        })
+      );
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await toggleInspect(user, rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    expectInspectExpanded(rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers(WORKSPACE.id), exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
+    });
+    expect(await within(workers).findByRole('alert')).toHaveTextContent(
+      /couldn't load interrupted workers/i
+    );
+    expect(await within(scheduler).findByRole('alert')).toHaveTextContent(
+      /couldn't load scheduler admissions/i
+    );
+    expect
+      .soft(queryClient.getQueryState(operationsKeys.workers(WORKSPACE.id))?.error)
+      .toMatchObject({
+        status,
+        code: 'workspace_access_denied',
+        message: "Couldn't load interrupted workers.",
+        details: undefined,
+      });
+    expect
+      .soft(queryClient.getQueryState(operationsKeys.admissions(WORKSPACE.id))?.error)
+      .toMatchObject({
+        status,
+        code: 'workspace_access_denied',
+        message: "Couldn't load scheduler admissions.",
+        details: undefined,
+      });
+    expect.soft(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
+    expect.soft(within(workers).queryByText(INSPECT_WORKER.contextDigest as string)).toBeNull();
+    expect.soft(within(scheduler).queryByText(DENIED_ADMISSION.requestedAgentId)).toBeNull();
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Retry');
+    expectActionUnavailable(scheduler, 'Cancel');
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
+  it('keeps generic stale recovery observations inspectable while read retry blocks new effects', async () => {
+    const user = userEvent.setup();
+    const retryWorkers = createDeferred<{ items: unknown[] }>();
+    const retryAdmissions = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockRejectedValueOnce(new ApiCallError(500, 'private read failure'))
+      .mockReturnValue(retryWorkers.promise);
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockRejectedValueOnce(new ApiCallError(500, 'private read failure'))
+      .mockReturnValue(retryAdmissions.promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers(WORKSPACE.id), exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
+    });
+    const workerAlert = await within(workers).findByRole('alert');
+    const schedulerAlert = await within(scheduler).findByRole('alert');
+    expect(within(workers).getByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeInTheDocument();
+    expect(within(scheduler).getByText(DENIED_ADMISSION.requestedAgentId)).toBeInTheDocument();
+    await toggleInspect(user, rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    expectInspectExpanded(rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Retry');
+    expectActionUnavailable(scheduler, 'Cancel');
+    await user.click(within(workerAlert).getByRole('button', { name: 'Try again' }));
+    await user.click(within(schedulerAlert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => {
+      expect(workersRead).toHaveBeenCalledTimes(3);
+      expect(admissionsRead).toHaveBeenCalledTimes(3);
+    });
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Retry');
+    expectActionUnavailable(scheduler, 'Cancel');
+    await act(async () => {
+      retryWorkers.resolve({ items: ALL_WORKERS });
+      retryAdmissions.resolve({ items: [DENIED_ADMISSION] });
+      await Promise.all([retryWorkers.promise, retryAdmissions.promise]);
+    });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    expect(within(scheduler).getByRole('button', { name: 'Retry' })).toBeEnabled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
+  it('preserves an unknown worker command identity through denied-read inspection and authorized retry', async () => {
+    const user = userEvent.setup();
+    const deniedRead = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValueOnce(deniedRead.promise)
+      .mockResolvedValue({ items: ALL_WORKERS });
+    const release = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockReturnValue(createDeferred<unknown>().promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'recovery.checkpoint-retry': release,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await user.click(workerActionButton(workers));
+    expect(await within(workers).findByRole('alert')).toHaveTextContent(
+      /couldn't release the checkpoint/i
+    );
+    const originalCommand = release.mock.calls[0]?.[0];
+    expect(originalCommand).toEqual({
+      workspaceId: WORKSPACE.id,
+      threadId: INTERRUPTED_WORKER.threadId,
+      turnId: INTERRUPTED_WORKER.turnId,
+      requestId: expect.any(String),
+    });
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = queryClient.refetchQueries({
+        queryKey: operationsKeys.workers(WORKSPACE.id),
+        exact: true,
+      });
+    });
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(within(workers).queryByRole('button', { name: 'Try again' })).toBeNull()
+    );
+    expect(release.mock.calls).toEqual([[originalCommand]]);
+    await act(async () => {
+      deniedRead.reject(new ApiCallError(403, 'private denied read'));
+      await refresh;
+    });
+    const deniedAlert = await within(workers).findByRole('alert');
+    expect(deniedAlert).toHaveTextContent(/couldn't load interrupted workers/i);
+    await user.click(within(deniedAlert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(3));
+    const unknownAlert = await within(workers).findByRole('alert');
+    expect(unknownAlert).toHaveTextContent(/couldn't release the checkpoint/i);
+    expectWorkerActionUnavailable(workers);
+    expect(release).toHaveBeenCalledTimes(1);
+    await user.click(within(unknownAlert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(release.mock.calls).toEqual([[originalCommand], [originalCommand]]));
+  });
+
+  it('keeps generic stale recovery observations unavailable after denial and remount', async () => {
+    const user = userEvent.setup();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockRejectedValueOnce(new ApiCallError(403, 'private denied read'))
+      .mockRejectedValue(new ApiCallError(500, 'private read failure'));
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockRejectedValueOnce(new ApiCallError(403, 'private denied read'))
+      .mockRejectedValue(new ApiCallError(500, 'private read failure'));
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    await waitFor(() =>
+      expect(
+        workerActionButton(screen.getByRole('region', { name: 'Interrupted workers' }))
+      ).toBeEnabled()
+    );
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers(WORKSPACE.id), exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
+    });
+    await user.click(screen.getByRole('button', { name: 'Overview' }));
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await screen.findByRole('heading', { level: 1, name: 'Recovery' });
+    // Refresh explicitly to isolate denial disposal from mount admission.
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers(WORKSPACE.id), exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
+    });
+    expect(workersRead.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(admissionsRead.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const workers = screen.getByRole('region', { name: 'Interrupted workers' });
+    const scheduler = screen.getByRole('region', { name: 'Scheduler admissions' });
+    expect(await within(workers).findByRole('alert')).toHaveTextContent(
+      /couldn't load interrupted workers/i
+    );
+    expect(await within(scheduler).findByRole('alert')).toHaveTextContent(
+      /couldn't load scheduler admissions/i
+    );
+    expect.soft(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
+    expect.soft(within(scheduler).queryByText(DENIED_ADMISSION.requestedAgentId)).toBeNull();
+    expect(within(workers).queryByText('No interrupted workers')).toBeNull();
+    expect(within(scheduler).queryByText('No scheduler admissions')).toBeNull();
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Cancel');
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
+  it('keeps the original worker recovery lock after a canceled settlement read while another Workspace is selected', async () => {
+    const user = userEvent.setup();
+    const departedRead = createDeferred<{ items: unknown[] }>();
+    const currentRead = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValueOnce(departedRead.promise)
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValue(currentRead.promise);
+    const release = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiCallError(409, 'private recovery failure', { code: 'recovery_required' })
+      );
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'recovery.checkpoint-retry': release,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await user.click(workerActionButton(workers));
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(2));
+    const originalCommand = release.mock.calls[0]?.[0];
+    expect(originalCommand).toEqual({
+      workspaceId: WORKSPACE.id,
+      threadId: INTERRUPTED_WORKER.threadId,
+      turnId: INTERRUPTED_WORKER.turnId,
+      requestId: expect.any(String),
+    });
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
+    await screen.findByText(WORKSPACE_B_WORKER.diagnosticsSummary);
+    await act(async () => {
+      await queryClient.cancelQueries({
+        queryKey: operationsKeys.workers(WORKSPACE.id),
+        exact: true,
+      });
+    });
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id }));
+    await screen.findByText(INTERRUPTED_WORKER.diagnosticsSummary);
+    const recovery = await within(workers).findByRole('alert');
+    expect(recovery).toHaveTextContent('Recovery required');
+    expectWorkerActionUnavailable(workers);
+    await act(async () => {
+      departedRead.resolve({ items: ALL_WORKERS });
+      await departedRead.promise;
+    });
+    expectWorkerActionUnavailable(workers);
+    expect(release.mock.calls).toEqual([[originalCommand]]);
+    await user.click(within(recovery).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(5));
+    expectWorkerActionUnavailable(workers);
+    expect(release.mock.calls).toEqual([[originalCommand]]);
+    await act(async () => {
+      currentRead.resolve({ items: ALL_WORKERS });
+      await currentRead.promise;
+    });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    expect(within(workers).queryByRole('alert')).toBeNull();
+    expect(release.mock.calls).toEqual([[originalCommand]]);
+  });
+
+  it('keeps recorded Recovery observations inspectable while a paused current read blocks effects until resume completes', async () => {
+    const user = userEvent.setup();
+    const workersReread = createDeferred<{ items: unknown[] }>();
+    const admissionsReread = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValue(workersReread.promise);
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockReturnValue(admissionsReread.promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    onlineManager.setOnline(true);
+    try {
+      renderApp('/recovery', client, undefined, queryClient);
+      const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+      const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
+      await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+      act(() => onlineManager.setOnline(false));
+      await act(async () => {
+        await Promise.all([
+          queryClient.refetchQueries({
+            queryKey: operationsKeys.workers(WORKSPACE.id),
+            exact: true,
+          }),
+          queryClient.refetchQueries({
+            queryKey: operationsKeys.admissions(WORKSPACE.id),
+            exact: true,
+          }),
+        ]);
+      });
+      await waitFor(() => {
+        expect(queryClient.getQueryState(operationsKeys.workers(WORKSPACE.id))?.fetchStatus).toBe(
+          'paused'
+        );
+        expect(
+          queryClient.getQueryState(operationsKeys.admissions(WORKSPACE.id))?.fetchStatus
+        ).toBe('paused');
+      });
+      expect(workersRead).toHaveBeenCalledTimes(1);
+      expect(admissionsRead).toHaveBeenCalledTimes(1);
+      expect(within(workers).getByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeInTheDocument();
+      expect(within(scheduler).getByText(DENIED_ADMISSION.requestedAgentId)).toBeInTheDocument();
+      await toggleInspect(user, rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+      expectInspectExpanded(rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+      expectWorkerActionUnavailable(workers);
+      expectActionUnavailable(scheduler, 'Retry');
+      expectActionUnavailable(scheduler, 'Cancel');
+      act(() => onlineManager.setOnline(true));
+      await waitFor(() => {
+        expect(workersRead).toHaveBeenCalledTimes(2);
+        expect(admissionsRead).toHaveBeenCalledTimes(2);
+      });
+      expectWorkerActionUnavailable(workers);
+      expectActionUnavailable(scheduler, 'Cancel');
+      await act(async () => {
+        workersReread.resolve({ items: ALL_WORKERS });
+        admissionsReread.resolve({ items: [DENIED_ADMISSION] });
+        await Promise.all([workersReread.promise, admissionsReread.promise]);
+      });
+      await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+      expect(within(scheduler).getByRole('button', { name: 'Retry' })).toBeEnabled();
+      expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+      expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+      expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+    } finally {
+      act(() => onlineManager.setOnline(true));
+    }
+  });
+
+  it.each([
+    'worker',
+    'scheduler',
+  ] as const)('does not settle a pending %s command from a read retry started before its result', async (subject) => {
+    const user = userEvent.setup();
+    const command = createDeferred<unknown>();
+    const firstRead = createDeferred<{ items: unknown[] }>();
+    const pendingRead = createDeferred<{ items: unknown[] }>();
+    const postResultRead = createDeferred<{ items: unknown[] }>();
+    const rows = subject === 'worker' ? ALL_WORKERS : [DENIED_ADMISSION];
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ items: rows })
+      .mockRejectedValueOnce(new ApiCallError(403, 'private denied read'))
+      .mockReturnValueOnce(firstRead.promise)
+      .mockRejectedValueOnce(new ApiCallError(403, 'private denied read'))
+      .mockReturnValueOnce(pendingRead.promise)
+      .mockReturnValue(postResultRead.promise);
+    const mutation = vi.fn().mockReturnValue(command.promise);
+    const client = makeClient(
+      subject === 'worker'
+        ? { 'recovery.worker-list': read, 'recovery.checkpoint-retry': mutation }
+        : { 'scheduler.list': read, 'scheduler.retry': mutation }
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const region = await screen.findByRole('region', {
+      name: subject === 'worker' ? 'Interrupted workers' : 'Scheduler admissions',
+    });
+    const queryKey =
+      subject === 'worker'
+        ? operationsKeys.workers(WORKSPACE.id)
+        : operationsKeys.admissions(WORKSPACE.id);
+    if (subject === 'worker') {
+      await waitFor(() => expect(workerActionButton(region)).toBeEnabled());
+      await user.click(workerActionButton(region));
+    } else {
+      await user.click(within(region).getByRole('button', { name: 'Retry' }));
+    }
+    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
+    const originalCommand = mutation.mock.calls[0]?.[0];
+    expect(originalCommand).toEqual(
+      subject === 'worker'
+        ? {
+            workspaceId: WORKSPACE.id,
+            threadId: INTERRUPTED_WORKER.threadId,
+            turnId: INTERRUPTED_WORKER.turnId,
+            requestId: expect.any(String),
+          }
+        : { workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }
+    );
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey, exact: true });
+    });
+    const readError = await within(region).findByRole('alert');
+    await user.click(within(readError).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await act(async () => {
+      firstRead.resolve({ items: rows });
+      await firstRead.promise;
+    });
+    await within(region).findByText(
+      subject === 'worker'
+        ? INTERRUPTED_WORKER.diagnosticsSummary
+        : DENIED_ADMISSION.requestedAgentId
+    );
+    if (subject === 'worker') {
+      expectWorkerActionUnavailable(region);
+      await user.click(workerActionButton(region));
+    } else {
+      expectActionUnavailable(region, 'Retry');
+      expectActionUnavailable(region, 'Cancel');
+      await user.click(within(region).getByRole('button', { name: 'Retry' }));
+      await user.click(within(region).getByRole('button', { name: 'Cancel' }));
+    }
+    expect(mutation.mock.calls).toEqual([[originalCommand]]);
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey, exact: true });
+    });
+    const secondReadError = await within(region).findByRole('alert');
+    await user.click(within(secondReadError).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(5));
+    await act(async () => {
+      command.resolve(subject === 'worker' ? WORKER_RETRY_SUCCESS : SCHEDULER_RETRY_MUTATION);
+      await command.promise;
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(6));
+    await act(async () => {
+      pendingRead.resolve({ items: rows });
+      await pendingRead.promise;
+    });
+    expect(mutation.mock.calls).toEqual([[originalCommand]]);
+    if (subject === 'worker') expectWorkerActionUnavailable(region);
+    else {
+      expectActionUnavailable(region, 'Retry');
+      expectActionUnavailable(region, 'Cancel');
+    }
+    await act(async () => {
+      postResultRead.resolve({ items: rows });
+      await postResultRead.promise;
+    });
+    if (subject === 'worker') await waitFor(() => expect(workerActionButton(region)).toBeEnabled());
+    else
+      await waitFor(() =>
+        expect(within(region).getByRole('button', { name: 'Retry' })).toBeEnabled()
+      );
+    expect(mutation.mock.calls).toEqual([[originalCommand]]);
+  });
+
+  it('starts current recovery reads on a fresh-cache remount before enabling actions', async () => {
+    const user = userEvent.setup();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValue(createDeferred<{ items: unknown[] }>().promise);
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockReturnValue(createDeferred<{ items: unknown[] }>().promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    await waitFor(() =>
+      expect(
+        workerActionButton(screen.getByRole('region', { name: 'Interrupted workers' }))
+      ).toBeEnabled()
+    );
+    await user.click(screen.getByRole('button', { name: 'Overview' }));
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await screen.findByRole('heading', { level: 1, name: 'Recovery' });
+    await waitFor(() => {
+      expect(workersRead).toHaveBeenCalledTimes(2);
+      expect(admissionsRead).toHaveBeenCalledTimes(2);
+    });
+    expectWorkerActionUnavailable(screen.getByRole('region', { name: 'Interrupted workers' }));
+    expectActionUnavailable(screen.getByRole('region', { name: 'Scheduler admissions' }), 'Cancel');
+  });
+
+  it('does not use departed pending recovery reads to authorize a later mount', async () => {
+    const user = userEvent.setup();
+    const departedWorkers = createDeferred<{ items: unknown[] }>();
+    const departedAdmissions = createDeferred<{ items: unknown[] }>();
+    const currentWorkers = createDeferred<{ items: unknown[] }>();
+    const currentAdmissions = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockReturnValueOnce(departedWorkers.promise)
+      .mockReturnValue(currentWorkers.promise);
+    const admissionsRead = vi
+      .fn()
+      .mockReturnValueOnce(departedAdmissions.promise)
+      .mockReturnValue(currentAdmissions.promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Overview' }));
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await screen.findByRole('heading', { level: 1, name: 'Recovery' });
+    await act(async () => {
+      departedWorkers.resolve({ items: ALL_WORKERS });
+      departedAdmissions.resolve({ items: [DENIED_ADMISSION] });
+      await Promise.all([departedWorkers.promise, departedAdmissions.promise]);
+    });
+    await waitFor(() => {
+      expect(workersRead).toHaveBeenCalledTimes(2);
+      expect(admissionsRead).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
+    expect(screen.queryByText(DENIED_ADMISSION.requestedAgentId)).toBeNull();
+    await act(async () => {
+      currentWorkers.resolve({ items: ALL_WORKERS });
+      currentAdmissions.resolve({ items: [DENIED_ADMISSION] });
+      await Promise.all([currentWorkers.promise, currentAdmissions.promise]);
+    });
+    await waitFor(() =>
+      expect(
+        workerActionButton(screen.getByRole('region', { name: 'Interrupted workers' }))
+      ).toBeEnabled()
+    );
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
   it('groups interrupted-worker and scheduler recovery on a published workflow', async () => {
     const user = userEvent.setup();
     let pathname = '';
@@ -1543,6 +2162,7 @@ describe('Recovery and search', () => {
     const listInterruptedWorkers = vi
       .fn()
       .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
       .mockRejectedValue(new Error('workers-private refetch failure'));
     const client = makeClient({
       'recovery.worker-list': listInterruptedWorkers,
@@ -2439,7 +3059,7 @@ describe('Recovery and search', () => {
     const returnedAlert = within(workers).getByRole('alert');
     expect(returnedAlert).toHaveTextContent(/couldn't (release|retry)/i);
     expect(returnedAlert).not.toHaveTextContent('worker-private failure');
-    const tryAgain = within(returnedAlert).getByRole('button', { name: 'Try again' });
+    const tryAgain = await within(returnedAlert).findByRole('button', { name: 'Try again' });
     expect(tryAgain).toBeEnabled();
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
     expect(retryInterruptedWorkerCheckpoint.mock.calls).toEqual([frozenACall]);
@@ -2484,7 +3104,7 @@ describe('Recovery and search', () => {
       mutation.resolve(WORKER_RETRY_MUTATION);
       await mutation.promise;
     });
-    await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(3));
     expect(screen.queryByRole('alert')).toBeNull();
     expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
@@ -2502,7 +3122,7 @@ describe('Recovery and search', () => {
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).queryByRole('alert')).toBeNull();
     expect(workerActionButtons(rowFor(workers, INSPECT_WORKER.diagnosticsSummary))).toEqual([]);
-    expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}]]);
+    expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}], [{}]]);
     expect(retryInterruptedWorkerCheckpoint.mock.calls).toEqual([
       [
         {
@@ -2537,7 +3157,7 @@ describe('Recovery and search', () => {
         }
         workspaceAReads += 1;
         if (workspaceAReads === 1) return Promise.resolve({ items: [DENIED_ADMISSION] });
-        if (scenario.mode === 'settlement' && workspaceAReads === 2) {
+        if (scenario.mode === 'settlement' && workspaceAReads >= 2) {
           return Promise.resolve({ items: [RETRIED_ADMISSION] });
         }
         return Promise.resolve({ items: [DENIED_ADMISSION] });
@@ -2643,7 +3263,9 @@ describe('Recovery and search', () => {
     expect(within(scheduler).queryByText('Denied', { exact: true })).toBeNull();
     expect(within(scheduler).queryByRole('alert')).toBeNull();
     expect(within(scheduler).queryByRole('button', { name: 'Retry' })).toBeNull();
-    expect(within(scheduler).getByRole('button', { name: 'Cancel' })).toBeEnabled();
+    await waitFor(() =>
+      expect(within(scheduler).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    );
     expect(retrySchedulerAdmission.mock.calls).toEqual([
       [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
     ]);
@@ -2716,7 +3338,7 @@ describe('Recovery and search', () => {
         },
       ],
     ]);
-    await waitFor(() => expect(client.operations['recovery.worker-list']).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(client.operations['recovery.worker-list']).toHaveBeenCalledTimes(3));
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
 
@@ -2759,7 +3381,7 @@ describe('Recovery and search', () => {
     let workerReads = 0;
     const listInterruptedWorkers = vi.fn().mockImplementation(() => {
       workerReads += 1;
-      if (scenario.mode !== 'generic' && workerReads >= 3) return aSettlement.promise;
+      if (scenario.mode !== 'generic' && workerReads >= 4) return aSettlement.promise;
       return Promise.resolve({ items: ALL_WORKERS });
     });
     const retryInterruptedWorkerCheckpoint = vi
@@ -2832,7 +3454,7 @@ describe('Recovery and search', () => {
       pendingB.resolve(WORKSPACE_B_WORKER_RETRY);
       await pendingB.promise;
     });
-    await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(3));
     expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
     expect(within(workers).queryByRole('alert')).toBeNull();
     expect(
@@ -2846,8 +3468,8 @@ describe('Recovery and search', () => {
         pendingA.resolve(WORKER_RETRY_MUTATION);
         await pendingA.promise;
       });
-      await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(3));
-      expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}]]);
+      await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(4));
+      expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}], [{}]]);
       expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
       expect(within(workers).queryByRole('alert')).toBeNull();
       expect(
@@ -2900,10 +3522,10 @@ describe('Recovery and search', () => {
     });
 
     if (scenario.mode === 'recovery') {
-      await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(3));
-      expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}]]);
+      await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(4));
+      expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}], [{}]]);
     } else {
-      expect(listInterruptedWorkers).toHaveBeenCalledTimes(2);
+      expect(listInterruptedWorkers).toHaveBeenCalledTimes(3);
     }
     expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
     expect(within(workers).queryByRole('alert')).toBeNull();
@@ -2953,7 +3575,7 @@ describe('Recovery and search', () => {
     }
 
     expect(returnedAlert).toHaveTextContent(/couldn't (release|retry)/i);
-    await user.click(within(returnedAlert).getByRole('button', { name: 'Try again' }));
+    await user.click(await within(returnedAlert).findByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(3));
     expect(workerRetryCallsFor(retryInterruptedWorkerCheckpoint, INTERRUPTED_WORKER)).toEqual([
       frozenACall,
