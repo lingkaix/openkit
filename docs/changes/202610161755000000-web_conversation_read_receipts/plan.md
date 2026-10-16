@@ -2,7 +2,7 @@
 type: change-plan
 status: in-progress
 date: "2026-10-16"
-branch: lane/web-p26
+branch: lane/web-p26-interrupt-actor
 ---
 # Conversation Read Receipts and Goal Navigation
 
@@ -86,3 +86,8 @@ Independent review `reviews/L-WEB-navigation-834c8a4bff19.md` approved the sourc
 P19 landed on main at fa45b8aac6b4593ba5b1305416e95cf833565f49 on 2026-10-16 at 23:06Z. Integrate the prepared P26 receipts, real Goal grouping, Assistant and member navigation, and Stop actor projection with that actual Timeline contract. L-AK retains Timeline internals. Preserve incoming native presentation grouping, focused-Turn navigation, Workspace handoff migration and recurring Audit filtering. User read receipts remain User-owned and advance only after actual display or explicit read. This changes the integration frontier, not the accepted behavior or authority. [Web projection](../../specs/20260628-web_product_surface_projection.md), [Thread Visibility](../../specs/20260909-thread_visibility_and_sharing.md) and [Storage Layout](../../specs/20260703-storage_layout_record_ownership.md) retain their owners.
 
 Initial merge resolves the eight actual conflicts by composing criteria: Audit retains the new Core handle and current Thread audience filter; migration expectations include Workspace0001 and User0001 independently; the final Thread stream keeps incoming presentation/focused-Turn behavior within the receipt display context. Generated CLI/OpenAPI temporarily retain main bytes until regeneration from joined source. No merged-head or browser pass is claimed. Bounded backend and Web integration, exact generation, independent delta review and the complete first P26 owner-module/package/browser gate remain required.
+
+
+## Landed Timeline Integration Evidence
+
+At merged source 6d50dcc50c3e6e02c6af850168177d42cc7db7dd, matching dependency and CLI builds, OpenAPI generation and validation, Web typecheck, the complete App/Chat/Workspace/Settings Web modules (779 tests in 32 files) and the complete operation-inventory guard passed. The actual runtime inventory is 243 total, 58 server, two Gateway and 183 Web-included operations. Generation adds only thread.mark-read and thread.read-state plus their four schemas, and updates conversation.navigation.output; no existing endpoint changes or disappears. The only additional Web source diff is formatter output. Raw evidence is retained under evidence/L-WEB/p26-timeline-integration in the assigned backlog. These are integration components, not the first complete exact-head Express gate. Native owner checks, shared Message/root App coverage, local browser checks and independent authored-merge review remain open.

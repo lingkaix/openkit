@@ -266,7 +266,8 @@ export function ThreadStream({
                     }
                     requestObjective={
                       item.type === 'user-message'
-                        ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
+                        ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)
+                            ?.objective
                         : undefined
                     }
                     readOnly={
@@ -328,7 +329,8 @@ export function ThreadStream({
                           withdraw.variables?.pendingRequestId === item.approvalRequestId))
                     }
                     onRetryApproval={() => {
-                      if (withdraw.isError && withdraw.variables) withdraw.mutate(withdraw.variables);
+                      if (withdraw.isError && withdraw.variables)
+                        withdraw.mutate(withdraw.variables);
                       else if (respond.variables) respond.mutate(respond.variables);
                     }}
                     onApprovalDecision={(approvalRequestId, turnId, decision) =>
