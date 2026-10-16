@@ -35,11 +35,14 @@ Documentation-model and specification-lifecycle validation, generated documentat
 The following explicit paths are outside `apps/nanocore/src/vault/` and are direct consumers, accepted owners, guides, focused regressions or this change record:
 
 - `apps/nanocore/README.md`
+- `apps/nanocore/openapi/app-api.openapi.json`
 - `apps/nanocore/src/operation-composition.ts`
 - `apps/nanocore/src/runtime/README.md`
 - `apps/nanocore/src/runtime/openkit-generative-mcp.ts`
 - `apps/nanocore/src/runtime/pending-request-flow.ts`
 - `apps/nanocore/src/worker-mcp-routes.ts`
+- `apps/nanohost/README.md`
+- `apps/nanohost/src/core-effect-command-fixture.json`
 - `apps/web/README.md`
 - `apps/web/src/screens/settings/ServerVaultSecretsPanel.test.tsx`
 - `apps/web/src/screens/settings/ServerVaultSecretsPanel.tsx`
@@ -48,6 +51,8 @@ The following explicit paths are outside `apps/nanocore/src/vault/` and are dire
 - `apps/web/src/screens/settings/VaultGrantRequestsPanel.test.tsx`
 - `apps/web/src/screens/settings/VaultGrantRequestsPanel.tsx`
 - `apps/web/src/screens/settings/VaultScreen.tsx`
+- `apps/web/src/screens/settings/VaultSecretsPanel.test.tsx`
+- `apps/web/src/screens/settings/VaultSecretsPanel.tsx`
 - `docs/changes/202610161240000000-vault_grant_request_review/plan.md`
 - `docs/specs/20260628-web_product_surface_projection.md`
 - `docs/specs/20260703-vault_secret_injection.md`
@@ -61,6 +66,9 @@ The following explicit paths are outside `apps/nanocore/src/vault/` and are dire
 - `packages/core-client/README.md`
 - `skills/openkit-ops/references/nanocore-operations.en.md`
 - `skills/openkit-ops/references/using-openkit.en.md`
+- `skills/openkit-ops/scripts/openkit`
+- `tests/openkit-skill-interface.test.mjs`
+- `tests/web-user-operation-surface-contract.test.mjs`
 
 ## Primary Integration Checkpoint
 
@@ -108,4 +116,8 @@ The NanoHost guide explains this accepted request-only Tool inventory and uses t
 
 Normally merge prepared Server/P14 parent `4ceaa9e0ad3687843754ff13d987faafdf82d405`, which contains the actual committed P14 API `e2493a138cdef6d204afbd1c9d6ef471647661cc`. No changing remote or independently reworked Server/common join is imported. Request-owned Turn, Item, VaultGrant and PermissionDecision allocation uses `allocateEntityId` with its existing kind and allocation trigger; Worker Turns and exact request replay retain their recorded identities. Named public/captured entity fields reuse Protocol validators, while request, Approval, Agent, MCP and native selectors remain opaque under their existing owners. No generator, tag, compatibility reader or derivation is added.
 
-Existing native, App API and Web fixtures use recorded canonical identities and otherwise valid unknown targets so authority and canary negatives still reach their subject. The actual nonmember administrator session and persisted product-policy provenance oracles remain. R1 uses the accepted P14 parent Host fixture and actual producer, not the prior 9215-byte old-format Tool package. Its current accepted comparison baseline has 24 effects and a 9639-byte/15-Tool package; observe the real producer before regeneration and preserve every other P14 field and authored byte. Focused results and generation are pending; this preparation is not final main integration, independent acceptance, a full gate or browser proof.
+Existing native, App API and Web fixtures use recorded canonical identities and otherwise valid unknown targets so authority and canary negatives still reach their subject. The actual nonmember administrator session and persisted product-policy provenance oracles remain. R1 uses the accepted P14 parent Host fixture and actual producer, not the prior 9215-byte old-format Tool package. Its current accepted comparison baseline has 24 effects and a 9639-byte/15-Tool package; observe the real producer before regeneration and preserve every other P14 field and authored byte. Normal merges also retain Preview/P14 parents `d6b4e72a2ac4841672af93f2702c9fc579c00086` and `463323b79fc15b7fe94a2d686697c7ab3baec9dd`, including the P14 test/fixture corrections without a production identifier change. The Request feature is 40 paths against the latter parent. No Equal adapter or Preview/catalog/session behavior change is imported. This preparation is not final main integration, independent acceptance, a full gate or browser proof.
+
+The actual focused pipeline passed all 26 Native Request and four App API cases, Native/dependency/CoreClient builds, CLI/OpenAPI generation and validation, and Native/Web types. Its initial Web result was 36/40: four custody-added button labels still named pre-P14 fixture identifiers. The labels now use the canonical retained fixture records; all transport/cache refusal and transient clearing assertions remain. The complete corrected Web run passed 40/40, and actual CLI/OpenAPI regeneration on the newer parent passed. Final parent typechecks, all 89 Skill/Web inventory cases and focused Biome passed. Raw outputs are `request-p14-focused.log`, `request-p14-web-generation.log` and `request-p14-final-types-inventory.log` under the external backlog evidence directory.
+
+The actual updates-disabled Host producer failed at complete fixture equality, one selected case with 186 unselected: its 15-Tool, 9639-byte P14 body needed the two Request tools and 9688 bytes. Documented real producer regeneration passed. Complete comparison preserved all 24 effects and order, changing only effect 4 input/command body, length and SHA. Decoded package changes are exactly the two Request built-ins and derived catalog digest; reconstruction matches complete generated bytes. Accepted parent bytes and the comparison method/results remain in external `request-p14-host-parent-before.json`, `request-p14-host-comparison.mjs` and `request-p14-host-comparison.log`; the actual failure is retained in `request-p14-host-red.log`. Updates-disabled native producer and dispatcher pins passed, two selected cases with 200 unselected. The app-scoped locked Rust consumer passed one selected test with 382 unit cases filtered; unrelated integration targets ran no selected cases. Exact output is `request-p14-host-regenerate-green.log`. R1 and R2 now have bounded producer evidence on this committed-parent integration; final actual-main dependency join, independent review, full gate and browser proof remain open.
