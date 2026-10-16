@@ -1,4 +1,4 @@
-import { KnowledgeOwnerScopeSchema } from '@openkit/protocol';
+import { allocateEntityId, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -17,9 +17,12 @@ import {
 const features = ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'];
 const workspace = KnowledgeOwnerScopeSchema.options[1].parse({
   kind: 'workspace',
-  workspaceId: 'workspace-a',
+  workspaceId: allocateEntityId('ws'),
 });
-const user = KnowledgeOwnerScopeSchema.options[0].parse({ kind: 'user', userId: 'user-a' });
+const user = KnowledgeOwnerScopeSchema.options[0].parse({
+  kind: 'user',
+  userId: allocateEntityId('usr'),
+});
 
 function page(fields: Record<string, unknown> = {}) {
   const frontmatter = {
@@ -154,8 +157,8 @@ describe('OpenKit scoped profile v4', () => {
   it.each([
     [workspace, user],
     [workspace, { kind: 'server' }],
-    [user, { ...user, userId: `${user.userId}-other` }],
-    [workspace, { ...workspace, workspaceId: `${workspace.workspaceId}-other` }],
+    [user, { ...user, userId: allocateEntityId('usr') }],
+    [workspace, { ...workspace, workspaceId: allocateEntityId('ws') }],
     [{ kind: 'server' }, user],
   ])('refuses a valid page owned by another admitted notebook %j', (scope, expectedOwnerScope) => {
     const document = parsedPage({ scope });

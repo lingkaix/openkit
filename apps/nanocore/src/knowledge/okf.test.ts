@@ -1,4 +1,4 @@
-import { KnowledgeOwnerScopeSchema } from '@openkit/protocol';
+import { allocateEntityId, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -18,7 +18,7 @@ import {
 
 const workspace = KnowledgeOwnerScopeSchema.options[1].parse({
   kind: 'workspace',
-  workspaceId: 'workspace-a',
+  workspaceId: allocateEntityId('ws'),
 });
 
 describe('parseOkfDocument', () => {

@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { KnowledgeNotebookAdmission } from '@openkit/protocol';
+import { allocateEntityId, type KnowledgeNotebookAdmission } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
@@ -20,12 +20,18 @@ import {
   applyScopedMigrations,
 } from '../storage/migrate.js';
 
+const ownerUserId = allocateEntityId('usr');
+const editorUserId = allocateEntityId('usr');
+const otherUserId = allocateEntityId('usr');
+const workspaceId = allocateEntityId('ws');
+const otherWorkspaceId = allocateEntityId('ws');
+
 /** Uses the existing three database owners; no notebook journal or content fixture substitutes for Audit. */
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-audit-'));
   const coreDb = openCoreDb(dataRoot);
-  const userDb = openUserDb(dataRoot, 'user_owner');
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_notebook');
+  const userDb = openUserDb(dataRoot, ownerUserId);
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   onTestFinished(() => {
     for (const { sqlite } of [coreDb, userDb, workspaceDb]) if (sqlite.open) sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -47,7 +53,7 @@ function admission(
     inputDigest: `sha256:${'1'.repeat(64)}`,
     baseRevision: null,
     candidateRevision: 'opaque-git-commit',
-    producer: { kind: 'user', id: 'user_editor' },
+    producer: { kind: 'user', id: editorUserId },
     authority: { kind: 'direct', instructionReference: `request:${requestId}` },
     sourceReferences: ['source:registered@sha256:exact'],
   };
@@ -113,7 +119,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
         )
         .run(
           'aud_retained',
-          scope === 'core' ? null : 'ws_notebook',
+          scope === 'core' ? null : workspaceId,
           'knowledge',
           'retained.admission',
           'succeeded',
@@ -154,7 +160,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
       notebookAdmission: facts,
     });
     f.userDb.sqlite.close();
-    const reopened = openUserDb(f.dataRoot, 'user_owner');
+    const reopened = openUserDb(f.dataRoot, ownerUserId);
     try {
       applyScopedMigrations(reopened);
       const row = reopened.sqlite.prepare('SELECT * FROM audit_events').get() as Record<
@@ -202,7 +208,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
     expect(() =>
       recordUserAuditEvent({
         userDb: f.userDb,
-        ...event(admission({ kind: 'user', userId: 'user_other' })),
+        ...event(admission({ kind: 'user', userId: otherUserId })),
       })
     ).toThrow();
     expect(f.userDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get()).toEqual({
@@ -216,7 +222,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
       recordWorkspaceAuditEvent({
         workspaceDb: f.workspaceDb,
         workspaceId: f.workspaceDb.workspaceId,
-        ...event(admission({ kind: 'workspace', workspaceId: 'ws_other' })),
+        ...event(admission({ kind: 'workspace', workspaceId: otherWorkspaceId })),
       })
     ).toThrow();
     expect(
@@ -227,8 +233,8 @@ describe('notebook publication admission in the existing Audit owners', () => {
   it('refuses User or Workspace admission in the Server Audit database', () => {
     const f = fixture();
     for (const scope of [
-      { kind: 'user', userId: 'user_owner' },
-      { kind: 'workspace', workspaceId: 'ws_notebook' },
+      { kind: 'user', userId: ownerUserId },
+      { kind: 'workspace', workspaceId: workspaceId },
     ] as const) {
       expect(() =>
         recordServerAuditEvent({ coreDb: f.coreDb, ...event(admission(scope)) })

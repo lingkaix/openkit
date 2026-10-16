@@ -13,6 +13,7 @@ import { AgentSessionSchema, deriveEntityId, RequestIdSchema } from '@openkit/pr
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { uuidv5 } from '../generative-kernel/uuid.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -784,11 +785,10 @@ describe('FsStore persistence', () => {
       'Persist this work',
       LOCAL_ACTOR
     );
-    const knowledgeEntry = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
-      title: 'Persisted knowledge',
-      content: 'Knowledge survived restart.',
-    });
+    const knowledgeEntry = store.getKnowledgeEntry(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'mem_project'
+    );
     const knowledgeSourceContent = 'Persisted source material.';
     const knowledgeSource = store.createKnowledgeSource(
       {
@@ -893,7 +893,13 @@ describe('FsStore persistence', () => {
       content: { format: artifact.content.format },
     });
     expect(readFileSync(artifactContentPath, 'utf8')).toBe('History survived restart.');
-    expect(readFileSync(knowledgeProjectionPath, 'utf8')).toContain('Knowledge survived restart.');
+    expect(existsSync(knowledgeProjectionPath)).toBe(false);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+    });
+    expect(
+      notebook.readRevision(notebook.publishedRevision()).files[`${knowledgeEntry.id}.md`]
+    ).toContain(knowledgeEntry.content);
     expect(JSON.parse(readFileSync(knowledgeSourceProjectionPath, 'utf8'))).toEqual(
       knowledgeSource
     );

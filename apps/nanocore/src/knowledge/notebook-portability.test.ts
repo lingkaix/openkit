@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { KnowledgeNotebook, type NotebookCommitMetadata } from './notebook.js';
 import {
@@ -29,10 +30,11 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
 });
-const sourceScope = { kind: 'workspace' as const, workspaceId: 'ws_source' };
-const targetScope = { kind: 'workspace' as const, workspaceId: 'ws_target' };
-const sourceId = 'ks_123e4567-e89b-42d3-a456-426614174000';
-const targetId = 'ks_123e4567-e89b-42d3-a456-426614174001';
+const sourceScope = { kind: 'workspace' as const, workspaceId: allocateEntityId('ws') };
+const targetScope = { kind: 'workspace' as const, workspaceId: allocateEntityId('ws') };
+const sourceId = allocateEntityId('ks');
+const targetId = allocateEntityId('ks');
+const producerId = allocateEntityId('usr');
 const pin = `sha256:${'0'.repeat(64)}`;
 const sourceReference = `source:${sourceId}@${pin}`;
 const targetReference = `source:${targetId}@${pin}`;
@@ -45,12 +47,13 @@ function digest(content: string) {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }
 /** Fresh target command evidence is independent of the archived source commit. */
-function metadata(requestId: string, sourceReferences: string[] = []): NotebookCommitMetadata {
+function metadata(label: string, sourceReferences: string[] = []): NotebookCommitMetadata {
+  const requestId = randomUUID();
   return {
     summary: 'Explicit target import',
     changeRequest: { requestId, inputDigest: pin },
-    producer: { kind: 'user', id: 'user_local' },
-    authority: { kind: 'direct', instructionReference: `item:${requestId}` },
+    producer: { kind: 'user', id: producerId },
+    authority: { kind: 'direct', instructionReference: `test-fixture:${label}:${requestId}` },
     sourceReferences,
   };
 }

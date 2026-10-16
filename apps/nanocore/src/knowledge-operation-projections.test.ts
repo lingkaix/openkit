@@ -69,7 +69,10 @@ function fixture(member = true) {
 /** Test-owned exact immutable base; all mutations still cross current native admission. */
 function notebook(f: ReturnType<typeof fixture>) {
   return new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces/ws_demo/knowledge/notebook.git'),
+    repositoryPath: join(
+      f.dataRoot,
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/notebook.git'
+    ),
   });
 }
 
@@ -162,7 +165,7 @@ function proposalInput(source: { id: string; contentDigest: string }, baseRevisi
     'schema_version: "openkit-scope-knowledge-schema-v4"',
     'openkit_status: "active"',
     'status: "stable"',
-    'scope: {kind: workspace, workspaceId: ws_demo}',
+    'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
     'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_entry_id: "cutover-lesson"',
     'openkit_entry_kind: "project-context"',
@@ -365,7 +368,10 @@ describe('Knowledge operation definition cutover', () => {
         requestId: randomUUID(),
         proposalId: draft.proposal.id,
         decision: 'accepted',
-        proposalDigest: f.store.knowledgeProposalDigest('ws_demo', draft.proposal.id),
+        proposalDigest: f.store.knowledgeProposalDigest(
+          'ws_00000000-0000-7000-8000-000000000001',
+          draft.proposal.id
+        ),
         baseRevision: draft.proposal.baseRevision,
         candidateRevision: draft.proposal.candidateRevision,
       });
@@ -642,7 +648,7 @@ describe('Knowledge operation definition cutover', () => {
       const member = await projections(f);
       const foreign = f.store.createWorkspace('Foreign source authority', {
         requestId: randomUUID(),
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         instructionReference: 'test-owned-fresh-workspace',
       });
       recordWorkspaceOwnerMembership({
@@ -658,7 +664,7 @@ describe('Knowledge operation definition cutover', () => {
         content: 'Foreign secret bytes',
       })) as schemas.OperationOutput<'knowledge.source.register'>;
       const entry = (await member.http('knowledge.create', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: randomUUID(),
         baseRevision: notebook(f).publishedRevision(),
         knowledgePageId: 'restricted-audience-lesson',
@@ -671,7 +677,7 @@ describe('Knowledge operation definition cutover', () => {
       const path = `${entry.id}.md`;
       const bytes = notebook(f).readRevision(baseRevision, [path]).files[path]!;
       await member.http('knowledge.notebook.update', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: randomUUID(),
         baseRevision,
         changes: [
