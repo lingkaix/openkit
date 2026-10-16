@@ -4,6 +4,8 @@ import type { OperationDefinition } from './operation-contract.js';
 import {
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
+  NarrowWorkspaceVaultGrantRequestSchema,
+  NarrowWorkspaceVaultGrantResponseSchema,
   RotateWorkspaceVaultSecretRequestSchema,
   SetProviderApiKeyRequestSchema,
   SetProviderApiKeyResponseSchema,
@@ -103,8 +105,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     inputSensitivity: 'secret stdin',
   },
   'vault.secret-create': {
-    description:
-      'Secret create for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
+    description: 'Create a Workspace Vault reference from request-only material.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -120,8 +121,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     inputSensitivity: 'secret stdin',
   },
   'vault.secret-rotate': {
-    description:
-      'Secret rotate for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
+    description: 'Rotate Workspace secret material while preserving its reference identity.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -139,7 +139,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
   },
   'vault.secret-revoke': {
     description:
-      'Secret revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
+      'Revoke Workspace secret material and its dependent grants and injection projections.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -155,7 +155,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
   },
   'vault.grant-create': {
     description:
-      'Create an ordinary gateway-only workspace grant with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant.',
+      'Create a workspace-lifetime grant for a supported sink with optional exact target restrictions.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -169,9 +169,25 @@ export const VAULT_OPERATION_DEFINITIONS = {
     policyOperation: 'vault.admin',
     mutating: true,
   },
-  'vault.grant-revoke': {
+  'vault.grant-narrow': {
     description:
-      'Grant revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
+      'Revoke a workspace grant and issue a strictly narrower replacement; bindings require an explicit update.',
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    inputSchema: NarrowWorkspaceVaultGrantRequestSchema.safeExtend({
+      workspaceId: WorkspaceIdSchema,
+      grantId: z.string().min(1),
+    }).strict(),
+    outputSchema: NarrowWorkspaceVaultGrantResponseSchema,
+    credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'vault.admin',
+    mutating: true,
+  },
+  'vault.grant-revoke': {
+    description: 'Revoke a Workspace grant and its dependent injection projections.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

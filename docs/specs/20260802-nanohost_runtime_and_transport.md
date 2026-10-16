@@ -359,6 +359,10 @@ Image environment is untrusted input until the activation confirmation's exact n
 
 Before the activation confirmation's exact non-secret admission, only a bounded private preparation result with names/classification and no raw values may be shown. The authorized preparer declares the exact candidate's defaults non-secret under existing candidate confirmation; no name heuristic or scanner proves arbitrary strings non-secret. Misclassified or suspicious input withholds publication rather than printing its values for diagnosis.
 
+### Filesystem Capacity Observations
+
+Existing byte limits and free-byte reserves apply on every filesystem. Where inode accounting is available, the existing inode reserves also apply. If total, free and available inode counts all report zero, NanoHost treats inode accounting as unavailable. It does not infer inode exhaustion from that observation. Other observations with zero available inodes retain their ordinary refusal. Observation errors and actual allocation failures retain the owning operation's failure and uncertainty rules. Missing inode accounting never weakens a byte-space check or permits retained-data eviction.
+
 ### Local Image Maintenance
 
 The existing NanoHost binary exposes `nanohost image import <archive> <expected-digest>`, `nanohost image remove <digest>`, `nanohost image list` and `nanohost image capacity [<bytes>]` for a local host administrator. These are explicit local store operations, separate from the service's no-argument startup and its `--version` command. They use the fixed `/var/lib/openkit/nanohost-images` root, existing private ownership/path validation and the same Image Store implementation. They start no epoch, daemon, network session or service lifecycle operation, require no NanoCore enrollment or environment-file parser, and expose no new remote API. A local archive path is accepted only at this host-admin CLI boundary, never in a NanoCore effect command.
@@ -638,6 +642,8 @@ The deployment MAY use an upstream TLS terminator only when the deployment decla
 Exact same-host loopback MAY use plaintext HTTP/2 under the existing local trust rules. Container bridge, host LAN, overlay, tunnel, and remote-host addresses are non-loopback even when privately routed and therefore require TLS.
 
 Missing, invalid, expired, hostname-mismatched, or untrusted certificate or trust material prevents an authoritative session and keeps the NanoHost non-ready. A configured CA is the exclusive trust source for that connection, and failure under that source MUST NOT fall back to platform roots. The NanoHost MUST NOT use verification bypass, trust on first use, plaintext downgrade, SSH tunnel runtime fallback, alternate endpoints, or bearer-token-only acceptance to restore availability.
+
+The server presents a valid server certificate, separate from its issuing CA certificate. A CA certificate used as the server leaf fails verification. Before admission, NanoHost completes certificate verification within the existing startup deadline. An initial definite certificate rejection reports a closed TLS verification cause and ends that startup attempt. It must not become an ordinary physical-close retry or only a later startup timeout. Diagnostics exclude raw certificate errors, endpoints, trust paths and secret material. A successor failure retains the existing healthy-Epoch reconnect rules.
 
 This contract is dedicated bearer NanoHost Token authentication over server-authenticated TLS. It does not define mTLS, client certificates, server-admin token reuse, or another authentication path.
 
@@ -1392,6 +1398,8 @@ The two numbers are the epoch rebuild time and the rate at which accepted operat
 Readiness MUST NOT be advertised early to satisfy a budget. Exceeding the hard rebuild bound is a NanoHost defect and keeps the NanoHost non-ready; it never converts into a weaker readiness proof.
 
 The temporary fence-to-ready timestamp is create-once for one unresolved interval. Every later failure and evidence-export path MUST preserve the first timestamp. After authoritative admission, NanoHost MUST derive one absolute monotonic deadline from the remaining hard bound, recheck it immediately before sending readiness, and apply it to request construction, send, and the complete exact empty `204` response; only an acknowledgement completed within that deadline may consume the marker.
+
+After a bounded startup failure, an operator with separate recovery authorization may retire the complete failed epoch state and start from fresh state. The operator first stops activation and proves the entire prior effect domain empty. Both complete private epoch roots, including the unresolved marker, remain retained outside their live names. Image Store content, retained Worker bytes and association lineage, the private Workspace scan store, forensic evidence, identity and credentials remain unchanged. After the normal startup barrier proves every prior writer absent, opening the retained-volume store releases old attachment hints through its existing owner, even when no old epoch roots or marker remain under the live names. This release does not settle Core records or authorize deletion. Retiring roots alone is not writer-fence proof. The new start establishes a new recovery interval and must prove ordinary authenticated readiness. This explicit operation does not authorize automatic timestamp reset, isolated marker deletion or repeated starts of the same failed state.
 
 ### Falsifiable Premise
 

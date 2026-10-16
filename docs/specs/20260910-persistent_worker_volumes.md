@@ -94,6 +94,8 @@ An existing native home is never overwritten, reset, reseeded or synchronized by
 
 Initialization requires sole write ownership, no writes outside the admitted destination and validated source traversal. Freshness must be established, not inferred merely from an empty directory or missing remembered filename. Initialization must be complete before use; interrupted or partial initialization remains unadmitted and is inspected before retry without deleting or replacing existing bytes. Ordinary directory creation, staging and no-overwrite publication may implement this rule; no new durable profile registry or per-native-file retention inventory is introduced.
 
+Image seeding applies the [NanoHost Filesystem Capacity Observations](20260802-nanohost_runtime_and_transport.md#filesystem-capacity-observations) to its existing byte and inode reserves. Missing inode accounting does not authorize a smaller byte reserve or weaken initialization failure handling.
+
 Image defaults supply configuration/resources, not authority to import another live home, select a saved conversation or restore platform credentials. Ordinary close retains the entire native home. A successor resumes only its exact recorded native reference after the existing predecessor fence. Missing/incompatible native data, uncertain initialization or unproved writer absence prevents the dependent start and preserves retained data for explicit correction.
 
 The decision and its reason are recorded in [a decision record](../decisions/20260930-adapters_honor_native_configuration.md).

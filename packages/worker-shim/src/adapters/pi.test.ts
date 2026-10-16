@@ -191,6 +191,7 @@ const PEER_BIN = fileURLToPath(new URL('../test-support/pi-channel-peer.mjs', im
 const TIMEOUT = 120_000;
 const sessions: PiResidentBinding[] = [];
 const stops: (() => Promise<void>)[] = [];
+const fixtureRoots: string[] = [];
 
 afterEach(async () => {
   copyControl.publishRace = false;
@@ -220,6 +221,7 @@ afterEach(async () => {
   spawnCalls.length = 0;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  for (const root of fixtureRoots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 interface Dirs {
@@ -242,6 +244,7 @@ interface Fixture {
 /** Real, absolute directories for one binding. macOS `/tmp` is a symlink, so this resolves it. */
 async function createDirs(): Promise<Dirs> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openkit-pi-adapter-')));
+  fixtureRoots.push(root);
   const dirs = {
     home: join(root, 'home'),
     root,

@@ -59,6 +59,8 @@ The `image.build` effect has an additional conditional requirement: Buildx `0.35
 
 OpenShell's upstream support matrix is an input, not OpenKit's product support owner. OpenKit consumes the upstream Docker `28.0` floor and the Gateway's glibc `2.28` floor for its pinned `v0.0.99` integration, then narrows the supported set to its Docker-specific Linux amd64 and arm64 targets. The Gateway floor alone is insufficient because each separately built NanoHost executable may require newer libc symbols. Packaging derives the maximum required symbol versions from both exact target-matched executables, and the host check observes loader compatibility with that derived requirement rather than hard-coding the Gateway floor as the complete package requirement. Upstream Podman, macOS, MicroVM, and Windows possibilities remain outside the OpenKit NanoHost profile.
 
+The systemd parse probe judges the archive's OpenKit service, its slice and the required `openkit.slice` parent, including exact-name, dash-prefix and type-wide drop-ins that apply to them, rather than the configuration of unrelated units loaded by `systemd-analyze verify`. Diagnostics attributed to another unit do not fail the OpenKit predicate unless they also concern an OpenKit unit. OpenKit diagnostics and unattributed inspector failures remain blocking even when verification exits zero. A nonzero status remains blocking, except for the exact expected diagnostic that the not-yet-installed NanoHost executable is absent; that exception must be the only remaining diagnostic and have status one. Unavailable inspection remains `cannot-check`. This read-only check does not correct or certify unrelated services.
+
 ### Resource Recommendation
 
 For the initial combined small-deployment profile, begin with at least 2 available logical CPU cores, 8 GiB of available memory, and 30 GiB of available persistent storage before loading deployment images and Workspace data. This is an empirical operating recommendation, not a hard minimum, admission rule, capacity promise, per-process allocation, or storage reservation. Actual deployment images, build cache, retained Workspace data, and operating-system use may require more. The NanoHost Image Store's administrator-configurable content limit defaults to 200 GiB; it is an admission ceiling, not reserved capacity or automatic eviction. Full-store admission preserves retained images and refuses growth, and the limit does not replace measuring available storage.
@@ -161,7 +163,8 @@ NanoCore source startup, Docker application-image packaging for both Linux archi
 7. Requirement verdict, provisioning, installation disposition and result, runtime readiness, and real-product qualification remain separately named and separately proved.
 8. Replacing exact promoted-machine identities with prerequisite predicates cannot reuse an earlier host pass as acceptance evidence.
 9. Missing or unusable checker Python produces one bounded `cannot-check` JSON result, and blocks both live installation and staging before writes; a corrected prerequisite requires a fresh invocation.
-10. Adding, relaxing, or retiring a requirement creates a new profile digest, never rewrites prior results, and gives already deployed hosts an explicit migration or support consequence.
+10. The systemd parse probe ignores unrelated-unit warnings on a successful verification, rejects OpenKit service, slice and drop-in errors even with status zero, and retains nonzero and unavailable-inspector failure semantics.
+11. Adding, relaxing, or retiring a requirement creates a new profile digest, never rewrites prior results, and gives already deployed hosts an explicit migration or support consequence.
 
 ## Risks And Mitigations
 
