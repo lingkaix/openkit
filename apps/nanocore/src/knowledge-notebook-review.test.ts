@@ -261,10 +261,36 @@ describe('native fixed-base Knowledge Review and removal', () => {
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     expect((await call(f, 'knowledge.proposal.reverse', reverseInput)).status).toBe(200);
     expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(created.body.notebookRevision);
+    // A replacement reversal copies the original exact path from Git, rather than deleting it.
+    const replacementDraft = await draft(f);
+    const replacementReview = await accept(f, replacementDraft);
+    expect(replacementReview.status, JSON.stringify(replacementReview.body)).toBe(200);
+    const restored = await call(f, 'knowledge.proposal.reverse', {
+      requestId: randomUUID(),
+      proposalId: replacementDraft.proposal.id,
+      reviewId: replacementReview.body.review.reviewId,
+      knowledgePageId: 'alpha',
+      expectedContentDigest: digest(replacementDraft.bytes),
+      baseRevision: replacementDraft.proposal.candidateRevision,
+    });
+    expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+    expect(restored.body.application.present).toBe(true);
+    expect(
+      execFileSync(
+        'git',
+        [
+          '--git-dir',
+          f.repositoryPath,
+          'show',
+          `${restored.body.application.notebookRevision}:pages/alpha.md`,
+        ],
+        { encoding: 'utf8' }
+      )
+    ).toBe(replacement);
     const deletion = {
       requestId: randomUUID(),
       knowledgeEntryId: 'alpha',
-      baseRevision: created.body.notebookRevision,
+      baseRevision: restored.body.application.notebookRevision,
       expectedContentDigest: digest(replacement),
     };
     expect((await call(f, 'knowledge.delete', deletion)).status).toBe(400);
@@ -289,7 +315,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
         "SELECT action FROM audit_events WHERE action IN ('knowledge.proposal.decide','knowledge.proposal.reverse','knowledge.delete') AND outcome = 'succeeded'"
       )
       .all();
-    expect(evidence).toHaveLength(3);
+    expect(evidence).toHaveLength(5);
     expect(
       f.store.getCommandRequest(
         'knowledge.proposal.reverse',

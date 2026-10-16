@@ -1865,7 +1865,13 @@ export class FsStore {
         contentDigest(content) !== proposal.contentDigest ||
         candidate.metadata.authority.kind !== 'proposal' ||
         candidate.metadata.authority.proposalId !== proposal.id ||
-        !isDeepStrictEqual(candidate.metadata.producer, proposal.producer)
+        !isDeepStrictEqual(candidate.metadata.producer, proposal.producer) ||
+        candidate.metadata.summary !== proposal.rationale ||
+        !isDeepStrictEqual(candidate.metadata.sourceReferences, proposal.sourceReferences) ||
+        knowledgeAuthorityId('kp_', {
+          workspaceId: proposal.workspaceId,
+          requestId: candidate.metadata.changeRequest.requestId,
+        }) !== proposal.id
       )
         throw knowledgeProposalAuthorityError('recovery_required');
       return actual;

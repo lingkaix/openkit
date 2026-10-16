@@ -154,6 +154,8 @@ function readAuthorizedKnowledgeOwner<T extends { readonly workspaceId: string }
  * @throws The retained typed owner refusal or its bounded fallback.
  */
 function knowledgeProposalDraftFailure(error: unknown): never {
+  if (error instanceof OperationError) throw error;
+  if (error instanceof NotebookError) notebookCommandFailure(error);
   if (
     error instanceof IdempotencyKeyConflictError ||
     error instanceof KnowledgePageValidationError
@@ -1385,62 +1387,70 @@ export function createKnowledgeOperationImplementations(
       });
     },
     'knowledge.proposal.reverse': async (input, context) => {
-      const { workspaceId, proposalId } = input;
-      const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
-      store.projectKnowledgeProposalDraft(workspaceId, proposalId);
-      const decision = store.projectKnowledgeProposalDecision(workspaceId, input.reviewId);
-      if (
-        decision.review.proposalId !== proposalId ||
-        decision.review.decision !== 'accepted' ||
-        input.knowledgePageId !== proposal.knowledgePageId ||
-        input.expectedContentDigest !== proposal.contentDigest
-      )
-        throw new OperationError('conflict', 'Knowledge reversal conflicts with its Review.', 409);
-      // Restore only the selected path from the original base; keep every unrelated current path.
-      const dataRoot = store.getDataRoot();
-      if (!dataRoot)
-        throw new OperationError('recovery_required', 'Notebook storage is unavailable.', 503);
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
-      });
-      const path = `${proposal.knowledgePageId}.md`;
-      const original = notebook.readRevision(proposal.baseRevision).files[path] ?? null;
-      const baseBytes = notebook.readRevision(input.baseRevision).files[path];
-      if (baseBytes !== proposal.canonicalPageBytes)
-        throw new OperationError('conflict', 'Knowledge page changed after Review.', 409);
-      const request: NotebookUpdate = {
-        workspaceId,
-        requestId: input.requestId,
-        baseRevision: input.baseRevision,
-        changes: [{ path, content: original }],
-        summary: 'Reverse reviewed Knowledge change',
-      };
-      return withGovernedNotebook(request, context, async (owner) => {
-        const publication = await publishWorkspaceNotebook(
-          {
-            ...owner,
-            command: { name: 'knowledge.proposal.reverse', input },
-            ...(original === null && input.confirmRemoval
-              ? { confirmedRemovals: { [path]: baseBytes } }
-              : {}),
-          },
-          request
-        );
-        const content = owner.notebook.readRevision(publication.notebookRevision).files[path];
-        return ReverseKnowledgeProposalResponseSchema.parse({
-          proposalId,
-          reviewId: input.reviewId,
-          application: {
-            knowledgePageId: proposal.knowledgePageId,
-            contentDigest:
-              content === undefined
-                ? proposal.contentDigest
-                : `sha256:${createHash('sha256').update(content).digest('hex')}`,
-            present: content !== undefined,
-            notebookRevision: publication.notebookRevision,
-          },
+      try {
+        const { workspaceId, proposalId } = input;
+        const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
+        store.projectKnowledgeProposalDraft(workspaceId, proposalId);
+        const decision = store.projectKnowledgeProposalDecision(workspaceId, input.reviewId);
+        if (
+          decision.review.proposalId !== proposalId ||
+          decision.review.decision !== 'accepted' ||
+          input.knowledgePageId !== proposal.knowledgePageId ||
+          input.expectedContentDigest !== proposal.contentDigest
+        )
+          throw new OperationError(
+            'conflict',
+            'Knowledge reversal conflicts with its Review.',
+            409
+          );
+        // Restore only the selected path from the original base; keep every unrelated current path.
+        const dataRoot = store.getDataRoot();
+        if (!dataRoot)
+          throw new OperationError('recovery_required', 'Notebook storage is unavailable.', 503);
+        const notebook = new KnowledgeNotebook({
+          repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
         });
-      });
+        const path = `${proposal.knowledgePageId}.md`;
+        const original = notebook.readRevision(proposal.baseRevision).files[path] ?? null;
+        const baseBytes = notebook.readRevision(input.baseRevision).files[path];
+        if (baseBytes !== proposal.canonicalPageBytes)
+          throw new OperationError('conflict', 'Knowledge page changed after Review.', 409);
+        const request: NotebookUpdate = {
+          workspaceId,
+          requestId: input.requestId,
+          baseRevision: input.baseRevision,
+          changes: [{ path, content: original }],
+          summary: 'Reverse reviewed Knowledge change',
+        };
+        return withGovernedNotebook(request, context, async (owner) => {
+          const publication = await publishWorkspaceNotebook(
+            {
+              ...owner,
+              command: { name: 'knowledge.proposal.reverse', input },
+              ...(original === null && input.confirmRemoval
+                ? { confirmedRemovals: { [path]: baseBytes } }
+                : {}),
+            },
+            request
+          );
+          const content = owner.notebook.readRevision(publication.notebookRevision).files[path];
+          return ReverseKnowledgeProposalResponseSchema.parse({
+            proposalId,
+            reviewId: input.reviewId,
+            application: {
+              knowledgePageId: proposal.knowledgePageId,
+              contentDigest:
+                content === undefined
+                  ? proposal.contentDigest
+                  : `sha256:${createHash('sha256').update(content).digest('hex')}`,
+              present: content !== undefined,
+              notebookRevision: publication.notebookRevision,
+            },
+          });
+        });
+      } catch (error) {
+        notebookCommandFailure(error);
+      }
     },
     'knowledge.list': async (input, context) => {
       const { workspaceId } = input;
@@ -1575,6 +1585,7 @@ export function createKnowledgeOperationImplementations(
 
         return null;
       } catch (error) {
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_delete_failed');
       }
     },
