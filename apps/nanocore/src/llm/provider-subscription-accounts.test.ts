@@ -24,6 +24,7 @@ import {
   fauxText,
   type MutableModels,
   type OAuthCredential,
+  type StreamOptions,
 } from '@earendil-works/pi-ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -4803,7 +4804,22 @@ describe('inference route same-credential rejection', () => {
           .spyOn(globalThis, 'fetch')
           .mockRejectedValue(new Error('Inference observation must not fetch quota.'));
         let bearer: string | undefined;
-        const reject = async (_context: unknown, options: { apiKey?: string } | undefined) => {
+        const reject = async (_context: unknown, options: StreamOptions | undefined) => {
+          // This controlled native source emits only a framing event before its classified rejection.
+          // Invoke the installed pre-conversion hook so the Worker can prove its complete empty output.
+          const model = f.handle.models.getModel(
+            subscriptionProviderId,
+            f.providerModel.replace('openai-codex/', '')
+          )!;
+          await options?.onProviderStreamEvent?.(
+            subscriptionProviderId === 'openai-codex'
+              ? {
+                  type: 'response.created',
+                  response: { id: 'resp_observed_rejection', output: [] },
+                }
+              : { id: 'chatcmpl_observed_rejection', choices: [] },
+            model
+          );
           bearer = options?.apiKey;
           if (scenario === 'predecessor')
             await f.handle.credentials.modify(subscriptionProviderId, async (current) => current!);
