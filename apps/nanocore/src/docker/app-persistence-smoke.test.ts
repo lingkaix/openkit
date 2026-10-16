@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 import { OpenKitConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const smokeScript = join(repoRoot, 'scripts', 'docker', 'app-persistence-smoke.sh');
@@ -56,7 +59,13 @@ async function createMountedDataRootFixture(workspaceId: string): Promise<string
     mkdirSync(directory, { recursive: true });
   }
 
-  writeFileSync(join(dataRoot, 'server', 'db', 'core.sqlite'), '');
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+  } finally {
+    coreDb.sqlite.close();
+  }
   writeFileSync(join(dataRoot, 'config', 'server.jsonc'), '{ "schemaVersion": 1 }\n');
   writeFileSync(
     join(workspaceRoot, 'workspace-record.json'),

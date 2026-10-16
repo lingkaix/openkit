@@ -308,14 +308,16 @@ describe('dashboard and search Thread audiences', () => {
           artifactCount: scope === 'server-admin' ? 4 : 3,
           knowledgeEntryCount: 0,
         });
+        const localPrivateArtifactId = testEntityId('ar', 'ar_local-private');
+        const otherPrivateArtifactId = testEntityId('ar', 'ar_other-private');
         const deniedArtifactId =
           userId === 'usr_00000000-0000-7000-8000-000000000001'
-            ? 'ar_00000000-0000-7955-8f7a-56cc4f1f53c1'
-            : 'ar_00000000-0000-72b7-8c16-2b72362fa5bc';
+            ? otherPrivateArtifactId
+            : localPrivateArtifactId;
         const ownArtifactId =
           userId === 'usr_00000000-0000-7000-8000-000000000001'
-            ? 'ar_00000000-0000-72b7-8c16-2b72362fa5bc'
-            : 'ar_00000000-0000-7955-8f7a-56cc4f1f53c1';
+            ? localPrivateArtifactId
+            : otherPrivateArtifactId;
         const catalog = await app.request(
           ...operationRequest('artifact.list', { workspaceId: workspace.id }, { headers })
         );
@@ -324,8 +326,8 @@ describe('dashboard and search Thread audiences', () => {
           [
             ownArtifactId,
             ...(scope === 'server-admin' ? [deniedArtifactId] : []),
-            'ar_00000000-0000-7bc3-9a1d-b66b46bc7746',
-            'ar_00000000-0000-72ae-b987-bd44a8ecb5b3',
+            testEntityId('ar', 'ar_Task'),
+            testEntityId('ar', 'ar_Goal'),
           ].sort()
         );
         const record = await app.request(

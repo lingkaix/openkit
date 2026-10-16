@@ -70,7 +70,7 @@ function parameters(platform = 'linux/arm64') {
     previousPhysicalEpoch,
     nanoHostReplacementReference: replacementReference,
     prepare: {
-      administrationThreadId: 'private-administration-thread',
+      administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
       requestId: '11111111-1111-4111-8111-111111111111',
       configuration: { expectedRevision: revision, fileId: 'agents/worker.agent.jsonc' },
       target: { kind: 'agent', agentId: 'worker' },

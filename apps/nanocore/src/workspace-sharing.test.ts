@@ -139,10 +139,26 @@ describe('Workspace sharing lifecycle', () => {
       },
     ]);
     expect(listWorkspaceMembers(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d')).toMatchObject([
-      { isOwner: false, status: 'active', userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
-      { isOwner: true, status: 'active', userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
-      { isOwner: false, status: 'removed', userId: 'usr_00000000-0000-7171-af76-f9d024000442' },
-      { isOwner: false, status: 'active', userId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8' },
+      {
+        isOwner: true,
+        status: 'active',
+        userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      },
+      {
+        isOwner: false,
+        status: 'removed',
+        userId: 'usr_00000000-0000-7171-af76-f9d024000442',
+      },
+      {
+        isOwner: false,
+        status: 'active',
+        userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+      },
+      {
+        isOwner: false,
+        status: 'active',
+        userId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+      },
     ]);
     expect(
       getWorkspaceAccessRecoveryState(

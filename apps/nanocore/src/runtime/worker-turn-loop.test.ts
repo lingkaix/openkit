@@ -23,6 +23,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
@@ -132,11 +133,16 @@ describe('worker turn loop', () => {
         },
         reservedTurnId: 'tu_00000000-0000-70bb-b641-bbcd02b08432',
         reserveTurn: () => ({ turnId: 'tu_00000000-0000-70bb-b641-bbcd02b08432' }),
-        startWorker: admittedWorker(coreDb, store, 'req_worker_1', 'session_worker_1'),
+        startWorker: admittedWorker(
+          coreDb,
+          store,
+          'req_worker_1',
+          testEntityId('as', 'session_worker_1')
+        ),
         awaitWorker: () => ({
           stopReason: 'completed',
           itemIds: ['it_00000000-0000-7815-a0f2-b025bd06cb71'],
-          artifactIds: ['art_done'],
+          artifactIds: [testEntityId('ar', 'art_done')],
         }),
       });
 
@@ -144,7 +150,7 @@ describe('worker turn loop', () => {
       expect(result).not.toHaveProperty('queues');
       expect(result).toMatchObject({
         turnId: 'tu_00000000-0000-70bb-b641-bbcd02b08432',
-        workerSessionId: 'session_worker_1',
+        workerSessionId: testEntityId('as', 'session_worker_1'),
         stopDecision: {
           outcome: 'review',
           shouldStop: true,
@@ -152,7 +158,7 @@ describe('worker turn loop', () => {
         },
         evidence: {
           itemIds: ['it_00000000-0000-7815-a0f2-b025bd06cb71'],
-          artifactIds: ['art_done'],
+          artifactIds: [testEntityId('ar', 'art_done')],
         },
       });
       expect(
@@ -166,7 +172,7 @@ describe('worker turn loop', () => {
         goalId: 'goal_demo',
         taskId: 'task_demo',
         stage: 'completed',
-        workerSessionId: 'session_worker_1',
+        workerSessionId: testEntityId('as', 'session_worker_1'),
         contextDigest: 'ctxpkg_sha256_demo',
         stopReason: 'completed',
       });
@@ -410,7 +416,7 @@ describe('worker turn loop', () => {
             coreDb,
             store,
             'req_worker_admin_authority',
-            'session_worker_admin_authority',
+            testEntityId('as', 'session_worker_admin_authority'),
             'usr_00000000-0000-7916-9acc-f85082f95261',
             {
               kind: 'token',

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -981,12 +982,12 @@ describe('generic turn routes', () => {
           ? []
           : [
               {
-                queueEntryId: schedulerTurnId(
-                  JSON.stringify(LOCAL_ACTOR),
-                  'ws_00000000-0000-7000-8000-000000000001',
-                  'th_00000000-0000-7000-8000-000000000001',
-                  requestId
-                ).replace(/^turn_/, 'queue_'),
+                queueEntryId: `queue_${requestId}_${createHash('sha256')
+                  .update(
+                    `${JSON.stringify(LOCAL_ACTOR)}:ws_00000000-0000-7000-8000-000000000001:th_00000000-0000-7000-8000-000000000001:${requestId}`
+                  )
+                  .digest('hex')
+                  .slice(0, 16)}`,
                 status: 'admitted',
               },
             ]
@@ -1655,8 +1656,12 @@ describe('Core Turn receipt recovery boundary', () => {
         ...receipt,
         response:
           fault === 'wrong-kind'
-            ? { ...receipt.response, kind: 'workspace' as const }
-            : { ...receipt.response, id: 'missing-turn' },
+            ? {
+                ...receipt.response,
+                kind: 'workspace' as const,
+                id: testEntityId('ws', 'wrong-kind'),
+              }
+            : { ...receipt.response, id: testEntityId('tu', 'missing-turn') },
       };
       store.recordCommandRequest(corrupted);
       const turns = store.listThreadTurns(scope.workspaceId, scope.threadId);

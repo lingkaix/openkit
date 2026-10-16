@@ -451,7 +451,7 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const agentSessionId = `session_sim_turn_${turn.id}`;
+    const agentSessionId = testEntityId('as', `session_sim_turn_${turn.id}`);
     store.createAgentSession({
       id: agentSessionId,
       agentId: 'agent_codex_host',

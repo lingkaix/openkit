@@ -352,14 +352,17 @@ describe('Worker environment operations', () => {
     );
     const foreign = fixture.store.createThread(
       fixture.store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001').id,
-      'Private assistant'
+      'Private assistant',
+      undefined,
+      'conversation',
+      { privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001', visibility: 'private' }
     );
     const hidden = {
       code: 'not_found',
       message: 'Worker environment was not found.',
     };
 
-    for (const threadId of ['thread_missing', foreign.id, inaccessible.id]) {
+    for (const threadId of [testEntityId('th', 'thread_missing'), foreign.id, inaccessible.id]) {
       expect(() =>
         fixture.operations.select(context, {
           adjudicatedThreadIds: [],

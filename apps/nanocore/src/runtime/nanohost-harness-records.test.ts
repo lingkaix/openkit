@@ -1252,10 +1252,7 @@ describe('private NanoHost Harness records', () => {
       queueNanoHostHarnessOperation(coreDb, {
         body: {
           agentSessionId: testEntityId('as', `agent-session-${closedSession}`),
-          agentSessionRuntimeBindingId: testEntityId(
-            'as',
-            `agent-session-binding-${closedSession}`
-          ),
+          agentSessionRuntimeBindingId: `agent-session-binding-${closedSession}`,
         },
         harnessInstanceId: 'harness-1',
         operation: 'session.close',
