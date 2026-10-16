@@ -8283,55 +8283,6 @@
         }
       }
     },
-    "/api/app/operations/chat.quick": {
-      "post": {
-        "operationId": "chat.quick",
-        "tags": [
-          "chat"
-        ],
-        "summary": "Run one completed non-streaming Quick Chat in the actor’s own Workspace.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/chat.quick.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Run one completed non-streaming Quick Chat in the actor’s own Workspace.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/chat.quick.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/operations/conversation.targets": {
       "post": {
         "operationId": "conversation.targets",
@@ -25748,7 +25699,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -25892,7 +25843,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -25996,7 +25947,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -26037,7 +25988,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -26159,7 +26110,7 @@
                   "research",
                   "operations",
                   "general",
-                  "quick-chat"
+                  "personal"
                 ]
               },
               "status": {
@@ -26371,6 +26322,17 @@
                     "conversation",
                     "administration"
                   ]
+                },
+                "threadSource": {
+                  "type": "string",
+                  "enum": [
+                    "conversation",
+                    "worker"
+                  ]
+                },
+                "parentThreadId": {
+                  "type": "string",
+                  "minLength": 1
                 },
                 "visibility": {
                   "type": "string",
@@ -26642,7 +26604,7 @@
                         "research",
                         "operations",
                         "general",
-                        "quick-chat"
+                        "personal"
                       ]
                     },
                     "status": {
@@ -27936,7 +27898,7 @@
                   "research",
                   "operations",
                   "general",
-                  "quick-chat"
+                  "personal"
                 ]
               },
               "status": {
@@ -31836,7 +31798,7 @@
                       "research",
                       "operations",
                       "general",
-                      "quick-chat"
+                      "personal"
                     ]
                   },
                   "status": {
@@ -32695,7 +32657,7 @@
                           "research",
                           "operations",
                           "general",
-                          "quick-chat"
+                          "personal"
                         ]
                       },
                       "status": {
@@ -32870,6 +32832,17 @@
                     "administration"
                   ]
                 },
+                "threadSource": {
+                  "type": "string",
+                  "enum": [
+                    "conversation",
+                    "worker"
+                  ]
+                },
+                "parentThreadId": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "visibility": {
                   "type": "string",
                   "enum": [
@@ -32999,6 +32972,17 @@
               "administration"
             ]
           },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
+            ]
+          },
+          "parentThreadId": {
+            "type": "string",
+            "minLength": 1
+          },
           "visibility": {
             "type": "string",
             "enum": [
@@ -33091,6 +33075,17 @@
               "conversation",
               "administration"
             ]
+          },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
+            ]
+          },
+          "parentThreadId": {
+            "type": "string",
+            "minLength": 1
           },
           "visibility": {
             "type": "string",
@@ -33192,6 +33187,17 @@
               "administration"
             ]
           },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
+            ]
+          },
+          "parentThreadId": {
+            "type": "string",
+            "minLength": 1
+          },
           "visibility": {
             "type": "string",
             "enum": [
@@ -33284,6 +33290,17 @@
               "conversation",
               "administration"
             ]
+          },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
+            ]
+          },
+          "parentThreadId": {
+            "type": "string",
+            "minLength": 1
           },
           "visibility": {
             "type": "string",
@@ -33582,6 +33599,140 @@
                     "completedAt",
                     "type",
                     "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
                   ],
                   "additionalProperties": false
                 },
@@ -34301,6 +34452,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -35351,6 +35562,17 @@
                   "administration"
                 ]
               },
+              "threadSource": {
+                "type": "string",
+                "enum": [
+                  "conversation",
+                  "worker"
+                ]
+              },
+              "parentThreadId": {
+                "type": "string",
+                "minLength": 1
+              },
               "visibility": {
                 "type": "string",
                 "enum": [
@@ -35690,6 +35912,140 @@
                           "completedAt",
                           "type",
                           "text"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "workspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "threadId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "turnId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          "parentItemId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "causationId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "completedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "type": {
+                            "type": "string",
+                            "const": "context-summary"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "environmentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "sourceRange": {
+                            "type": "object",
+                            "properties": {
+                              "firstItemId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "lastItemId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "itemCount": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "sourceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              },
+                              "evidenceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "firstItemId",
+                              "lastItemId",
+                              "itemCount",
+                              "sourceDigest",
+                              "evidenceDigest"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "previousSummary": {
+                            "type": "object",
+                            "properties": {
+                              "itemId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "digest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "itemId",
+                              "digest"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "threadId",
+                          "turnId",
+                          "status",
+                          "createdAt",
+                          "completedAt",
+                          "type",
+                          "text",
+                          "environmentDigest",
+                          "sourceRange"
                         ],
                         "additionalProperties": false
                       },
@@ -36409,6 +36765,66 @@
                               ],
                               "additionalProperties": false
                             }
+                          },
+                          "assistantHandoff": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "task"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "input": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  },
+                                  "agentId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "modelId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "input"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "goal"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "intent": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "intent"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -38413,6 +38829,140 @@
                     },
                     "status": {
                       "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
                       "enum": [
                         "in_progress",
                         "completed",
@@ -39108,6 +39658,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -40667,6 +41277,140 @@
                     },
                     "status": {
                       "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
                       "enum": [
                         "in_progress",
                         "completed",
@@ -41362,6 +42106,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -43010,6 +43814,140 @@
                     },
                     "status": {
                       "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
                       "enum": [
                         "in_progress",
                         "completed",
@@ -43705,6 +44643,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -60867,57 +61865,6 @@
         ],
         "additionalProperties": false
       },
-      "chat.quick.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "input": {
-            "type": "string",
-            "minLength": 1
-          },
-          "stream": {
-            "type": "boolean",
-            "const": false
-          }
-        },
-        "required": [
-          "input"
-        ],
-        "additionalProperties": false
-      },
-      "chat.quick.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "status": {
-            "type": "string",
-            "const": "completed"
-          },
-          "workspaceId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "modelId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "content": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "status",
-          "workspaceId",
-          "modelId",
-          "content"
-        ],
-        "additionalProperties": false
-      },
       "conversation.targets.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -61177,6 +62124,17 @@
                         "conversation",
                         "administration"
                       ]
+                    },
+                    "threadSource": {
+                      "type": "string",
+                      "enum": [
+                        "conversation",
+                        "worker"
+                      ]
+                    },
+                    "parentThreadId": {
+                      "type": "string",
+                      "minLength": 1
                     },
                     "visibility": {
                       "type": "string",
@@ -61700,6 +62658,140 @@
                         "completedAt",
                         "type",
                         "text"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "status": {
+                          "type": "string",
+                          "const": "completed"
+                        },
+                        "parentItemId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "causationId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "context-summary"
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        },
+                        "environmentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "sourceRange": {
+                          "type": "object",
+                          "properties": {
+                            "firstItemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "lastItemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "itemCount": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "sourceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "evidenceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "firstItemId",
+                            "lastItemId",
+                            "itemCount",
+                            "sourceDigest",
+                            "evidenceDigest"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "previousSummary": {
+                          "type": "object",
+                          "properties": {
+                            "itemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "digest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "itemId",
+                            "digest"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "status",
+                        "createdAt",
+                        "completedAt",
+                        "type",
+                        "text",
+                        "environmentDigest",
+                        "sourceRange"
                       ],
                       "additionalProperties": false
                     },
@@ -62419,6 +63511,66 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "assistantHandoff": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "task"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                },
+                                "agentId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "modelId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "goal"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "intent": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "intent"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -63879,6 +65031,140 @@
                   },
                   "status": {
                     "type": "string",
+                    "const": "completed"
+                  },
+                  "parentItemId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "causationId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "completedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "context-summary"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536
+                  },
+                  "environmentDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "sourceRange": {
+                    "type": "object",
+                    "properties": {
+                      "firstItemId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "lastItemId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "itemCount": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sourceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "evidenceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "firstItemId",
+                      "lastItemId",
+                      "itemCount",
+                      "sourceDigest",
+                      "evidenceDigest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "previousSummary": {
+                    "type": "object",
+                    "properties": {
+                      "itemId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "itemId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "id",
+                  "workspaceId",
+                  "threadId",
+                  "turnId",
+                  "status",
+                  "createdAt",
+                  "completedAt",
+                  "type",
+                  "text",
+                  "environmentDigest",
+                  "sourceRange"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "type": "string",
                     "enum": [
                       "in_progress",
                       "completed",
@@ -64574,6 +65860,66 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "assistantHandoff": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "task"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "input": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "agentId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "modelId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "input"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "goal"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "intent": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "intent"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -66004,6 +67350,140 @@
                         },
                         "status": {
                           "type": "string",
+                          "const": "completed"
+                        },
+                        "parentItemId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "causationId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "context-summary"
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        },
+                        "environmentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "sourceRange": {
+                          "type": "object",
+                          "properties": {
+                            "firstItemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "lastItemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "itemCount": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "sourceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "evidenceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "firstItemId",
+                            "lastItemId",
+                            "itemCount",
+                            "sourceDigest",
+                            "evidenceDigest"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "previousSummary": {
+                          "type": "object",
+                          "properties": {
+                            "itemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "digest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "itemId",
+                            "digest"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "status",
+                        "createdAt",
+                        "completedAt",
+                        "type",
+                        "text",
+                        "environmentDigest",
+                        "sourceRange"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "status": {
+                          "type": "string",
                           "enum": [
                             "in_progress",
                             "completed",
@@ -66699,6 +68179,66 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "assistantHandoff": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "task"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                },
+                                "agentId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "modelId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "goal"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "intent": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "intent"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -78188,6 +79728,140 @@
                         },
                         "status": {
                           "type": "string",
+                          "const": "completed"
+                        },
+                        "parentItemId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "causationId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "context-summary"
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        },
+                        "environmentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "sourceRange": {
+                          "type": "object",
+                          "properties": {
+                            "firstItemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "lastItemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "itemCount": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "sourceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "evidenceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "firstItemId",
+                            "lastItemId",
+                            "itemCount",
+                            "sourceDigest",
+                            "evidenceDigest"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "previousSummary": {
+                          "type": "object",
+                          "properties": {
+                            "itemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "digest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "itemId",
+                            "digest"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "status",
+                        "createdAt",
+                        "completedAt",
+                        "type",
+                        "text",
+                        "environmentDigest",
+                        "sourceRange"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "status": {
+                          "type": "string",
                           "enum": [
                             "in_progress",
                             "completed",
@@ -78883,6 +80557,66 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "assistantHandoff": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "task"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                },
+                                "agentId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "modelId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "goal"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "intent": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "intent"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -80343,6 +82077,140 @@
                   },
                   "status": {
                     "type": "string",
+                    "const": "completed"
+                  },
+                  "parentItemId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "causationId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "completedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "context-summary"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536
+                  },
+                  "environmentDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "sourceRange": {
+                    "type": "object",
+                    "properties": {
+                      "firstItemId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "lastItemId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "itemCount": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sourceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "evidenceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "firstItemId",
+                      "lastItemId",
+                      "itemCount",
+                      "sourceDigest",
+                      "evidenceDigest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "previousSummary": {
+                    "type": "object",
+                    "properties": {
+                      "itemId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "itemId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "id",
+                  "workspaceId",
+                  "threadId",
+                  "turnId",
+                  "status",
+                  "createdAt",
+                  "completedAt",
+                  "type",
+                  "text",
+                  "environmentDigest",
+                  "sourceRange"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "type": "string",
                     "enum": [
                       "in_progress",
                       "completed",
@@ -81038,6 +82906,66 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "assistantHandoff": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "task"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "input": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "agentId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "modelId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "input"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "goal"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "intent": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "intent"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -91872,7 +93800,7 @@
                           "research",
                           "operations",
                           "general",
-                          "quick-chat"
+                          "personal"
                         ]
                       },
                       "status": {
@@ -93038,7 +94966,7 @@
                       "research",
                       "operations",
                       "general",
-                      "quick-chat"
+                      "personal"
                     ]
                   },
                   "status": {
@@ -94720,7 +96648,7 @@
                   "research",
                   "operations",
                   "general",
-                  "quick-chat"
+                  "personal"
                 ]
               },
               "status": {
@@ -94826,5 +96754,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:99579ebc20ea32fbe961ac5e1b4684d97e47bfe4003280f004b23e1f10368f85"
+  "x-openkit-source-digest": "sha256:6c6ffcf3345b202b75e14c0f189b466ab376593c856a6d77f2d80e7bff61e9a9"
 }

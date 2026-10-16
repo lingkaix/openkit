@@ -39,6 +39,17 @@
         "administration"
       ]
     },
+    "threadSource": {
+      "type": "string",
+      "enum": [
+        "conversation",
+        "worker"
+      ]
+    },
+    "parentThreadId": {
+      "type": "string",
+      "minLength": 1
+    },
     "visibility": {
       "type": "string",
       "enum": [
