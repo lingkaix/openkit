@@ -1,28 +1,28 @@
 {
-  "protocolVersion": "0.5.0",
+  "protocolVersion": "0.6.0",
   "schema": "audit-event",
   "data": {
-    "id": "0190f4c8-0014-7abc-8def-000000000014",
-    "workspaceId": "0190f4c8-0001-7abc-8def-000000000001",
-    "protocolVersion": "0.5.0",
-    "threadId": "0190f4c8-0002-7abc-8def-000000000002",
-    "turnId": "0190f4c8-0003-7abc-8def-000000000003",
-    "itemId": "0190f4c8-0004-7abc-8def-000000000004",
-    "capabilityCallId": "0190f4c8-0012-7abc-8def-000000000012",
-    "permissionDecisionId": "pd_0190f4c8",
-    "vaultGrantId": "grant_0190f4c8",
+    "id": "aud_00000000-0000-7e8e-9dda-823fbd6c1493",
+    "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a",
+    "protocolVersion": "0.6.0",
+    "threadId": "th_00000000-0000-7162-9ddb-378c8b96b0a3",
+    "turnId": "tu_00000000-0000-7a7e-8dd5-ad6ea5188a9c",
+    "itemId": "it_00000000-0000-7805-99c2-9f7445de7927",
+    "capabilityCallId": "cap_00000000-0000-7dab-b906-9484bf8db5d0",
+    "permissionDecisionId": "pd_00000000-0000-778e-b8e3-7d91a797a603",
+    "vaultGrantId": "grant_00000000-0000-78d4-9936-9be403ecc375",
     "requestId": "0190f4c8-0011-7abc-8def-000000000011",
     "actor": {
       "kind": "user",
-      "id": "user_owner"
+      "id": "usr_00000000-0000-7011-88df-c2b1e8466b6f"
     },
     "subject": {
       "kind": "automation",
-      "id": "automation_turn_start",
-      "responsibleUserId": "user_owner"
+      "id": "auto_00000000-0000-7c68-a0c6-f67c5fedf3bc",
+      "responsibleUserId": "usr_00000000-0000-7011-88df-c2b1e8466b6f"
     },
     "agentId": "0190f4c8-0008-7abc-8def-000000000008",
-    "agentSessionId": "0190f4c8-0007-7abc-8def-000000000007",
+    "agentSessionId": "as_00000000-0000-797c-9610-9f2b978140b7",
     "category": "command",
     "action": "turn.start",
     "resource": "turn",

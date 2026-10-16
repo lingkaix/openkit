@@ -18,7 +18,7 @@ import { listVaultUseRecords } from './vault-use-records.js';
 function createDbs(): { coreDb: CoreDb; workspaceDb: WorkspaceDb } {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-use-audited-'));
   const coreDb = openCoreDb(dataRoot);
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
   applyMigrations(coreDb);
   applyScopedMigrations(workspaceDb);
   return { coreDb, workspaceDb };
@@ -37,22 +37,24 @@ describe('vault use audited backend', () => {
       backend.store({
         material: 'ghp_live_secret',
         metadata: { ownerScope: 'server' },
-        referenceId: 'vault_github',
+        referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       });
 
       const audited = createVaultUseAuditedBackend({
         backend,
-        createUseId: () => 'use_success',
+        createUseId: () => 'vu_00000000-0000-76ef-929d-5d592024e236',
         db: coreDb,
-        grantId: 'grant_1',
+        grantId: 'grant_00000000-0000-7919-a9bd-25953b88f539',
         now: () => '2026-07-05T02:01:00.000Z',
         ownerScope: 'server',
         resolvingPath: 'grant',
       });
 
-      expect(Buffer.from(audited.resolve({ referenceId: 'vault_github' })).toString('utf8')).toBe(
-        'ghp_live_secret'
-      );
+      expect(
+        Buffer.from(
+          audited.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+        ).toString('utf8')
+      ).toBe('ghp_live_secret');
       const records = listVaultUseRecords(coreDb);
       const auditRow = coreDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
@@ -63,14 +65,14 @@ describe('vault use audited backend', () => {
           auditEventId: expect.stringMatching(/^aud_/),
           backendKind: 'encrypted-file',
           failureCode: null,
-          grantId: 'grant_1',
+          grantId: 'grant_00000000-0000-7919-a9bd-25953b88f539',
           materialVersion: 1,
           outcome: 'succeeded',
           ownerScope: 'server',
           resolvingPath: 'grant',
           usedAt: '2026-07-05T02:01:00.000Z',
-          useId: 'use_success',
-          vaultReferenceId: 'vault_github',
+          useId: 'vu_00000000-0000-76ef-929d-5d592024e236',
+          vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
           workspaceId: null,
         }),
       ]);
@@ -80,9 +82,9 @@ describe('vault use audited backend', () => {
         category: 'system',
         error_code: null,
         outcome: 'succeeded',
-        resource: 'vault:vault_github',
+        resource: 'vault:vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         severity: 'info',
-        vault_grant_id: 'grant_1',
+        vault_grant_id: 'grant_00000000-0000-7919-a9bd-25953b88f539',
         workspace_id: null,
       });
       expect(JSON.stringify(records)).not.toContain('ghp_live_secret');
@@ -103,19 +105,19 @@ describe('vault use audited backend', () => {
     try {
       const audited = createVaultUseAuditedBackend({
         backend,
-        capabilityCallId: 'call_1',
-        createUseId: () => 'use_failed',
+        capabilityCallId: 'cap_00000000-0000-7289-8845-faf171b19b16',
+        createUseId: () => 'vu_00000000-0000-76f6-90d7-e6da6d369da3',
         db: workspaceDb,
         now: () => '2026-07-05T02:02:00.000Z',
         ownerScope: 'workspace',
         planId: 'plan_1',
         resolvingPath: 'plan',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       });
 
-      expect(() => audited.resolve({ referenceId: 'vault_missing' })).toThrow(
-        'reference-not-found'
-      );
+      expect(() =>
+        audited.resolve({ referenceId: 'vault_00000000-0000-722b-b433-75d118b2149c' })
+      ).toThrow('reference-not-found');
       const records = listVaultUseRecords(workspaceDb);
       const auditRow = workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
@@ -125,7 +127,7 @@ describe('vault use audited backend', () => {
         expect.objectContaining({
           auditEventId: expect.stringMatching(/^aud_/),
           backendKind: 'encrypted-file',
-          capabilityCallId: 'call_1',
+          capabilityCallId: 'cap_00000000-0000-7289-8845-faf171b19b16',
           failureCode: 'reference-not-found',
           materialVersion: null,
           outcome: 'failed',
@@ -133,22 +135,22 @@ describe('vault use audited backend', () => {
           planId: 'plan_1',
           resolvingPath: 'plan',
           usedAt: '2026-07-05T02:02:00.000Z',
-          useId: 'use_failed',
-          vaultReferenceId: 'vault_missing',
-          workspaceId: 'ws_1',
+          useId: 'vu_00000000-0000-76f6-90d7-e6da6d369da3',
+          vaultReferenceId: 'vault_00000000-0000-722b-b433-75d118b2149c',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         }),
       ]);
       expect(auditRow).toMatchObject({
         action: 'vault.resolve',
         agent_session_id: null,
         audit_event_id: records[0]?.auditEventId,
-        capability_call_id: 'call_1',
+        capability_call_id: 'cap_00000000-0000-7289-8845-faf171b19b16',
         category: 'system',
         error_code: 'reference-not-found',
         outcome: 'failed',
-        resource: 'vault:vault_missing',
+        resource: 'vault:vault_00000000-0000-722b-b433-75d118b2149c',
         severity: 'error',
-        workspace_id: 'ws_1',
+        workspace_id: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -168,31 +170,31 @@ describe('vault use audited backend', () => {
       backend.store({
         material: 'server_only_secret',
         metadata: { ownerScope: 'server' },
-        referenceId: 'vault_server_only',
+        referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
       });
 
       const audited = createVaultUseAuditedBackend({
         backend,
-        createUseId: () => 'use_scope_mismatch',
+        createUseId: () => 'vu_00000000-0000-71b5-a3a6-2e8ee6b25407',
         db: workspaceDb,
         now: () => '2026-07-05T02:04:00.000Z',
         ownerScope: 'workspace',
         resolvingPath: 'provider',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       });
 
-      expect(() => audited.resolve({ referenceId: 'vault_server_only' })).toThrow(
-        'backend-unavailable: Vault reference scope does not match resolution scope.'
-      );
+      expect(() =>
+        audited.resolve({ referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860' })
+      ).toThrow('backend-unavailable: Vault reference scope does not match resolution scope.');
       expect(listVaultUseRecords(workspaceDb)).toEqual([
         expect.objectContaining({
           failureCode: 'backend-unavailable',
           materialVersion: null,
           outcome: 'failed',
           ownerScope: 'workspace',
-          useId: 'use_scope_mismatch',
-          vaultReferenceId: 'vault_server_only',
-          workspaceId: 'ws_1',
+          useId: 'vu_00000000-0000-71b5-a3a6-2e8ee6b25407',
+          vaultReferenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         }),
       ]);
       expect(JSON.stringify(listVaultUseRecords(workspaceDb))).not.toContain('server_only_secret');
@@ -209,7 +211,7 @@ describe('vault use audited backend', () => {
         diagnostic: 'vault is locked',
         kind: 'encrypted-file',
       }),
-      createUseId: () => 'use_locked',
+      createUseId: () => 'vu_00000000-0000-7bfa-81f1-3584e640b846',
       db: coreDb,
       now: () => '2026-07-05T02:03:00.000Z',
       ownerScope: 'server',
@@ -217,15 +219,17 @@ describe('vault use audited backend', () => {
     });
 
     try {
-      expect(() => audited.resolve({ referenceId: 'vault_github' })).toThrow('vault-locked');
+      expect(() =>
+        audited.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+      ).toThrow('vault-locked');
       expect(listVaultUseRecords(coreDb)).toEqual([
         expect.objectContaining({
           failureCode: 'vault-locked',
           materialVersion: null,
           outcome: 'failed',
           resolvingPath: 'admin',
-          useId: 'use_locked',
-          vaultReferenceId: 'vault_github',
+          useId: 'vu_00000000-0000-7bfa-81f1-3584e640b846',
+          vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         }),
       ]);
     } finally {

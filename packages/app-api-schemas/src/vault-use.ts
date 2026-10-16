@@ -1,24 +1,33 @@
+import {
+  AgentSessionIdSchema,
+  AuditEventIdSchema,
+  CapabilityCallIdSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  VaultUseIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
 /** Redacted workspace vault use record exposed through the App API. */
 export const WorkspaceVaultUseRecordSchema = z
   .object({
-    useId: z.string().min(1),
+    useId: VaultUseIdSchema,
     ownerScope: z.literal('workspace'),
-    workspaceId: z.string().min(1),
-    vaultReferenceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    vaultReferenceId: VaultReferenceIdSchema,
     materialVersion: z.number().int().positive().nullable(),
     backendKind: z.enum(['encrypted-file']),
     resolvingPath: z.enum(['grant', 'plan', 'admin', 'provider']),
-    grantId: z.string().min(1).nullable(),
+    grantId: VaultGrantIdSchema.nullable(),
     planId: z.string().min(1).nullable(),
     receiptId: z.string().min(1).nullable(),
-    agentSessionId: z.string().min(1).nullable(),
-    capabilityCallId: z.string().min(1).nullable(),
+    agentSessionId: AgentSessionIdSchema.nullable(),
+    capabilityCallId: CapabilityCallIdSchema.nullable(),
     outcome: z.enum(['succeeded', 'failed', 'denied']),
     failureCode: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     usedAt: z.string().datetime(),
   })
   .strict()
@@ -29,21 +38,21 @@ export const WorkspaceVaultUseRecordSchema = z
 /** Redacted server vault use record exposed through the App API. */
 export const ServerVaultUseRecordSchema = z
   .object({
-    useId: z.string().min(1),
+    useId: VaultUseIdSchema,
     ownerScope: z.literal('server'),
     workspaceId: z.null(),
-    vaultReferenceId: z.string().min(1),
+    vaultReferenceId: VaultReferenceIdSchema,
     materialVersion: z.number().int().positive().nullable(),
     backendKind: z.enum(['encrypted-file']),
     resolvingPath: z.enum(['grant', 'plan', 'admin', 'provider']),
-    grantId: z.string().min(1).nullable(),
+    grantId: VaultGrantIdSchema.nullable(),
     planId: z.string().min(1).nullable(),
     receiptId: z.string().min(1).nullable(),
-    agentSessionId: z.string().min(1).nullable(),
-    capabilityCallId: z.string().min(1).nullable(),
+    agentSessionId: AgentSessionIdSchema.nullable(),
+    capabilityCallId: CapabilityCallIdSchema.nullable(),
     outcome: z.enum(['succeeded', 'failed', 'denied']),
     failureCode: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     usedAt: z.string().datetime(),
   })
   .strict()
@@ -54,7 +63,7 @@ export const ServerVaultUseRecordSchema = z
 /** Redacted workspace vault use record list response. */
 export const ListWorkspaceVaultUseRecordsResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     vaultUseRecords: z.array(WorkspaceVaultUseRecordSchema),
   })
   .strict()

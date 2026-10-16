@@ -4,13 +4,13 @@
   "snapshotId": "image-smoke-snapshot",
   "createdAt": "2026-10-01T00:00:00.000Z",
   "scope": {
-    "workspaceId": "image-smoke",
-    "threadId": "thread-codex",
-    "turnId": "image-smoke-turn",
-    "agentSessionId": "image-smoke-codex",
+    "workspaceId": "ws_00000000-0000-7000-8000-000000000001",
+    "threadId": "th_00000000-0000-7000-8000-000000000001",
+    "turnId": "tu_00000000-0000-7000-8000-000000000001",
+    "agentSessionId": "as_00000000-0000-7000-8000-000000000001",
     "triggerActor": {
       "kind": "user",
-      "id": "image-smoke"
+      "id": "usr_00000000-0000-7000-8000-000000000001"
     },
     "requestId": "image-smoke-request"
   },
@@ -86,9 +86,9 @@
       }
     },
     "transcript": {
-      "root": "/openkit/threads/thread-codex/codex/capture/image-smoke-turn",
-      "eventsPath": "/openkit/threads/thread-codex/codex/capture/image-smoke-turn/events.jsonl",
-      "itemsPath": "/openkit/threads/thread-codex/codex/capture/image-smoke-turn/items.jsonl",
+      "root": "/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-7000-8000-000000000001",
+      "eventsPath": "/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-7000-8000-000000000001/events.jsonl",
+      "itemsPath": "/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-7000-8000-000000000001/items.jsonl",
       "flush": "line",
       "import": "turn-end",
       "required": true

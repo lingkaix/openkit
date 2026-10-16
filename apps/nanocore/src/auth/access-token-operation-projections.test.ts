@@ -3,15 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS, operationMcpEligible } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../app.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import { ensureServerBootstrapToken } from './bootstrap-token.js';
-import { ensureLocalUser } from './identity.js';
 import type { BetterAuthServer } from './middleware.js';
 
 /** Fresh storage proves refusal before bootstrap writes to any of its three durable owners. */
@@ -22,7 +22,7 @@ function fixture() {
   const bootstrap = ensureServerBootstrapToken(coreDb)!;
   const input = {
     token: bootstrap.token,
-    ownerUserId: 'user_bootstrap',
+    ownerUserId: 'usr_00000000-0000-7470-911b-542e36daabda',
     displayName: 'Bootstrap owner',
     email: 'bootstrap@example.test',
     password: 'fixture-password',
@@ -52,7 +52,9 @@ describe('B12 bootstrap credential admission', () => {
     const auth: BetterAuthServer = {
       api: {
         getSession: async () =>
-          credential === 'session' ? { user: { id: 'user_session' } } : null,
+          credential === 'session'
+            ? { user: { id: 'usr_00000000-0000-7691-add4-fc1fc8769319' } }
+            : null,
       },
       handler: async () => new Response(null, { status: 404 }),
     };
@@ -104,32 +106,42 @@ describe('B12 bootstrap credential admission', () => {
     try {
       const invoke = createOperationInvocation({ coreDb: f.coreDb, mode: 'server' });
       const contexts: OperationInvocationContext[] = [
-        { kind: 'public', actor: { kind: 'local', userId: 'user_local' } },
-        { kind: 'public', actor: { kind: 'session', userId: 'user_session' } },
         {
           kind: 'public',
-          actor: { kind: 'token', userId: 'user_admin', tokenScope: 'server-admin' },
+          actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+        },
+        {
+          kind: 'public',
+          actor: { kind: 'session', userId: 'usr_00000000-0000-7691-add4-fc1fc8769319' },
+        },
+        {
+          kind: 'public',
+          actor: {
+            kind: 'token',
+            userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+            tokenScope: 'server-admin',
+          },
         },
         {
           kind: 'worker',
-          actor: { kind: 'user', id: 'user_worker' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7e0a-a693-dd67da4c90db' },
           requestId: 'request_worker',
           bindings: {},
           lineage: {
-            workspaceId: 'ws_test',
-            threadId: 'th_test',
-            turnId: 'turn_test',
-            agentSessionId: 'as_test',
+            workspaceId: 'ws_00000000-0000-796a-8af7-97608a790532',
+            threadId: 'th_00000000-0000-7264-9729-c1391de4f71e',
+            turnId: 'tu_00000000-0000-721a-a80b-ea39a8900478',
+            agentSessionId: 'as_00000000-0000-7645-9bc1-276baec9cf48',
             packageSnapshotId: 'package_test',
           },
         },
         {
           kind: 'coordinator',
-          actor: { kind: 'local', userId: 'user_local' },
-          workspaceId: 'ws_test',
-          threadId: 'th_test',
+          actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-796a-8af7-97608a790532',
+          threadId: 'th_00000000-0000-7264-9729-c1391de4f71e',
           goalId: 'goal_test',
-          turnId: 'turn_test',
+          turnId: 'tu_00000000-0000-721a-a80b-ea39a8900478',
           requestId: 'request_test',
         },
       ];
@@ -167,15 +179,23 @@ describe('B12 bootstrap credential admission', () => {
 
 const formerBindings = [
   ['GET', '/api/app/auth/my-admin-tokens', {}],
-  ['PUT', '/api/app/auth/my-admin-tokens/default', { tokenId: 'tok_admin' }],
+  [
+    'PUT',
+    '/api/app/auth/my-admin-tokens/default',
+    { tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' },
+  ],
   ['GET', '/api/app/auth/tokens', {}],
   [
     'POST',
     '/api/app/auth/tokens',
     { scope: 'server-admin', expiresAt: '2999-01-01T00:00:00.000Z' },
   ],
-  ['POST', '/api/app/auth/tokens/tok_admin/rotate', { graceSeconds: 60 }],
-  ['POST', '/api/app/auth/tokens/tok_admin/revoke', {}],
+  [
+    'POST',
+    '/api/app/auth/tokens/tok_00000000-0000-75c5-b4dc-6661b8eac629/rotate',
+    { graceSeconds: 60 },
+  ],
+  ['POST', '/api/app/auth/tokens/tok_00000000-0000-75c5-b4dc-6661b8eac629/revoke', {}],
   ['POST', '/api/app/auth/bootstrap/consume', {}],
 ] as const;
 
@@ -187,16 +207,18 @@ describe('B12 authorized former binding retirement', () => {
     try {
       ensureLocalUser(f.coreDb);
       const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2999-01-01T00:00:00.000Z',
-        tokenId: 'tok_admin',
+        tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
       });
       const auth: BetterAuthServer = {
         api: {
           getSession: async ({ headers }) =>
-            headers.has('x-test-session') ? { user: { id: 'user_local' } } : null,
+            headers.has('x-test-session')
+              ? { user: { id: 'usr_00000000-0000-7000-8000-000000000001' } }
+              : null,
         },
         handler: async () => new Response(null, { status: 404 }),
       };

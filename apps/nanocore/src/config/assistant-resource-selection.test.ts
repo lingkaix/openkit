@@ -26,7 +26,7 @@ function createSelectionFixture(): { dataRoot: string; path: string } {
       displayName: id,
       expectedRevision: revision,
       id,
-      producer: { kind: 'user', id: 'user_local' },
+      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       tree: [
         {
           kind: 'file',

@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { isEntityId } from '@openkit/protocol';
 
 import {
   assertVaultEntryMetadata,
@@ -1018,7 +1019,7 @@ function assertMasterKey(masterKey: Uint8Array): void {
  * @throws VaultBackendError when the reference id is unsafe.
  */
 function assertSafeReferenceId(referenceId: string): void {
-  if (!SAFE_REFERENCE_ID_PATTERN.test(referenceId)) {
+  if (!isEntityId('vault', referenceId) || !SAFE_REFERENCE_ID_PATTERN.test(referenceId)) {
     throw invalidStoreFormatError('Vault reference id is not safe for encrypted-file store paths.');
   }
 }

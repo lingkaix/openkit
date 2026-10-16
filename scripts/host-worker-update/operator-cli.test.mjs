@@ -19,7 +19,13 @@ function params() {
       expectedCurrentImageId: `sha256:${'a'.repeat(64)}`,
       helperSha256: 'b'.repeat(64),
       retainedReads: [
-        { operation: 'thread.read', input: { workspaceId: 'workspace', threadId: 'thread' } },
+        {
+          operation: 'thread.read',
+          input: {
+            workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+            threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
+          },
+        },
       ],
       pollAttempts: 1,
       pollMs: 1,
@@ -30,7 +36,7 @@ function params() {
     },
     worker: {
       prepare: {
-        administrationThreadId: 'private-administration-thread',
+        administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
         requestId: '22222222-2222-4222-8222-222222222222',
         configuration: {
           expectedRevision: `sha256:${'d'.repeat(64)}`,

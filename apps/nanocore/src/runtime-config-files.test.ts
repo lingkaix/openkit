@@ -10,12 +10,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -68,7 +68,7 @@ function writeServerConfig(dataRoot: string): void {
         kind: 'custom',
         baseUrl: 'https://openrouter.ai/api/v1',
         models: ['openai/gpt-5.1'],
-        secretRef: 'vault://provider_agent_openrouter',
+        secretRef: 'vault://vault_00000000-0000-794f-be5b-43dd897fef0c',
       },
       null,
       2
@@ -136,11 +136,17 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
-    mkdirSync(join(dataRoot, 'workspaces', 'ws_demo', 'config'), {
+    mkdirSync(join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001', 'config'), {
       recursive: true,
     });
     writeFileSync(
-      join(dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
+      join(
+        dataRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'config',
+        'workspace.jsonc'
+      ),
       `{
         "schemaVersion": 1,
         "workspace": {
@@ -155,7 +161,7 @@ describe('runtime config file API', () => {
     const list = (await listRes.json()) as {
       files: Array<{ id: string; kind: string; revision: string | null }>;
     };
-    const fileId = 'workspaces/ws_demo/workspace.jsonc';
+    const fileId = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
     const readRes = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
     const read = (await readRes.json()) as { file: { revision: string }; content: string };
     const updateRes = await app.request(
@@ -184,7 +190,12 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
-    const configRoot = join(dataRoot, 'workspaces', 'ws_demo', 'config');
+    const configRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'config'
+    );
     mkdirSync(configRoot, { recursive: true });
     writeFileSync(
       join(configRoot, 'data-sources.jsonc'),
@@ -195,7 +206,7 @@ describe('runtime config file API', () => {
     );
     const app = createApp({ dataRoot, store });
 
-    const fileId = 'workspaces/ws_demo/data-sources.jsonc';
+    const fileId = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
     const listRes = await app.request(...operationRequest('runtime.file-list', {}));
     const list = (await listRes.json()) as { files: Array<{ id: string; kind: string }> };
     const readRes = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
@@ -247,7 +258,12 @@ describe('runtime config file API', () => {
     applyMigrations(coreDb);
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
-    const configRoot = join(dataRoot, 'workspaces', 'ws_demo', 'config');
+    const configRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'config'
+    );
     mkdirSync(configRoot, { recursive: true });
     writeFileSync(
       join(configRoot, 'data-sources.jsonc'),
@@ -270,7 +286,7 @@ describe('runtime config file API', () => {
 
     try {
       const app = createApp({ coreDb, dataRoot, store });
-      const fileId = 'workspaces/ws_demo/data-sources.jsonc';
+      const fileId = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
       const readRes = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
       const read = (await readRes.json()) as { file: { revision: string }; content: string };
       const updateRes = await app.request(
@@ -289,7 +305,7 @@ describe('runtime config file API', () => {
           }
         )
       );
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(workspaceDb);
 
       try {
@@ -301,7 +317,7 @@ describe('runtime config file API', () => {
 
         expect(updateRes.status).toBe(200);
         expect(row).toMatchObject({
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           category: 'system',
           resource: 'data-source-catalog:repo_default',
           outcome: 'succeeded',
@@ -325,8 +341,8 @@ describe('runtime config file API', () => {
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     try {
@@ -342,7 +358,7 @@ describe('runtime config file API', () => {
               'content-type': 'application/json',
             },
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               ...{
                 allowedTools: ['echo'],
                 declaration: { args: [], command: 'node', kind: 'stdio' },
@@ -362,7 +378,7 @@ describe('runtime config file API', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+            body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
           }
         )
       );
@@ -416,9 +432,12 @@ describe('runtime config file API', () => {
 
     expect(providerRes.status).toBe(200);
     expect(agentRes.status).toBe(200);
-    expect(
+    const providerTemplate = JSON.parse(
       readFileSync(join(dataRoot, 'config', 'providers', 'new-openrouter.provider.jsonc'), 'utf8')
-    ).toContain('"secretRef": "vault://provider_new-openrouter"');
+    );
+    expect(providerTemplate.secretRef).toMatch(
+      /^vault:\/\/vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
     const agentTemplate = readFileSync(
       join(dataRoot, 'config', 'agents', 'new-agent.agent.jsonc'),
       'utf8'

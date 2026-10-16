@@ -1,4 +1,10 @@
-import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  CollectionIdSchema,
+  FieldIdSchema,
+  RequestIdSchema,
+  TimestampSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** User-authored Light App collection and field names. */
@@ -64,7 +70,7 @@ export const LightAppRelationFieldOptionsSchema = z
 /** One authored Light App field. */
 export const LightAppFieldInputSchema = z
   .object({
-    id: z.string().uuid().optional(),
+    id: FieldIdSchema.optional(),
     name: LightAppNameSchema,
     type: LightAppFieldTypeSchema,
     required: z.boolean(),
@@ -153,7 +159,7 @@ export const LightAppIndexInputSchema = z
 /** One authored base collection. */
 export const LightAppCollectionInputSchema = z
   .object({
-    id: z.string().uuid().optional(),
+    id: CollectionIdSchema.optional(),
     name: LightAppNameSchema,
     type: z.literal('base'),
     description: z.string(),
@@ -216,7 +222,7 @@ export const LightAppSchemaInputSchema = z
 /** Admitted field with Core-assigned identity and resolved relation targets. */
 export const LightAppAdmittedFieldSchema = z
   .object({
-    id: z.string().uuid(),
+    id: FieldIdSchema,
     name: LightAppNameSchema,
     type: LightAppFieldTypeSchema,
     required: z.boolean(),
@@ -230,7 +236,7 @@ export const LightAppAdmittedFieldSchema = z
 /** Admitted collection with Core-assigned identity. */
 export const LightAppAdmittedCollectionSchema = z
   .object({
-    id: z.string().uuid(),
+    id: CollectionIdSchema,
     name: LightAppNameSchema,
     type: z.literal('base'),
     description: z.string(),
@@ -238,7 +244,7 @@ export const LightAppAdmittedCollectionSchema = z
     indexes: z.array(
       z
         .object({
-          fields: z.array(z.string().uuid()).min(1).max(4),
+          fields: z.array(FieldIdSchema).min(1).max(4),
           unique: z.boolean(),
         })
         .strict()
@@ -344,7 +350,7 @@ export const LightAppFieldValueSchema = z.union([z.string(), z.number(), z.boole
 export const LightAppRecordSchema = z
   .object({
     id: z.string().uuid(),
-    collectionId: z.string().uuid(),
+    collectionId: CollectionIdSchema,
     collectionName: LightAppNameSchema,
     revision: z.number().int().positive(),
     schemaRevision: z.number().int().positive(),

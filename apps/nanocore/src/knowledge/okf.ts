@@ -1,3 +1,4 @@
+import { isEntityId } from '@openkit/protocol';
 import { type Document, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 
 export const OKF_SNAPSHOT_ID = 'docs/okf-spec-v0.2-snapshot.md#v0.2';
@@ -606,11 +607,8 @@ export function resolveRegisteredKnowledgeSourceReference(
   reference: string,
   registeredSources: ReadonlyMap<string, string | null>
 ): { targetId: string | null; resolved: boolean } {
-  const parsed =
-    /^source:(ks_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})(?:@(sha256:[a-f0-9]{64}))?$/.exec(
-      reference
-    );
-  if (!parsed || parsed[0] !== reference) {
+  const parsed = /^source:([^@]+)(?:@(sha256:[a-f0-9]{64}))?(?![\s\S])/.exec(reference);
+  if (!parsed || !isEntityId('ks', parsed[1])) {
     return { targetId: null, resolved: false };
   }
   const targetId = parsed[1]!;

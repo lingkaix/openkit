@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { ActivateWorkerEnvironmentResponseSchema } from '@openkit/app-api-schemas';
 import type {
   GatewayConfig,
@@ -7,7 +6,12 @@ import type {
   WorkspaceDataSourceCatalog,
   WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { responsibleUserIdForActor, type TurnSchema } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  responsibleUserIdForActor,
+  type TurnSchema,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
@@ -51,10 +55,10 @@ import {
   workspaceSourceRefsFromAgentManifest,
 } from './orchestrator.js';
 import {
+  assistantPendingOutcomeSource,
   assistantPendingOutcomeSourceHash,
   listThreadPendingRequests,
 } from './pending-requests.js';
-import { generateUuidV7 } from './session-id.js';
 import type { PrepareAgentSessionForTurnInput, TurnExecutor } from './types.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
@@ -327,11 +331,12 @@ function assistantOutcomePublicationComplete(
     if (!records.length || records.some((record) => !itemIds.includes(record.requestItemId)))
       return false;
     const turn = store.getTurn(entry.workspaceId, source.threadId, source.turnId);
+    const sourceName = assistantPendingOutcomeSource(turn, records, userId);
     const hash = assistantPendingOutcomeSourceHash(turn, records, userId);
     return (
       entry.requestId === `pending_${hash}` &&
-      entry.threadId === `th_task_${hash.slice(0, 24)}` &&
-      entry.turnId === `tu_task_${hash.slice(0, 24)}`
+      entry.threadId === deriveEntityId('th', sourceName) &&
+      entry.turnId === deriveEntityId('tu', sourceName)
     );
   });
 }
@@ -404,7 +409,7 @@ async function dispatchSchedulerAdmission(
   )?.catalog;
   const attempt = createSchedulerExecutionAttempt(input.coreDb, {
     entry,
-    attemptId: (input.createAttemptId ?? (() => `attempt_${randomUUID()}`))(),
+    attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
     preparationInput: {
       admission: entry,
       configVersion: input.configVersion ?? null,
@@ -433,7 +438,7 @@ async function dispatchSchedulerAdmission(
     const preparation: PrepareAgentSessionForTurnInput = {
       attemptId: attempt.attemptId,
       agentSetup: setup,
-      freshAgentSessionId: (input.createAgentSessionId ?? generateUuidV7)(),
+      freshAgentSessionId: (input.createAgentSessionId ?? (() => allocateEntityId('as')))(),
       requestId: entry.requestId,
       turn: input.store.getTurnById(entry.turnId),
       turnInput: entry.turnInput,

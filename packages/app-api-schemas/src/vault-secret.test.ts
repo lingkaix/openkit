@@ -13,7 +13,11 @@ describe('workspace Vault secret input', () => {
       { secretKind: '../unsafe', material: 'test' },
       { secretKind: 'sk-secret', material: 'test' },
       { secretKind: 'github-token', material: '' },
-      { secretKind: 'github-token', material: 'test', referenceId: 'chosen' },
+      {
+        secretKind: 'github-token',
+        material: 'test',
+        referenceId: 'vault_00000000-0000-7377-a5ad-28032ca327ae',
+      },
     ])
       expect(vault.CreateWorkspaceVaultSecretRequestSchema.safeParse(value).success).toBe(false);
     expect(
@@ -21,13 +25,13 @@ describe('workspace Vault secret input', () => {
     ).toBe(true);
     expect(
       vault.CreateWorkspaceVaultGrantRequestSchema.safeParse({
-        referenceId: 'vault_example',
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
         expiresAt: 'invalid',
       }).success
     ).toBe(false);
     expect(
       vault.CreateWorkspaceVaultGrantRequestSchema.parse({
-        referenceId: 'vault_example',
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
         targetAgentId: 'agent-selected',
         targetCapabilityId: 'mcp.call_tool',
       })
@@ -42,17 +46,19 @@ describe('workspace Vault secret input', () => {
         false
       );
     expect(
-      vault.CreateWorkspaceVaultGrantRequestSchema.parse({ referenceId: 'vault_example' })
-    ).toMatchObject({ referenceId: 'vault_example' });
+      vault.CreateWorkspaceVaultGrantRequestSchema.parse({
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
+      })
+    ).toMatchObject({ referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a' });
     expect(
       vault.CreateWorkspaceVaultGrantRequestSchema.parse({
-        referenceId: 'vault_example',
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
         injectionPath: 'runtime-env',
       })
     ).toMatchObject({ injectionPath: 'runtime-env' });
     expect(
       vault.CreateWorkspaceVaultGrantRequestSchema.safeParse({
-        referenceId: 'vault_example',
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
         injectionPath: 'gateway-only',
         targetCapabilityId: null,
       }).success

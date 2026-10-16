@@ -23,7 +23,6 @@ import {
   ResolveKnowledgeConflictResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
@@ -31,12 +30,13 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const requestId = '00000000-0000-4000-8000-000000000111';
 const SYNTACTIC_PROPOSAL_SOURCE_REFERENCE =
-  'source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  'source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 /**
  * Grants the local test actor access to the demo Workspace.
@@ -47,8 +47,8 @@ function authorizeDemoWorkspace(coreDb: ReturnType<typeof openCoreDb>): void {
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
 }
 
@@ -127,7 +127,7 @@ describe('Knowledge proposal decision lineage', () => {
       rationale: 'Preserve foreign Workspace isolation.',
       confidence: 1,
       verifiedExternalReferences: [],
-      producer: { kind: 'user', id: 'user_local' },
+      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     });
     const app = createApp({ coreDb, dataRoot, store });
 
@@ -135,7 +135,7 @@ describe('Knowledge proposal decision lineage', () => {
       const response = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.proposal.decide',
-          { workspaceId: 'ws_demo', proposalId: proposal.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', proposalId: proposal.id },
           {
             body: JSON.stringify({
               decision: 'rejected',
@@ -168,7 +168,7 @@ describe('Knowledge Store save-time validation', () => {
       const response = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -177,7 +177,7 @@ describe('Knowledge Store save-time validation', () => {
               kind: 'project-context',
               title: 'Unresolved source page',
               content: 'This page must not become active.',
-              sourceReferences: ['source:ks_123e4567-e89b-42d3-a456-426614174000'],
+              sourceReferences: ['source:ks_00000000-0000-7e28-9211-1f67fd14ca84'],
             }),
           }
         )
@@ -186,7 +186,9 @@ describe('Knowledge Store save-time validation', () => {
       expect(response.status, await response.clone().text()).toBe(400);
       await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' });
       expect(
-        store.listKnowledge('ws_demo').some((entry) => entry.title === 'Unresolved source page')
+        store
+          .listKnowledge('ws_00000000-0000-7000-8000-000000000001')
+          .some((entry) => entry.title === 'Unresolved source page')
       ).toBe(false);
     } finally {
       coreDb.sqlite.close();
@@ -205,7 +207,7 @@ describe('Knowledge Store save-time validation', () => {
       const createResponse = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -223,7 +225,7 @@ describe('Knowledge Store save-time validation', () => {
       const pagePath = join(
         dataRoot,
         'workspaces',
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'knowledge',
         'pages',
         `${knowledge.id}.md`
@@ -233,7 +235,10 @@ describe('Knowledge Store save-time validation', () => {
       const updateResponse = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.update',
-          { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            knowledgeEntryId: knowledge.id,
+          },
           {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
@@ -266,7 +271,7 @@ describe('Knowledge Manager answer operation', () => {
     const registerRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -276,7 +281,7 @@ describe('Knowledge Manager answer operation', () => {
             title: 'Release notes',
             uri: 'file://release.md',
             content: sourceContent,
-            originatingThreadId: 'th_demo',
+            originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
           }),
         }
       )
@@ -285,11 +290,11 @@ describe('Knowledge Manager answer operation', () => {
 
     const registered = RegisterKnowledgeSourceResponseSchema.parse(await registerRes.json());
     expect(registered.source).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
       title: 'Release notes',
       uri: 'file://release.md',
-      originatingThreadId: 'th_demo',
+      originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
       originatingTurnId: null,
       originatingFileId: null,
     });
@@ -298,7 +303,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(registered.derivedRepresentations).toEqual([
       expect.objectContaining({
         sourceId: registered.source.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'text',
         path: `sources/derived/${registered.source.id}/text.json`,
         materialPath: `sources/materials/${registered.source.id}/content.txt`,
@@ -312,7 +317,7 @@ describe('Knowledge Manager answer operation', () => {
         join(
           dataRoot,
           'workspaces',
-          'ws_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
           'sources',
           'materials',
           registered.source.id,
@@ -327,7 +332,7 @@ describe('Knowledge Manager answer operation', () => {
           join(
             dataRoot,
             'workspaces',
-            'ws_demo',
+            'ws_00000000-0000-7000-8000-000000000001',
             'sources',
             'derived',
             registered.source.id,
@@ -343,7 +348,9 @@ describe('Knowledge Manager answer operation', () => {
     });
 
     const listRes = await app.request(
-      ...knowledgeOperationRequest('knowledge.source.list', { workspaceId: 'ws_demo' })
+      ...knowledgeOperationRequest('knowledge.source.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeSourcesResponseSchema.parse(await listRes.json())).toMatchObject({
@@ -352,7 +359,7 @@ describe('Knowledge Manager answer operation', () => {
 
     const readRes = await app.request(
       ...knowledgeOperationRequest('knowledge.source.read', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         sourceId: registered.source.id,
       })
     );
@@ -369,7 +376,11 @@ describe('Knowledge Manager answer operation', () => {
     });
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -383,14 +394,14 @@ describe('Knowledge Manager answer operation', () => {
         operation: 'knowledge.source.register',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
       expect.objectContaining({
         capabilityId: 'knowledge.source.read',
         operation: 'knowledge.source.read',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
     expect(
@@ -402,13 +413,13 @@ describe('Knowledge Manager answer operation', () => {
         category: 'tool',
         source: 'knowledge-source-register',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
       expect.objectContaining({
         category: 'tool',
         source: 'knowledge-source-read',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
 
@@ -426,7 +437,7 @@ describe('Knowledge Manager answer operation', () => {
     const recordRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.observation.record',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -434,7 +445,10 @@ describe('Knowledge Manager answer operation', () => {
             requestId: '00000000-0000-4000-8000-000000000102',
             kind: 'retrieval',
             summary: 'Worker repeatedly needed release cadence context.',
-            sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+            sourceReferences: [
+              'knowledge:kn_demo',
+              'source:ks_00000000-0000-7ef0-a551-80b39073108f',
+            ],
             producer: 'knowledge-manager',
             confidence: 0.75,
           }),
@@ -445,10 +459,10 @@ describe('Knowledge Manager answer operation', () => {
 
     const recorded = RecordKnowledgeObservationResponseSchema.parse(await recordRes.json());
     expect(recorded.observation).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'retrieval',
       summary: 'Worker repeatedly needed release cadence context.',
-      sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+      sourceReferences: ['knowledge:kn_demo', 'source:ks_00000000-0000-7ef0-a551-80b39073108f'],
       scope: 'workspace',
       producer: 'knowledge-manager',
       confidence: 0.75,
@@ -461,7 +475,7 @@ describe('Knowledge Manager answer operation', () => {
     const ledgerPath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'knowledge',
       'observations',
       `${month}.jsonl`
@@ -474,7 +488,9 @@ describe('Knowledge Manager answer operation', () => {
     ).toEqual([recorded.observation]);
 
     const listRes = await app.request(
-      ...knowledgeOperationRequest('knowledge.observation.list', { workspaceId: 'ws_demo' })
+      ...knowledgeOperationRequest('knowledge.observation.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeObservationsResponseSchema.parse(await listRes.json())).toMatchObject({
@@ -482,7 +498,11 @@ describe('Knowledge Manager answer operation', () => {
     });
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -492,7 +512,7 @@ describe('Knowledge Manager answer operation', () => {
         operation: 'knowledge.observation.record',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
     expect(usage.usageRecords).toEqual([
@@ -500,7 +520,7 @@ describe('Knowledge Manager answer operation', () => {
         category: 'tool',
         source: 'knowledge-observation-record',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
 
@@ -518,14 +538,17 @@ describe('Knowledge Manager answer operation', () => {
     const recordRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.claim.record',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000103',
             statement: 'Release cadence is weekly.',
-            sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+            sourceReferences: [
+              'knowledge:release-plan',
+              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+            ],
             producer: 'knowledge-manager',
             confidence: 0.8,
           }),
@@ -536,9 +559,12 @@ describe('Knowledge Manager answer operation', () => {
 
     const recorded = RecordKnowledgeClaimResponseSchema.parse(await recordRes.json());
     expect(recorded.claim).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       statement: 'Release cadence is weekly.',
-      sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+      sourceReferences: [
+        'knowledge:release-plan',
+        'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+      ],
       scope: 'workspace',
       producer: 'knowledge-manager',
       confidence: 0.8,
@@ -552,7 +578,7 @@ describe('Knowledge Manager answer operation', () => {
     const ledgerPath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'knowledge',
       'claims',
       `${month}.jsonl`
@@ -565,7 +591,9 @@ describe('Knowledge Manager answer operation', () => {
     ).toEqual([recorded.claim]);
 
     const listRes = await app.request(
-      ...knowledgeOperationRequest('knowledge.claim.list', { workspaceId: 'ws_demo' })
+      ...knowledgeOperationRequest('knowledge.claim.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeClaimsResponseSchema.parse(await listRes.json())).toMatchObject({
@@ -573,7 +601,11 @@ describe('Knowledge Manager answer operation', () => {
     });
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -583,7 +615,7 @@ describe('Knowledge Manager answer operation', () => {
         operation: 'knowledge.claim.record',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
     expect(usage.usageRecords).toEqual([
@@ -591,7 +623,7 @@ describe('Knowledge Manager answer operation', () => {
         category: 'tool',
         source: 'knowledge-claim-record',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
 
@@ -609,14 +641,20 @@ describe('Knowledge Manager answer operation', () => {
     const recordRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.conflict.record',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000104',
-            subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-            sourceReferences: ['source:ks_release', 'source:ks_correction'],
+            subjectReferences: [
+              'knowledge:release-plan',
+              'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
+            ],
+            sourceReferences: [
+              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+              'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
+            ],
             summary: 'Release cadence has contradictory source evidence.',
             suggestedActions: ['Ask the user which source is authoritative.'],
             producer: 'knowledge-manager',
@@ -628,9 +666,15 @@ describe('Knowledge Manager answer operation', () => {
 
     const recorded = RecordKnowledgeConflictResponseSchema.parse(await recordRes.json());
     expect(recorded.conflict).toMatchObject({
-      workspaceId: 'ws_demo',
-      subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-      sourceReferences: ['source:ks_release', 'source:ks_correction'],
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      subjectReferences: [
+        'knowledge:release-plan',
+        'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
+      ],
+      sourceReferences: [
+        'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+        'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
+      ],
       status: 'conflicting',
       summary: 'Release cadence has contradictory source evidence.',
       suggestedActions: ['Ask the user which source is authoritative.'],
@@ -642,7 +686,7 @@ describe('Knowledge Manager answer operation', () => {
     const ledgerPath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'knowledge',
       'conflicts',
       `${month}.jsonl`
@@ -655,7 +699,9 @@ describe('Knowledge Manager answer operation', () => {
     ).toEqual([recorded.conflict]);
 
     const listRes = await app.request(
-      ...knowledgeOperationRequest('knowledge.conflict.list', { workspaceId: 'ws_demo' })
+      ...knowledgeOperationRequest('knowledge.conflict.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeConflictsResponseSchema.parse(await listRes.json())).toMatchObject({
@@ -665,7 +711,10 @@ describe('Knowledge Manager answer operation', () => {
     const resolveRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.conflict.resolve',
-        { workspaceId: 'ws_demo', conflictId: recorded.conflict.id },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          conflictId: recorded.conflict.id,
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -696,7 +745,9 @@ describe('Knowledge Manager answer operation', () => {
     ).toEqual([recorded.conflict, resolved.conflict]);
 
     const resolvedListRes = await app.request(
-      ...knowledgeOperationRequest('knowledge.conflict.list', { workspaceId: 'ws_demo' })
+      ...knowledgeOperationRequest('knowledge.conflict.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(resolvedListRes.status).toBe(200);
     expect(ListKnowledgeConflictsResponseSchema.parse(await resolvedListRes.json())).toMatchObject({
@@ -704,7 +755,11 @@ describe('Knowledge Manager answer operation', () => {
     });
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -735,14 +790,14 @@ describe('Knowledge Manager answer operation', () => {
     const store = createDemoStore({ dataRoot });
     const app = createAppWithWorkspaceAuthority({ dataRoot, store });
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = store.createKnowledgeEntry('ws_demo', {
+    const knowledge = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Beta',
       content: 'Beta body.',
     });
     store.createKnowledgeSource({
-      id: 'ks_123e4567-e89b-42d3-a456-426614174000',
-      workspaceId: 'ws_demo',
+      id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
       title: 'Registered source',
       uri: null,
@@ -754,7 +809,7 @@ describe('Knowledge Manager answer operation', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
 
     writeFileSync(
       join(workspaceRoot, 'knowledge', 'pages', 'alpha.md'),
@@ -766,7 +821,7 @@ describe('Knowledge Manager answer operation', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        `source_refs: ["knowledge:${knowledge.id}", "source:ks_123e4567-e89b-42d3-a456-426614174000"]`,
+        `source_refs: ["knowledge:${knowledge.id}", "source:ks_00000000-0000-7e28-9211-1f67fd14ca84"]`,
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -787,7 +842,7 @@ describe('Knowledge Manager answer operation', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        'source_refs: ["source:ks_missing"]',
+        'source_refs: ["source:ks_00000000-0000-7e65-a399-d53a84c98ecb"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -800,7 +855,9 @@ describe('Knowledge Manager answer operation', () => {
     );
 
     const res = await app.request(
-      ...knowledgeOperationRequest('knowledge.indexes', { workspaceId: 'ws_demo' })
+      ...knowledgeOperationRequest('knowledge.indexes', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(res.status).toBe(200);
 
@@ -833,13 +890,13 @@ describe('Knowledge Manager answer operation', () => {
         }),
         expect.objectContaining({
           conceptId: 'alpha',
-          reference: 'source:ks_123e4567-e89b-42d3-a456-426614174000',
+          reference: 'source:ks_00000000-0000-7e28-9211-1f67fd14ca84',
           kind: 'registered-source',
           resolved: true,
         }),
         expect.objectContaining({
           conceptId: 'missing-source',
-          reference: 'source:ks_missing',
+          reference: 'source:ks_00000000-0000-7e65-a399-d53a84c98ecb',
           kind: 'registered-source',
           resolved: false,
         }),
@@ -857,8 +914,8 @@ describe('Knowledge Manager answer operation', () => {
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-    const sourceId = 'ks_123e4567-e89b-42d3-a456-426614174000';
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
+    const sourceId = 'ks_00000000-0000-7e28-9211-1f67fd14ca84';
     const sourceMaterial = 'Canonical release planning source material.';
     const sourceDigest = `sha256:${createHash('sha256').update(sourceMaterial).digest('hex')}`;
     const releasePage = [
@@ -901,7 +958,7 @@ describe('Knowledge Manager answer operation', () => {
     store.createKnowledgeSource(
       {
         id: sourceId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'document',
         title: 'Release source',
         uri: null,
@@ -921,7 +978,7 @@ describe('Knowledge Manager answer operation', () => {
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.retrieval',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -935,12 +992,12 @@ describe('Knowledge Manager answer operation', () => {
     expect(body).toEqual({
       queryContext: {
         serverId: expect.any(String),
-        workspaceId: 'ws_demo',
-        actor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
-      sourceScope: 'page/workspace/ws_demo',
+      sourceScope: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
       notebookRevision: null,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'app-api',
       requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       retrievalParameters: {
@@ -951,7 +1008,10 @@ describe('Knowledge Manager answer operation', () => {
       },
       selected: [
         {
-          reference: { scopeId: 'page/workspace/ws_demo', objectId: 'release-plan' },
+          reference: {
+            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            objectId: 'release-plan',
+          },
           revision: `sha256:${createHash('sha256').update(releasePage).digest('hex')}`,
           contentDigest: `sha256:${createHash('sha256').update(releasePage).digest('hex')}`,
           score: expect.any(Number),
@@ -965,11 +1025,24 @@ describe('Knowledge Manager answer operation', () => {
     expect(body).not.toHaveProperty('retrievalTraceRef');
     expect(body).not.toHaveProperty('traceId');
     expect(body).not.toHaveProperty('retrievalTraceId');
-    expect(existsSync(join(workspaceRoot, 'threads', 'th_demo', 'retrieval-traces'))).toBe(false);
+    expect(
+      existsSync(
+        join(
+          workspaceRoot,
+          'threads',
+          'th_00000000-0000-7000-8000-000000000001',
+          'retrieval-traces'
+        )
+      )
+    ).toBe(false);
     expect(existsSync(join(workspaceRoot, 'knowledge', 'traces'))).toBe(false);
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -981,7 +1054,7 @@ describe('Knowledge Manager answer operation', () => {
         providerRef: 'nanocore-knowledge',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
     expect(usage.usageRecords).toEqual([
@@ -991,7 +1064,7 @@ describe('Knowledge Manager answer operation', () => {
         quantity: 1,
         source: 'knowledge-retrieval',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
 
@@ -1008,7 +1081,7 @@ describe('Knowledge Manager answer operation', () => {
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1026,7 +1099,7 @@ describe('Knowledge Manager answer operation', () => {
     const pagePath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'knowledge',
       'pages',
       `${knowledge.id}.md`
@@ -1038,12 +1111,15 @@ describe('Knowledge Manager answer operation', () => {
         'Release cadence is fortnightly with a Tuesday review.'
       )
     );
-    rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' });
+    rebuildWorkspaceDerivedIndexes({
+      dataRoot,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
 
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.answer',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1058,26 +1134,52 @@ describe('Knowledge Manager answer operation', () => {
       caller: 'app-api',
       operation: 'answer',
       outcome: 'answered',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(body).not.toHaveProperty('retrievalTraceRef');
     expect(body).not.toHaveProperty('retrievalTraceId');
     expect(body.answer).toContain('Release cadence is fortnightly');
     expect(body.citations).toEqual([
       expect.objectContaining({
-        reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledge.id },
+        reference: {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: knowledge.id,
+        },
         kind: 'project-context',
         title: 'Release plan',
       }),
     ]);
 
     expect(
-      existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'threads', 'th_demo', 'retrieval-traces'))
+      existsSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'threads',
+          'th_00000000-0000-7000-8000-000000000001',
+          'retrieval-traces'
+        )
+      )
     ).toBe(false);
-    expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))).toBe(false);
+    expect(
+      existsSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'knowledge',
+          'traces'
+        )
+      )
+    ).toBe(false);
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -1091,7 +1193,7 @@ describe('Knowledge Manager answer operation', () => {
         providerRef: 'nanocore-knowledge',
         serviceRef: 'knowledge-manager',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
     expect(usage.usageRecords.filter((record) => record.source === 'knowledge-answer')).toEqual([
@@ -1101,7 +1203,7 @@ describe('Knowledge Manager answer operation', () => {
         quantity: 1,
         source: 'knowledge-answer',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
 
@@ -1114,7 +1216,7 @@ describe('Knowledge Manager answer operation', () => {
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.answer',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1140,7 +1242,7 @@ describe('Knowledge Manager answer operation', () => {
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1158,7 +1260,7 @@ describe('Knowledge Manager answer operation', () => {
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.answer',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1184,7 +1286,7 @@ describe('Knowledge Manager answer operation', () => {
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1202,7 +1304,7 @@ describe('Knowledge Manager answer operation', () => {
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.answer',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1225,7 +1327,7 @@ describe('Knowledge Manager answer operation', () => {
     const incidental = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.answer',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1248,7 +1350,7 @@ describe('Knowledge Manager answer operation', () => {
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1268,7 +1370,7 @@ describe('Knowledge Manager answer operation', () => {
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1289,7 +1391,7 @@ describe('Knowledge Manager answer operation', () => {
       app.request(
         ...knowledgeOperationRequest(
           'knowledge.context.prepare',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1314,11 +1416,14 @@ describe('Knowledge Manager answer operation', () => {
       caller: 'app-api',
       operation: 'prepare-context-material',
       outcome: 'prepared',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(body.selected).toEqual([
       {
-        reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledge.id },
+        reference: {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: knowledge.id,
+        },
         revision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         score: expect.any(Number),
@@ -1336,17 +1441,44 @@ describe('Knowledge Manager answer operation', () => {
 
     expect(repeatBody).not.toHaveProperty('retrievalTraceRef');
     expect(
-      existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'threads', 'th_demo', 'retrieval-traces'))
+      existsSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'threads',
+          'th_00000000-0000-7000-8000-000000000001',
+          'retrieval-traces'
+        )
+      )
     ).toBe(false);
-    expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))).toBe(false);
     expect(
-      existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'context-packages'))
+      existsSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'knowledge',
+          'traces'
+        )
+      )
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'knowledge',
+          'context-packages'
+        )
+      )
     ).toBe(false);
 
     const legacyRequest = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.context.prepare',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1358,7 +1490,11 @@ describe('Knowledge Manager answer operation', () => {
     await expect(legacyRequest.json()).resolves.toMatchObject({ code: 'invalid_request' });
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -1382,7 +1518,7 @@ describe('Knowledge Manager answer operation', () => {
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1419,7 +1555,7 @@ describe('Knowledge Manager answer operation', () => {
       app.request(
         ...knowledgeOperationRequest(
           'knowledge.proposal.draft',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1434,11 +1570,11 @@ describe('Knowledge Manager answer operation', () => {
     const { status: _status, ...retainedProposal } = first.proposal;
     expect(first).toMatchObject({
       operation: 'draft-proposal',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'app-api',
       proposal: {
         id: expect.stringMatching(/^kp_[a-f0-9]{64}$/),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         operation: 'create',
         knowledgePageId: 'release-cadence',
         canonicalPageBytes,
@@ -1446,7 +1582,7 @@ describe('Knowledge Manager answer operation', () => {
         sourceReferences: [sourceReference],
         rationale: 'Preserve the reviewed release cadence and hf_publicFixture.',
         confidence: 0.7,
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         status: 'pending',
       },
       validation: {
@@ -1456,7 +1592,14 @@ describe('Knowledge Manager answer operation', () => {
     });
     expect(
       existsSync(
-        join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', 'release-cadence.md')
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'knowledge',
+          'pages',
+          'release-cadence.md'
+        )
       )
     ).toBe(false);
 
@@ -1470,7 +1613,9 @@ describe('Knowledge Manager answer operation', () => {
     const replay = KnowledgeManagerDraftProposalResponseSchema.parse(await replayRes.json());
     expect(replay.proposal).toEqual(first.proposal);
     expect(replay.validation).toEqual(first.validation);
-    expect(store.listKnowledgeProposals('ws_demo')).toEqual([retainedProposal]);
+    expect(store.listKnowledgeProposals('ws_00000000-0000-7000-8000-000000000001')).toEqual([
+      retainedProposal,
+    ]);
     expect(
       `sha256:${createHash('sha256').update(first.proposal.canonicalPageBytes).digest('hex')}`
     ).toBe(contentDigest);
@@ -1482,7 +1627,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(conflictRes.status).toBe(409);
     await expect(conflictRes.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
 
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     workspaceDb.sqlite
       .prepare(
@@ -1495,13 +1640,19 @@ describe('Knowledge Manager answer operation', () => {
     const missingReceiptRes = await draft(draftRequest);
     expect(missingReceiptRes.status).toBe(409);
     await expect(missingReceiptRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-    expect(store.listKnowledgeProposals('ws_demo')).toEqual([retainedProposal]);
+    expect(store.listKnowledgeProposals('ws_00000000-0000-7000-8000-000000000001')).toEqual([
+      retainedProposal,
+    ]);
     expect(
       `sha256:${createHash('sha256').update(first.proposal.canonicalPageBytes).digest('hex')}`
     ).toBe(contentDigest);
 
     const actionCenterRes = await app.request(
-      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'attention.list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     expect(actionCenterRes.status).toBe(200);
     const actionCenter = (await actionCenterRes.json()) as { items: Array<{ id: string }> };
@@ -1510,7 +1661,11 @@ describe('Knowledge Manager answer operation', () => {
     ]);
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -1531,7 +1686,7 @@ describe('Knowledge Manager answer operation', () => {
     const first = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1548,7 +1703,7 @@ describe('Knowledge Manager answer operation', () => {
     const second = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1566,7 +1721,7 @@ describe('Knowledge Manager answer operation', () => {
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.repair.suggest',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1581,7 +1736,7 @@ describe('Knowledge Manager answer operation', () => {
       caller: 'app-api',
       operation: 'suggest-repair',
       outcome: 'suggested',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(body.suggestions).toEqual([
       expect.objectContaining({
@@ -1593,13 +1748,21 @@ describe('Knowledge Manager answer operation', () => {
     ]);
 
     const actionCenterRes = await app.request(
-      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'attention.list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const actionCenter = (await actionCenterRes.json()) as { items: unknown[] };
     expect(actionCenter.items).toEqual([]);
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -1613,7 +1776,7 @@ describe('Knowledge Manager answer operation', () => {
         providerRef: 'nanocore-knowledge',
         serviceRef: 'knowledge-manager',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
     expect(
@@ -1625,7 +1788,7 @@ describe('Knowledge Manager answer operation', () => {
         quantity: 1,
         source: 'knowledge-repair-suggest',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
 
@@ -1642,7 +1805,7 @@ describe('Knowledge Manager answer operation', () => {
     const first = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1659,7 +1822,7 @@ describe('Knowledge Manager answer operation', () => {
     const second = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1677,7 +1840,7 @@ describe('Knowledge Manager answer operation', () => {
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.health.check',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1692,7 +1855,7 @@ describe('Knowledge Manager answer operation', () => {
       caller: 'app-api',
       operation: 'health-check',
       outcome: 'needs-attention',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       checks: [
         { code: 'knowledge-present', status: 'pass' },
         { code: 'repair-suggestions', status: 'warn' },
@@ -1707,13 +1870,21 @@ describe('Knowledge Manager answer operation', () => {
     });
 
     const actionCenterRes = await app.request(
-      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'attention.list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const actionCenter = (await actionCenterRes.json()) as { items: unknown[] };
     expect(actionCenter.items).toEqual([]);
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -1727,7 +1898,7 @@ describe('Knowledge Manager answer operation', () => {
         providerRef: 'nanocore-knowledge',
         serviceRef: 'knowledge-manager',
         status: 'succeeded',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
     expect(
@@ -1739,7 +1910,7 @@ describe('Knowledge Manager answer operation', () => {
         quantity: 1,
         source: 'knowledge-health-check',
         unit: 'capability_calls',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }),
     ]);
 
@@ -1798,7 +1969,7 @@ describe('Knowledge Manager answer operation', () => {
       const response = await app.request(
         ...knowledgeOperationRequest(
           testCase.id,
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1850,7 +2021,7 @@ describe('Knowledge Manager answer operation', () => {
       const response = await readApp.request(
         ...knowledgeOperationRequest(
           testCase.id,
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1879,7 +2050,7 @@ describe('Knowledge Manager answer operation', () => {
     const proposalResponse = await proposalApp.request(
       ...knowledgeOperationRequest(
         'knowledge.proposal.draft',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

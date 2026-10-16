@@ -3,10 +3,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import {
   createWorkspaceDeletionClosure,
   existingWorkspaceDeletionClosureRoot,
@@ -24,7 +24,7 @@ it('verifies extended descriptive closure bytes after reopen while inventory and
     const workspace = store.createWorkspace('Closure annotations');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const input = {
@@ -37,11 +37,11 @@ it('verifies extended descriptive closure bytes after reopen while inventory and
         return db;
       },
       requestId: '00000000-0000-4000-8000-000000000001',
-      originalOwnerUserId: 'user_local',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       sourceRegistryRevision: 1,
       closureId: 'wsclose_extended',
       cutoffTimestamp: '2026-10-06T00:00:00.000Z',
-      recoveryExportId: 'wsexp_separate',
+      recoveryExportId: 'wsexp_00000000-0000-706a-b20c-a6a21d73aae2',
       recoveryExportManifestDigest: `sha256:${'a'.repeat(64)}`,
     };
     const baseline = createWorkspaceDeletionClosure(input);
@@ -75,7 +75,7 @@ it('verifies extended descriptive closure bytes after reopen while inventory and
       /required feature/
     );
     raw.requiredFeatures = [];
-    raw.lineage.workspaceId = 'ws_wrong';
+    raw.lineage.workspaceId = 'ws_00000000-0000-769e-b6a6-c9fdf1f7d7d9';
     writeFileSync(path, JSON.stringify(raw));
     expect(() => verifyWorkspaceDeletionClosure({ ...input, closureRoot })).toThrow(
       /contradictory/

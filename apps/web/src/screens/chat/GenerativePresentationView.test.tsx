@@ -8,13 +8,13 @@ import { CoreClientProvider } from '../../app/core-client';
 import { GenerativePresentationView } from './GenerativePresentationView';
 
 const ITEM = GenerativeUiReferenceItemSchema.parse({
-  id: 'i-gen',
-  workspaceId: 'ws1',
-  threadId: 'th1',
-  turnId: 't1',
+  id: 'it_00000000-0000-7000-8000-000000000071',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
   type: 'generative-ui-reference',
   status: 'completed',
-  presentationId: '11111111-1111-4111-8111-111111111111',
+  presentationId: 'pres_00000000-0000-7bec-9842-6a2ad434c0ef',
   title: 'Membership map',
   fallbackText: 'CRM mapping view',
   createdAt: '2026-09-09T00:00:00.000Z',
@@ -71,7 +71,7 @@ describe('GenerativePresentationView', () => {
     );
     expect(await screen.findByText('Membership mem_1 maps to crm_1')).toBeInTheDocument();
     expect(getGenerativePresentation).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       presentationId: ITEM.presentationId,
     });
   });
@@ -157,7 +157,7 @@ describe('GenerativePresentationView', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Refresh proof' }));
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     expect(refresh.mock.calls[0][0]).toMatchObject({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       presentationId: ITEM.presentationId,
       version: 'v0.9',
       action: {
@@ -172,7 +172,7 @@ describe('GenerativePresentationView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save proof' }));
     await waitFor(() => expect(action).toHaveBeenCalledTimes(2));
     expect(action.mock.calls[0][0]).toMatchObject({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       presentationId: ITEM.presentationId,
       requestId: expect.any(String),
       version: 'v0.9',
