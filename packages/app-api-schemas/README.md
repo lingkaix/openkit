@@ -87,7 +87,7 @@ The generic runtime config file contract includes `model-catalog` for the deploy
 
 Workspace Vault CRUD schemas admit bounded request-only material and return the existing redacted reference/grant shapes. Public grant creation accepts a reference and optional expiry for an ordinary gateway-only grant with no capability target, accepted by the selected MCP consumer under the existing authority check, or a separate user-space runtime-env `github-token` grant; callers cannot select arbitrary injection targets.
 
-Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines neither a durable Thread kind nor unread state.
+Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines no durable Thread kind; its unread count projects the current User-owned receipt and eligible message Items.
 
 `WorkspaceWorkersResponseSchema` is the selected-Workspace, viewer-filtered current Worker read model, separate from the Agent Catalog. It validates exact known work, recorded state, bounded package details and last-used model attribution, with distinct unavailable and restricted states; it exposes no AgentSession or native runtime identifier.
 
