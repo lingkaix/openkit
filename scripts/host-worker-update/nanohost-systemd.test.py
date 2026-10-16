@@ -59,6 +59,7 @@ class Fixture:
         self.conditions = copy.deepcopy(CONDITION)
         self.write(UNIT_PATH, b"[Service]\nExecStart=/usr/lib/openkit/nanohost\n")
         self.write(GUARD, GUARD_BYTES)
+        self.path(PERMIT).parent.mkdir(parents=True, exist_ok=True)
         self.write("/sys/fs/cgroup/cgroup.controllers", b"cpu memory pids\n")
         self.group("")
         self.group("/openkit-nanohost.service")
