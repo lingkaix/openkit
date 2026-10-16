@@ -117,13 +117,8 @@ import {
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import { remintPortableWorkspaceNotebookPage } from '../knowledge/notebook-workspace-portability.js';
-import {
-  parseOkfDocument,
-  stringFrontmatterField,
-  stringListFrontmatterField,
-  updateOkfFrontmatter,
-} from '../knowledge/okf.js';
+import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
+import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
@@ -812,6 +807,8 @@ interface ImportRemintContext {
   agentEnvironmentPackageSnapshotIds: Map<string, string>;
   /** Imported knowledge-source ids keyed by source id. */
   knowledgeSourceIds: Map<string, string>;
+  /** Exact source-page pins remapped to the admitted target tree. */
+  knowledgePageReferences: Map<string, string>;
   /** Exact accepted Context Package references keyed by their source form. */
   contextPackageReferences: Map<string, string>;
 
@@ -915,6 +912,7 @@ export function readWorkspaceImportSnapshot(
     agentEnvironmentPackageSnapshotIds: new Map(),
     knowledgeSourceIds: new Map(),
     contextPackageReferences: new Map(),
+    knowledgePageReferences: new Map(),
 
     workerCheckpointIds: new Map(),
 
@@ -929,7 +927,26 @@ export function readWorkspaceImportSnapshot(
   const sourceTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
     TurnSchema.parse(record)
   );
-  const retrievalTraces = readRetrievalTraceImportState(context, canonical, sourceTurns);
+  const sourceNotebookPages = new Map(
+    [...context.files]
+      .filter(([path]) => path.startsWith('workspace-files/knowledge/pages/'))
+      .map(([path, content]) => [path.slice('workspace-files/'.length), content])
+  );
+  assertPortableKnowledgePagesMatch(sourceNotebookPages, canonical.knowledge);
+  const notebook = remintPortableWorkspaceNotebookPages({
+    pages: sourceNotebookPages,
+    sourceWorkspaceId: context.report.exportedWorkspaceId,
+    targetWorkspaceId: context.targetWorkspaceId,
+    rewriteReferences: (references) =>
+      rewritePortableReferences(references, portableReferenceReplacements(context)),
+  });
+  context.knowledgePageReferences = new Map(notebook.referenceReplacements);
+  const retrievalTraces = readRetrievalTraceImportState(
+    context,
+    canonical,
+    sourceTurns,
+    notebook.pages
+  );
   const workerRuntime = readWorkerRuntimeControlState(context);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
   const workspaceSync = readWorkspaceSyncImportState(context);
@@ -954,6 +971,7 @@ export function readWorkspaceImportSnapshot(
     ...context.turnIds,
     ...context.itemIds,
     ...context.knowledgeSourceIds,
+    ...context.knowledgePageReferences,
   ] as const;
   const knowledge = canonical.knowledge.map((entry) =>
     KnowledgeEntrySchema.parse({
@@ -972,7 +990,8 @@ export function readWorkspaceImportSnapshot(
     context,
     workResources.workerContextPackageFiles,
     knowledge,
-    retrievalTraces.files
+    retrievalTraces.files,
+    notebook.pages
   );
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
 
@@ -3583,6 +3602,7 @@ function portableReferenceReplacements(
   ]);
   for (const idMap of [
     context.contextPackageReferences,
+    context.knowledgePageReferences,
     context.threadIds,
     context.turnIds,
     context.itemIds,
@@ -3636,7 +3656,8 @@ function remintImportedPageReference(
 function readRetrievalTraceImportState(
   context: ImportRemintContext,
   targetCanonical: ReturnType<typeof readCanonicalImportState>,
-  sourceTurnRecords: readonly Turn[]
+  sourceTurnRecords: readonly Turn[],
+  notebookPages: ReadonlyMap<string, string>
 ): ImportedRetrievalTraceState {
   const tracePaths = [...context.files.keys()]
     .filter((path) =>
@@ -3712,6 +3733,13 @@ function readRetrievalTraceImportState(
     if (sourceTrace.sourceScope !== expectedSourceScope) {
       throw new Error('Portable retrieval trace source selection is contradictory.');
     }
+    if (
+      sourceTrace.sourceScope.startsWith('page/workspace/') &&
+      sourceTrace.notebookRevision !== context.report.manifest.knowledgeNotebookRevision
+    )
+      throw new Error(
+        'Portable Knowledge history requires unavailable historical notebook closure.'
+      );
     const targetSelections = new Map<string, ImportedRetrievalSelectedPage>();
     const selected = sourceTrace.selected.map((entry) => {
       const reference = remintImportedPageReference(
@@ -3735,10 +3763,17 @@ function readRetrievalTraceImportState(
       const pagePath = `workspace-files/knowledge/pages/${entry.reference.objectId}.md`;
       const sourceContent = requiredExportFile(context.files, pagePath);
       const sourceContentDigest = `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`;
-      if (sourceContentDigest !== entry.contentDigest || entry.revision !== entry.contentDigest) {
+      if (
+        sourceContentDigest !== entry.contentDigest ||
+        entry.revision !== sourceTrace.notebookRevision
+      ) {
         throw new Error('Portable retrieval trace does not match its exported Knowledge Page.');
       }
-      const targetContent = rewriteNativePageReferences(pagePath, sourceContent, replacements);
+      const targetContent = requiredMapValue(
+        notebookPages,
+        pagePath.slice('workspace-files/'.length),
+        'Knowledge Page'
+      );
       const targetContentDigest = `sha256:${createHash('sha256').update(targetContent).digest('hex')}`;
       const targetSourceReferences = rewritePortableReferences(
         entry.sourceReferences,
@@ -3757,7 +3792,7 @@ function readRetrievalTraceImportState(
       return {
         ...entry,
         reference,
-        revision: targetContentDigest,
+        revision: sourceTrace.notebookRevision,
         contentDigest: targetContentDigest,
         sourceReferences: targetSourceReferences,
       };
@@ -3784,18 +3819,22 @@ function readRetrievalTraceImportState(
         const sourceContentDigest = `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`;
         if (
           sourceContentDigest !== entry.contentDigest ||
-          (entry.revision !== null && entry.revision !== entry.contentDigest)
+          (entry.revision !== null && entry.revision !== sourceTrace.notebookRevision)
         ) {
           throw new Error(
             'Portable retrieval exclusion does not match its exported Knowledge Page.'
           );
         }
-        const targetContent = rewriteNativePageReferences(pagePath, sourceContent, replacements);
+        const targetContent = requiredMapValue(
+          notebookPages,
+          pagePath.slice('workspace-files/'.length),
+          'Knowledge Page'
+        );
         const targetContentDigest = `sha256:${createHash('sha256').update(targetContent).digest('hex')}`;
         return {
           ...entry,
           reference,
-          revision: entry.revision === null ? null : targetContentDigest,
+          revision: entry.revision,
           contentDigest: targetContentDigest,
           sourceReferences: targetSourceReferences,
         };
@@ -3860,9 +3899,10 @@ function readPortableImportState(
   context: ImportRemintContext,
   workerContextPackageFiles: ReadonlyMap<string, string>,
   knowledge: readonly KnowledgeEntry[],
-  retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>
+  retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>,
+  notebookPages: ReadonlyMap<string, string>
 ): WorkspacePortableFileState {
-  const portableFileState = readPortableFileStateFromExport(context);
+  const portableFileState = readPortableFileStateFromExport(context, notebookPages);
   assertPortableKnowledgePagesMatch(portableFileState.nativeKnowledgePages, knowledge);
   return { ...portableFileState, retrievalTraceFiles, workerContextPackageFiles };
 }
@@ -3886,12 +3926,16 @@ function assertPortableKnowledgePagesMatch(
 
   for (const [path, content] of pages) {
     const parsed = parseOkfDocument({ path, content });
-    const entryId = parsed.document
-      ? stringFrontmatterField(parsed.document, 'openkit_entry_id')
-      : null;
-    if (!entryId) {
-      continue;
-    }
+    if (!parsed.ok) throw new Error('Portable Knowledge Page is invalid.');
+    if (parsed.document.reserved) continue;
+    if (
+      Object.hasOwn(parsed.document.frontmatter, 'openkit_entry_id') &&
+      typeof parsed.document.frontmatter.openkit_entry_id !== 'string'
+    )
+      throw new Error('Portable Knowledge Page has an invalid managed identity.');
+    const entryId =
+      stringFrontmatterField(parsed.document, 'openkit_entry_id') ??
+      path.slice('knowledge/pages/'.length, -3);
     if (matchedIds.has(entryId) || path !== `knowledge/pages/${entryId}.md`) {
       throw new Error(`Portable Knowledge Page identity is ambiguous: ${entryId}`);
     }
@@ -3922,7 +3966,10 @@ function assertPortableKnowledgePagesMatch(
  * @param context Canonical id maps established by the current import.
  * @returns Portable file state ready for staged publication.
  */
-function readPortableFileStateFromExport(context: ImportRemintContext): WorkspacePortableFileState {
+function readPortableFileStateFromExport(
+  context: ImportRemintContext,
+  notebookPages: ReadonlyMap<string, string>
+): WorkspacePortableFileState {
   const files = context.files;
   const replacements = portableReferenceReplacements(context);
   const observations = readImportJsonl(files, 'records/knowledge-observations.jsonl').map(
@@ -3979,13 +4026,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
     } else if (workspacePath.startsWith('knowledge/pages/')) {
       nativeKnowledgePages.set(
         workspacePath,
-        remintPortableWorkspaceNotebookPage({
-          path: workspacePath,
-          content,
-          sourceWorkspaceId: context.report.exportedWorkspaceId,
-          targetWorkspaceId: context.targetWorkspaceId,
-          rewriteReferences: (references) => rewritePortableReferences(references, replacements),
-        })
+        requiredMapValue(notebookPages, workspacePath, 'Knowledge Page')
       );
     } else if (
       workspacePath.startsWith('evidence/bundles/') ||
@@ -4046,29 +4087,6 @@ function groupPortableRecords<T>(
     grouped.set(month, rows);
   }
   return grouped;
-}
-
-/** Rewrites only the structured source_refs field of one native OKF page. */
-function rewriteNativePageReferences(
-  path: string,
-  content: string,
-  replacements: readonly (readonly [string, string])[]
-): string {
-  const parsed = parseOkfDocument({ path, content });
-  if (parsed.document?.frontmatter.source_refs === undefined) {
-    return content;
-  }
-  const sourceReferences = parsed.document
-    ? stringListFrontmatterField(parsed.document, 'source_refs')
-    : null;
-  if (sourceReferences === null) {
-    throw new Error(`Native OKF page has invalid source_refs: ${path}`);
-  }
-  const rewritten = rewritePortableReferences(sourceReferences, replacements);
-  if (rewritten.every((reference, index) => reference === sourceReferences[index])) {
-    return content;
-  }
-  return updateOkfFrontmatter({ path, content, updates: { source_refs: rewritten } });
 }
 
 /**

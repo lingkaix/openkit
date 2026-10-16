@@ -21,6 +21,7 @@ import {
 } from '../storage/workspace-transfer-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { remintPortableWorkspaceNotebookPages } from './notebook-workspace-portability.js';
 import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 
 const roots: string[] = [];
@@ -74,7 +75,7 @@ function source() {
       { kind: 'workspace', workspaceId: workspace.id }
     ),
     updates: { custom: { preserve: ['one', 'two'] } },
-  });
+  }).replace(/^openkit_entry_(?:id|kind):.*\n/gm, '');
   const baseRevision = notebook.publishedRevision();
   const revision = notebook.prepare({
     baseRevision,
@@ -95,6 +96,77 @@ function source() {
 }
 
 describe('canonical Notebook Workspace portability', () => {
+  it('remints exact dependent page pins after scope and captured Source identity change', () => {
+    const sourceWorkspaceId = `ws_${randomUUID()}`;
+    const targetWorkspaceId = `ws_${randomUUID()}`;
+    const sourceId = `ks_${randomUUID()}`;
+    const targetSourceId = `ks_${randomUUID()}`;
+    const capturedDigest = `sha256:${createHash('sha256').update('Captured evidence.').digest('hex')}`;
+    const hash = (content: string) =>
+      `sha256:${createHash('sha256').update(content).digest('hex')}`;
+    const page = (id: string, sourceReferences: string[]) =>
+      updateOkfFrontmatter({
+        path: `${id}.md`,
+        content: serializeUserAuthoredKnowledgePage(
+          {
+            id,
+            kind: 'project-context',
+            title: id,
+            content: `Exact ${id} body.\r\n\t  `,
+            sourceReferences,
+            createdAt: '2026-10-16T00:00:00Z',
+            updatedAt: '2026-10-16T00:00:00Z',
+          },
+          { kind: 'workspace', workspaceId: sourceWorkspaceId }
+        ),
+        updates: { custom: { retained: ['original', 'metadata'] } },
+      });
+    const evidence = page('evidence', [`source:${sourceId}@${capturedDigest}`]);
+    const dependent = page('dependent', [`knowledge:evidence@${hash(evidence)}`]);
+    const summary = page('summary', [`knowledge:dependent@${hash(dependent)}`]);
+    const pages = new Map([
+      ['knowledge/pages/summary.md', summary],
+      ['knowledge/pages/dependent.md', dependent],
+      ['knowledge/pages/evidence.md', evidence],
+    ]);
+    const reminted = remintPortableWorkspaceNotebookPages({
+      pages,
+      sourceWorkspaceId,
+      targetWorkspaceId,
+      rewriteReferences: (references) =>
+        references.map((reference) => reference.replaceAll(sourceId, targetSourceId)),
+    });
+    const targetEvidence = updateOkfFrontmatter({
+      path: 'evidence.md',
+      content: evidence,
+      updates: {
+        scope: { kind: 'workspace', workspaceId: targetWorkspaceId },
+        source_refs: [`source:${targetSourceId}@${capturedDigest}`],
+      },
+    });
+    const targetDependent = updateOkfFrontmatter({
+      path: 'dependent.md',
+      content: dependent,
+      updates: {
+        scope: { kind: 'workspace', workspaceId: targetWorkspaceId },
+        source_refs: [`knowledge:evidence@${hash(targetEvidence)}`],
+      },
+    });
+    expect(reminted.pages.get('knowledge/pages/evidence.md')).toBe(targetEvidence);
+    expect(reminted.pages.get('knowledge/pages/dependent.md')).toBe(targetDependent);
+    expect(reminted.pages.get('knowledge/pages/summary.md')).toBe(
+      updateOkfFrontmatter({
+        path: 'summary.md',
+        content: summary,
+        updates: {
+          scope: { kind: 'workspace', workspaceId: targetWorkspaceId },
+          source_refs: [`knowledge:dependent@${hash(targetDependent)}`],
+        },
+      })
+    );
+    expect(pages.get('knowledge/pages/evidence.md')).toBe(evidence);
+  });
+
   it('exports one published Git tree and the actual scope schema, ignoring stale page files', () => {
     const f = source();
     mkdirSync(join(f.root, 'knowledge', 'pages'), { recursive: true });
@@ -155,6 +227,9 @@ describe('canonical Notebook Workspace portability', () => {
     });
     const original = parseOkfDocument({ path: 'notes/portable.md', content: f.content });
     expect(page.ok && original.ok).toBe(true);
+    expect(original.document?.frontmatter).not.toHaveProperty('openkit_entry_id');
+    expect(original.document?.frontmatter).not.toHaveProperty('openkit_entry_kind');
+    expect(page.document?.conceptId).toBe('notes/portable');
     expect(page.document?.body).toBe(original.document?.body);
     expect(page.document?.frontmatter).toMatchObject({
       scope: { kind: 'workspace', workspaceId: imported.workspace.id },

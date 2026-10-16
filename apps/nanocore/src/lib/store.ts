@@ -53,6 +53,7 @@ import {
   initializeWorkspaceNotebook,
   type NotebookInitialization,
 } from '../knowledge/notebook-initialization.js';
+import { importedWorkspaceNotebookReferences } from '../knowledge/notebook-workspace-portability.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   type KnowledgePageReferenceProof,
@@ -1381,7 +1382,7 @@ export class FsStore {
             registeredSources: new Map(
               records.knowledgeSources.map((source) => [source.id, source.contentDigest])
             ),
-            resolvedReferences: new Map(),
+            resolvedReferences: importedWorkspaceNotebookReferences(initialNotebookFiles ?? {}),
           }),
         });
       } finally {

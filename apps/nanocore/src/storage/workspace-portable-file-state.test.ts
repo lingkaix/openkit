@@ -576,13 +576,14 @@ describe('workspace portable file state', () => {
       })
     );
     const importedNativePage = readWorkspaceKnowledgePage(importedRoot, importedKnowledge.id)!;
+    const importedKnowledgeReference = `knowledge:${importedKnowledge.id}@sha256:${createHash('sha256').update(importedNativePage).digest('hex')}`;
     expect(importedNativePage).toContain(`openkit_entry_id: "${importedKnowledge.id}"`);
     const expectedImportedAcceptedPageBytes = updateOkfFrontmatter({
       path: `${importedAcceptedKnowledge.id}.md`,
       content: acceptedPageBytes,
       updates: {
         scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
-        source_refs: [knowledgeReference.replaceAll(knowledge.id, importedKnowledge.id)],
+        source_refs: [importedKnowledgeReference],
       },
     });
     expect(readWorkspaceKnowledgePage(importedRoot, importedAcceptedKnowledge.id)).toBe(
@@ -626,7 +627,7 @@ describe('workspace portable file state', () => {
           scopeId: `page/workspace/${importedWorkspaceId}`,
           objectId: importedAcceptedKnowledge.id,
         },
-        sourceReferences: [knowledgeReference.replaceAll(knowledge.id, importedKnowledge.id)],
+        sourceReferences: [importedKnowledgeReference],
       }),
     ]);
 

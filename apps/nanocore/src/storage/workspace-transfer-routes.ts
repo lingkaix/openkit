@@ -56,6 +56,7 @@ import { listExportableGenerativePresentations } from '../generative-ui/commands
 import { assertConversationRetrievalTraceReadable } from '../internal-agents/assistant-history.js';
 import {
   assertPortableWorkspaceNotebookDisclosure,
+  bindImportedWorkspaceNotebookTraces,
   importedWorkspaceNotebookFiles,
 } from '../knowledge/notebook-workspace-portability.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
@@ -902,7 +903,14 @@ export function importVerifiedWorkspace({
     targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
-    writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
+    writeWorkspacePortableFileState(workspaceRoot, {
+      ...snapshot.portableFileState,
+      retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
+        workspaceRoot,
+        workspaceId: importedWorkspaceId,
+        traces: snapshot.portableFileState.retrievalTraceFiles,
+      }),
+    });
     for (const [turnId, text] of snapshot.turnObservations) {
       const turn = snapshot.turns.find((candidate) => candidate.id === turnId);
       if (!turn) throw new Error('Imported work observations have no Turn owner.');
