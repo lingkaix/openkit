@@ -3007,8 +3007,8 @@ function lowerResponsesNativeInput(
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
       }
-      if (native && item.type === 'function_call_output')
-        assertResponsesImageInputContent(item.output);
+      if (item.type === 'function_call_output')
+        assertResponsesImageInputContent(item.output, !native);
       else readExactResponsesTextContent(item.output, !native);
       lowered.push(item);
       continue;
@@ -3062,7 +3062,7 @@ function assertExactPreservedResponsesItem(item: Record<string, unknown>, native
     ) {
       throw new GatewayUnsupportedFeatureError('pi-ai Responses message item');
     }
-    if (native && item.role === 'user') assertResponsesImageInputContent(item.content);
+    if (item.role === 'user') assertResponsesImageInputContent(item.content, !native);
     else readExactResponsesTextContent(item.content, !native);
     return;
   }
@@ -3180,16 +3180,16 @@ function containsResponsesImage(value: unknown): boolean {
   return Array.isArray(value) && value.some((part) => readRecord(part)?.type === 'input_image');
 }
 
-/** Validates native user and function-result content while retaining the existing exact text admission. */
-function assertResponsesImageInputContent(value: unknown): void {
+/** Validates carriage syntax before member selection; mapping still enforces native and selected-model image capability. */
+function assertResponsesImageInputContent(value: unknown, allowPlainText = false): void {
   if (!Array.isArray(value)) {
-    readExactResponsesTextContent(value);
+    readExactResponsesTextContent(value, allowPlainText);
     return;
   }
   for (const part of value) {
     const record = readRecord(part);
     if (record?.type === 'input_image') readResponsesImageContent(record);
-    else readExactResponsesTextContent([part]);
+    else readExactResponsesTextContent([part], allowPlainText);
   }
 }
 
