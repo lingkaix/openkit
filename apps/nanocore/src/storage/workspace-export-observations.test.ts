@@ -20,6 +20,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -44,11 +45,7 @@ describe('work observation portable closure', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-runtime-joins-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('usr_00000000-0000-7000-8000-000000000001', 'Local user', 'local@example.com', false, 0, 0, 'human')"
-      )
-      .run();
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Runtime joins');
     const thread = store.createThread(workspace.id, 'Runtime joins');
@@ -152,7 +149,7 @@ describe('work observation portable closure', () => {
           ts: turn.startedAt,
         },
       ]);
-      createVerifiedWorkspaceExport({
+      const exported = createVerifiedWorkspaceExport({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -163,7 +160,7 @@ describe('work observation portable closure', () => {
       });
       const app = createApp({ coreDb, dataRoot, store });
       const archive = await app.request(
-        `/api/app/workspaces/${workspace.id}/exports/export_runtime_joins/archive`
+        `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
       );
       expect(archive.status).toBe(200);
       const bytes = await archive.arrayBuffer();
@@ -225,11 +222,7 @@ describe('work observation portable closure', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-environment-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('usr_00000000-0000-7000-8000-000000000001', 'Local user', 'local@example.com', false, 0, 0, 'human')"
-      )
-      .run();
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
     store.importWorkspaceSnapshot({
@@ -332,7 +325,7 @@ describe('work observation portable closure', () => {
       ).toEqual(environment.assistantSkillAdmission);
       const app = createApp({ coreDb, dataRoot, store });
       const archive = await app.request(
-        `/api/app/workspaces/${demo.workspace.id}/exports/export_environment/archive`
+        `/api/app/workspaces/${demo.workspace.id}/exports/${exported.verified.manifest.id}/archive`
       );
       expect(archive.status).toBe(200);
       const bytes = await archive.arrayBuffer();
@@ -465,11 +458,7 @@ describe('work observation portable closure', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-observations-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('usr_00000000-0000-7000-8000-000000000001', 'Local user', 'local@example.com', false, 0, 0, 'human')"
-      )
-      .run();
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
     store.importWorkspaceSnapshot({
@@ -578,7 +567,7 @@ describe('work observation portable closure', () => {
               'exports',
               'workspaces',
               demo.workspace.id,
-              'export_observations',
+              verified.manifest.id,
               entry.path
             )
           ).equals(systemSecretFile)
@@ -593,7 +582,7 @@ describe('work observation portable closure', () => {
               'exports',
               'workspaces',
               demo.workspace.id,
-              'export_observations',
+              verified.manifest.id,
               entry.path
             )
           ).equals(bytes)
