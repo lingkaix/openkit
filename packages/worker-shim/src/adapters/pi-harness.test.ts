@@ -4,12 +4,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import { type WorkerCanonicalEventRecord, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
 import { createPiResidentAdapter } from './pi.js';
+import { createPiLineReader, parsePiHostFrame } from './pi-channel.js';
 
 const HOST_BIN = fileURLToPath(
   new URL('../../../pi-runtime-host/src/bin/openkit-pi-runtime-host.ts', import.meta.url)
@@ -26,8 +30,11 @@ function credential(seed: string): string {
   return createHash('sha256').update(seed).digest('base64url');
 }
 
-/** Records the Integration calls the Harness makes. No listener is bound. */
-function fakeIntegration(finalStatuses: unknown[]): SandboxIntegrationClient {
+/** Records the actual Integration calls for fixture observation. No listener is bound. */
+function fakeIntegration(
+  finalStatuses: unknown[],
+  observeControl?: (url: string, body: unknown) => void
+): SandboxIntegrationClient {
   const loopbacks = new Set<string>();
   return {
     ready: Promise.resolve(),
@@ -49,6 +56,7 @@ function fakeIntegration(finalStatuses: unknown[]): SandboxIntegrationClient {
     },
     workerControlFetch: async (url: string, init: { body: string }) => {
       if (url.endsWith('/final-status')) finalStatuses.push(JSON.parse(init.body) as unknown);
+      observeControl?.(url, JSON.parse(init.body));
       return {
         ok: true,
         status: 200,
@@ -58,9 +66,12 @@ function fakeIntegration(finalStatuses: unknown[]): SandboxIntegrationClient {
   } as unknown as SandboxIntegrationClient;
 }
 
+/** Creates the existing Harness with optional passive channel and control observations. */
 function harnessFor(
   root: string,
-  hostCommand: readonly string[] = [process.execPath, '--no-warnings', HOST_BIN]
+  hostCommand: readonly string[] = [process.execPath, '--no-warnings', HOST_BIN],
+  observeChannel?: (channel: Duplex) => void,
+  observeControl?: (url: string, body: unknown) => void
 ) {
   const sandboxRoot = join(root, 'openkit');
   const nativeRoot = join(root, 'sandbox', 'native');
@@ -68,9 +79,9 @@ function harnessFor(
   mkdirSync(sandboxRoot, { recursive: true });
   mkdirSync(nativeRoot, { recursive: true });
   const harness = new WorkerHarness({
-    adapters: { pi: createPiResidentAdapter({ hostCommand }) },
+    adapters: { pi: createPiResidentAdapter({ hostCommand, observeChannel }) },
     environment: { HOME: join(root, 'home'), PATH: process.env.PATH ?? '' },
-    integration: fakeIntegration(finalStatuses),
+    integration: fakeIntegration(finalStatuses, observeControl),
     threadRootDirectory: nativeRoot,
     rootDirectory: join(root, 'private'),
     sandboxRoot,
@@ -136,6 +147,29 @@ describe('Pi Harness integration', () => {
       roots.push(root);
       mkdirSync(join(root, 'home'), { recursive: true });
       const requests: Array<{ model: string }> = [];
+      const turnIds = [
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+      ];
+      // Keep only terminal structure outside the fixture's temporary native files.
+      const native: Array<{
+        turnId: string;
+        type: string;
+        stopReason?: string;
+        willRetry?: boolean | 'unknown';
+        matchesMessage?: boolean;
+        matchesSyntheticText?: boolean;
+      }> = [];
+      const terminalOrder: Array<{
+        turnId: string;
+        source: 'native' | 'host' | 'canonical';
+        status?: string;
+        sequence?: number;
+        matchesSyntheticText?: boolean;
+      }> = [];
+      const canonical: WorkerCanonicalEventRecord[] = [];
+      let terminalMessage: { turnId: string; message: unknown } | undefined;
+      let captureFailure: 'invalid' | 'omitted' | 'overflow' | undefined;
       const proxy = createServer(async (req, res) => {
         try {
           const chunks: Buffer[] = [];
@@ -174,7 +208,104 @@ describe('Pi Harness integration', () => {
         proxy.listen(17892, '127.0.0.1', resolve);
       });
       try {
-        const harness = harnessFor(root);
+        const harness = harnessFor(
+          root,
+          undefined,
+          (channel) => {
+            const read = createPiLineReader(
+              (line) => {
+                const frame = parsePiHostFrame(line);
+                if (frame.kind === 'invalid' || frame.kind === 'omitted') {
+                  captureFailure = frame.kind;
+                } else if (frame.kind === 'native') {
+                  const event = frame.data as Record<string, unknown>;
+                  if (event.type === 'message_end') {
+                    const message = event.message as {
+                      role?: string;
+                      stopReason?: string;
+                      content?: Array<{ type: string; text?: string }>;
+                    };
+                    if (message.role !== 'assistant') return;
+                    terminalMessage = { turnId: frame.turnId, message };
+                    native.push({
+                      turnId: frame.turnId,
+                      type: 'message_end',
+                      stopReason:
+                        ['stop', 'error', 'aborted', 'length'].find(
+                          (reason) => reason === message.stopReason
+                        ) ?? 'unknown',
+                      matchesSyntheticText:
+                        message.content
+                          ?.filter((part) => part.type === 'text')
+                          .map((part) => part.text)
+                          .join('') === `answer-${turnIds.indexOf(frame.turnId) + 1}`,
+                    });
+                  } else if (event.type === 'turn_end' || event.type === 'agent_end') {
+                    const message =
+                      event.type === 'turn_end'
+                        ? event.message
+                        : (event.messages as Array<{ role?: string }>).findLast(
+                            (candidate) => candidate.role === 'assistant'
+                          );
+                    native.push({
+                      turnId: frame.turnId,
+                      type: event.type,
+                      matchesMessage:
+                        terminalMessage?.turnId === frame.turnId &&
+                        isDeepStrictEqual(terminalMessage.message, message),
+                      ...(event.type === 'agent_end'
+                        ? {
+                            willRetry:
+                              typeof event.willRetry === 'boolean' ? event.willRetry : 'unknown',
+                          }
+                        : {}),
+                    });
+                  } else if (event.type === 'agent_settled') {
+                    native.push({ turnId: frame.turnId, type: 'agent_settled' });
+                    terminalOrder.push({ turnId: frame.turnId, source: 'native' });
+                  }
+                } else if (frame.kind === 'settled') {
+                  const outcome = frame.settled.outcome as {
+                    status?: string;
+                    assistantText?: string;
+                  };
+                  terminalOrder.push({
+                    turnId: frame.settled.turnId,
+                    source: 'host',
+                    status:
+                      ['completed', 'failed', 'interrupted', 'length'].find(
+                        (status) => status === outcome.status
+                      ) ?? 'unknown',
+                    matchesSyntheticText:
+                      outcome.assistantText ===
+                      `answer-${turnIds.indexOf(frame.settled.turnId) + 1}`,
+                  });
+                }
+              },
+              () => {
+                captureFailure = 'overflow';
+              }
+            );
+            channel.on('data', read);
+            channel.once('end', () => read.finish());
+          },
+          (url, body) => {
+            if (url.endsWith('/events/append')) {
+              canonical.push((body as { record: WorkerCanonicalEventRecord }).record);
+            } else if (url.endsWith('/final-status')) {
+              const final = body as { sequence: number; body: { status: string } };
+              terminalOrder.push({
+                turnId: canonical.at(-1)?.lineage.turnId ?? 'unknown',
+                source: 'canonical',
+                sequence: final.sequence,
+                status:
+                  ['completed', 'failed', 'interrupted', 'blocked'].find(
+                    (candidate) => candidate === final.body.status
+                  ) ?? 'unknown',
+              });
+            }
+          }
+        );
         expect((await harness.open('as_00000000-0000-7f03-8682-76a52604a84a')).disposition).toBe(
           'succeeded'
         );
@@ -229,7 +360,7 @@ describe('Pi Harness integration', () => {
                   },
                 ],
               },
-              observability: { captureCoverage: { scope: 'server', value: 'off' } },
+              observability: { captureCoverage: { scope: 'server', value: 'on' } },
               runtime: {
                 command: { argv: ['openkit-worker-shim'], workingDirectory: harness.sandboxRoot },
               },
@@ -265,7 +396,7 @@ describe('Pi Harness integration', () => {
             workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
           });
         };
-        const first = await run('tu_00000000-0000-7e49-8268-e35715b55d0c', 0);
+        const first = await run(turnIds[0]!, 0);
         expect(first, JSON.stringify(first)).toMatchObject({ disposition: 'succeeded' });
         await vi.waitFor(() => expect(harness.finalStatuses).toHaveLength(1), {
           interval: 20,
@@ -285,7 +416,7 @@ describe('Pi Harness integration', () => {
           },
           { interval: 20, timeout: 10_000 }
         );
-        const second = await run('tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 1);
+        const second = await run(turnIds[1]!, 1);
         expect(second, JSON.stringify(second)).toMatchObject({ disposition: 'succeeded' });
         await vi.waitFor(() => expect(harness.finalStatuses).toHaveLength(2), {
           interval: 20,
@@ -314,6 +445,75 @@ describe('Pi Harness integration', () => {
         ).toMatchObject({
           disposition: 'succeeded',
         });
+        expect(captureFailure).toBeUndefined();
+        for (const [index, turnId] of turnIds.entries()) {
+          expect(native.filter((event) => event.turnId === turnId)).toEqual([
+            { turnId, type: 'message_end', stopReason: 'stop', matchesSyntheticText: true },
+            { turnId, type: 'turn_end', matchesMessage: true },
+            { turnId, type: 'agent_end', matchesMessage: true, willRetry: false },
+            { turnId, type: 'agent_settled' },
+          ]);
+          const records = canonical.filter((record) => record.lineage.turnId === turnId);
+          const paths = workerTurnCapturePaths(
+            'th_00000000-0000-730e-88b8-d76794f39a2f',
+            'pi',
+            turnId
+          );
+          const retained = readFileSync(
+            join(harness.nativeRoot, relative('/openkit/threads', paths.root), 'events.jsonl'),
+            'utf8'
+          )
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as WorkerCanonicalEventRecord);
+          const terminal = retained.at(-1)!;
+          expect(terminal.lineage.turnId).toBe(turnId);
+          expect(terminal.event.type).toBe('turn.completed');
+          expect(terminalOrder.filter((event) => event.turnId === turnId)).toEqual([
+            { turnId, source: 'native' },
+            { turnId, source: 'host', status: 'completed', matchesSyntheticText: true },
+            { turnId, source: 'canonical', status: 'completed', sequence: terminal.sequence },
+          ]);
+          const final = harness.finalStatuses[index] as {
+            schemaVersion: number;
+            sequence: number;
+            body: unknown;
+          };
+          expect(final.schemaVersion).toBe(2);
+          expect(final.sequence).toBe(terminal.sequence);
+          expect(isDeepStrictEqual(final.body, terminal.event.data)).toBe(true);
+          expect(records.every((record) => record.schemaVersion === 1)).toBe(true);
+          expect(records.some((record) => record.event.type === 'observation.recorded')).toBe(true);
+          const content = records.filter(
+            (record) => record.event.type === 'observation.content.chunk'
+          );
+          expect(content).toHaveLength(1);
+          const chunk = content[0]!.event;
+          expect(
+            chunk.type === 'observation.content.chunk' &&
+              Buffer.from(chunk.data.data, 'base64').toString() === `answer-${index + 1}`
+          ).toBe(true);
+        }
+        console.info(
+          JSON.stringify({
+            issue: 130,
+            scope: 'two synthetic loopback Turns in one real Pi SDK host and Harness',
+            version:
+              'pi-coding-agent 1.0.2 with workspace patch; worker protocol 2; canonical events 1',
+            retention: 'temporary fixture only; external log contains structural metadata',
+            redaction: 'no frames, reasoning, handles, paths, credentials or request content',
+            native: native.map(({ turnId, ...event }) => ({
+              turn: turnIds.indexOf(turnId),
+              ...event,
+            })),
+            terminalOrder: terminalOrder.map(({ turnId, ...event }) => ({
+              turn: turnIds.indexOf(turnId),
+              ...event,
+            })),
+            canonical: 'two correlated completed finals with matching synthetic content',
+            incident: 'INCONCLUSIVE: self-stop not reproduced; other terminal classes unobserved',
+          })
+        );
       } finally {
         proxy.closeAllConnections();
         await new Promise<void>((resolve) => proxy.close(() => resolve()));
