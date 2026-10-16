@@ -1,8 +1,8 @@
 import {
   ArchiveThreadRequestSchema,
   CreateThreadRequestSchema,
-  ListThreadsResponseSchema,
   ItemIdSchema,
+  ListThreadsResponseSchema,
   ThreadIdSchema,
   ThreadSchema,
   UpdateThreadRequestSchema,

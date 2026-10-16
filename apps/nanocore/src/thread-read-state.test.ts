@@ -89,9 +89,15 @@ describe('User-owned Thread read receipts', () => {
 
     expect(await state()).toEqual({ readItemIds: [], unreadItemIds: [FIRST, SECOND] });
     expect((await request('thread.items')).status).toBe(200);
-    expect((await request('conversation.navigation', { workspaceId: workspace.id })).status).toBe(
-      200
-    );
+    const prefetchedNavigation = await request('conversation.navigation', {
+      workspaceId: workspace.id,
+    });
+    expect(prefetchedNavigation.status).toBe(200);
+    expect(
+      (await prefetchedNavigation.json()).items.find(
+        (row: { thread: { id: string } }) => row.thread.id === thread.id
+      ).unreadCount
+    ).toBe(2);
     expect(await state()).toEqual({ readItemIds: [], unreadItemIds: [FIRST, SECOND] });
     expect((await request('thread.mark-read', { ...owner, itemIds: [SECOND] })).status).toBe(200);
     expect(await state()).toEqual({ readItemIds: [SECOND], unreadItemIds: [FIRST] });
