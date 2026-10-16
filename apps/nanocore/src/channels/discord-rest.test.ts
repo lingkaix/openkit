@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createDiscordRestTransport } from './discord-rest.js';
 
 const discordUserId = '223456789012345678';
 const channelId = '323456789012345678';
+const appPath = `/workspaces/${testEntityId('ws', 'discord-rest')}/threads/${testEntityId('th', 'discord-rest')}`;
 
 /** Produces a private DM acknowledgement with an exact recipient. */
 function dm() {
@@ -24,7 +26,7 @@ describe('Discord REST private attention transport', () => {
     expect(
       await transport.sendAttention({
         discordUserId,
-        appPath: '/workspaces/ws/threads/th',
+        appPath,
         beforeSend,
       })
     ).toEqual({ status: 'sent', externalMessageId: '423456789012345678' });
@@ -34,7 +36,7 @@ describe('Discord REST private attention transport', () => {
     expect(url).toBe(`https://discord.com/api/v10/channels/${channelId}/messages`);
     expect(init?.redirect).toBe('error');
     expect(JSON.parse(init?.body as string)).toEqual({
-      content: 'OpenKit needs your attention: https://openkit.example/workspaces/ws/threads/th',
+      content: `OpenKit needs your attention: https://openkit.example${appPath}`,
       allowed_mentions: { parse: [] },
       flags: 4,
     });
