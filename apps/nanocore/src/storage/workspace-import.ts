@@ -15,8 +15,8 @@ import {
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
-  type KnowledgeRetrievalTrace,
   KnowledgeRetrievalTraceSchema,
+  type ProductRetrievalTrace,
   RuntimeEvidenceRecordSchema,
   StagedWorkspaceReviewReaderSchema,
   StagedWorkspaceReviewSchema,
@@ -163,6 +163,12 @@ import {
   parseOwnedKnowledgeEntry,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
+import {
+  importAssistantHistoryTrace,
+  reconcileImportedAssistantContext,
+  remintAssistantSummaryItem,
+  remintAssistantThreadParents,
+} from './workspace-import-assistant-history.js';
 import {
   parseWorkspaceRetrievalTraceFile,
   serializeWorkspaceRetrievalTrace,
@@ -981,7 +987,10 @@ export function readWorkspaceImportSnapshot(
       );
     }
   }
-  const retrievalTraces = readRetrievalTraceImportState(context);
+  const sourceTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
+    TurnSchema.parse(record)
+  );
+  const retrievalTraces = readRetrievalTraceImportState(context, canonical, sourceTurns);
   const workerRuntime = readWorkerRuntimeControlState(context);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
   const workspaceSync = readWorkspaceSyncImportState(context);
@@ -990,6 +999,16 @@ export function readWorkspaceImportSnapshot(
     canonical,
     workspaceSync,
     retrievalTraces
+  );
+  Object.assign(
+    workResources,
+    reconcileImportedAssistantContext(context, workResources, retrievalTraces.files, sourceTurns)
+  );
+  workResources.turnEvents = refreshImportedTurnEventSnapshots(
+    workResources.turnEvents,
+    workResources.threads,
+    new Map(workResources.itemRevisions.map((item) => [item.id, item])),
+    workResources.turns
   );
   const knowledgeReferenceReplacements = [
     ...context.contextPackageReferences,
@@ -1210,27 +1229,14 @@ function readCanonicalImportState(context: ImportRemintContext) {
     'th',
     exportedThreads.map((thread) => thread.id)
   );
-  const targetThreadIds = new Set(threadIds.values());
-  const threads = exportedThreads.map((thread) => {
-    const mappedParent =
-      thread.parentThreadId === undefined ? undefined : threadIds.get(thread.parentThreadId);
-    if (
-      thread.parentThreadId !== undefined &&
-      mappedParent === undefined &&
-      targetThreadIds.has(thread.parentThreadId)
-    ) {
-      throw new Error('Unresolved source Thread parent collides with a target Thread.');
-    }
-    return ThreadSchema.parse({
+  const threads = exportedThreads.map((thread) =>
+    ThreadSchema.parse({
       ...thread,
       id: requiredMapValue(threadIds, thread.id, 'Thread'),
       workspaceId: context.targetWorkspaceId,
-      // Core keeps missing or excluded parents as unresolved source lineage, never a target lookup.
-      ...(thread.parentThreadId === undefined
-        ? {}
-        : { parentThreadId: mappedParent ?? thread.parentThreadId }),
-    });
-  });
+    })
+  );
+  remintAssistantThreadParents(threads, threadIds);
   const exportedKnowledge = readImportJsonl(context.files, 'records/knowledge.jsonl').map(
     (record) => KnowledgeEntrySchema.parse(record)
   );
@@ -1471,6 +1477,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     if (item.type !== 'user-input-response' && item.causationId && itemIds.has(item.causationId)) {
       rewritten.causationId = requiredMapValue(itemIds, item.causationId, 'causation item');
     }
+    Object.assign(rewritten, remintAssistantSummaryItem(item, itemIds));
     if (item.type === 'artifact-reference') {
       rewritten.artifactId = requiredMapValue(artifactIds, item.artifactId, 'artifact');
     } else if (item.type === 'approval-request' || item.type === 'approval-decision') {
@@ -3643,7 +3650,7 @@ interface ImportedRetrievalSelectedPage {
 
 /** Retrieval traces reminted before dependent S39 package reconstruction. */
 interface ImportedRetrievalTraceState {
-  readonly files: ReadonlyMap<string, KnowledgeRetrievalTrace>;
+  readonly files: Map<string, ProductRetrievalTrace>;
   readonly references: ReadonlyMap<string, RetrievalTraceReference>;
   readonly selectedPages: ReadonlyMap<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>;
 }
@@ -3713,7 +3720,11 @@ function remintImportedPageReference(
 }
 
 /** Reconstructs immutable query-owned trace files before S39 consumes their qualified references. */
-function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRetrievalTraceState {
+function readRetrievalTraceImportState(
+  context: ImportRemintContext,
+  targetCanonical: ReturnType<typeof readCanonicalImportState>,
+  sourceTurnRecords: readonly Turn[]
+): ImportedRetrievalTraceState {
   const tracePaths = [...context.files.keys()]
     .filter((path) =>
       /^workspace-files\/threads\/[^/]+\/(?:turns\/[^/]+\/)?retrieval-traces\/[^/]+\.json$/.test(
@@ -3725,13 +3736,14 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
     throw new Error('Workspace import requires the target Server identity for retrieval traces.');
   }
   const sourceTurns = new Map(
-    readImportJsonl(context.files, 'records/turns.jsonl').map((record) => {
+    sourceTurnRecords.map((record) => {
       const turn = TurnSchema.parse(record);
       return [turn.id, turn.threadId] as const;
     })
   );
   const replacements = portableReferenceReplacements(context);
-  const files = new Map<string, KnowledgeRetrievalTrace>();
+  const files = new Map<string, ProductRetrievalTrace>();
+  const targetItems = new Map(targetCanonical.itemRevisions.map((item) => [item.id, item]));
   const references = new Map<string, RetrievalTraceReference>();
   const selectedPages = new Map<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>();
 
@@ -3763,6 +3775,22 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
         : `retrieval-trace/thread/${context.targetWorkspaceId}/${targetThreadId}`,
       objectId: sourceReference.objectId,
     });
+    if ('sourceKind' in sourceTrace) {
+      importAssistantHistoryTrace({
+        context,
+        sourceTrace,
+        sourceReference,
+        targetReference,
+        targetThreadId,
+        targetTurnId,
+        sourceTurnRecords,
+        targetCanonical,
+        targetItems,
+        files,
+        references,
+      });
+      continue;
+    }
     const targetSourceScope = remintImportedPageScope(sourceTrace.sourceScope, context);
     const expectedSourceScope =
       sourceTrace.retrievalParameters.sourceScope === 'workspace'
@@ -3919,7 +3947,7 @@ function readPortableImportState(
   context: ImportRemintContext,
   workerContextPackageFiles: ReadonlyMap<string, string>,
   knowledge: readonly KnowledgeEntry[],
-  retrievalTraceFiles: ReadonlyMap<string, KnowledgeRetrievalTrace>
+  retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>
 ): WorkspacePortableFileState {
   const portableFileState = readPortableFileStateFromExport(context);
   assertPortableKnowledgePagesMatch(portableFileState.nativeKnowledgePages, knowledge);

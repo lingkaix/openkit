@@ -14,8 +14,8 @@ import {
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
-  type KnowledgeRetrievalTrace,
-  KnowledgeRetrievalTraceReaderSchema,
+  type ProductRetrievalTrace,
+  ProductRetrievalTraceReaderSchema,
 } from '@openkit/app-api-schemas';
 import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -35,7 +35,7 @@ const ConflictRowSchema = KnowledgeConflictSchema.strict();
 const ObservationReaderSchema = ObservationRowSchema.strip();
 const ClaimReaderSchema = ClaimRowSchema.strip();
 const ConflictReaderSchema = ConflictRowSchema.strip();
-const RetrievalTraceReaderSchema = KnowledgeRetrievalTraceReaderSchema;
+const RetrievalTraceReaderSchema = ProductRetrievalTraceReaderSchema;
 const retainedLedgerRow = Symbol('retainedKnowledgeLedgerRow');
 
 /** Keeps owned source annotations separate from the normalized Knowledge read model. */
@@ -68,7 +68,7 @@ export interface WorkspacePortableFileState {
   /** Complete conflict append history grouped by canonical ledger month. */
   readonly conflicts: ReadonlyMap<string, readonly z.infer<typeof ConflictRowSchema>[]>;
   /** Immutable query-owned retrieval traces keyed by canonical Workspace-relative path. */
-  readonly retrievalTraceFiles: ReadonlyMap<string, KnowledgeRetrievalTrace>;
+  readonly retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>;
   /** Exact workspace configuration text, or null when absent. */
   readonly workspaceConfig: string | null;
   /** Exact workspace knowledge schema text, or null when absent. */
@@ -522,7 +522,7 @@ export function parseWorkspaceRetrievalTraceFile(
   relativePath: string,
   text: string,
   expectedWorkspaceId: string
-): { readonly reference: RetrievalTraceReference; readonly trace: KnowledgeRetrievalTrace } {
+): { readonly reference: RetrievalTraceReference; readonly trace: ProductRetrievalTrace } {
   safeRelativeSegments(relativePath);
   const turnMatch = /^threads\/([^/]+)\/turns\/([^/]+)\/retrieval-traces\/([^/]+)\.json$/.exec(
     relativePath
@@ -543,7 +543,7 @@ export function parseWorkspaceRetrievalTraceFile(
 }
 
 /** Serializes only normalized trace evidence; ignored additions cannot enter export or import. */
-export function serializeWorkspaceRetrievalTrace(trace: KnowledgeRetrievalTrace): string {
+export function serializeWorkspaceRetrievalTrace(trace: ProductRetrievalTrace): string {
   return `${JSON.stringify(RetrievalTraceReaderSchema.parse(trace))}\n`;
 }
 
@@ -551,7 +551,7 @@ export function serializeWorkspaceRetrievalTrace(trace: KnowledgeRetrievalTrace)
 function readWorkspaceRetrievalTraceFiles(
   root: string,
   owners: WorkspacePortableOwnerGraph
-): ReadonlyMap<string, KnowledgeRetrievalTrace> {
+): ReadonlyMap<string, ProductRetrievalTrace> {
   if (workspaceDirectory(root, 'knowledge/traces', false)) {
     throw new Error('The retired Knowledge retrieval trace ledger is unsupported.');
   }
@@ -567,7 +567,7 @@ function readWorkspaceRetrievalTraceFiles(
   if (knownThreads.size !== owners.threads.length || knownTurns.size !== owners.turns.length) {
     throw new Error('Portable retrieval trace owners must be unique.');
   }
-  const files = new Map<string, KnowledgeRetrievalTrace>();
+  const files = new Map<string, ProductRetrievalTrace>();
   const threadsDirectory = workspaceDirectory(root, 'threads', false);
   if (!threadsDirectory) return files;
 
@@ -619,7 +619,7 @@ function readRetrievalTraceDirectory(
   root: string,
   relativeDirectory: string,
   workspaceId: string,
-  files: Map<string, KnowledgeRetrievalTrace>
+  files: Map<string, ProductRetrievalTrace>
 ): void {
   const directory = workspaceDirectory(root, relativeDirectory, false);
   if (!directory) return;
@@ -653,7 +653,7 @@ function readRetrievalTraceDirectory(
 /** Writes reminted trace files into an unpublished staging Workspace. */
 function writeWorkspaceRetrievalTraceFiles(
   root: string,
-  files: ReadonlyMap<string, KnowledgeRetrievalTrace>
+  files: ReadonlyMap<string, ProductRetrievalTrace>
 ): void {
   for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
     const text = serializeWorkspaceRetrievalTrace(trace);
@@ -672,7 +672,7 @@ function writeWorkspaceRetrievalTraceFiles(
 /** Writes admitted trace files under the portable export namespace. */
 function writeWorkspaceRetrievalTraceExportFiles(
   root: string,
-  files: ReadonlyMap<string, KnowledgeRetrievalTrace>
+  files: ReadonlyMap<string, ProductRetrievalTrace>
 ): void {
   for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
     const text = serializeWorkspaceRetrievalTrace(trace);

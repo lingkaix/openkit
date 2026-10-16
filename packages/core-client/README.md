@@ -32,7 +32,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 ## Client Shape
 
-- `client.operations`: definition-derived product operations, including `chat.quick`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, redacted Agent Environment Package snapshot readback, Material reads and mutations, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership, and personal administrator-token inventory and default selection.
+- `client.operations`: definition-derived product operations, including `conversation.submit`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, redacted Agent Environment Package snapshot readback, Material reads and mutations, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership, and personal administrator-token inventory and default selection.
 - `client.core`: metadata discovery and the Thread event stream.
 - `client.app`: raw portable archive download, dry-run, and import streams.
 - `client.operations` exposes the seven current-administrator Worker environment operations and the private administration conversation entry. Every input carries its complete logical selectors; destructive purge binds confirmation to the same storage reference and revision.
