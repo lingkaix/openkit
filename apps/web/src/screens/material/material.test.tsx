@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { ApiCallError, type CoreClient, type GetArtifactResponse } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
@@ -971,10 +970,9 @@ describe('Workspace Material Plane 1 S12', () => {
   });
 });
 
-/** Small canonical proposal fixture; expected hashes come from Node, not the loader's hash. */
-function proposalFixture(text = '\ufeff# Proposed release notes\n界 ships.\n', version = 1) {
+/** Small canonical proposal fixture; expected SHA-256 literals were independently precomputed from its exact UTF-8 bytes. */
+function proposalFixture(text = '\ufeff# Proposed release notes\n界 ships.\n', version = 1, contentDigest = 'sha256:7016ac7cb4a4f6358bed70b70eb9b64ad285a8d036402de53562c347db2025ad') {
   const bytes = new TextEncoder().encode(text);
-  const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const artifact: GetArtifactResponse = {
     id: 'artifact_proposal',
     workspaceId: WORKSPACE_ID,
@@ -1085,7 +1083,7 @@ describe('exact Material proposal text', () => {
           ?.textContent
       ).toBe(fixture.text)
     );
-    const inline = proposalFixture('Inline proposal', 2);
+    const inline = proposalFixture('Inline proposal', 2, 'sha256:bb2d8b3e7f5c5bdc7f13cb38f8be6cf1876c621878af2e0baed801e9d2bded5b');
     inline.artifact.content = { format: 'text', body: inline.text };
     view.rerender(inline);
     expect(screen.getByRole('region', { name: 'Reviewed artifact proposal' })).toHaveTextContent(
@@ -1095,8 +1093,8 @@ describe('exact Material proposal text', () => {
   });
 
   it('hides the previous version while loading and refuses changed original bytes', async () => {
-    const first = proposalFixture('Original version');
-    const next = proposalFixture('Changed version!', 2);
+    const first = proposalFixture('Original version', 1, 'sha256:46dd9599c8810a12958ab82213e13650ebe51c805b3fd459e2b143ae03745a25');
+    const next = proposalFixture('Changed version!', 2, 'sha256:5a7910d2e791c67a96a395727195787e828ec3ea3f8648e22eecb5123aea9116');
     const pending = createDeferred<ReturnType<typeof next.downloaded>>();
     const download = vi
       .fn()
@@ -1138,9 +1136,9 @@ describe('exact Material proposal text', () => {
       "Couldn't load the reviewed proposal text."
     );
     expect(download).not.toHaveBeenCalled();
-    const invalid = proposalFixture('a', 2);
+    const invalid = proposalFixture('a', 2, 'sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb');
     const bytes = new Uint8Array([255]);
-    invalid.artifact.contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    invalid.artifact.contentDigest = 'sha256:a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89';
     invalid.review.contentDigest = invalid.artifact.contentDigest;
     download.mockResolvedValue({
       ...invalid.downloaded(),
@@ -1158,7 +1156,7 @@ describe('exact Material proposal text', () => {
       "Couldn't load the reviewed proposal text."
     );
     expect(screen.queryByText('\ufffd')).not.toBeInTheDocument();
-    const overflow = proposalFixture('a', 3);
+    const overflow = proposalFixture('a', 3, 'sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb');
     const cancelled = vi.fn();
     download.mockResolvedValue({
       ...overflow.downloaded(),
