@@ -5,6 +5,7 @@ import {
   GenerativeUiRefreshActionSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createAssistantGenerativeTools } from './internal-tools.js';
 
 const context = {
@@ -88,13 +89,13 @@ it('preserves cancellation before and after native work without claiming an owne
 it('requires completed publication and keeps renderer bytes out of the model observation', async () => {
   const digest = `sha256:${'1'.repeat(64)}`;
   const presentation = {
-    id: '00000000-0000-4000-8000-000000000001',
-    workspaceId: 'workspace',
-    threadId: 'thread',
-    turnId: 'turn',
-    itemId: 'presentation-item',
+    id: testEntityId('pres', 'native-presentation'),
+    workspaceId: testEntityId('ws', 'native-workspace'),
+    threadId: testEntityId('th', 'native-thread'),
+    turnId: testEntityId('tu', 'native-turn'),
+    itemId: testEntityId('it', 'native-presentation-item'),
     createdAt: '2026-10-17T00:00:00.000Z',
-    actor: { kind: 'user', id: 'user' },
+    actor: { kind: 'user', id: testEntityId('usr', 'native-user') },
     requestId: null,
     originRequestId: null,
     semanticInputHash: digest,
@@ -104,7 +105,11 @@ it('requires completed publication and keeps renderer bytes out of the model obs
     catalogId: GENERATIVE_UI_NATIVE_CATALOG_ID,
     messages: [{ renderer: 'RENDERER_CANARY' }, {}, {}],
     contentDigest: digest,
-    source: { kind: 'item', itemId: 'source-item', contentDigest: digest },
+    source: {
+      kind: 'item',
+      itemId: testEntityId('it', 'native-source-item'),
+      contentDigest: digest,
+    },
     actions: [],
     observedAt: '2026-10-17T00:00:00.000Z',
     publication: 'unpublished' as const,
@@ -148,9 +153,9 @@ it('preserves generated-answer action refusal in the native definition and model
   };
   const logical = {
     ...model,
-    workspaceId: 'workspace',
-    threadId: 'thread',
-    turnId: 'turn',
+    workspaceId: testEntityId('ws', 'native-workspace'),
+    threadId: testEntityId('th', 'native-thread'),
+    turnId: testEntityId('tu', 'native-turn'),
     requestId: '00000000-0000-4000-8000-000000000002',
   };
   const definition = GENERATIVE_UI_OPERATION_DEFINITIONS['generative-ui.publish'];
