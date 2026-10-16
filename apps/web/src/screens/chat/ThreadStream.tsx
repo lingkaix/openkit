@@ -12,6 +12,7 @@ import {
   useWithdrawPendingRequest,
 } from './data';
 import { ItemView } from './ItemView';
+import { ThreadReadReceipts } from './ThreadReadReceipts';
 
 const MISSING_TURN_ERROR = 'This turn failed. Review the conversation before trying again.';
 
@@ -158,203 +159,214 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      {live.isError ? (
-        <ErrorBanner
-          message="Runtime activity is unavailable. Retry to refresh."
-          onRetry={() => void live.refetch()}
-        />
-      ) : null}
-      {groups.map((group, index) => {
-        const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
-        const isLastGroup =
-          groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
-        const activity = groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
-        const historicalFailure =
-          groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
-            ? (groupTurn.error?.message ?? MISSING_TURN_ERROR)
-            : null;
+    <ThreadReadReceipts
+      key={`${workspaceId}:${threadId}:${dashboard?.viewerUserId ?? ''}`}
+      workspaceId={workspaceId}
+      threadId={threadId}
+      viewerUserId={dashboard?.viewerUserId}
+      items={items.data ?? []}
+      disabled={controlsReadOnly || live.isError}
+    >
+      <div className="flex flex-col gap-5">
+        {live.isError ? (
+          <ErrorBanner
+            message="Runtime activity is unavailable. Retry to refresh."
+            onRetry={() => void live.refetch()}
+          />
+        ) : null}
+        {groups.map((group, index) => {
+          const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
+          const isLastGroup =
+            groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
+          const activity = groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
+          const historicalFailure =
+            groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
+              ? (groupTurn.error?.message ?? MISSING_TURN_ERROR)
+              : null;
 
-        return (
-          <div key={group.items[0]?.id ?? group.turnId} className="flex flex-col gap-4">
-            {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
-            {group.items.map((item) =>
-              item.type === 'user-input-request' &&
-              (items.data ?? []).some(
-                (candidate) =>
-                  candidate.type === 'user-input-response' &&
-                  candidate.userInputRequestId === item.userInputRequestId
-              ) ? null : (
-                <ItemView
-                  key={item.id}
-                  item={item}
-                  viewerUserId={dashboard?.viewerUserId}
-                  authorName={
-                    'actor' in item
-                      ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
-                      : turnAuthors.get(item.turnId)
-                  }
-                  requestObjective={
-                    item.type === 'user-message'
-                      ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
-                      : undefined
-                  }
-                  readOnly={
-                    controlsReadOnly ||
-                    (item.type === 'user-input-request' &&
-                      (live.isError ||
-                        dashboard?.pendingRequests?.find(
-                          (record) => record.requestId === item.userInputRequestId
-                        )?.state !== 'pending'))
-                  }
-                  resolvedApproval={
-                    item.type === 'approval-request'
-                      ? (items.data ?? []).find(
-                          (
-                            candidate
-                          ): candidate is Extract<
-                            typeof candidate,
-                            { type: 'approval-decision' }
-                          > =>
-                            candidate.type === 'approval-decision' &&
-                            candidate.approvalRequestId === item.approvalRequestId
-                        )
-                      : undefined
-                  }
-                  approvalRequestTitle={
-                    item.type === 'approval-decision'
-                      ? (items.data ?? []).find(
-                          (
-                            candidate
-                          ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
-                            candidate.type === 'approval-request' &&
-                            candidate.approvalRequestId === item.approvalRequestId
-                        )?.title
-                      : undefined
-                  }
-                  approvalEffect={
-                    item.type === 'approval-request'
-                      ? dashboard?.pendingRequests?.find(
-                          (row) => row.requestId === item.approvalRequestId
-                        )?.approvalEffect
-                      : undefined
-                  }
-                  onWithdrawApproval={(pendingRequestId) =>
-                    withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
-                  }
-                  approvalUnavailableReason={approvalUnavailableReason(item)}
-                  approvalPending={
-                    item.type === 'approval-request' &&
-                    ((respond.isPending &&
-                      respond.variables?.approvalRequestId === item.approvalRequestId) ||
-                      (withdraw.isPending &&
-                        withdraw.variables?.pendingRequestId === item.approvalRequestId))
-                  }
-                  approvalError={
-                    item.type === 'approval-request' &&
-                    ((respond.isError &&
-                      respond.variables?.approvalRequestId === item.approvalRequestId) ||
-                      (withdraw.isError &&
-                        withdraw.variables?.pendingRequestId === item.approvalRequestId))
-                  }
-                  onRetryApproval={() => {
-                    if (withdraw.isError && withdraw.variables) withdraw.mutate(withdraw.variables);
-                    else if (respond.variables) respond.mutate(respond.variables);
-                  }}
-                  onApprovalDecision={(approvalRequestId, turnId, decision) =>
-                    respond.mutate({
-                      approvalRequestId,
-                      turnId,
-                      decision,
-                      requestId: createRequestId(),
-                    })
-                  }
-                  onSubmitAnswers={(userInputRequestId, answers) =>
-                    submitAnswers.mutate({
-                      userInputRequestId,
-                      answers,
-                      requestId: createRequestId(),
-                    })
-                  }
-                  answerPending={
-                    submitAnswers.isPending &&
-                    item.type === 'user-input-request' &&
-                    submitAnswers.variables?.userInputRequestId === item.userInputRequestId
-                  }
-                  answerError={
-                    submitAnswers.isError &&
-                    item.type === 'user-input-request' &&
-                    submitAnswers.variables?.userInputRequestId === item.userInputRequestId
-                  }
-                  onRetryAnswers={() => {
-                    if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
-                  }}
-                />
-              )
-            )}
-            {activity ? (
-              <section
-                aria-label="Runtime activity"
-                className="rounded-ok border border-border bg-sunken p-4 text-sm"
-              >
-                <h3 className="font-semibold text-fg">Runtime activity</h3>
-                <p className="mt-1 text-fg-muted">
-                  {activity.coverage === 'collecting'
-                    ? 'Activity collection is ongoing.'
-                    : activity.coverage === 'partial'
-                      ? 'Activity coverage is partial.'
-                      : 'Activity coverage is unavailable.'}
-                </p>
-                <p className="mt-1 text-fg-muted">
-                  {activity.contentCapture === 'on'
-                    ? 'Full-content capture was enabled for this Turn.'
-                    : activity.contentCapture === 'off'
-                      ? 'Full-content capture was off for this Turn.'
-                      : 'Full-content capture setting is unknown.'}
-                </p>
-                {activity.omittedEntryCount > 0 ? (
+          return (
+            <div key={group.items[0]?.id ?? group.turnId} className="flex flex-col gap-4">
+              {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
+              {group.items.map((item) =>
+                item.type === 'user-input-request' &&
+                (items.data ?? []).some(
+                  (candidate) =>
+                    candidate.type === 'user-input-response' &&
+                    candidate.userInputRequestId === item.userInputRequestId
+                ) ? null : (
+                  <ItemView
+                    key={item.id}
+                    item={item}
+                    viewerUserId={dashboard?.viewerUserId}
+                    authorName={
+                      'actor' in item
+                        ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
+                        : turnAuthors.get(item.turnId)
+                    }
+                    requestObjective={
+                      item.type === 'user-message'
+                        ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)
+                            ?.objective
+                        : undefined
+                    }
+                    readOnly={
+                      controlsReadOnly ||
+                      (item.type === 'user-input-request' &&
+                        (live.isError ||
+                          dashboard?.pendingRequests?.find(
+                            (record) => record.requestId === item.userInputRequestId
+                          )?.state !== 'pending'))
+                    }
+                    resolvedApproval={
+                      item.type === 'approval-request'
+                        ? (items.data ?? []).find(
+                            (
+                              candidate
+                            ): candidate is Extract<
+                              typeof candidate,
+                              { type: 'approval-decision' }
+                            > =>
+                              candidate.type === 'approval-decision' &&
+                              candidate.approvalRequestId === item.approvalRequestId
+                          )
+                        : undefined
+                    }
+                    approvalRequestTitle={
+                      item.type === 'approval-decision'
+                        ? (items.data ?? []).find(
+                            (
+                              candidate
+                            ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
+                              candidate.type === 'approval-request' &&
+                              candidate.approvalRequestId === item.approvalRequestId
+                          )?.title
+                        : undefined
+                    }
+                    approvalEffect={
+                      item.type === 'approval-request'
+                        ? dashboard?.pendingRequests?.find(
+                            (row) => row.requestId === item.approvalRequestId
+                          )?.approvalEffect
+                        : undefined
+                    }
+                    onWithdrawApproval={(pendingRequestId) =>
+                      withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
+                    }
+                    approvalUnavailableReason={approvalUnavailableReason(item)}
+                    approvalPending={
+                      item.type === 'approval-request' &&
+                      ((respond.isPending &&
+                        respond.variables?.approvalRequestId === item.approvalRequestId) ||
+                        (withdraw.isPending &&
+                          withdraw.variables?.pendingRequestId === item.approvalRequestId))
+                    }
+                    approvalError={
+                      item.type === 'approval-request' &&
+                      ((respond.isError &&
+                        respond.variables?.approvalRequestId === item.approvalRequestId) ||
+                        (withdraw.isError &&
+                          withdraw.variables?.pendingRequestId === item.approvalRequestId))
+                    }
+                    onRetryApproval={() => {
+                      if (withdraw.isError && withdraw.variables)
+                        withdraw.mutate(withdraw.variables);
+                      else if (respond.variables) respond.mutate(respond.variables);
+                    }}
+                    onApprovalDecision={(approvalRequestId, turnId, decision) =>
+                      respond.mutate({
+                        approvalRequestId,
+                        turnId,
+                        decision,
+                        requestId: createRequestId(),
+                      })
+                    }
+                    onSubmitAnswers={(userInputRequestId, answers) =>
+                      submitAnswers.mutate({
+                        userInputRequestId,
+                        answers,
+                        requestId: createRequestId(),
+                      })
+                    }
+                    answerPending={
+                      submitAnswers.isPending &&
+                      item.type === 'user-input-request' &&
+                      submitAnswers.variables?.userInputRequestId === item.userInputRequestId
+                    }
+                    answerError={
+                      submitAnswers.isError &&
+                      item.type === 'user-input-request' &&
+                      submitAnswers.variables?.userInputRequestId === item.userInputRequestId
+                    }
+                    onRetryAnswers={() => {
+                      if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
+                    }}
+                  />
+                )
+              )}
+              {activity ? (
+                <section
+                  aria-label="Runtime activity"
+                  className="rounded-ok border border-border bg-sunken p-4 text-sm"
+                >
+                  <h3 className="font-semibold text-fg">Runtime activity</h3>
                   <p className="mt-1 text-fg-muted">
-                    {activity.omittedEntryCount} earlier activity entries not shown.
+                    {activity.coverage === 'collecting'
+                      ? 'Activity collection is ongoing.'
+                      : activity.coverage === 'partial'
+                        ? 'Activity coverage is partial.'
+                        : 'Activity coverage is unavailable.'}
                   </p>
-                ) : null}
-                {activity.entries.length > 0 ? (
-                  <ol className="mt-3 flex flex-col gap-3">
-                    {activity.entries.map((entry) => (
-                      <li key={entry.sequence}>
-                        <div className="flex flex-wrap items-baseline gap-2">
-                          <span className="font-medium text-fg">
-                            {entry.label ??
-                              {
-                                'child-started': 'Child activity started',
-                                progress: 'Reported progress',
-                                result: 'Reported result',
-                                failure: 'Reported failure',
-                              }[entry.kind]}
-                          </span>
-                          <time dateTime={entry.observedAt} className="text-xs text-fg-muted">
-                            {new Date(entry.observedAt).toLocaleTimeString()}
-                          </time>
-                        </div>
-                        {entry.text !== undefined ? (
-                          <p className="mt-1 whitespace-pre-wrap break-words text-fg">
-                            {entry.text}
-                          </p>
-                        ) : null}
-                        {entry.textTruncated ? (
-                          <p className="mt-1 text-xs text-fg-muted">
-                            Text shortened for this timeline.
-                          </p>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ol>
-                ) : null}
-              </section>
-            ) : null}
-            {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
-          </div>
-        );
-      })}
-    </div>
+                  <p className="mt-1 text-fg-muted">
+                    {activity.contentCapture === 'on'
+                      ? 'Full-content capture was enabled for this Turn.'
+                      : activity.contentCapture === 'off'
+                        ? 'Full-content capture was off for this Turn.'
+                        : 'Full-content capture setting is unknown.'}
+                  </p>
+                  {activity.omittedEntryCount > 0 ? (
+                    <p className="mt-1 text-fg-muted">
+                      {activity.omittedEntryCount} earlier activity entries not shown.
+                    </p>
+                  ) : null}
+                  {activity.entries.length > 0 ? (
+                    <ol className="mt-3 flex flex-col gap-3">
+                      {activity.entries.map((entry) => (
+                        <li key={entry.sequence}>
+                          <div className="flex flex-wrap items-baseline gap-2">
+                            <span className="font-medium text-fg">
+                              {entry.label ??
+                                {
+                                  'child-started': 'Child activity started',
+                                  progress: 'Reported progress',
+                                  result: 'Reported result',
+                                  failure: 'Reported failure',
+                                }[entry.kind]}
+                            </span>
+                            <time dateTime={entry.observedAt} className="text-xs text-fg-muted">
+                              {new Date(entry.observedAt).toLocaleTimeString()}
+                            </time>
+                          </div>
+                          {entry.text !== undefined ? (
+                            <p className="mt-1 whitespace-pre-wrap break-words text-fg">
+                              {entry.text}
+                            </p>
+                          ) : null}
+                          {entry.textTruncated ? (
+                            <p className="mt-1 text-xs text-fg-muted">
+                              Text shortened for this timeline.
+                            </p>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
+                </section>
+              ) : null}
+              {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
+            </div>
+          );
+        })}
+      </div>
+    </ThreadReadReceipts>
   );
 }

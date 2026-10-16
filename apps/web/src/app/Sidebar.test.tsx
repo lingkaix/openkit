@@ -182,13 +182,17 @@ describe('conversation navigation sidebar', () => {
     await waitFor(() => expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working'));
     await user.click(screen.getByRole('button', { name: 'Send pending request' }));
     await waitFor(() =>
-      expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Waiting for response')
+      expect(buttons[2]).toHaveAccessibleDescription(
+        'Assistant chat · Waiting for response · 2 unread replies'
+      )
     );
     expect(screen.getAllByRole('button', { name: /^Conversation \d$/ })[0]).toBe(buttons[2]);
     await act(async () => {
       finishRequest({ receivingWorkspaceId: 'ws1', receivingThreadId: 'th2' });
     });
-    await waitFor(() => expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies'));
+    await waitFor(() =>
+      expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies')
+    );
     await user.click(screen.getByRole('button', { name: 'Rename conversation' }));
     expect(await screen.findByRole('button', { name: 'Updated conversation' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Archive conversation' }));

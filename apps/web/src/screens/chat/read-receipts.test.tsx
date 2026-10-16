@@ -41,7 +41,12 @@ describe('displayed conversation receipts', () => {
       unreadItemIds: ['first', 'second'].filter((id) => !readIds.has(id)),
     });
     const read = vi.fn(async () => state());
+    let rejectSave = true;
     const mark = vi.fn(async (input: { itemIds?: string[] }) => {
+      if (rejectSave) {
+        rejectSave = false;
+        throw new Error('Save unavailable');
+      }
       for (const id of input.itemIds ?? ['first', 'second']) readIds.add(id);
       return state();
     });
@@ -78,11 +83,18 @@ describe('displayed conversation receipts', () => {
     await screen.findByText('first reply');
     await waitFor(() => expect(read).toHaveBeenCalled());
     expect(mark).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        observers.some((observer) =>
+          [...observer.targets].some((element) => element.textContent?.trim() === 'first reply')
+        )
+      ).toBe(true)
+    );
     const emitFirst = (intersecting: boolean) =>
       act(() => {
         for (const observer of observers) {
           const target = [...observer.targets].find(
-            (element) => element.textContent === 'first reply'
+            (element) => element.textContent?.trim() === 'first reply'
           );
           if (target)
             observer.callback(
@@ -111,6 +123,17 @@ describe('displayed conversation receipts', () => {
         itemIds: ['first'],
       })
     );
+    await screen.findByText('Read state was not saved.');
+    expect(readIds.size).toBe(0);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(mark).toHaveBeenCalledTimes(2));
+    expect(mark).toHaveBeenLastCalledWith({
+      workspaceId: 'workspace',
+      threadId: 'thread',
+      itemIds: ['first'],
+    });
+    await waitFor(() => expect(readIds.has('first')).toBe(true));
+    expect(readIds.has('second')).toBe(false);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Mark read' })).toBeEnabled());
     await userEvent.setup().click(screen.getByRole('button', { name: 'Mark read' }));
     await waitFor(() =>
