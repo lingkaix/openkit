@@ -237,7 +237,7 @@ describe('B5 catalog operation projections', () => {
     }
   });
 
-  it('projects exact Skill inspection, comparison, removal and unavailable retention authority', async () => {
+  it('projects exact Skill inspection, comparison, removal and retained-version refusal', async () => {
     const f = fixture();
     try {
       const invalid = await call(f, 'catalog.skill-import', {
@@ -322,17 +322,24 @@ describe('B5 catalog operation projections', () => {
           },
         ],
       });
+      const pinned = await call(f, 'catalog.skill-pin', {
+        ...identity,
+        expectedPinDigest: null,
+        expectedRevision: 2,
+        requestId: crypto.randomUUID(),
+      });
+      expect(pinned.status).toBe(200);
       const removed = await call(f, 'catalog.skill-remove', {
         workspaceId: f.workspace.id,
         skillId: 'proof',
-        expectedRevision: 2,
+        expectedRevision: 3,
         requestId: crypto.randomUUID(),
       });
       expect(removed.status).toBe(200);
       const refused = await call(f, 'catalog.skill-select', {
         ...identity,
         expectedCurrentDigest: null,
-        expectedRevision: 3,
+        expectedRevision: 4,
         requestId: crypto.randomUUID(),
       });
       expect(refused.status).toBe(404);
@@ -343,15 +350,15 @@ describe('B5 catalog operation projections', () => {
       expect(historical.status).toBe(200);
       const purge = await call(f, 'catalog.skill-purge', {
         ...identity,
-        expectedRevision: 3,
+        expectedRevision: 4,
         requestId: crypto.randomUUID(),
       });
       expect(purge.status).toBe(409);
       expect(await purge.json()).toMatchObject({
         code: 'resource_retained',
-        details: { references: ['retention_authority_unavailable'] },
+        details: { references: ['skill_pin:proof'] },
       });
-      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(3);
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(4);
       rmSync(skillSnapshotPath(f.dataRoot, f.workspace.id, 'proof', identity.digest), {
         recursive: true,
         force: true,
