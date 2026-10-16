@@ -4,22 +4,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import * as packageOwner from '../context/worker-context-package.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
@@ -730,38 +730,104 @@ it('dispatches bounded source reads and refuses a path outside the accepted Turn
   expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
 });
 
-
 it('reads retained bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
   const fixture = submissionFixture();
   ensureLocalUser(fixture.coreDb);
-  recordWorkspaceOwnerMembership({ coreDb: fixture.coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb: fixture.coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
   const artifactId = acknowledgedArtifactId(await fixture.submit());
   const artifact = fixture.store.getArtifact('ws_demo', artifactId);
   const bytes = fixture.readBytes(artifactId);
   const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const originalSnapshotPath = `originals/artifacts/${artifactId}/1/payload`;
   const packagePath = `sources/artifacts/${artifactId}/1.txt`;
-  const path = join(fixture.dataRoot, 'workspaces/ws_demo/threads/th_demo/turns', fixture.turn.id, 'context-package', originalSnapshotPath);
+  const path = join(
+    fixture.dataRoot,
+    'workspaces/ws_demo/threads/th_demo/turns',
+    fixture.turn.id,
+    'context-package',
+    originalSnapshotPath
+  );
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, bytes);
   const source: packageOwner.WorkerContextPackageSourceFile = {
-    source: { kind: 'artifact', reference: { scopeId: 'artifact/workspace/ws_demo', objectId: artifactId }, artifactVersion: artifact.version },
-    originalDigest: contentDigest, byteLength: bytes.length, mediaType: 'text/plain', originalSnapshotPath, packagePath,
-    projection: { kind: 'body', sourceRevision: String(artifact.version), representationId: 'original-utf8', representationDigest: contentDigest, representationByteLength: bytes.length, deliveredDigest: contentDigest, ranges: [{ start: 0, end: bytes.length }], byteLength: bytes.length, truncated: false, availability: 'available', originalSnapshotPath },
+    source: {
+      kind: 'artifact',
+      reference: { scopeId: 'artifact/workspace/ws_demo', objectId: artifactId },
+      artifactVersion: artifact.version,
+    },
+    originalDigest: contentDigest,
+    byteLength: bytes.length,
+    mediaType: 'text/plain',
+    originalSnapshotPath,
+    packagePath,
+    projection: {
+      kind: 'body',
+      sourceRevision: String(artifact.version),
+      representationId: 'original-utf8',
+      representationDigest: contentDigest,
+      representationByteLength: bytes.length,
+      deliveredDigest: contentDigest,
+      ranges: [{ start: 0, end: bytes.length }],
+      byteLength: bytes.length,
+      truncated: false,
+      availability: 'available',
+      originalSnapshotPath,
+    },
   };
   const { scope } = fixture.environmentPackage;
-  const entry = createSchedulerAdmissionEntry(fixture.coreDb, { backendId: 'nanohost', queueEntryId: 'queue_source_read', requestId: scope.requestId, triggerActor: scope.triggerActor, workspaceId: scope.workspaceId, threadId: scope.threadId, turnId: scope.turnId, turnInput: 'Read source', requestedAgentId: fixture.environmentPackage.agent.agentId });
-  recordTestExecutionAttempt(fixture.coreDb, { entry, attemptId: 'attempt_source_read', agentSessionId: scope.agentSessionId, inputRef: fixture.environmentPackage.snapshotId, bindingRef: 'binding_source_read', sessionCompatibilityKey: 'fixture-compatibility', now: () => new Date().toISOString() });
+  const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'queue_source_read',
+    requestId: scope.requestId,
+    triggerActor: scope.triggerActor,
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    turnInput: 'Read source',
+    requestedAgentId: fixture.environmentPackage.agent.agentId,
+  });
+  recordTestExecutionAttempt(fixture.coreDb, {
+    entry,
+    attemptId: 'attempt_source_read',
+    agentSessionId: scope.agentSessionId,
+    inputRef: fixture.environmentPackage.snapshotId,
+    bindingRef: 'binding_source_read',
+    sessionCompatibilityKey: 'fixture-compatibility',
+    now: () => new Date().toISOString(),
+  });
   // S39's complete proof is independently covered by its own suite; this boundary controls only that accepted result.
   // The actual dispatcher, current scheduler/actor/domain checks and no-follow bounded disk reader run here.
-  const proof = vi.spyOn(packageOwner, 'readWorkerContextPackageTrace').mockReturnValue({ workspaceId: scope.workspaceId, threadId: scope.threadId, turnId: scope.turnId, agentSessionId: scope.agentSessionId, packageSnapshotId: fixture.environmentPackage.snapshotId, sourceFiles: [source] } as packageOwner.WorkerContextPackageTrace);
+  const proof = vi.spyOn(packageOwner, 'readWorkerContextPackageTrace').mockReturnValue({
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    agentSessionId: scope.agentSessionId,
+    packageSnapshotId: fixture.environmentPackage.snapshotId,
+    sourceFiles: [source],
+  } as packageOwner.WorkerContextPackageTrace);
   onTestFinished(() => proof.mockRestore());
-  const result = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', { path: packagePath, mode: 'read' });
-  expect(result.structuredContent).toMatchObject({ status: 'ready', text: 'Finished report\n', eof: true });
+  const result = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+    path: packagePath,
+    mode: 'read',
+  });
+  expect(result.structuredContent).toMatchObject({
+    status: 'ready',
+    text: 'Finished report\n',
+    eof: true,
+  });
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
   expect(proof).toHaveBeenCalledOnce();
-  fixture.coreDb.sqlite.transaction(() => { disableCanonicalUser(fixture.coreDb, 'user_local'); })();
-  const denied = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', { path: packagePath, mode: 'read' });
+  fixture.coreDb.sqlite.transaction(() => {
+    disableCanonicalUser(fixture.coreDb, 'user_local');
+  })();
+  const denied = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+    path: packagePath,
+    mode: 'read',
+  });
   expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(JSON.stringify(denied)).not.toContain(artifactId);
   expect(JSON.stringify(denied)).not.toContain('Finished report');
