@@ -1281,6 +1281,17 @@ async fn run_sessions(
             Ok(generation) => reconnect_after = Some(generation),
             Err(failure) => match failure.disposition() {
                 OuterSessionDisposition::Reconnect => {
+                    // Observe the predecessor's retained result separately from the next poll; this projection never decides retry or effect ownership.
+                    let retained = pending_result
+                        .as_ref()
+                        .map(|(command, _)| OuterSessionOperation::from(command.kind))
+                        .unwrap_or(OuterSessionOperation::None);
+                    let _ = writeln!(std::io::stderr().lock(), "{failure}");
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "nanohost retained effect after connection loss: operation={}",
+                        retained.as_str()
+                    );
                     reconnect_after = failure.reconnect_after();
                 }
                 OuterSessionDisposition::Terminal => {
