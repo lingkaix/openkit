@@ -1,8 +1,15 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const testRoots: string[] = [];
+afterEach(() => {
+  for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 import { ensureLayout } from '../storage/fs-layout.js';
 import { acquireDataRootLock, DataRootLockError, dataRootLockPath } from './lock.js';
@@ -10,6 +17,7 @@ import { acquireDataRootLock, DataRootLockError, dataRootLockPath } from './lock
 /** Creates an isolated data root for lock tests. */
 function createDataRoot(): string {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-lock-'));
+  testRoots.push(dataRoot);
   ensureLayout(dataRoot);
   return dataRoot;
 }
@@ -37,6 +45,45 @@ function writeSyntheticLockRecord(
       2
     )}\n`
   );
+}
+
+/** Starts a real lock holder so process death and live exclusion use the production path. */
+function startLockHolder(dataRoot: string) {
+  const moduleUrl = new URL('./lock.ts', import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '--eval',
+      `const { acquireDataRootLock } = await import(${JSON.stringify(moduleUrl)});
+       const lock = acquireDataRootLock(process.argv[1], { bootId: 'boot_child' });
+       const fs = await import('node:fs');
+       const path = await import('node:path');
+       // Ordinary inventory reads must not release the live App's ownership.
+       for (const entry of fs.readdirSync(path.dirname(lock.path), { withFileTypes: true })) {
+         if (entry.isFile()) fs.readFileSync(path.join(path.dirname(lock.path), entry.name));
+       }
+       console.log('lock-held');
+       setInterval(() => { void lock.path; }, 1000);`,
+      dataRoot,
+    ],
+    {
+      env: { PATH: process.env.PATH, TMPDIR: tmpdir() },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
+  const exited = once(child, 'exit');
+  const ready = Promise.race([
+    once(child.stdout, 'data').then(([chunk]) => {
+      expect(String(chunk).trim()).toBe('lock-held');
+    }),
+    exited.then(() => {
+      throw new Error('Lock holder exited before acquiring its lock.');
+    }),
+  ]);
+  return { child, ready, exited };
 }
 
 describe('data-root instance lock', () => {
@@ -204,4 +251,46 @@ describe('data-root instance lock', () => {
       }
     }
   );
+
+  it('acquires after SIGKILL even when the previous container hostname differs', async () => {
+    const dataRoot = createDataRoot();
+    const holder = startLockHolder(dataRoot);
+    try {
+      await holder.ready;
+      const path = dataRootLockPath(dataRoot);
+      const record = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify({ ...record, hostname: 'retired-app-container' }));
+      holder.child.kill('SIGKILL');
+      expect(await holder.exited).toEqual([null, 'SIGKILL']);
+      expect(existsSync(path)).toBe(true);
+
+      const successor = acquireDataRootLock(dataRoot, { bootId: 'boot_successor' });
+      try {
+        expect(successor.acquisition.status).toBe('stale_broken');
+        expect(JSON.parse(readFileSync(path, 'utf8')).bootId).toBe('boot_successor');
+      } finally {
+        successor.release();
+      }
+    } finally {
+      holder.child.kill('SIGKILL');
+      await holder.exited;
+    }
+  });
+
+  it('refuses a second App while the real holder process is alive', async () => {
+    const dataRoot = createDataRoot();
+    const holder = startLockHolder(dataRoot);
+    try {
+      await holder.ready;
+      expect(() => acquireDataRootLock(dataRoot, { bootId: 'boot_contender' })).toThrow(
+        DataRootLockError
+      );
+      expect(JSON.parse(readFileSync(dataRootLockPath(dataRoot), 'utf8')).bootId).toBe(
+        'boot_child'
+      );
+    } finally {
+      holder.child.kill('SIGKILL');
+      await holder.exited;
+    }
+  });
 });
