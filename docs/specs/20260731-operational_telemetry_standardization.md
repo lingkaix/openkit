@@ -267,6 +267,8 @@ NanoCore already provides much of the source information this projection will co
 
 NanoCore creates server and Workspace log directories, but ordinary process output currently goes mainly to stdout and stderr and has no complete application-owned retention path. Existing evidence producers and retention coverage remain partial as documented by their owning specifications. The initial slice does not implement the full target: manual Gateway, provider, broader scheduler and Worker lifecycle, and storage spans, metric export, broad log bridging, and CI telemetry remain future work under this owner. It does not claim complete instrumentation of all producers.
 
+At the selected OpenShell 0.0.99 pin, an admitted TCP dial failure before CONNECT 200 can lose request correlation. The native failure event retains a shared static proxy endpoint, while a separate destination DEBUG message has no request join. NanoHost cannot reconstruct that missing association. [Issue #136](https://github.com/lingkaix/openkit/issues/136) remains open for an official upstream fix; the current slice does not add a proxy, patch OpenShell or relax identity enforcement. This limit does not establish the cause of a historical package-download failure.
+
 ## Alternatives Considered
 
 **Create an OpenKit-wide event table and project every subsystem into it.** Rejected because it would duplicate Audit, CapabilityCall, Usage, Evidence, Turn, runtime, and test authority while creating a second lifecycle and retention owner.
