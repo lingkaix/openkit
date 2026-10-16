@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   KnowledgePageValidationError,
 } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
@@ -49,7 +49,7 @@ function candidatePage(
     'title: "Review authority lesson"',
     'openkit_entry_kind: "project-context"',
     `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
-    `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+    `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
     'openkit_status: "active"',
     ...(includeStandardStatus ? ['status: "stable"'] : []),
     'scope: "workspace"',

@@ -308,7 +308,7 @@ export function draftKnowledgeProposal(
       status: 'pending',
     },
     validation: {
-      conformance: 'Workspace-schema-valid',
+      conformance: 'scope-schema-valid',
       generatedFromCompletedWorkHistory: input.generatedFromCompletedWorkHistory,
     },
   };

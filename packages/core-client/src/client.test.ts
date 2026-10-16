@@ -3018,7 +3018,7 @@ describe('createCoreClient', () => {
                 conceptId: 'alpha',
                 path: 'knowledge/pages/alpha.md',
                 title: 'Alpha',
-                conformance: 'Workspace-schema-valid',
+                conformance: 'scope-schema-valid',
                 active: true,
                 indexed: true,
                 errors: [],
@@ -3276,7 +3276,7 @@ describe('createCoreClient', () => {
             createdAt: timestamp,
           },
           validation: {
-            conformance: 'Workspace-schema-valid',
+            conformance: 'scope-schema-valid',
             generatedFromCompletedWorkHistory: false,
           },
         },

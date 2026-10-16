@@ -15,7 +15,7 @@ import {
 } from '@openkit/protocol';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import {
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
   type KnowledgeConformance,
   type KnowledgePageReferenceProof,
@@ -23,12 +23,12 @@ import {
   knowledgeReferenceErrors,
   type OkfDocument,
   parseOkfDocument,
-  parseWorkspaceKnowledgeSchema,
+  parseScopeKnowledgeSchema,
   resolveRegisteredKnowledgeSourceReference,
+  type ScopeKnowledgeSchema,
   stringFrontmatterField,
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
-  type WorkspaceKnowledgeSchema,
 } from '../knowledge/okf.js';
 import { OperationError } from '../operation-error.js';
 import {
@@ -599,7 +599,7 @@ export async function retrieveWorkspaceKnowledge(
   const createdAt = input.now?.() ?? new Date().toISOString();
   const traceId = input.traceId ?? allocateRetrievalTraceId();
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
-  const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
+  const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
   const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
   const service = getRetrievalService(input.dataRoot, workspaceRoot);
@@ -707,7 +707,7 @@ export async function retrieveWorkspaceKnowledge(
     const indexValidation = validateKnowledgePageCandidate({
       path: expectedPath,
       content,
-      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
+      ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
     });
@@ -725,7 +725,7 @@ export async function retrieveWorkspaceKnowledge(
     const validation = validateKnowledgePageCandidate({
       path: expectedPath,
       content,
-      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
+      ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
       ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
@@ -737,7 +737,7 @@ export async function retrieveWorkspaceKnowledge(
     const staticallyIndexed =
       active &&
       stringFrontmatterField(document, 'review_state') === 'user-authored' &&
-      indexValidation.conformance === 'Workspace-schema-valid' &&
+      indexValidation.conformance === 'scope-schema-valid' &&
       indexValidation.errors.length === 0;
     const title = document ? stringFrontmatterField(document, 'title') : null;
 
@@ -771,7 +771,7 @@ export async function retrieveWorkspaceKnowledge(
       continue;
     }
 
-    if (!parsed.ok || !document || validation.conformance !== 'Workspace-schema-valid') {
+    if (!parsed.ok || !document || validation.conformance !== 'scope-schema-valid') {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest: knowledgePageReadable(input, candidate.knowledgePageId, content)
@@ -1094,7 +1094,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   )
     throw new Error('Knowledge retrieval trace lineage is contradictory.');
 
-  const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
+  const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
   const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
   const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
@@ -1125,7 +1125,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     const validation = validateKnowledgePageCandidate({
       path,
       content,
-      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
+      ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
       ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
@@ -1139,7 +1139,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     if (
       !parsed.ok ||
       !document ||
-      validation.conformance !== 'Workspace-schema-valid' ||
+      validation.conformance !== 'scope-schema-valid' ||
       validation.errors.length > 0 ||
       document.conceptId !== selected.reference.objectId ||
       stringFrontmatterField(document, 'openkit_status') !== 'active' ||
@@ -1357,7 +1357,7 @@ function sourceReferencesResolve(
  */
 function isStaticKnowledgeIndexPage(
   document: OkfDocument,
-  schema: WorkspaceKnowledgeSchema,
+  schema: ScopeKnowledgeSchema,
   registeredSources: ReadonlyMap<string, string | null>,
   knowledgeIds: ReadonlySet<string>
 ): boolean {
@@ -1380,7 +1380,7 @@ function buildKnowledgeValidationRecords(
   workspaceId: string
 ): WorkspaceKnowledgeValidationRecord[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
+  const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const records: WorkspaceKnowledgeValidationRecord[] = [];
@@ -1395,7 +1395,7 @@ function buildKnowledgeValidationRecords(
     const report = validateKnowledgePageCandidate({
       path,
       content,
-      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
+      ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
     });
@@ -1415,7 +1415,7 @@ function buildKnowledgeValidationRecords(
       indexed:
         active &&
         reviewState === 'user-authored' &&
-        report.conformance === 'Workspace-schema-valid' &&
+        report.conformance === 'scope-schema-valid' &&
         report.errors.length === 0,
       errors: report.errors,
     });
@@ -1556,7 +1556,7 @@ function buildKnowledgeLinkEdges(
   workspaceId: string
 ): WorkspaceKnowledgeLinkEdge[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const schema = readWorkspaceKnowledgeSchema(workspaceRoot);
+  const schema = readScopeKnowledgeSchema(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const conceptIds = readKnowledgePageConceptIds(pagesRoot);
@@ -1682,20 +1682,20 @@ function normalizeKnowledgeLinkTarget(fromConceptId: string, target: string): st
  * @param workspaceRoot Workspace root path.
  * @returns Parsed schema, default schema when absent, or null for invalid schema files.
  */
-function readWorkspaceKnowledgeSchema(workspaceRoot: string): WorkspaceKnowledgeSchema | null {
-  const content = readWorkspaceKnowledgeSchemaText(workspaceRoot);
+function readScopeKnowledgeSchema(workspaceRoot: string): ScopeKnowledgeSchema | null {
+  const content = readScopeKnowledgeSchemaText(workspaceRoot);
 
   if (!content) {
-    return DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA;
+    return DEFAULT_SCOPE_KNOWLEDGE_SCHEMA;
   }
 
-  const parsed = parseWorkspaceKnowledgeSchema(content);
+  const parsed = parseScopeKnowledgeSchema(content);
 
   return parsed.ok ? parsed.schema : null;
 }
 
 /** Reads the exact workspace Knowledge schema text when present. */
-function readWorkspaceKnowledgeSchemaText(workspaceRoot: string): string | undefined {
+function readScopeKnowledgeSchemaText(workspaceRoot: string): string | undefined {
   const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
   return existsSync(schemaPath) ? readCanonicalTextFile(schemaPath) : undefined;
 }

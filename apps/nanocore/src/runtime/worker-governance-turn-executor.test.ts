@@ -8130,7 +8130,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(draftResponse.status, await draftResponse.clone().text()).toBe(200);
       const drafted = KnowledgeManagerDraftProposalResponseSchema.parse(await draftResponse.json());
       expect(drafted.validation).toEqual({
-        conformance: 'Workspace-schema-valid',
+        conformance: 'scope-schema-valid',
         generatedFromCompletedWorkHistory: true,
       });
 

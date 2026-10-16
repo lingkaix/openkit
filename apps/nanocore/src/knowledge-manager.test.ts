@@ -1450,7 +1450,7 @@ describe('Knowledge Manager answer operation', () => {
         status: 'pending',
       },
       validation: {
-        conformance: 'Workspace-schema-valid',
+        conformance: 'scope-schema-valid',
         generatedFromCompletedWorkHistory: false,
       },
     });

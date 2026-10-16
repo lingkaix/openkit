@@ -55,8 +55,8 @@ import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT,
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   parseOkfDocument,
   stringFrontmatterField,
   stringListFrontmatterField,
@@ -2489,7 +2489,7 @@ export function serializeUserAuthoredKnowledgePage(entry: KnowledgeEntry): strin
     '---',
     'type: "KnowledgePage"',
     `title: ${JSON.stringify(entry.title)}`,
-    `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+    `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
     'openkit_status: "active"',
     'status: "stable"',
     'scope: "workspace"',
@@ -2580,7 +2580,7 @@ function writeKnowledge(
   if (schemaMetadata) {
     assertCanonicalRegularFile(schemaPath);
   } else {
-    writeFileAtomic(schemaPath, DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT);
+    writeFileAtomic(schemaPath, DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
   }
 
   removeStaleFiles(proposalsRoot, expectedProposals, '.md');
