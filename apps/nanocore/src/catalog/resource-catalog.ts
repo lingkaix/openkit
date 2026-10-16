@@ -48,8 +48,15 @@ import {
   syncCanonicalTree,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
-import { CatalogInputError, type CatalogTreeFile, treeFilesToEntries, validateCatalogTree } from './catalog-tree.js';
+import {
+  CatalogInputError,
+  type CatalogTreeFile,
+  treeFilesToEntries,
+  validateCatalogTree,
+} from './catalog-tree.js';
+
 export { CatalogInputError, type CatalogTreeFile, validateCatalogTree } from './catalog-tree.js';
+
 import { parseEcosystemSkillHeader, SkillSourceInputError } from './skill-source.js';
 
 /** Compare-and-set failure against the catalog revision. */

@@ -218,10 +218,14 @@ export const ImportSkillRequestSchema = z
   .refine((input) => (input.tree === undefined) !== (input.source === undefined), {
     message: 'Supply exactly one uploaded tree or ecosystem source.',
   })
-  .refine((input) => input.source !== undefined ||
-    input.sourceSubpath === undefined && input.sourceSkillName === undefined, {
-    message: 'Source selectors require an ecosystem source.',
-  });
+  .refine(
+    (input) =>
+      input.source !== undefined ||
+      (input.sourceSubpath === undefined && input.sourceSkillName === undefined),
+    {
+      message: 'Source selectors require an ecosystem source.',
+    }
+  );
 
 /** Skill import response. */
 export const ImportSkillResponseSchema = z

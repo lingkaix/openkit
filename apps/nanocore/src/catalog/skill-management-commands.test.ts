@@ -100,7 +100,8 @@ function fixture() {
 describe('native Skill management command evidence', () => {
   it('imports unchanged ecosystem bytes and checks updates without moving selection or contacting an unavailable source on replay', async () => {
     const f = fixture();
-    let content = '---\nname: Ecosystem Example\ndescription: Original unmodified package.\n---\nVersion A\n';
+    let content =
+      '---\nname: Ecosystem Example\ndescription: Original unmodified package.\n---\nVersion A\n';
     let unavailable = false;
     let requests = 0;
     const server = createServer((_request, response) => {
@@ -114,23 +115,37 @@ describe('native Skill management command evidence', () => {
       if (!address || typeof address === 'string') throw new Error('HTTP fixture did not bind.');
       const source = `http://127.0.0.1:${address.port}/SKILL.md`;
       const input = {
-        requestId: randomUUID(), expectedRevision: 2, id: 'ecosystem-example',
-        displayName: 'Ecosystem Example', activate: false, source,
+        requestId: randomUUID(),
+        expectedRevision: 2,
+        id: 'ecosystem-example',
+        displayName: 'Ecosystem Example',
+        activate: false,
+        source,
       };
       const imported = await f.call('catalog.skill-import', input);
       expect(imported.status, await imported.clone().text()).toBe(201);
       const original = await imported.json();
-      expect(original.version.provenance).toMatchObject({ sourceLocator: source, sourceCommit: null });
+      expect(original.version.provenance).toMatchObject({
+        sourceLocator: source,
+        sourceCommit: null,
+      });
       expect(original.entry.currentDigest).toBeNull();
       const retained = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
       const identity = { skillId: original.entry.id, digest: original.version.digest };
       const unchanged = await f.call('catalog.skill-update-check', identity);
       expect(unchanged.status, await unchanged.clone().text()).toBe(200);
-      expect(await unchanged.json()).toMatchObject({ status: 'unchanged', observedDigest: identity.digest });
+      expect(await unchanged.json()).toMatchObject({
+        status: 'unchanged',
+        observedDigest: identity.digest,
+      });
       content = content.replace('Version A', 'Version B');
       const changed = await f.call('catalog.skill-update-check', identity);
       expect(changed.status, await changed.clone().text()).toBe(200);
-      expect(await changed.json()).toMatchObject({ status: 'changed', digest: identity.digest, sourceCommit: null });
+      expect(await changed.json()).toMatchObject({
+        status: 'changed',
+        digest: identity.digest,
+        sourceCommit: null,
+      });
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(retained);
       unavailable = true;
       const missing = await f.call('catalog.skill-update-check', identity);
@@ -143,7 +158,9 @@ describe('native Skill management command evidence', () => {
       expect(requests).toBe(priorRequests);
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(retained);
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      );
     }
   });
 
@@ -151,8 +168,11 @@ describe('native Skill management command evidence', () => {
     const f = fixture();
     const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
     const result = await f.call('catalog.skill-import', {
-      requestId: randomUUID(), expectedRevision: 2, displayName: 'Local source',
-      activate: false, source: f.dataRoot,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      displayName: 'Local source',
+      activate: false,
+      source: f.dataRoot,
     });
     expect(result.status, await result.clone().text()).toBe(400);
     expect(await result.json()).toMatchObject({ code: 'invalid_request' });

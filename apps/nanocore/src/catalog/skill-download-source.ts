@@ -33,7 +33,9 @@ export async function acquireDownloadedEcosystemSkill(
     const source = parseSkillImportSource(input.url);
     if (source.kind !== 'download') throw new SkillSourceInputError();
     const response = await fetch(source.url, {
-      credentials: 'omit', dispatcher, signal: AbortSignal.timeout(60_000),
+      credentials: 'omit',
+      dispatcher,
+      signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok || !response.body) {
       await response.body?.cancel();

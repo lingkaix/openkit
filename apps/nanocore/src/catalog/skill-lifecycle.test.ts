@@ -723,7 +723,16 @@ describe('Skill catalog lifecycle', () => {
         expectedRevision: f.imported.catalog.revision,
         retainedReferences: null,
         admitDeletion: () => {
-          expect(existsSync(skillSnapshotPath(f.dataRoot, f.workspaceId, f.imported.version.entryId, f.imported.version.digest))).toBe(true);
+          expect(
+            existsSync(
+              skillSnapshotPath(
+                f.dataRoot,
+                f.workspaceId,
+                f.imported.version.entryId,
+                f.imported.version.digest
+              )
+            )
+          ).toBe(true);
           admitted = true;
         },
       };
