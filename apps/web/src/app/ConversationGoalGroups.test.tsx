@@ -127,19 +127,19 @@ describe('Goal navigation groups', () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Show tasks for Goal work' }));
     await screen.findByText('Ship parser');
-    expect(screen.getAllByRole('button', { name: 'Linked Task', exact: true })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Linked Task' })).toHaveLength(1);
     const attempts = screen.getByRole('list', { name: 'Attempts for Linked Task' });
     expect(
       within(attempts)
         .getAllByRole('listitem')
         .map((item) => item.textContent)
     ).toEqual(['Attempt 1 · completed', 'Attempt 2 · failed']);
-    expect(
-      screen.getByRole('button', { name: 'Archived Task', exact: true })
-    ).toHaveAccessibleDescription('Archived Task');
+    expect(screen.getByRole('button', { name: 'Archived Task' })).toHaveAccessibleDescription(
+      'Archived Task'
+    );
     expect(screen.getByText('Attempt 1 · cancelled')).toBeVisible();
     expect(screen.getByText('Task unavailable')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Independent work', exact: true })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Independent work' })).toBeVisible();
     expect(markRead).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Hide tasks for Goal work' }));
     expect(
