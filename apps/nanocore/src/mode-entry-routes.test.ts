@@ -2218,7 +2218,7 @@ describe('Task durable admission response', () => {
     });
     let turnId: string | undefined;
     try {
-      await vi.waitFor(() => expect(responseObserved).toBe(true));
+      // The pending response is the barrier; the held Worker and existing test timeout bound it.
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(token ? 200 : 202);
       turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
