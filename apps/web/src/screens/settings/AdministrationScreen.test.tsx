@@ -1390,6 +1390,43 @@ describe('Administration', () => {
     }
   });
 
+  it('removes an open deletion confirmation when current administrator access is denied', async () => {
+    const purge = vi.fn();
+    const client = makeClient({
+      'worker-environment.list': vi.fn().mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
+      'worker-environment.purge': purge,
+    });
+    const { queryClient } = renderScreen(client);
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(screen.getByRole('dialog', { name: 'Delete retained environment?' })).toBeInTheDocument();
+    vi.mocked(client.operations['token.list']).mockRejectedValue(new ApiCallError(403, 'administrator-denied'));
+    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'administration', 'access'], exact: true }));
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it('hides private candidate facts during an automatic typed-denial Items retry', async () => {
+    const client = makeClient({}, {
+      'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+      'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+      'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 60_000 } } });
+    renderScreen(client, queryClient);
+    await userEvent.click(await screen.findByRole('button', { name: 'Review configuration' }));
+    vi.mocked(client.operations['thread.items']).mockRejectedValue(new ApiCallError(403, 'private-items-denied'));
+    const queryKey = ['items', QUICK_CHAT.id, ADMIN_THREAD.id];
+    await act(async () => { void queryClient.invalidateQueries({ queryKey, exact: true }); });
+    await waitFor(() => expect(queryClient.getQueryState(queryKey)?.fetchFailureCount).toBe(1));
+    expect(queryClient.getQueryState(queryKey)?.error).toBeNull();
+    expect(queryClient.getQueryState(queryKey)?.fetchFailureReason).toBeInstanceOf(ApiCallError);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+    expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
+    await act(() => queryClient.cancelQueries({ queryKey, exact: true }));
+  });
+
   it('rechecks current administrator and exact parent authority before admitting a fresh cached candidate on remount', async () => {
     const fixture = () => makeClient({}, {
       'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
