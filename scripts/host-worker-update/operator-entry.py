@@ -1,10 +1,12 @@
 """Fixed root bootstrap for one explicitly selected external operator invocation.
 
 The internal frame is not a public command API. Only the current checkout adapter supplies code, and no parameter file can choose code, commands, services or host paths.
+
 Unknown completion retains all archive, source, maintenance and recovery custody for inspection.
 """
 
 from contextlib import ExitStack
+from datetime import datetime
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -28,6 +30,16 @@ _DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 _FAILURE = "Operator host input or observation unavailable; inspect custody before any new effect."
 _REASONS = {"request", "machine-binding", "runtime-directory", "verified-archive", "retained-inputs", "canonical-systemd-posture", "target-host-check", "maintenance-inhibition", "old-payload-custody", "target-installation", "controlled-start", "controlled-inspection", "supervision-restoration", "native-inspection"}
+
+_IDENTITY_REASONS = {"machine-binding", "app-helper-identity", "canonical-docker-posture", "app-web-attribution"}
+
+
+class IdentityRefusal(Exception):
+    """Expose only a fixed prerequisite category from this trusted identity reader."""
+
+    def __init__(self, reason):
+        super().__init__(_FAILURE)
+        self.reason = reason
 
 
 def _need(condition):
@@ -296,61 +308,83 @@ def _physical(binding):
     return actual
 
 
+def _container_stamp(container, name):
+    """Bind the actual named Docker incarnation without retaining its configuration or environment."""
+    state = container.get("State", {})
+    _need(container.get("Name") == "/" + name and _hex(container.get("Id")) and type(container.get("Image")) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", container["Image"]))
+    _need(state.get("Running") is True and type(state.get("Pid")) is int and 0 < state["Pid"] <= 2147483647 and type(state.get("StartedAt")) is str and state["StartedAt"].endswith("Z"))
+    datetime.fromisoformat(state["StartedAt"].replace("Z", "+00:00"))
+    return (container["Id"], container["Image"], state["Pid"], state["StartedAt"])
+
+
 def _host_identity(header):
     """Observe canonical Docker posture and optionally the exact successful helper Web tree."""
-    binding = header["binding"]
-    machine = _physical(binding)
-    helper_path = Path("/usr/local/lib/openkit/app-update-helper.py")
-    helper_bytes = _regular(helper_path, limit=1048576)
-    _need(hashlib.sha256(helper_bytes).hexdigest() == header["helperSha256"])
-    spec = importlib.util.spec_from_file_location("openkit_installed_app_helper", helper_path)
-    helper = importlib.util.module_from_spec(spec)
-    exec(compile(helper_bytes, str(helper_path), "exec"), helper.__dict__)
-    _need(helper.HELPER_SHA256 == header["helperSha256"])
-    config_bytes = _regular(Path(helper.PRODUCTION_CONFIG_PATH), limit=65536, mode=0o600)
-    _json(config_bytes)
-    config = helper.load_config(helper.PRODUCTION_CONFIG_PATH, require_compatibility=False)
-    _need(config["containerName"] == binding["container"])
-    container = _docker(binding["container"])
-    _need(container.get("Name") == "/" + binding["container"] and container.get("State", {}).get("Running") is True)
-    image_id = container.get("Image")
-    _need(type(image_id) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", image_id))
-    image = _docker(image_id, image=True)
-    _need(image.get("Id") == image_id)
-    # Reuse the checksum-pinned helper's canonical deployment predicate without its directory-creating constructor.
-    checker = object.__new__(helper.AppUpdateHelper)
-    checker.config = config
-    checker._assert_configured_deployment_bindings(container, {"entrypoint": list(image.get("Config", {}).get("Entrypoint") or []), "cmd": list(image.get("Config", {}).get("Cmd") or [])})
-    _need(_hex(container.get("Id")))
-    result = {"outcome": "observed", "machineId": machine, "machineIdentityDigest": binding["machineIdentityDigest"], "container": binding["container"], "containerId": container["Id"], "appImageId": image_id, "helperSha256": header["helperSha256"]}
-    app = header["app"]
-    if app is not None:
-        _need(image_id == app["configDigest"])
-        receipt_path = Path(config["receiptDir"]) / (app["requestId"] + ".json")
-        receipt_bytes = _regular(receipt_path, limit=65536, mode=0o600)
-        receipt = _json(receipt_bytes)
-        _need(receipt.get("requestId") == app["requestId"] and receipt.get("source") == app["source"] and receipt.get("stage") == "succeeded" and receipt.get("preparedHelperSha256") == header["helperSha256"])
-        boot = receipt.get("candidateBoot")
-        _need(type(boot) is dict and boot.get("imageId") == image_id and boot.get("sourceCommit") == app["source"]["sourceCommit"] and type(boot.get("bootId")) is str and re.fullmatch(r"boot_[a-fA-F0-9-]{36}", boot["bootId"]))
-        _need(str(uuid.UUID(boot["bootId"][5:])) == boot["bootId"][5:].lower())
-        expected = receipt.get("webStagedDigest")
-        _need(type(expected) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", expected))
-        web = Path(config["webAssetsDir"])
-        with ExitStack() as stack:
-            _directory(web, stack)
-            current = web / "current"
-            _need(current.is_symlink())
-            resolved = Path(os.path.realpath(current))
-            _need(resolved.parent == web)
-            _directory(resolved, stack)
-            measured = helper.digest_tree(str(resolved))
-            _need(measured == expected and Path(os.path.realpath(current)) == resolved)
-        _need(_regular(receipt_path, limit=65536, mode=0o600) == receipt_bytes)
-        result.update(requestId=app["requestId"], source=app["source"], candidateBoot={key: boot[key] for key in ("bootId", "imageId", "sourceCommit")}, webTreeDigest=measured, webStagedDigest=expected)
-    _need(_regular(Path(helper.PRODUCTION_CONFIG_PATH), limit=65536, mode=0o600) == config_bytes and _regular(helper_path, limit=1048576) == helper_bytes and _physical(binding) == machine)
-    again = _docker(binding["container"])
-    _need(again.get("Id") == container.get("Id") and again.get("Image") == image_id and again.get("State", {}).get("Running") is True)
-    return result
+    phase = "machine-binding"
+    try:
+        binding = header["binding"]
+        machine = _physical(binding)
+        phase = "app-helper-identity"
+        helper_path = Path("/usr/local/lib/openkit/app-update-helper.py")
+        helper_bytes = _regular(helper_path, limit=1048576)
+        _need(hashlib.sha256(helper_bytes).hexdigest() == header["helperSha256"])
+        spec = importlib.util.spec_from_file_location("openkit_installed_app_helper", helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        exec(compile(helper_bytes, str(helper_path), "exec"), helper.__dict__)
+        _need(helper.HELPER_SHA256 == header["helperSha256"])
+        config_bytes = _regular(Path(helper.PRODUCTION_CONFIG_PATH), limit=65536, mode=0o600)
+        _json(config_bytes)
+        config = helper.load_config(helper.PRODUCTION_CONFIG_PATH, require_compatibility=False)
+        phase = "canonical-docker-posture"
+        _need(config["containerName"] == binding["container"])
+        container = _docker(binding["container"])
+        incarnation = _container_stamp(container, binding["container"])
+        image_id = container.get("Image")
+        _need(type(image_id) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", image_id))
+        image = _docker(image_id, image=True)
+        _need(image.get("Id") == image_id)
+        # Reuse the checksum-pinned helper's canonical deployment predicate without its directory-creating constructor.
+        checker = object.__new__(helper.AppUpdateHelper)
+        checker.config = config
+        checker._assert_configured_deployment_bindings(container, {"entrypoint": list(image.get("Config", {}).get("Entrypoint") or []), "cmd": list(image.get("Config", {}).get("Cmd") or [])})
+        _need(_hex(container.get("Id")))
+        result = {"outcome": "observed", "machineId": machine, "machineIdentityDigest": binding["machineIdentityDigest"], "container": binding["container"], "containerId": container["Id"], "appImageId": image_id, "helperSha256": header["helperSha256"]}
+        app = header["app"]
+        if app is not None:
+            phase = "app-web-attribution"
+            _need(image_id == app["configDigest"])
+            receipt_path = Path(config["receiptDir"]) / (app["requestId"] + ".json")
+            receipt_bytes = _regular(receipt_path, limit=65536, mode=0o600)
+            receipt = _json(receipt_bytes)
+            observed_source = receipt.get("source")
+            _need(type(observed_source) is dict and {key: observed_source.get(key) for key in ("tag", "sourceCommit", "appDigest")} == app["source"] and receipt.get("requestId") == app["requestId"] and receipt.get("stage") == "succeeded" and receipt.get("preparedHelperSha256") == header["helperSha256"])
+            boot = receipt.get("candidateBoot")
+            _need(type(boot) is dict and boot.get("imageId") == image_id and boot.get("sourceCommit") == app["source"]["sourceCommit"] and type(boot.get("bootId")) is str and re.fullmatch(r"boot_[a-fA-F0-9-]{36}", boot["bootId"]))
+            _need(str(uuid.UUID(boot["bootId"][5:])) == boot["bootId"][5:].lower())
+            expected = receipt.get("webStagedDigest")
+            _need(type(expected) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", expected))
+            web = Path(config["webAssetsDir"])
+            with ExitStack() as stack:
+                _directory(web, stack)
+                current = web / "current"
+                _need(current.is_symlink())
+                resolved = Path(os.path.realpath(current))
+                _need(resolved.parent == web)
+                _directory(resolved, stack)
+                measured = helper.digest_tree(str(resolved))
+                _need(measured == expected and Path(os.path.realpath(current)) == resolved)
+            _need(_regular(receipt_path, limit=65536, mode=0o600) == receipt_bytes)
+            result.update(requestId=app["requestId"], source=app["source"], candidateBoot={key: boot[key] for key in ("bootId", "imageId", "sourceCommit")}, webTreeDigest=measured, webStagedDigest=expected)
+        phase = "app-helper-identity"
+        _need(_regular(Path(helper.PRODUCTION_CONFIG_PATH), limit=65536, mode=0o600) == config_bytes and _regular(helper_path, limit=1048576) == helper_bytes)
+        phase = "machine-binding"
+        _need(_physical(binding) == machine)
+        phase = "canonical-docker-posture"
+        again = _docker(binding["container"])
+        _need(_container_stamp(again, binding["container"]) == incarnation)
+        checker._assert_configured_deployment_bindings(again, {"entrypoint": list(image.get("Config", {}).get("Entrypoint") or []), "cmd": list(image.get("Config", {}).get("Cmd") or [])})
+        return result
+    except Exception:
+        raise IdentityRefusal(phase) from None
 
 
 def main():
@@ -369,7 +403,8 @@ def main():
         else:
             _physical(header["binding"])
             container = _docker(header["binding"]["container"])
-            _need(container.get("Name") == "/" + header["binding"]["container"] and container.get("Id") == header["containerId"] and container.get("Image") == header["imageConfigDigest"] and container.get("State", {}).get("Running") is True)
+            incarnation = _container_stamp(container, header["binding"]["container"])
+            _need(container.get("Id") == header["containerId"] and container.get("Image") == header["imageConfigDigest"])
             workspace = _custody(header, lambda size: _read(0, size, deadline))
             _eof(0, deadline)
             spec = importlib.util.spec_from_file_location("openkit_operator_procedure", workspace / "host-procedure.py")
@@ -380,7 +415,7 @@ def main():
             else:
                 result = module.run_step(header["request"], workspace, header["binding"]["machineIdentityDigest"])
             again = _docker(header["binding"]["container"])
-            _need(again.get("Id") == header["containerId"] and again.get("Image") == header["imageConfigDigest"] and again.get("State", {}).get("Running") is True)
+            _need(_container_stamp(again, header["binding"]["container"]) == incarnation)
         output = json.dumps(result, separators=(",", ":")).encode("utf-8")
         _need(len(output) + 1 <= 16384)
         view = memoryview(output + b"\n")
@@ -389,8 +424,12 @@ def main():
         return 0
     except Exception as error:
         try:
-            refusal = getattr(module, "ProcedureRefusal", None)
             reason = getattr(error, "reason", None)
+            if isinstance(error, IdentityRefusal) and type(reason) is str and reason in _IDENTITY_REASONS:
+                output = {"action": "identity", "outcome": "unavailable", "reason": reason}
+                os.write(1, json.dumps(output, separators=(",", ":")).encode() + b"\n")
+                return 1
+            refusal = getattr(module, "ProcedureRefusal", None)
             if isinstance(refusal, type) and isinstance(error, refusal) and type(reason) is str and reason in _REASONS:
                 output = {"action": header["request"]["action"], "outcome": "unavailable", "reason": reason}
                 os.write(1, json.dumps(output, separators=(",", ":")).encode() + b"\n")

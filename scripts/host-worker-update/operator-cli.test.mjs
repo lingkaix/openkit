@@ -98,7 +98,7 @@ async function fixture(t) {
 
 test('executable help requires no authority file or host capability', () => {
   const executable = fileURLToPath(new URL('operator-cli.mjs', import.meta.url));
-  const out = spawnSync(process.execPath, [executable, '--help'], {
+  const out = spawnSync(executable, ['--help'], {
     encoding: 'utf8',
     timeout: 10000,
   });

@@ -1,4 +1,4 @@
-// openkit-test-platform: linux
+// openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
@@ -536,6 +536,41 @@ test('default archive verification uses the existing verifier in one bounded Nod
 });
 
 for (const reason of [
+  'machine-binding',
+  'app-helper-identity',
+  'canonical-docker-posture',
+  'app-web-attribution',
+  'invented-private-marker',
+  ['machine-binding'],
+]) {
+  test(`identity prerequisite diagnostics admit only finite local reasons (${reason === 'invented-private-marker' ? 'unknown' : reason})`, async (t) => {
+    const f = await fixture(t);
+    const io = await f.open();
+    f.controls.process = (tool, out) =>
+      tool === 'ssh'
+        ? {
+            ...out,
+            exitCode: 1,
+            stdout: Buffer.from(
+              JSON.stringify({ action: 'identity', outcome: 'unavailable', reason })
+            ),
+          }
+        : out;
+    await assert.rejects(io.identities(), (error) => {
+      if (reason === 'invented-private-marker' || Array.isArray(reason)) {
+        assert.equal(error.operatorReason, undefined);
+        assert.ok(!error.message.includes(String(reason)));
+      } else {
+        assert.equal(error.code, 'operator-identity-unavailable');
+        assert.equal(error.operatorReason, reason);
+      }
+      return true;
+    });
+    assert.equal(f.calls.filter((item) => item.kind === 'frame').length, 1);
+  });
+}
+
+for (const reason of [
   'canonical-systemd-posture',
   'runtime-directory',
   'invented-private-marker',
@@ -623,13 +658,34 @@ def regular(path,**kwargs):
  if str(path)=='/fixed-fixture-config': return b'{}'
  if str(path)==str(root/'receipts'/(request+'.json')): return json.dumps(receipt).encode()
  raise AssertionError('unexpected reader')
-container={'Id':'e'*64,'Name':'/openkit-app','Image':image_id,'State':{'Running':True},'Config':{}}
+container={'Id':'e'*64,'Name':'/openkit-app','Image':image_id,'State':{'Running':True,'Pid':123,'StartedAt':'2026-10-16T00:00:00.000000000Z'},'Config':{}}
 directory=m._directory;real_open=builtins.open;m._regular=regular;m._physical=lambda binding:'f'*32;m._docker=lambda name,image=False:{'Id':image_id,'Config':{}} if image else container
 m._directory=lambda path,stack:directory(path,stack,owner=os.geteuid())
 def opened(path,*args,**kwargs): return io.BytesIO(source) if str(path)==helper_path else real_open(path,*args,**kwargs)
 header={'binding':{'container':'openkit-app','origin':'https://staging.example.invalid','machineId':'f'*32,'machineIdentityDigest':'0'*64},'helperSha256':source_identity,'app':{'requestId':request,'source':release,'configDigest':image_id}}
 with mock.patch.object(builtins,'open',opened),mock.patch.object(os,'mkdir',side_effect=AssertionError('mkdir reached')),mock.patch.object(os,'makedirs',side_effect=AssertionError('mkdir reached')):
  result=m._host_identity(header)
+ def refused(reason):
+  try: m._host_identity(header)
+  except m.IdentityRefusal as error:
+   assert error.reason==reason and 'private-marker' not in str(error)
+   return
+  raise AssertionError('prerequisite accepted')
+ physical=m._physical
+ def lost_machine(_binding): raise ValueError('private-marker')
+ m._physical=lost_machine;refused('machine-binding');m._physical=physical
+ header['helperSha256']='0'*64;refused('app-helper-identity');header['helperSha256']=source_identity
+ container['State']['Running']=False;refused('canonical-docker-posture');container['State']['Running']=True
+ receipt['webStagedDigest']='sha256:'+'0'*64;refused('app-web-attribution');receipt['webStagedDigest']='sha256:'+'a'*64
+ # A restart of the same container is a different observed incarnation.
+ docker=m._docker;reads=[0]
+ def restarted(name,image=False):
+  value=docker(name,image=image)
+  if not image:
+   reads[0]+=1
+   if reads[0]>1: return dict(value,State=dict(value['State'],Pid=124))
+  return value
+ m._docker=restarted;refused('canonical-docker-posture');m._docker=docker
 assert result['webTreeDigest']==receipt['webStagedDigest'] and result['candidateBoot']['bootId']==boot
 print(json.dumps({'passed':True}))
 `;

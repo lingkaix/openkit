@@ -41,6 +41,22 @@ class OperatorStepUnavailable extends Error {
     this.operatorReason = reason;
   }
 }
+const identityGuidance = Object.freeze({
+  'machine-binding': 'Verify the retained physical host binding.',
+  'app-helper-identity':
+    'Install the selected checksum-pinned App helper and its protected configuration.',
+  'canonical-docker-posture': 'Restore the supported canonical Docker deployment posture.',
+  'app-web-attribution': 'Inspect the successful App receipt and its current Web payload.',
+});
+
+/** Retain only a local prerequisite category; remote text is never an error message. */
+class OperatorIdentityUnavailable extends Error {
+  constructor(reason) {
+    super(`Operator identity unavailable. ${identityGuidance[reason]}`);
+    this.code = 'operator-identity-unavailable';
+    this.operatorReason = reason;
+  }
+}
 const maxArchive = 536_870_912;
 const sourceNames = [
   'host-procedure.py',
@@ -245,7 +261,9 @@ async function selectedArtifacts(filename) {
 
 /**
  * Build actual adapters while keeping authentication with the existing administrator credential owner.
+ *
  * Web tree content is measured against the successful helper receipt; webDigest is then release/platform attribution, not the tree's content hash.
+ *
  * The fixed target child manifest supplies its image config digest; Docker image IDs never infer platform or release identity.
  * @param {string} target Explicit HTTPS staging origin.
  * @param {object} options Closed params and explicit deployment, grant, artifact and new private work locations.
@@ -451,11 +469,15 @@ export async function createOperatorLive(target, options, adapters = {}) {
       const output = json(response.stdout);
       if (output?.outcome === 'unavailable') {
         need(
-          header.kind !== 'identity' &&
-            output.action === header.request.action &&
-            reasons.has(output.reason) &&
+          response.exitCode === 1 &&
+            typeof output.reason === 'string' &&
+            output.action === (header.kind === 'identity' ? 'identity' : header.request.action) &&
+            (header.kind === 'identity'
+              ? Object.hasOwn(identityGuidance, output.reason)
+              : reasons.has(output.reason)) &&
             Object.keys(output).sort().join(',') === 'action,outcome,reason'
         );
+        if (header.kind === 'identity') throw new OperatorIdentityUnavailable(output.reason);
         throw new OperatorStepUnavailable(output.reason);
       }
       need(response.exitCode === 0);
@@ -514,7 +536,8 @@ export async function createOperatorLive(target, options, adapters = {}) {
           webTreeDigest: observed.webTreeDigest,
           webStagedDigest: observed.webStagedDigest,
         };
-      } catch {
+      } catch (error) {
+        if (error instanceof OperatorIdentityUnavailable) throw error;
         throw Error(unavailable);
       }
     };
@@ -557,6 +580,13 @@ export async function createOperatorLive(target, options, adapters = {}) {
           const physical = await observeIdentity(remaining(), controller.signal);
           remaining();
           need(succeeded && physical.appImageId === imageConfigDigest);
+          const diagnostics = await call('diagnostics.app', {});
+          remaining();
+          need(
+            diagnostics.build?.sourceCommit === p.manifest.sourceCommit &&
+              diagnostics.build.releaseTag === p.manifest.tag &&
+              diagnostics.boot?.bootId === physical.candidateBoot?.bootId
+          );
           if (request.action === 'preflight') {
             predecessor = admit(
               NanoHostRuntimeTargetStatusResponseSchema.strip(),
@@ -603,6 +633,11 @@ export async function createOperatorLive(target, options, adapters = {}) {
             );
           }
           remaining();
+          need(
+            canonical(await currentGrant()) === canonical(admitted.grant) &&
+              canonical(await deploymentRecord()) === canonical(initialBinding)
+          );
+          remaining();
           const output = await ssh(header, bytes, {
             timeoutMs: remaining(),
             signal: controller.signal,
@@ -637,6 +672,11 @@ export async function createOperatorLive(target, options, adapters = {}) {
             await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining())));
           }
           remaining();
+          need(
+            canonical(await currentGrant()) === canonical(admitted.grant) &&
+              canonical(await deploymentRecord()) === canonical(initialBinding)
+          );
+          remaining();
           const controlled = await ssh(
             { ...header, kind: 'controlled-observation', controlledProcess: process },
             null,
@@ -662,7 +702,11 @@ export async function createOperatorLive(target, options, adapters = {}) {
           }),
         ]);
       } catch (error) {
-        if (error instanceof OperatorStepUnavailable) throw error;
+        if (
+          error instanceof OperatorStepUnavailable ||
+          error instanceof OperatorIdentityUnavailable
+        )
+          throw error;
         throw Error(unavailable);
       } finally {
         clearTimeout(timer);
