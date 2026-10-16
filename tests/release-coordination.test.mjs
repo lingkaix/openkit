@@ -14,6 +14,7 @@ import {
   commitAt,
   issueDelta,
   observeIssues,
+  observePublication,
   observeRun,
   publicText,
   requireOrigin,
@@ -21,7 +22,7 @@ import {
   validateShaReferences,
 } from '../scripts/release-observe.mjs';
 import { notesDraft, prepareRelease, previousIssues } from '../scripts/release-prepare.mjs';
-import { candidateJobs } from '../scripts/release-publication-check.mjs';
+import { candidateJobs, publicationJobs } from '../scripts/release-publication-check.mjs';
 
 test('exact-head premerge refuses changed source, main, missing ancestry or dirty inputs', () => {
   const valid = {
@@ -111,6 +112,108 @@ test('a rerun starting during retained CI observation invalidates the proof', ()
         ? run
         : { ...run, run_attempt: 3, status: 'in_progress' };
   assert.throws(() => observeRun({ ...expected, runId: run.id }, { read }), /attempt changed/);
+});
+
+/** Fresh API facts supply baseline identity; authored claims cannot fill missing provenance. */
+function publicationFixture() {
+  const { run } = runFixture();
+  run.event = 'push';
+  run.head_branch = 'v0.1.0-rc.8';
+  const expected = {
+    repository: run.repository.full_name,
+    tag: run.head_branch,
+    sha: run.head_sha,
+    runId: run.id,
+  };
+  const jobs = publicationJobs.map((name, index) => ({
+    name,
+    id: index + 1,
+    run_id: run.id,
+    run_attempt: run.run_attempt,
+    head_sha: run.head_sha,
+    status: 'completed',
+    conclusion: 'success',
+  }));
+  const tag = {
+    ref: `refs/tags/${run.head_branch}`,
+    object: { type: 'commit', sha: run.head_sha },
+  };
+  const read = (endpoint) =>
+    endpoint.includes('/jobs?')
+      ? [{ total_count: jobs.length, jobs }]
+      : endpoint.includes('/git/ref/tags/')
+        ? tag
+        : run;
+  return { run, jobs, tag, expected, read };
+}
+
+test('publication observation retains fresh run, tag and job provenance for lightweight and annotated tags', () => {
+  const f = publicationFixture();
+  for (const annotated of [false, true]) {
+    const observed = observePublication(f.expected, {
+      read: (endpoint) => {
+        if (annotated && endpoint.includes('/git/ref/tags/'))
+          return { ...f.tag, object: { type: 'tag', sha: 'b'.repeat(40) } };
+        if (annotated && endpoint.includes('/git/tags/'))
+          return { sha: 'b'.repeat(40), object: f.tag.object };
+        return f.read(endpoint);
+      },
+    });
+    assert.equal(observed.workflow, f.run.path);
+    assert.equal(observed.event, 'push');
+    assert.equal(observed.ref, f.tag.ref);
+    assert.equal(observed.resolvedTagSha, f.run.head_sha);
+    assert.deepEqual(observed.jobs[0], {
+      id: f.jobs[0].id,
+      name: f.jobs[0].name,
+      conclusion: 'success',
+      runId: f.run.id,
+      attempt: f.run.run_attempt,
+      sha: f.run.head_sha,
+    });
+  }
+});
+
+for (const field of ['run_id', 'run_attempt', 'head_sha']) {
+  for (const change of ['missing', 'mismatched']) {
+    test(`publication observation refuses ${change} job ${field}`, () => {
+      const f = publicationFixture();
+      if (change === 'missing') delete f.jobs[0][field];
+      else f.jobs[0][field] = field === 'head_sha' ? 'b'.repeat(40) : 99;
+      assert.throws(() => observePublication(f.expected, { read: f.read }), /job provenance/);
+    });
+  }
+}
+
+test('publication observation refuses a stale tag and a tag or run changed during collection', () => {
+  const stale = publicationFixture();
+  stale.tag.object.sha = 'b'.repeat(40);
+  assert.throws(
+    () => observePublication(stale.expected, { read: stale.read }),
+    /tag commit differs/
+  );
+  for (const race of ['tag', 'run']) {
+    const f = publicationFixture();
+    let reads = 0;
+    assert.throws(
+      () =>
+        observePublication(f.expected, {
+          read: (endpoint) => {
+            if (race === 'tag' && endpoint.includes('/git/ref/tags/') && ++reads === 2)
+              return { ...f.tag, object: { type: 'commit', sha: 'b'.repeat(40) } };
+            if (
+              race === 'run' &&
+              !endpoint.includes('/git/') &&
+              !endpoint.includes('/jobs?') &&
+              ++reads === 2
+            )
+              return { ...f.run, run_attempt: f.run.run_attempt + 1 };
+            return f.read(endpoint);
+          },
+        }),
+      /baseline attempt changed/
+    );
+  }
 });
 
 test('issue collection follows all pages and never exposes account addresses in draft text', () => {

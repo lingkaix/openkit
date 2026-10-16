@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
+import { observePublication } from '../scripts/release-observe.mjs';
 import { parseVersionTag } from '../scripts/release-preflight.mjs';
 import {
   checkPublication as actualCheck,
@@ -584,7 +585,7 @@ test('native publication admission requires exact rendered App job names and bot
       fingerprint;
   input.baseline.jobs.push(
     ...[
-      'Build app candidate',
+      'Read app candidate',
       'Smoke App native (linux/amd64)',
       'Smoke App native (linux/arm64)',
     ].map((name, i) => ({ name, id: 100 + i, conclusion: 'success' }))
@@ -597,9 +598,47 @@ test('native publication admission requires exact rendered App job names and bot
   approveBaseline(input, 'scratch-rehearsal');
   const check = (value) =>
     actualCheck(value, { repoRoot: native.root, now: new Date('2026-10-14T00:10:00Z') });
+  const run = {
+    id: input.baseline.runId,
+    run_attempt: input.baseline.attempt,
+    repository: { full_name: input.baseline.repository },
+    head_sha: baseline,
+    head_branch: input.baseline.tag,
+    event: 'push',
+    status: 'completed',
+    conclusion: 'success',
+    path: '.github/workflows/ci.yml',
+  };
+  const jobs = input.baseline.jobs.map((job, index) => ({
+    ...job,
+    id: index + 1,
+    status: 'completed',
+    run_id: run.id,
+    run_attempt: run.run_attempt,
+    head_sha: baseline,
+  }));
+  const tagObject = { ref: input.baseline.ref, object: { type: 'commit', sha: baseline } };
+  const read = (endpoint) =>
+    endpoint.includes('/jobs?')
+      ? [{ total_count: jobs.length, jobs }]
+      : endpoint.includes('/git/ref/tags/')
+        ? tagObject
+        : run;
+  input.baseline = {
+    ...input.baseline,
+    ...observePublication(
+      {
+        repository: input.baseline.repository,
+        tag: input.baseline.tag,
+        sha: baseline,
+        runId: run.id,
+      },
+      { read }
+    ),
+  };
   assert.equal(check(input).status, 'eligible');
   for (const name of [
-    'Build app candidate',
+    'Read app candidate',
     'Smoke App native (linux/amd64)',
     'Smoke App native (linux/arm64)',
     'Publish app image',

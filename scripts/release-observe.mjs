@@ -1,5 +1,6 @@
 /** Read current Git and GitHub release facts without collecting credentials or creating effects. */
 import { spawnSync } from 'node:child_process';
+import { parseVersionTag } from './release-preflight.mjs';
 import { candidateJobs, publicationJobs } from './release-publication-check.mjs';
 import { canonical, redact, sha } from './release-safety.mjs';
 
@@ -261,6 +262,26 @@ export function observePublication(
 ) {
   requireRepository(repository);
   if (!Number.isSafeInteger(runId) || runId < 1) throw Error('Explicit publication run required');
+  parseVersionTag(tag);
+  const ref = `refs/tags/${tag}`;
+  // Resolve observed Git objects rather than copying the authored baseline SHA.
+  // A bounded peel accepts lightweight and annotated tags and refuses other objects.
+  const resolveTag = () => {
+    const observed = read(`repos/${repository}/git/ref/tags/${tag}`);
+    if (observed?.ref !== ref) throw Error('Publication baseline tag identity differs');
+    let object = observed.object;
+    for (let depth = 0; depth < 8; depth++) {
+      if (!/^[a-f0-9]{40}$/.test(object?.sha ?? '')) break;
+      if (object.type === 'commit') return object.sha;
+      if (object.type !== 'tag') break;
+      const annotated = read(`repos/${repository}/git/tags/${object.sha}`);
+      if (annotated?.sha !== object.sha) break;
+      object = annotated.object;
+    }
+    throw Error('Publication baseline tag must resolve to a commit');
+  };
+  const resolvedTagSha = resolveTag();
+  if (resolvedTagSha !== source) throw Error('Publication baseline tag commit differs');
   const endpoint = `repos/${repository}/actions/runs/${runId}`;
   const run = read(endpoint);
   if (run.id !== runId || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1)
@@ -282,6 +303,18 @@ export function observePublication(
     throw Error('Incomplete publication job pagination');
   const jobs = pages.flatMap((p) => p.jobs);
   if (pages.some((p) => p.total_count !== jobs.length)) throw Error('Incomplete publication jobs');
+  if (
+    new Set(jobs.map((job) => job.id)).size !== jobs.length ||
+    jobs.some(
+      (job) =>
+        !Number.isSafeInteger(job.id) ||
+        job.id < 1 ||
+        job.run_id !== runId ||
+        job.run_attempt !== run.run_attempt ||
+        job.head_sha !== source
+    )
+  )
+    throw Error('Publication job provenance differs from current run');
   for (const name of publicationJobs) {
     const matches = jobs.filter((j) => j.name === name);
     if (
@@ -298,9 +331,14 @@ export function observePublication(
   if (
     current.id !== run.id ||
     current.run_attempt !== run.run_attempt ||
+    current.repository?.full_name !== repository ||
     current.head_sha !== source ||
+    current.head_branch !== tag ||
+    current.event !== 'push' ||
+    current.path !== run.path ||
     current.status !== 'completed' ||
-    current.conclusion !== 'success'
+    current.conclusion !== 'success' ||
+    resolveTag() !== resolvedTagSha
   )
     throw Error('Publication baseline attempt changed');
   return {
@@ -309,7 +347,18 @@ export function observePublication(
     sha: source,
     runId,
     attempt: run.run_attempt,
+    workflow: run.path,
+    event: run.event,
+    ref,
+    resolvedTagSha,
     conclusion: 'success',
-    jobs: jobs.map((j) => ({ id: j.id, name: j.name, conclusion: j.conclusion })),
+    jobs: jobs.map((j) => ({
+      id: j.id,
+      name: j.name,
+      conclusion: j.conclusion,
+      runId: j.run_id,
+      attempt: j.run_attempt,
+      sha: j.head_sha,
+    })),
   };
 }
