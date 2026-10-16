@@ -638,6 +638,8 @@ Exact same-host loopback MAY use plaintext HTTP/2 under the existing local trust
 
 Missing, invalid, expired, hostname-mismatched, or untrusted certificate or trust material prevents an authoritative session and keeps the NanoHost non-ready. A configured CA is the exclusive trust source for that connection, and failure under that source MUST NOT fall back to platform roots. The NanoHost MUST NOT use verification bypass, trust on first use, plaintext downgrade, SSH tunnel runtime fallback, alternate endpoints, or bearer-token-only acceptance to restore availability.
 
+The server presents a valid server certificate, separate from its issuing CA certificate. A CA certificate used as the server leaf fails verification. Before admission, NanoHost completes certificate verification within the existing startup deadline. An initial definite certificate rejection reports a closed TLS verification cause and ends that startup attempt. It must not become an ordinary physical-close retry or only a later startup timeout. Diagnostics exclude raw certificate errors, endpoints, trust paths and secret material. A successor failure retains the existing healthy-Epoch reconnect rules.
+
 This contract is dedicated bearer NanoHost Token authentication over server-authenticated TLS. It does not define mTLS, client certificates, server-admin token reuse, or another authentication path.
 
 ## NanoCore-To-NanoHost Communication Boundary

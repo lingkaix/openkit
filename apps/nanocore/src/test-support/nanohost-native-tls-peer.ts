@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createSecureServer } from 'node:http2';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -21,6 +22,8 @@ import { applyMigrations } from '../storage/migrate.js';
 
 const root = process.argv[2];
 assert(root, 'Rust fixture must supply an isolated temporary directory.');
+const certificateRole = process.argv[3] ?? 'server';
+assert(certificateRole === 'server' || certificateRole === 'ca-as-leaf');
 const certFile = join(root, 'certificate.pem');
 // Every attempt creates its own key and Token; neither is a retained fixture.
 execFileSync(
@@ -63,7 +66,7 @@ execFileSync(
 );
 writeFileSync(
   join(root, 'extensions.cnf'),
-  'basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n'
+  `basicConstraints=critical,CA:${certificateRole === 'ca-as-leaf' ? 'TRUE' : 'FALSE'}\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n`
 );
 execFileSync(
   'openssl',
@@ -107,6 +110,13 @@ const authority = createNanoHostTransportSessionAuthority();
 const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
 const app = new Hono<{ Variables: AuthVariables }>();
 let negotiatedProtocol: string | false = false;
+let requestCount = 0;
+let tokenPresentationCount = 0;
+app.use('*', async (context, next) => {
+  requestCount += 1;
+  if (context.req.header('authorization') !== undefined) tokenPresentationCount += 1;
+  await next();
+});
 app.use('/api/nanohost/transport/session/readiness', async (context, next) => {
   await next();
   const target = getNanoHostRuntimeTarget(coreDb, identityId);
@@ -143,3 +153,11 @@ const address = server.address();
 assert(address && typeof address !== 'string');
 // Only the captured child pipe carries the attempt-local credential.
 process.stdout.write(`${JSON.stringify({ port: address.port, secret: token.secret })}\n`);
+// An explicit post-attempt query observes absence without a guessed wait or retained secrets.
+createInterface({ input: process.stdin }).on('line', (line) => {
+  assert.equal(line, 'observe');
+  const target = getNanoHostRuntimeTarget(coreDb, identityId);
+  process.stdout.write(
+    `${JSON.stringify({ requestCount, tokenPresentationCount, targetExists: target !== null })}\n`
+  );
+});

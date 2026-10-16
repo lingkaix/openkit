@@ -23,6 +23,8 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 
 `nanohost-native-tls-peer.ts` is the isolated peer for NanoHost's real TLS regression. It uses the native secure HTTP/2 factory from `src/index.ts`, production Token verification, admission, and durable readiness routes. It generates its own temporary CA, server key, and Token, and sends the credential only through the captured child pipe. The Rust caller owns process and temporary-file cleanup. Run `cargo test native_tls_` from `apps/nanohost` with the repository's pinned Node and OpenSSL available after installing workspace dependencies and building NanoCore's dependency packages.
 
+Its CA-as-leaf mode reproduces a server certificate that Rustls rejects although some other TLS clients accept it. A bounded pipe query observes HTTP requests, Token presentation and durable target absence after certificate rejection. These observations remain fixture-local and supply no runtime authority.
+
 Run the tests that consume the changed fixture and the NanoCore package test suite.
 
 See [NanoCore README](../../README.md) for the package test model.

@@ -72,7 +72,9 @@ impl Drop for NativeTlsPeer {
 }
 
 /// Starts the real NanoCore route fixture under the caller's pinned Node runtime.
-async fn native_tls_peer() -> (
+async fn native_tls_peer(
+    ca_as_leaf: bool,
+) -> (
     NativeTlsPeer,
     tokio::io::Lines<BufReader<tokio::fs::File>>,
     serde_json::Value,
@@ -93,6 +95,8 @@ async fn native_tls_peer() -> (
         .arg(nanocore.join("node_modules/tsx/dist/loader.mjs"))
         .arg(nanocore.join("src/test-support/nanohost-native-tls-peer.ts"))
         .arg(&root)
+        .arg(if ca_as_leaf { "ca-as-leaf" } else { "server" })
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -121,7 +125,7 @@ async fn native_tls_handshake_progresses_after_partial_record_write() {
 
 /// Requires real Token admission and durable readiness on one verified native connection.
 async fn assert_native_tls_ready(fragment: bool) {
-    let (peer, mut lines, input) = native_tls_peer().await;
+    let (peer, mut lines, input) = native_tls_peer(false).await;
     let origin = format!("https://localhost:{}", input["port"].as_u64().unwrap());
     let transport = prepare_verified_session_transport(
         &origin,
@@ -136,14 +140,30 @@ async fn assert_native_tls_ready(fragment: bool) {
     }
     let startup_deadline = super::tests::test_startup_deadline();
     let generation = tokio::time::timeout(Duration::from_secs(5), async {
-        let VerifiedSessionIo::Tls(io) =
-            connect_verified_session_transport(&origin, &transport, startup_deadline)
-                .await
-                .unwrap()
-        else {
-            panic!("HTTPS must use verified TLS");
+        let io = if fragment {
+            AsyncRustlsClientStream {
+                socket: TcpStream::connect(("localhost", input["port"].as_u64().unwrap() as u16))
+                    .await
+                    .unwrap(),
+                connection: ClientConnection::new(
+                    transport.tls_client_config().unwrap().clone(),
+                    ServerName::try_from("localhost").unwrap(),
+                )
+                .unwrap(),
+                pending_tls: Vec::new(),
+                pending_tls_offset: 0,
+            }
+        } else {
+            let VerifiedSessionIo::Tls(io) =
+                connect_verified_session_transport(&origin, &transport, startup_deadline)
+                    .await
+                    .unwrap()
+            else {
+                panic!("HTTPS must use verified TLS");
+            };
+            *io
         };
-        let io = AsyncRustlsClientStream {
+        let mut io = AsyncRustlsClientStream {
             socket: FragmentedSocket {
                 socket: io.socket,
                 fragment,
@@ -153,6 +173,17 @@ async fn assert_native_tls_ready(fragment: bool) {
             pending_tls: io.pending_tls,
             pending_tls_offset: io.pending_tls_offset,
         };
+        if fragment {
+            assert!(io.connection.is_handshaking());
+            tokio::time::timeout_at(
+                startup_deadline,
+                std::future::poll_fn(|cx| io.poll_handshake(cx)),
+            )
+            .await
+            .expect("fragmented handshake must retain its startup bound")
+            .expect("verified fragmented handshake");
+            assert!(!io.connection.is_handshaking());
+        }
         run_outer_session(
             io,
             &origin,
@@ -183,7 +214,7 @@ async fn assert_native_tls_ready(fragment: bool) {
 
 #[tokio::test]
 async fn native_tls_offers_only_h2_for_both_trust_sources() {
-    let (peer, _lines, _input) = native_tls_peer().await;
+    let (peer, _lines, _input) = native_tls_peer(false).await;
     for trust in [
         TlsTrustMaterial::Platform,
         TlsTrustMaterial::ConfiguredRef {
@@ -196,6 +227,32 @@ async fn native_tls_offers_only_h2_for_both_trust_sources() {
             vec![b"h2".to_vec()],
             "native TLS must offer only HTTP/2"
         );
+    }
+}
+
+#[tokio::test]
+async fn native_tls_silent_peer_expires_at_connection_startup_deadline() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let transport =
+        prepare_verified_session_transport(&origin, &TlsTrustMaterial::Platform).unwrap();
+    let startup_deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+    let (result, accepted) = tokio::time::timeout(Duration::from_secs(2), async {
+        // The accepted socket stays open while the production connector receives no TLS response.
+        tokio::join!(
+            connect_verified_session_transport(&origin, &transport, startup_deadline),
+            listener.accept(),
+        )
+    })
+    .await
+    .expect("the existing absolute startup deadline must bound eager TLS negotiation");
+    let _silent_peer = accepted.expect("the local peer must accept TCP before TLS stalls");
+    match result {
+        Err(reason) => assert_eq!(reason, "nanohost NanoCore rendezvous timed out"),
+        Ok(_) => panic!("a silent TLS peer cannot produce a verified connection"),
     }
 }
 
@@ -322,7 +379,7 @@ async fn ready_session_outlives_startup_deadline() {
 
 #[tokio::test]
 async fn native_tls_verifies_ca_and_server_name_before_ready() {
-    let (peer, _lines, input) = native_tls_peer().await;
+    let (mut peer, mut lines, input) = native_tls_peer(false).await;
     for (host, trust) in [
         ("localhost", TlsTrustMaterial::Platform),
         (
@@ -332,36 +389,79 @@ async fn native_tls_verifies_ca_and_server_name_before_ready() {
             },
         ),
     ] {
-        let origin = format!("https://{host}:{}", input["port"].as_u64().unwrap());
-        let transport = prepare_verified_session_transport(&origin, &trust).unwrap();
-        let (context, mut presentation) = super::tests::test_outer_credentials();
-        if let CredentialPresentationOutcome::Presented { secret, .. } = &mut presentation {
-            *secret = input["secret"].as_str().unwrap().to_owned();
-        }
-        let startup_deadline = super::tests::test_startup_deadline();
-        let failure = tokio::time::timeout(Duration::from_secs(5), async {
-            let io = connect_verified_session_transport(&origin, &transport, startup_deadline)
-                .await
-                .unwrap();
-            run_outer_session(
-                io,
-                &origin,
-                &context,
-                &presentation,
-                None,
-                (&"a".repeat(64), startup_deadline, || Ok(None)),
-                |_, _| async { panic!("untrusted CA or wrong server name cannot grant readiness") },
-            )
-            .await
-        })
-        .await
-        .expect("verification rejection must be bounded")
-        .expect_err("verification must fail closed");
-        assert!(matches!(
-            failure.stage,
-            OuterSessionStage::Connect | OuterSessionStage::Admission
-        ));
+        assert_native_tls_verification_rejected(&mut peer, &mut lines, &input, host, trust).await;
     }
+}
+
+#[tokio::test]
+async fn native_tls_rejects_ca_certificate_as_server_leaf() {
+    let (mut peer, mut lines, input) = native_tls_peer(true).await;
+    let trust = TlsTrustMaterial::ConfiguredRef {
+        reference: peer.root.join("ca.pem").to_str().unwrap().to_owned(),
+    };
+    assert_native_tls_verification_rejected(&mut peer, &mut lines, &input, "localhost", trust)
+        .await;
+}
+
+/// Invalid certificates must retain a definite safe cause before any Token or authority crosses TLS.
+async fn assert_native_tls_verification_rejected(
+    peer: &mut NativeTlsPeer,
+    lines: &mut tokio::io::Lines<BufReader<tokio::fs::File>>,
+    input: &serde_json::Value,
+    host: &str,
+    trust: TlsTrustMaterial,
+) {
+    let origin = format!("https://{host}:{}", input["port"].as_u64().unwrap());
+    let transport = prepare_verified_session_transport(&origin, &trust).unwrap();
+    let (context, mut presentation) = super::tests::test_outer_credentials();
+    if let CredentialPresentationOutcome::Presented { secret, .. } = &mut presentation {
+        *secret = input["secret"].as_str().unwrap().to_owned();
+    }
+    let startup_deadline = super::tests::test_startup_deadline();
+    let failure = tokio::time::timeout(Duration::from_secs(5), async {
+        let io = connect_verified_session_transport(&origin, &transport, startup_deadline)
+            .await
+            .map_err(|reason| {
+                OuterSessionFailure::terminal(
+                    OuterSessionStage::Connect,
+                    OuterSessionOperation::None,
+                    None,
+                    reason,
+                )
+            })?;
+        run_outer_session(
+            io,
+            &origin,
+            &context,
+            &presentation,
+            None,
+            (&"a".repeat(64), startup_deadline, || Ok(None)),
+            |_, _| async { panic!("invalid certificate cannot grant readiness") },
+        )
+        .await
+    })
+    .await
+    .expect("verification rejection must be bounded")
+    .expect_err("verification must fail closed");
+    std::io::Write::write_all(peer.child.stdin.as_mut().unwrap(), b"observe\n").unwrap();
+    let observation = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .expect("peer observation must be bounded")
+        .unwrap()
+        .expect("peer verification observation");
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["requestCount"], 0, "TLS must precede HTTP");
+    assert_eq!(observation["tokenPresentationCount"], 0);
+    assert_eq!(observation["targetExists"], false);
+    assert_eq!(
+        failure.reason(),
+        "nanohost NanoCore TLS certificate verification failed",
+        "retain the definite TLS cause without raw certificate, endpoint, or secret content"
+    );
+    assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+    assert_eq!(failure.stage, OuterSessionStage::Connect);
+    assert_eq!(failure.status(), None);
+    assert_eq!(failure.reconnect_after(), None);
 }
 
 #[tokio::test(start_paused = true)]
