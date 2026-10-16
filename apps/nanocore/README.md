@@ -551,3 +551,5 @@ The App-update family includes an administrator-only content-free deployment pre
 Vault injection plans and receipts preserve immutable intent and completion lineage under repeated creation. Changed input for an existing identity fails without mutation. Exact replay preserves current revocation state and original timestamps. See the [Vault guide](src/vault/README.md) for the focused checks.
 
 All NanoCore Vitest unit and e2e configurations use the shared [temporary-directory setup](../../tests/support/vitest-global-setup.mjs), including the default-off real Codex gate. Workers inherit one private invocation directory; normal teardown reclaims it after success or failure. Tests close database handles and remove owned fixtures before the run-level backstop.
+
+Explicit ZIP folder snapshots use `artifact.folder-extract` and paged `artifact.folder-read`. The original Artifact stays unchanged and remains downloadable. Disposable source-version caches use the existing sidecar lifecycle; no editable folder tree or new command receipt exists. The focused route check is `pnpm --filter @openkit/nanocore exec vitest run src/artifact-folder-routes.test.ts --maxWorkers=1`.

@@ -434,3 +434,5 @@ Gateway account rows clear cached quota while pending or logged out, including l
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
+
+ZIP Artifacts expose an explicit Extract ZIP as folder action beside their original download. The panel shows bounded inventory pages and extraction status. ZIP import alone does not extract. Failed current reads hide cached names, and failed or uncertain processing retains a retry against the same original. `src/screens/artifacts/ZipFolderPanel.test.tsx` covers explicit choice, source identity and unavailable states.
