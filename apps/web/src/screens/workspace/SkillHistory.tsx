@@ -73,7 +73,11 @@ export function SkillHistory({
         />
       ) : null}
       <p className="text-xs text-fg-muted">Removal blocks future selection and retains history.</p>
-      <Button size="sm" isDisabled={blocked || remove.isPending} onPress={() => remove.mutate()}>
+      <Button
+        size="sm"
+        isDisabled={blocked || remove.isPending || remove.isSuccess}
+        onPress={() => remove.mutate()}
+      >
         Remove Skill from future selection
       </Button>
       {remove.isSuccess ? <p role="status">Skill removed from future selection.</p> : null}

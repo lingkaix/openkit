@@ -239,7 +239,8 @@ export function CatalogScreen() {
                 hint="Upload a SKILL.md to add the first Skill."
               />
             )}
-            {withdrawCandidate.isError ? (
+            {withdrawCandidate.isError &&
+            withdrawCandidate.variables?.workspaceId === workspaceId ? (
               <ErrorBanner message="Couldn't withdraw that proposal. Only its submitter can withdraw it; refresh the catalog before retrying." />
             ) : null}
             {proposed.length ? (
