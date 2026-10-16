@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parseOkfDocument, updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -263,6 +264,61 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(changed.status).toBe(409);
     expect(changed.body).toMatchObject({ code: 'idempotency_key_conflict' });
     expect((await listing(f)).notebookRevision).toBe(currentRevision);
+  });
+
+  it('preserves unknown nested OKF metadata through the native entry update and restart', async () => {
+    const f = fixture();
+    const id = 'notes/metadata';
+    const created = await entryCommand(f, 'knowledge.create', randomUUID(), {
+      baseRevision: (await listing(f)).notebookRevision,
+      knowledgePageId: id,
+      kind: 'project-context',
+      title: 'Original title',
+      content: 'Original body.',
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const originalRevision = (await listing(f)).notebookRevision;
+    const original = git(f, ['show', `${originalRevision}:pages/${id}.md`]);
+    const sources = [{ id: 'upstream', credibility: { author: 'human:owner' } }];
+    const generated = { by: 'reference_agent/test', at: '2026-09-06T00:00:00Z' };
+    const annotated = await publish(f, {
+      requestId: randomUUID(),
+      baseRevision: originalRevision,
+      changes: [
+        {
+          path: `${id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${id}.md`,
+            content: original,
+            updates: { sources, generated },
+          }),
+        },
+      ],
+      summary: 'Retain authored extension metadata',
+    });
+    reopen(f);
+    const updated = await entryCommand(f, 'knowledge.update', randomUUID(), {
+      baseRevision: annotated.notebookRevision,
+      knowledgeEntryId: id,
+      title: 'Updated title',
+      content: 'Updated body.',
+    });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    const revision = (await listing(f)).notebookRevision;
+    const content = git(f, ['show', `${revision}:pages/${id}.md`]);
+    const parsed = parseOkfDocument({ path: `${id}.md`, content });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('Published page is invalid OKF.');
+    expect(parsed.document.frontmatter.sources).toEqual(sources);
+    expect(parsed.document.frontmatter.generated).toEqual(generated);
+    expect(parsed.document.frontmatter.title).toBe('Updated title');
+    expect(parsed.document.body).toBe('Updated body.\n');
+    reopen(f);
+    expect((await listing(f)).items).toContainEqual(
+      expect.objectContaining({ id, title: 'Updated title', content: 'Updated body.' })
+    );
+    expect(git(f, ['show', `${revision}:pages/${id}.md`])).toBe(content);
+    expect(git(f, ['show', `${originalRevision}:pages/${id}.md`])).toBe(original);
   });
 
   it('retains generic valid pages without managed entry fields or body text across reopen', async () => {

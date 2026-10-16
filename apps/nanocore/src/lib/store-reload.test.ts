@@ -22,7 +22,7 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-import { parseOkfDocument } from '../knowledge/okf.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { FsStore } from './store.js';
@@ -319,12 +319,24 @@ describe('FsStore canonical reload', () => {
 
   it('reloads canonical workspace records and event logs without store.json', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-reload-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Reload Workspace');
-    const knowledge = store.createKnowledgeEntry(workspace.id, {
+    const fixtureStore = new FsStore();
+    const workspace = fixtureStore.createWorkspace('Reload Workspace');
+    const knowledge = fixtureStore.createKnowledgeEntry(workspace.id, {
       kind: 'project-context',
       title: 'Reload context',
       content: 'Snapshot reload should preserve this knowledge entry.',
+    });
+    const store = new FsStore({ dataRoot });
+    store.importWorkspaceSnapshot({
+      workspace,
+      knowledge: [knowledge],
+      threads: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+      ...notebookImportFixture({ workspaceId: workspace.id, knowledge: [knowledge] }),
     });
     const thread = store.createThread(workspace.id, 'Reload thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Persist the whole turn', localActor);
@@ -554,89 +566,37 @@ describe('FsStore canonical reload', () => {
     expect(events.at(-1)?.sequence).toBe(105);
   });
 
-  it('removes stale knowledge records', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-stale-knowledge-'));
+  it('refuses direct file-backed Knowledge writers without changing the published notebook', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-knowledge-writer-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Stale knowledge workspace');
-    const knowledge = store.createKnowledgeEntry(workspace.id, {
-      kind: 'project-context',
-      title: 'Delete this knowledge',
-      content: 'This canonical page must be removed.',
+    const input = workspaceImportPayload(testEntityId('ws', 'knowledge-writer-boundary'));
+    const workspace = store.importWorkspaceSnapshot(input);
+    const knowledge = input.knowledge[0]!;
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
     });
-    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    const knowledgePath = join(workspaceRoot, 'knowledge', 'pages', `${knowledge.id}.md`);
+    const revision = notebook.publishedRevision();
+    const retained = notebook.readRevision(revision);
+    const refusal = 'File-backed Knowledge changes require the notebook publisher.';
 
-    store.deleteKnowledgeEntry(workspace.id, knowledge.id);
-
-    expect(existsSync(knowledgePath)).toBe(false);
-  });
-
-  it('preserves unknown nested OKF metadata when a user edits a Knowledge Page', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-okf-edit-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('OKF metadata workspace');
-    const knowledge = store.createKnowledgeEntry(workspace.id, {
-      kind: 'project-context',
-      title: 'Original title',
-      content: 'Original body.',
-    });
-    const pagePath = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'knowledge',
-      'pages',
-      `${knowledge.id}.md`
-    );
-    const original = readFileSync(pagePath, 'utf8');
-    writeFileSync(
-      pagePath,
-      original.replace(
-        'scope: "workspace"',
-        [
-          'scope: "workspace"',
-          'sources:',
-          '  - id: upstream',
-          '    credibility:',
-          '      author: human:owner',
-          'generated:',
-          '  by: reference_agent/test',
-          '  at: 2026-09-06T00:00:00Z',
-        ].join('\n')
-      )
-    );
-
-    const restarted = new FsStore({ dataRoot });
-    restarted.updateKnowledgeEntry(workspace.id, knowledge.id, {
-      title: 'Updated title',
-      content: 'Updated body.',
-    });
-
-    const content = readFileSync(pagePath, 'utf8');
-    const parsed = parseOkfDocument({ path: `knowledge/pages/${knowledge.id}.md`, content });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) {
-      return;
-    }
-    expect(parsed.document.frontmatter.sources).toEqual([
-      { id: 'upstream', credibility: { author: 'human:owner' } },
-    ]);
-    expect(parsed.document.frontmatter.generated).toEqual({
-      by: 'reference_agent/test',
-      at: '2026-09-06T00:00:00Z',
-    });
-    expect(parsed.document.frontmatter.title).toBe('Updated title');
-    expect(parsed.document.body).toBe('Updated body.\n');
-
-    const secondRestart = new FsStore({ dataRoot });
-    expect(secondRestart.getWorkspaceResources(workspace.id).knowledge).toContainEqual(
-      expect.objectContaining({
-        id: knowledge.id,
-        title: 'Updated title',
-        content: 'Updated body.',
+    expect(() =>
+      store.createKnowledgeEntry(workspace.id, {
+        kind: 'project-context',
+        title: 'Bypass',
+        content: 'Must not publish.',
       })
+    ).toThrow(refusal);
+    expect(() =>
+      store.updateKnowledgeEntry(workspace.id, knowledge.id, {
+        content: 'Must not replace the published page.',
+      })
+    ).toThrow(refusal);
+    expect(() => store.deleteKnowledgeEntry(workspace.id, knowledge.id)).toThrow(refusal);
+    expect(notebook.publishedRevision()).toBe(revision);
+    expect(notebook.readRevision(revision)).toEqual(retained);
+    expect(new FsStore({ dataRoot }).getWorkspaceResources(workspace.id).knowledge).toEqual(
+      input.knowledge
     );
-    expect(readFileSync(pagePath, 'utf8')).toBe(content);
   });
 
   it('preserves a workspace-authored knowledge schema during unrelated persistence', () => {
