@@ -232,14 +232,47 @@ export function normalizeStoredOpenKitToken(value) {
 }
 
 /**
- * Resolves an endpoint credential from an explicit environment override or local storage.
+ * Resolves an explicit named credential, or the ordinary endpoint credential without fallback between them.
  *
- * @param {{endpoint: string, env?: Partial<Record<'OPENKIT_NANOCORE_TOKEN', string>>, store?: Pick<OpenKitCredentialStore, 'readToken'>}} input Resolution inputs.
- * @returns {{source: 'environment' | 'store', token: string} | null} Resolved credential and its source, or null for unauthenticated local mode.
- * @throws {Error & {code: 'invalid_configuration'}} When a non-empty explicit override is not an OpenKit token.
+ * @param {{endpoint: string, env?: Partial<Record<'OPENKIT_NANOCORE_TOKEN', string>>, destination?: string, store?: Pick<OpenKitCredentialStore, 'readToken'> & Partial<Pick<OpenKitCredentialStore, 'readNamedToken'>>}} input Resolution inputs.
+ * @returns {{source: 'environment' | 'store' | 'named-store', token: string} | null} Resolved credential and its source, or null for unauthenticated local mode.
+ * @throws {Error} When selection is invalid, ambiguous, unavailable, or an explicit override is malformed.
  */
 export function resolveCredential(input) {
   const explicit = input.env?.OPENKIT_NANOCORE_TOKEN?.trim();
+  if (input.destination !== undefined) {
+    if (!isValidCredentialDestination(input.destination)) {
+      throw Object.assign(new Error('A non-reserved named credential destination is required.'), {
+        code: 'invalid_credential_destination',
+      });
+    }
+    if (explicit) {
+      throw Object.assign(new Error('Select either --credential or OPENKIT_NANOCORE_TOKEN.'), {
+        code: 'invalid_configuration',
+      });
+    }
+    let token;
+    try {
+      token = normalizeStoredOpenKitToken(
+        input.store?.readNamedToken?.({
+          baseUrl: input.endpoint,
+          destination: input.destination,
+        })
+      );
+    } catch {
+      // A failed named read must never disclose storage details or select an administrator token.
+      token = null;
+    }
+    if (!token) {
+      throw Object.assign(
+        new Error('The selected named credential is unavailable for this endpoint.'),
+        {
+          code: 'credential_unavailable',
+        }
+      );
+    }
+    return { source: 'named-store', token };
+  }
   if (explicit) {
     const token = normalizeStoredOpenKitToken(explicit);
     if (!token) {

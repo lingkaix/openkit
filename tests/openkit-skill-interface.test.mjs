@@ -2486,6 +2486,104 @@ function isolatedCredentialLayout(root, platform = process.platform) {
   };
 }
 
+test('bundled named credential selection authenticates exact calls without changing administration', async (t) => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'openkit-selected-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const endpoint = 'https://nanocore.example';
+  const layout = isolatedCredentialLayout(root);
+  const store = createDefaultOpenKitCredentialStore({
+    configDir: layout.configDir,
+    machineId: layout.machineId,
+    execFile() {
+      throw new Error('unavailable');
+    },
+    warn() {},
+  });
+  store.writeToken({ baseUrl: endpoint, token: 'okt_fixture_admin' });
+  store.writeNamedToken({ baseUrl: endpoint, destination: 'member', token: 'okt_fixture_member' });
+  const originalFiles = new Map(
+    listFiles(layout.configDir).map((path) => [path, readFileSync(join(layout.configDir, path))])
+  );
+  const env = { ...layout.env, OPENKIT_NANOCORE_URL: endpoint, OPENKIT_NANOCORE_TOKEN: '' };
+  const args = ['ops', 'call', 'workspace.list', '--input', '-', '--credential', 'member'];
+  const transport = dataModule(`
+    globalThis.fetch = async (url, options) => {
+      if (url !== '${endpoint}/api/app/operations/workspace.list') throw new Error('wrong endpoint');
+      const headers = new Headers(options.headers);
+      if (headers.get('authorization') !== 'Bearer okt_fixture_member') throw new Error('wrong credential');
+      if (headers.get('x-openkit-client-channel') !== 'openkit-cli') throw new Error('wrong channel');
+      return new Response('{"items":[]}', { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+  `);
+  const result = await runCli(args, env, '{}', [...layout.imports, transport]);
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout).data, { items: [] });
+  assert.doesNotMatch(result.stdout + result.stderr, /okt_fixture_/);
+  for (const [path, bytes] of originalFiles)
+    assert.deepEqual(readFileSync(join(layout.configDir, path)), bytes);
+  for (const status of [401, 403]) {
+    const denied = await runCli(args, env, '{}', [
+      ...layout.imports,
+      responseModule(status, {
+        code: status === 401 ? 'core.auth.unauthenticated' : 'core.auth.forbidden',
+        message: 'Denied okt_fixture_member',
+      }),
+    ]);
+    assert.equal(denied.code, 3, denied.stdout);
+    assert.doesNotMatch(denied.stdout + denied.stderr, /okt_fixture_/);
+  }
+  const doctor = await runCli(['doctor', '--credential', 'member'], env, '{}', [
+    ...layout.imports,
+    dataModule(`
+      globalThis.fetch = async (url, options) => {
+        if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fixture_member') throw new Error('wrong credential');
+        const body = url === '${endpoint}/api/meta'
+          ? { protocolVersion: '${protocol.PROTOCOL_VERSION}', capabilities: [], eventFamilies: [] }
+          : { code: 'core.auth.forbidden', message: 'Administrator diagnostics unavailable' };
+        return new Response(JSON.stringify(body), { status: url.endsWith('/api/meta') ? 200 : 403, headers: { 'content-type': 'application/json' } });
+      };
+    `),
+  ]);
+  assert.equal(doctor.code, 0, doctor.stdout);
+  assert.equal(JSON.parse(doctor.stdout).data.authentication, 'named-store');
+  assert.equal(JSON.parse(doctor.stdout).data.nanocore.productWorkReadiness, 'unknown');
+  assert.doesNotMatch(doctor.stdout + doctor.stderr, /okt_fixture_/);
+  const noNetwork = dataModule(
+    `globalThis.fetch = () => { throw new Error('unexpected network request'); };`
+  );
+  for (const [command, overrides, expected] of [
+    [args.slice(0, -1).concat('missing'), {}, 'credential_unavailable'],
+    [args, { OPENKIT_NANOCORE_URL: 'https://other.example' }, 'credential_unavailable'],
+    [args, { OPENKIT_NANOCORE_TOKEN: 'okt_fixture_override' }, 'invalid_configuration'],
+    [args.slice(0, -1).concat('admin'), {}, 'invalid_credential_destination'],
+    [args.slice(0, -1).concat('../member'), {}, 'invalid_credential_destination'],
+    [['doctor', '--credential', 'missing'], {}, 'credential_unavailable'],
+    [['ops', 'search', 'workspace', '--credential', 'member'], {}, 'invalid_usage'],
+    [
+      ['ops', 'call', 'bootstrap.consume', '--input', '-', '--credential', 'member'],
+      {},
+      'invalid_usage',
+    ],
+    [args.concat('--credential', 'member'), {}, 'invalid_usage'],
+    [
+      ['ops', 'call', 'credential.delete', '--input', '-', '--credential', 'member'],
+      {},
+      'invalid_usage',
+    ],
+  ]) {
+    const failed = await runCli(command, { ...env, ...overrides }, '{}', [
+      ...layout.imports,
+      noNetwork,
+    ]);
+    assert.notEqual(failed.code, 0);
+    assert.equal(JSON.parse(failed.stdout).error.code, expected, failed.stdout);
+    assert.equal(Object.hasOwn(JSON.parse(failed.stdout), 'requestId'), false);
+    assert.doesNotMatch(failed.stdout + failed.stderr, /okt_fixture_/);
+  }
+  assert.equal(store.readToken({ baseUrl: endpoint }), 'okt_fixture_admin');
+});
+
 for (const platform of ['darwin', 'linux']) {
   test(`bundled token create and rotate preserve transport, redaction, and auth denials (${platform})`, async (t) => {
     const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
