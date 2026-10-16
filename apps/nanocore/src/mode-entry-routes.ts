@@ -3376,8 +3376,14 @@ export function createConversationService({
 
       /** Validates the objective before creating receiving work through the existing product Turn owner. */
       const startSelectedWorker = async (): Promise<ConversationCommandResult> => {
+        // File consent admits the current brief and verified originals, never private history or Artifact disclosure.
+        const confirmedFileHandoff =
+          acceptedTarget.kind === 'new-task-worker' &&
+          chatInput.fileHandoffConfirmed === true &&
+          filePayloadPaths !== undefined;
         if (
-          store.getThread(workspaceId, threadId).visibility === 'private' ||
+          (store.getThread(workspaceId, threadId).visibility === 'private' &&
+            !confirmedFileHandoff) ||
           artifacts.some(
             (artifact) =>
               artifact.origin.kind === 'turn-output' &&
