@@ -1,5 +1,13 @@
 // openkit-test-platform: posix
-import { cpSync, mkdtempSync, renameSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -17,6 +25,46 @@ import { startRecurringScheduleService } from './recurring-schedule-service.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 
 const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
+
+it.each([
+  'openkit.work-observations.v1',
+  'openkit.unsupported.v1',
+])('checks the exact required Turn feature %s without changing metadata', (feature) => {
+  const root = mkdtempSync(join(tmpdir(), 'recurring-feature-'));
+  try {
+    const store = new FsStore({ dataRoot: root });
+    const workspace = store.createWorkspace('Required features');
+    const thread = store.createThread(workspace.id, 'Target');
+    const turn = store.createTurn(workspace.id, thread.id, 'Inspect metadata', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const path = join(
+      root,
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'turn.json'
+    );
+    const bytes = `${JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), requiredFeatures: [feature], futureDescription: 'Unconsumed descriptive metadata.' })}\n`;
+    writeFileSync(path, bytes);
+    if (feature === 'openkit.work-observations.v1') {
+      expect(readPublishedTurnFileRecords(root, workspace.id, thread.id, turn.id)?.turn.id).toBe(
+        turn.id
+      );
+    } else {
+      expect(() => readPublishedTurnFileRecords(root, workspace.id, thread.id, turn.id)).toThrow(
+        feature
+      );
+    }
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it.each([
   'workspace',

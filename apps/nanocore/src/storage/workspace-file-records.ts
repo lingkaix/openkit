@@ -128,6 +128,17 @@ export const TurnReaderSchema = TurnSchema.safeExtend({
     .extend({ explanation: GitFailureExplanationReaderSchema.optional() })
     .nullable(),
 });
+/** One metadata validator preserves the writer's admitted feature set on direct canonical reads. */
+const TurnFileMetadataSchema = TurnReaderSchema.safeExtend({
+  captureCoverage: CaptureCoverageBindingSchema.optional(),
+  requiredFeatures: z
+    .array(
+      z.literal('openkit.work-observations.v1', {
+        error: ({ input }) => `Unsupported required Turn feature: ${JSON.stringify(input)}.`,
+      })
+    )
+    .optional(),
+});
 /** Imported-origin attribution is a historical fact, never current import authority. */
 const ArtifactReaderSchema = ArtifactSchema.safeExtend({
   origin: z.discriminatedUnion('kind', [
@@ -976,15 +987,7 @@ export function readPublishedTurnFileRecords(
   if (rawTurn.items !== undefined && (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)) {
     throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
   }
-  if (rawTurn.captureCoverage !== undefined) {
-    const parsedCoverage = CaptureCoverageBindingSchema.safeParse(rawTurn.captureCoverage);
-    if (!parsedCoverage.success) {
-      throw new Error(
-        `Canonical turn metadata has an invalid capture coverage binding: ${turnId}.`
-      );
-    }
-  }
-  const turnWithoutItems = TurnReaderSchema.parse({ ...rawTurn, items: [] });
+  const turnWithoutItems = TurnFileMetadataSchema.parse({ ...rawTurn, items: [] });
   if (
     turnWithoutItems.id !== turnId ||
     turnWithoutItems.workspaceId !== workspaceId ||
@@ -2351,10 +2354,7 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
       ...(captureCoverage ? { captureCoverage } : {}),
       ...(previousRaw?.requiredFeatures ? { requiredFeatures: previousRaw.requiredFeatures } : {}),
     },
-    TurnReaderSchema.safeExtend({
-      captureCoverage: CaptureCoverageBindingSchema.optional(),
-      requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
-    })
+    TurnFileMetadataSchema
   );
   const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
   const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
