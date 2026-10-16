@@ -14,7 +14,7 @@
 #![allow(dead_code, clippy::assertions_on_constants)]
 
 use std::future::Future;
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -579,6 +579,23 @@ pub struct AsyncRustlsClientStream<S = TcpStream> {
     pending_tls_offset: usize,
 }
 
+/// Polls a socket into rustls's own receive buffer, preserving partial-read ownership.
+struct RustlsSocketReader<'a, 'cx, S> {
+    socket: &'a mut S,
+    context: &'a mut Context<'cx>,
+}
+
+impl<S: AsyncRead + Unpin> Read for RustlsSocketReader<'_, '_, S> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let mut buffer = ReadBuf::new(buffer);
+        match Pin::new(&mut *self.socket).poll_read(self.context, &mut buffer) {
+            Poll::Pending => Err(std::io::ErrorKind::WouldBlock.into()),
+            Poll::Ready(Err(error)) => Err(error),
+            Poll::Ready(Ok(())) => Ok(buffer.filled().len()),
+        }
+    }
+}
+
 impl VerifiedSessionTransport {
     /// Returns whether this transport requires server-authenticated TLS.
     pub fn requires_server_authenticated_tls(&self) -> bool {
@@ -660,24 +677,31 @@ where
 
     /// Reads and processes one TLS record batch without exposing peer error text.
     fn poll_receive_tls(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let mut encrypted = [0_u8; 16 * 1024];
-        let mut encrypted_buffer = ReadBuf::new(&mut encrypted);
-        match Pin::new(&mut self.socket).poll_read(cx, &mut encrypted_buffer) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) => {}
-        }
-        if encrypted_buffer.filled().is_empty() {
+        // rustls can consume less than an offered socket batch. Let its Read buffer select the socket read size so no encrypted suffix is discarded.
+        let mut reader = RustlsSocketReader {
+            socket: &mut self.socket,
+            context: cx,
+        };
+        let received = match self.connection.read_tls(&mut reader) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Poll::Pending,
+            Err(error) => return Poll::Ready(Err(error)),
+            Ok(received) => received,
+        };
+        if received == 0 {
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "nanohost TLS socket read closed",
             )));
         }
-        self.connection
-            .read_tls(&mut Cursor::new(encrypted_buffer.filled()))?;
-        self.connection
-            .process_new_packets()
-            .map_err(std::io::Error::other)?;
+        self.connection.process_new_packets().map_err(|error| {
+            // H2 retains only the I/O kind and stringifies its source. Observe the typed cause here without exposing that text or retaining another connection projection.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}",
+                format_tls_processing_failure(&error)
+            );
+            std::io::Error::other(error)
+        })?;
         Poll::Ready(Ok(()))
     }
 
@@ -1354,6 +1378,22 @@ fn is_physical_epoch(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Classifies a TLS processing failure before H2 erases its typed I/O source.
+fn format_tls_processing_failure(error: &rustls::Error) -> String {
+    let cause = match error {
+        rustls::Error::InvalidCertificate(_) => "certificate",
+        rustls::Error::AlertReceived(_) => "peer_alert",
+        rustls::Error::InvalidMessage(_) => "invalid_message",
+        rustls::Error::DecryptError => "decrypt_error",
+        rustls::Error::PeerMisbehaved(_) => "peer_misbehaved",
+        rustls::Error::PeerIncompatible(_) => "peer_incompatible",
+        rustls::Error::InappropriateMessage { .. }
+        | rustls::Error::InappropriateHandshakeMessage { .. } => "unexpected_message",
+        _ => "other",
+    };
+    format!("nanohost TLS processing failed: cause={cause}")
 }
 
 /// Projects the actual H2 driver's completion into closed, value-free journal fields.
@@ -3020,6 +3060,10 @@ pub(crate) mod native_tls_tests;
 #[cfg(test)]
 #[path = "nanocore_connection_tests.rs"]
 mod nanocore_connection_tests;
+
+#[cfg(test)]
+#[path = "nanocore_tls_io_tests.rs"]
+mod nanocore_tls_io_tests;
 
 #[cfg(test)]
 mod tests {

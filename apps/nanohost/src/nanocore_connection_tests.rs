@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use super::format_h2_driver_close;
+use super::{format_h2_driver_close, format_tls_processing_failure};
 
 const PRIVATE_IO_TEXT: &str = "PRIVATE_FIXTURE_IO\nokt_not_a_real_fixture_credential";
 const PRIVATE_DEBUG_BYTES: &[u8] = b"PRIVATE_FIXTURE_DEBUG\nokt_not_a_real_fixture_credential";
@@ -285,4 +285,48 @@ async fn physical_close_real_stream_reset_has_remote_origin_and_closed_reason() 
         &result,
         "source=h2_driver outcome=reset initiator=remote reason=cancel io=none",
     );
+}
+
+#[test]
+fn tls_processing_failure_preserves_only_typed_closed_class() {
+    for (cause, class) in [
+        (rustls::Error::General(PRIVATE_IO_TEXT.to_owned()), "other"),
+        (rustls::Error::DecryptError, "decrypt_error"),
+        (
+            rustls::Error::InvalidMessage(rustls::InvalidMessage::InvalidContentType),
+            "invalid_message",
+        ),
+        (
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+            "certificate",
+        ),
+        (
+            rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure),
+            "peer_alert",
+        ),
+        (
+            rustls::Error::PeerMisbehaved(rustls::PeerMisbehaved::IncorrectBinder),
+            "peer_misbehaved",
+        ),
+        (
+            rustls::Error::PeerIncompatible(rustls::PeerIncompatible::NoCipherSuitesInCommon),
+            "peer_incompatible",
+        ),
+        (
+            rustls::Error::InappropriateMessage {
+                expect_types: vec![rustls::ContentType::ApplicationData],
+                got_type: rustls::ContentType::Handshake,
+            },
+            "unexpected_message",
+        ),
+    ] {
+        let observed = format_tls_processing_failure(&cause);
+        assert_eq!(
+            observed,
+            format!("nanohost TLS processing failed: cause={class}")
+        );
+        assert!(!observed.contains(['\n', '\r']));
+        assert!(!observed.contains("PRIVATE_FIXTURE"));
+        assert!(!observed.contains("okt_"));
+    }
 }
