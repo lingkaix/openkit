@@ -18,7 +18,7 @@ import { isSurfaceLive } from '../../app/flags';
 import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
-import { pathForSearchHit } from './data';
+import { operationsKeys, pathForSearchHit } from './data';
 
 const TIMESTAMP = '2026-07-21T12:00:00.000Z';
 const HOST_PATH = '/Users/secret/openkit-runtime';
@@ -409,8 +409,13 @@ function LocationProbe({ onChange }: { onChange: (pathname: string) => void }) {
   return null;
 }
 
-function renderApp(path: string, client: CoreClient, onLocation?: (pathname: string) => void) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** Renders production routes with a caller-selected query freshness policy. */
+function renderApp(
+  path: string,
+  client: CoreClient,
+  onLocation?: (pathname: string) => void,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
@@ -556,6 +561,321 @@ beforeEach(() => {
 });
 
 describe('Recovery and search', () => {
+  it.each([
+    401, 403,
+  ])('hides cached private recovery rows and blocks actions after a %s current read', async (status) => {
+    const user = userEvent.setup();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockRejectedValue(
+        new ApiCallError(status, 'private read denial', { code: 'workspace_access_denied' })
+      );
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockRejectedValue(
+        new ApiCallError(status, 'private read denial', { code: 'workspace_access_denied' })
+      );
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await toggleInspect(user, rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    expectInspectExpanded(rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers, exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
+    });
+    expect(await within(workers).findByRole('alert')).toHaveTextContent(
+      /couldn't load interrupted workers/i
+    );
+    expect(await within(scheduler).findByRole('alert')).toHaveTextContent(
+      /couldn't load scheduler admissions/i
+    );
+    expect.soft(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
+    expect.soft(within(workers).queryByText(INSPECT_WORKER.contextDigest as string)).toBeNull();
+    expect.soft(within(scheduler).queryByText(DENIED_ADMISSION.requestedAgentId)).toBeNull();
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Retry');
+    expectActionUnavailable(scheduler, 'Cancel');
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
+  it('keeps generic stale recovery observations inspectable while read retry blocks new effects', async () => {
+    const user = userEvent.setup();
+    const retryWorkers = createDeferred<{ items: unknown[] }>();
+    const retryAdmissions = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockRejectedValueOnce(new ApiCallError(500, 'private read failure'))
+      .mockReturnValue(retryWorkers.promise);
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockRejectedValueOnce(new ApiCallError(500, 'private read failure'))
+      .mockReturnValue(retryAdmissions.promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers, exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
+    });
+    const workerAlert = await within(workers).findByRole('alert');
+    const schedulerAlert = await within(scheduler).findByRole('alert');
+    expect(within(workers).getByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeInTheDocument();
+    expect(within(scheduler).getByText(DENIED_ADMISSION.requestedAgentId)).toBeInTheDocument();
+    await toggleInspect(user, rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    expectInspectExpanded(rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Retry');
+    expectActionUnavailable(scheduler, 'Cancel');
+    await user.click(within(workerAlert).getByRole('button', { name: 'Try again' }));
+    await user.click(within(schedulerAlert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => {
+      expect(workersRead).toHaveBeenCalledTimes(3);
+      expect(admissionsRead).toHaveBeenCalledTimes(3);
+    });
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Retry');
+    expectActionUnavailable(scheduler, 'Cancel');
+    await act(async () => {
+      retryWorkers.resolve({ items: ALL_WORKERS });
+      retryAdmissions.resolve({ items: [DENIED_ADMISSION] });
+      await Promise.all([retryWorkers.promise, retryAdmissions.promise]);
+    });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    expect(within(scheduler).getByRole('button', { name: 'Retry' })).toBeEnabled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
+  it('preserves an unknown worker command identity through denied-read inspection and authorized retry', async () => {
+    const user = userEvent.setup();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockRejectedValueOnce(new ApiCallError(403, 'private denied read'))
+      .mockResolvedValue({ items: ALL_WORKERS });
+    const release = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockReturnValue(createDeferred<unknown>().promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'recovery.checkpoint-retry': release,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+    await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+    await user.click(workerActionButton(workers));
+    expect(await within(workers).findByRole('alert')).toHaveTextContent(
+      /couldn't release the checkpoint/i
+    );
+    const originalCommand = release.mock.calls[0]?.[0];
+    expect(originalCommand).toEqual({
+      workspaceId: WORKSPACE.id,
+      threadId: INTERRUPTED_WORKER.threadId,
+      turnId: INTERRUPTED_WORKER.turnId,
+      requestId: expect.any(String),
+    });
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: operationsKeys.workers, exact: true });
+    });
+    const deniedAlert = await within(workers).findByRole('alert');
+    expect(deniedAlert).toHaveTextContent(/couldn't load interrupted workers/i);
+    await user.click(within(deniedAlert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(3));
+    const unknownAlert = await within(workers).findByRole('alert');
+    expect(unknownAlert).toHaveTextContent(/couldn't release the checkpoint/i);
+    expectWorkerActionUnavailable(workers);
+    expect(release).toHaveBeenCalledTimes(1);
+    await user.click(within(unknownAlert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(release.mock.calls).toEqual([[originalCommand], [originalCommand]]));
+  });
+
+  it('keeps generic stale recovery observations unavailable after denial and remount', async () => {
+    const user = userEvent.setup();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockRejectedValueOnce(new ApiCallError(403, 'private denied read'))
+      .mockRejectedValue(new ApiCallError(500, 'private read failure'));
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockRejectedValueOnce(new ApiCallError(403, 'private denied read'))
+      .mockRejectedValue(new ApiCallError(500, 'private read failure'));
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    await waitFor(() =>
+      expect(
+        workerActionButton(screen.getByRole('region', { name: 'Interrupted workers' }))
+      ).toBeEnabled()
+    );
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers, exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
+    });
+    await user.click(screen.getByRole('button', { name: 'Overview' }));
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await screen.findByRole('heading', { level: 1, name: 'Recovery' });
+    await waitFor(() => {
+      expect(workersRead).toHaveBeenCalledTimes(3);
+      expect(admissionsRead).toHaveBeenCalledTimes(3);
+    });
+    const workers = screen.getByRole('region', { name: 'Interrupted workers' });
+    const scheduler = screen.getByRole('region', { name: 'Scheduler admissions' });
+    expect(await within(workers).findByRole('alert')).toHaveTextContent(
+      /couldn't load interrupted workers/i
+    );
+    expect(await within(scheduler).findByRole('alert')).toHaveTextContent(
+      /couldn't load scheduler admissions/i
+    );
+    expect.soft(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
+    expect.soft(within(scheduler).queryByText(DENIED_ADMISSION.requestedAgentId)).toBeNull();
+    expect(within(workers).queryByText('No interrupted workers')).toBeNull();
+    expect(within(scheduler).queryByText('No scheduler admissions')).toBeNull();
+    expectWorkerActionUnavailable(workers);
+    expectActionUnavailable(scheduler, 'Cancel');
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
+  it('starts current recovery reads on a fresh-cache remount before enabling actions', async () => {
+    const user = userEvent.setup();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValue(createDeferred<{ items: unknown[] }>().promise);
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockReturnValue(createDeferred<{ items: unknown[] }>().promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    await waitFor(() =>
+      expect(
+        workerActionButton(screen.getByRole('region', { name: 'Interrupted workers' }))
+      ).toBeEnabled()
+    );
+    await user.click(screen.getByRole('button', { name: 'Overview' }));
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await screen.findByRole('heading', { level: 1, name: 'Recovery' });
+    await waitFor(() => {
+      expect(workersRead).toHaveBeenCalledTimes(2);
+      expect(admissionsRead).toHaveBeenCalledTimes(2);
+    });
+    expectWorkerActionUnavailable(screen.getByRole('region', { name: 'Interrupted workers' }));
+    expectActionUnavailable(screen.getByRole('region', { name: 'Scheduler admissions' }), 'Cancel');
+  });
+
+  it('does not use departed pending recovery reads to authorize a later mount', async () => {
+    const user = userEvent.setup();
+    const departedWorkers = createDeferred<{ items: unknown[] }>();
+    const departedAdmissions = createDeferred<{ items: unknown[] }>();
+    const currentWorkers = createDeferred<{ items: unknown[] }>();
+    const currentAdmissions = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockReturnValueOnce(departedWorkers.promise)
+      .mockReturnValue(currentWorkers.promise);
+    const admissionsRead = vi
+      .fn()
+      .mockReturnValueOnce(departedAdmissions.promise)
+      .mockReturnValue(currentAdmissions.promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/recovery', client, undefined, queryClient);
+    await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Overview' }));
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await screen.findByRole('heading', { level: 1, name: 'Recovery' });
+    await act(async () => {
+      departedWorkers.resolve({ items: ALL_WORKERS });
+      departedAdmissions.resolve({ items: [DENIED_ADMISSION] });
+      await Promise.all([departedWorkers.promise, departedAdmissions.promise]);
+    });
+    await waitFor(() => {
+      expect(workersRead).toHaveBeenCalledTimes(2);
+      expect(admissionsRead).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
+    expect(screen.queryByText(DENIED_ADMISSION.requestedAgentId)).toBeNull();
+    await act(async () => {
+      currentWorkers.resolve({ items: ALL_WORKERS });
+      currentAdmissions.resolve({ items: [DENIED_ADMISSION] });
+      await Promise.all([currentWorkers.promise, currentAdmissions.promise]);
+    });
+    await waitFor(() =>
+      expect(
+        workerActionButton(screen.getByRole('region', { name: 'Interrupted workers' }))
+      ).toBeEnabled()
+    );
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+  });
+
   it('groups interrupted-worker and scheduler recovery on a published workflow', async () => {
     const user = userEvent.setup();
     let pathname = '';

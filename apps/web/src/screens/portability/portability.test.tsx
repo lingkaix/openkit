@@ -499,8 +499,12 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
-function renderApp(path: string, client: CoreClient) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** Renders production routes with a caller-selected query freshness policy. */
+function renderApp(
+  path: string,
+  client: CoreClient,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
@@ -1820,6 +1824,149 @@ describe('Portability', () => {
     expect(main).not.toHaveTextContent(/select or create a workspace to export, import/i);
     expect(vaultQueryKeys(queryClient)).toEqual([]);
     await proveUserScopedImport(user, client, queryClient);
+  });
+
+  it.each([
+    401, 403,
+  ])('hides cached Vault references and rebind after a %s current read', async (status) => {
+    const referencesRead = vi
+      .fn()
+      .mockResolvedValueOnce(VAULT_LIST)
+      .mockRejectedValue(privateFailure(status, 'workspace_access_denied'));
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const { queryClient } = renderApp('/settings/portability', client);
+    expect(
+      await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId)
+    ).toBeEnabled();
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: settingsKeys.vault(WORKSPACE.id), exact: true });
+    });
+    const vault = screen.getByRole('region', { name: 'Vault references' });
+    expect(await within(vault).findByRole('alert')).toHaveTextContent(
+      /couldn't load vault references/i
+    );
+    expect
+      .soft(within(vault).queryByText(UNBOUND_REFERENCE.referenceId, { exact: true }))
+      .toBeNull();
+    expect.soft(within(vault).queryByRole('button', { name: /rebind/i })).toBeNull();
+    expect(within(vault).queryByLabelText('Vault material')).toBeNull();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
+  });
+
+  it('blocks an open rebind confirmation while the current Vault read is pending or denied', async () => {
+    const user = userEvent.setup();
+    const reread = createDeferred<typeof VAULT_LIST>();
+    const referencesRead = vi
+      .fn()
+      .mockResolvedValueOnce(VAULT_LIST)
+      .mockReturnValueOnce(reread.promise)
+      .mockResolvedValue(VAULT_LIST);
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const { queryClient } = renderApp('/settings/portability', client);
+    await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true });
+    await user.type(vaultMaterialInput(), VAULT_MATERIAL);
+    await user.click(rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId));
+    const dialog = await screen.findByRole('dialog', { name: /confirm rebind/i });
+    const confirm = within(dialog).getByRole('button', { name: 'Confirm' });
+    expect(confirm).toBeEnabled();
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = queryClient.refetchQueries({
+        queryKey: settingsKeys.vault(WORKSPACE.id),
+        exact: true,
+      });
+    });
+    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(2));
+    expect.soft(confirm).toBeDisabled();
+    await user.click(confirm);
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    await act(async () => {
+      reread.reject(privateFailure(403, 'workspace_access_denied'));
+      await refresh;
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn't load vault references/i);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText(UNBOUND_REFERENCE.referenceId, { exact: true })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true });
+    expect(vaultMaterialInput()).toHaveValue('');
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    assertNoLeakedInternals(queryClient);
+  });
+
+  it('hides cached Vault references after denial followed by a failed remount read', async () => {
+    const user = userEvent.setup();
+    const referencesRead = vi
+      .fn()
+      .mockResolvedValueOnce(VAULT_LIST)
+      .mockRejectedValueOnce(privateFailure(403, 'workspace_access_denied'))
+      .mockRejectedValue(privateFailure(500, 'unavailable'));
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/settings/portability', client, queryClient);
+    await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true });
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: settingsKeys.vault(WORKSPACE.id), exact: true });
+    });
+    await user.click(screen.getByRole('button', { name: 'Appearance' }));
+    await screen.findByRole('heading', { level: 1, name: 'Appearance' });
+    await user.click(screen.getByRole('button', { name: 'Portability' }));
+    await screen.findByRole('heading', { level: 1, name: 'Portability' });
+    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(3));
+    const vault = screen.getByRole('region', { name: 'Vault references' });
+    expect(await within(vault).findByRole('alert')).toHaveTextContent(
+      /couldn't load vault references/i
+    );
+    expect
+      .soft(within(vault).queryByText(UNBOUND_REFERENCE.referenceId, { exact: true }))
+      .toBeNull();
+    expect(within(vault).queryByRole('button', { name: /rebind/i })).toBeNull();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+  });
+
+  it('does not expose a departed pending Vault read in a later Portability mount', async () => {
+    const user = userEvent.setup();
+    const departedRead = createDeferred<typeof VAULT_LIST>();
+    const currentRead = createDeferred<typeof VAULT_LIST>();
+    const referencesRead = vi
+      .fn()
+      .mockReturnValueOnce(departedRead.promise)
+      .mockReturnValue(currentRead.promise);
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/settings/portability', client, queryClient);
+    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Appearance' }));
+    await screen.findByRole('heading', { level: 1, name: 'Appearance' });
+    await user.click(screen.getByRole('button', { name: 'Portability' }));
+    await screen.findByRole('heading', { level: 1, name: 'Portability' });
+    await act(async () => {
+      departedRead.resolve(VAULT_LIST);
+      await departedRead.promise;
+    });
+    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(UNBOUND_REFERENCE.referenceId, { exact: true })).toBeNull();
+    expect(screen.queryByRole('button', { name: /rebind/i })).toBeNull();
+    await act(async () => {
+      currentRead.resolve(VAULT_LIST);
+      await currentRead.promise;
+    });
+    expect(
+      await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId)
+    ).toBeEnabled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
   });
 
   it('keeps existing Portability UI plus stale or error indication when a background Workspace refetch fails', async () => {
