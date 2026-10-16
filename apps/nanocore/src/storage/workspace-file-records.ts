@@ -2182,13 +2182,15 @@ function parseCanonicalThreadRecord(
   }
   if ('visibility' in raw || 'privateOwnerUserId' in raw)
     throw new Error('Thread visibility requires its required feature.');
-  const predecessor = ThreadSchema.parse({
-    ...raw,
-    entryPath: enveloped ? raw.entryPath : 'conversation',
-    visibility: 'private',
-    privateOwnerUserId: 'cutover-validation-only',
-  });
-  const { visibility: _visibility, privateOwnerUserId: _owner, ...oldPayload } = predecessor;
+  // Predecessors have no audience authority. Validate their shared fields before
+  // checking their digest; full Thread refinements apply after classification.
+  const oldPayload = z
+    .object(ThreadSchema.shape)
+    .omit({ visibility: true, privateOwnerUserId: true })
+    .parse({
+      ...raw,
+      entryPath: enveloped ? raw.entryPath : 'conversation',
+    });
   if (
     envelope &&
     envelope.contentDigest !==
