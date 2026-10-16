@@ -5,16 +5,46 @@ const selections = {
   profileId: z.string().min(1).optional(),
   modelId: z.string().min(1).optional(),
 };
+/** Complete bounded Gregorian monthly rule; all nominal instants use literal UTC and zero milliseconds. */
+export const MonthlyUtcScheduleSchema = z.object({
+  zone: z.literal('UTC'),
+  dayOfMonth: z.number().int().min(1).max(28),
+  hour: z.number().int().min(0).max(23),
+  minute: z.number().int().min(0).max(59),
+  second: z.number().int().min(0).max(59),
+});
+/** Authored monthly timing, independent of elapsed duration or local time. */
+export type MonthlyUtcSchedule = z.infer<typeof MonthlyUtcScheduleSchema>;
+
+const timing = {
+  intervalSeconds: z.number().int().min(5).optional(),
+  monthlyUtc: MonthlyUtcScheduleSchema.optional(),
+};
+function requireOneTiming(
+  value: z.infer<z.ZodObject<typeof timing>>,
+  context: z.RefinementCtx
+): void {
+  if ((value.intervalSeconds === undefined) === (value.monthlyUtc === undefined))
+    context.addIssue({
+      code: 'custom',
+      message: 'Exactly one intervalSeconds or monthlyUtc timing rule is required.',
+    });
+}
+/** The two admitted timing shapes preserve fixed-interval retained data without an artificial monthly interval. */
+export const AutomationCadenceSchema = z.object(timing).superRefine(requireOneTiming);
+/** Validated fixed-interval or monthly UTC cadence fields. */
+export type AutomationCadence = z.infer<typeof AutomationCadenceSchema>;
+
 const editable = {
   name: z.string().min(1),
   threadId: z.string().min(1),
-  intervalSeconds: z.number().int().min(5),
+  ...timing,
   prompt: z.string().min(1),
   ...selections,
 };
 
-/** Durable fixed-interval schedule projection; the creator binding is immutable. */
-export const AutomationRecordSchema = z.object({
+/** Shared retained fields before complete-cadence validation. */
+const AutomationRecordFieldsSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   ...editable,
@@ -33,30 +63,45 @@ export const AutomationRecordSchema = z.object({
   deletedAt: z.iso.datetime().nullable(),
 });
 
+/** Durable schedule projection; the creator binding and one complete cadence are immutable history inputs. */
+export const AutomationRecordSchema = AutomationRecordFieldsSchema.superRefine(requireOneTiming);
+
 /** Workspace-authorized schedule collection. */
 export const ListAutomationsResponseSchema = z.object({ items: z.array(AutomationRecordSchema) });
 
 /** A new schedule is always paused and targets an existing Thread. */
-export const CreateAutomationRequestSchema = z.object({
-  workspaceId: z.string().min(1),
-  ...editable,
-});
+export const CreateAutomationRequestSchema = z
+  .object({
+    workspaceId: z.string().min(1),
+    ...editable,
+    monthlyUtc: MonthlyUtcScheduleSchema.strict().optional(),
+  })
+  .superRefine(requireOneTiming);
 
 /** Revision-checked edit or pause/resume; resume also requires an exact UTC instant. */
-export const UpdateAutomationRequestSchema = z.object({
-  expectedRevision: z.number().int().positive(),
-  status: z.enum(['paused', 'active']).optional(),
-  scheduledAt: z.iso.datetime().optional(),
-  name: editable.name.optional(),
-  threadId: editable.threadId.optional(),
-  intervalSeconds: editable.intervalSeconds.optional(),
-  prompt: editable.prompt.optional(),
-  agentId: selections.agentId.unwrap().nullable().optional(),
-  profileId: selections.profileId.unwrap().nullable().optional(),
-  modelId: selections.modelId.unwrap().nullable().optional(),
-});
+export const UpdateAutomationRequestSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    status: z.enum(['paused', 'active']).optional(),
+    scheduledAt: z.iso.datetime().optional(),
+    name: editable.name.optional(),
+    threadId: editable.threadId.optional(),
+    intervalSeconds: timing.intervalSeconds,
+    monthlyUtc: MonthlyUtcScheduleSchema.strict().optional(),
+    prompt: editable.prompt.optional(),
+    agentId: selections.agentId.unwrap().nullable().optional(),
+    profileId: selections.profileId.unwrap().nullable().optional(),
+    modelId: selections.modelId.unwrap().nullable().optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.intervalSeconds !== undefined && value.monthlyUtc !== undefined)
+      context.addIssue({
+        code: 'custom',
+        message: 'A timing edit must supply only one complete cadence.',
+      });
+  });
 
-/** Fixed-interval schedule returned by NanoCore. */
+/** Fixed-interval or monthly UTC schedule returned by NanoCore. */
 export type AutomationRecord = z.infer<typeof AutomationRecordSchema>;
 /** Workspace-authorized collection response. */
 export type ListAutomationsResponse = z.infer<typeof ListAutomationsResponseSchema>;
@@ -66,13 +111,14 @@ export type CreateAutomationRequest = z.infer<typeof CreateAutomationRequestSche
 export type UpdateAutomationRequest = z.infer<typeof UpdateAutomationRequestSchema>;
 
 /** Immutable authored request retained by occurrences and expired ranges. */
-export const AutomationDefinitionSnapshotSchema = AutomationRecordSchema.pick({
+export const AutomationDefinitionSnapshotSchema = AutomationRecordFieldsSchema.pick({
   threadId: true,
   actor: true,
   prompt: true,
   agentId: true,
   profileId: true,
   modelId: true,
+  monthlyUtc: true,
 });
 /** Closed admission outcomes; dependency exception text never becomes public history. */
 export const AutomationAttemptCodeSchema = z.enum([
@@ -132,20 +178,22 @@ export const AutomationOccurrenceSchema = z.object({
   publicationIssue: z.enum(['turn_missing', 'turn_contradictory']).nullable(),
 });
 /** Exact missed nominal coverage; reads return a range without expanding its occurrences. */
-export const AutomationExpiredRangeSchema = z.object({
-  id: z.string().min(1),
-  scheduleId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  definitionRevision: z.number().int().positive(),
-  intervalSeconds: z.number().int().min(5),
-  firstScheduledAt: z.iso.datetime(),
-  lastScheduledAt: z.iso.datetime(),
-  count: z.number().int().positive(),
-  snapshot: AutomationDefinitionSnapshotSchema,
-  reason: z.literal('deadline_elapsed'),
-  createdAt: z.iso.datetime(),
-  terminalAt: z.iso.datetime(),
-});
+export const AutomationExpiredRangeSchema = z
+  .object({
+    id: z.string().min(1),
+    scheduleId: z.string().min(1),
+    workspaceId: z.string().min(1),
+    definitionRevision: z.number().int().positive(),
+    ...timing,
+    firstScheduledAt: z.iso.datetime(),
+    lastScheduledAt: z.iso.datetime(),
+    count: z.number().int().positive(),
+    snapshot: AutomationDefinitionSnapshotSchema,
+    reason: z.literal('deadline_elapsed'),
+    createdAt: z.iso.datetime(),
+    terminalAt: z.iso.datetime(),
+  })
+  .superRefine(requireOneTiming);
 /** Bounded newest-first history cursor uses the last returned nominal instant. */
 export const AutomationHistoryRequestSchema = z.object({
   automationId: z.string().min(1),

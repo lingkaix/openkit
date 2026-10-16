@@ -67,7 +67,9 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     successStatus: 200,
     ...child,
     description: 'Update one automation definition.',
-    inputSchema: UpdateAutomationRequestSchema.extend({ automationId: z.string().min(1) }).strict(),
+    inputSchema: UpdateAutomationRequestSchema.safeExtend({
+      automationId: z.string().min(1),
+    }).strict(),
     outputSchema: AutomationRecordSchema,
   },
   'automation.delete': {
