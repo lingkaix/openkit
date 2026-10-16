@@ -1,19 +1,24 @@
 import { createHash } from 'node:crypto';
 import { type BigIntStats, constants } from 'node:fs';
 import { type FileHandle, lstat, open } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   ArtifactReferenceSchema,
   ArtifactSchema,
   MAX_ARTIFACT_FILE_BYTES,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   artifactFilePayloadPath,
   MAX_ARTIFACT_MATERIAL_TEXT_BYTES,
 } from '../storage/artifacts/file-records.js';
-import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
+import {
+  assertCanonicalDirectory,
+  ensureCanonicalDirectoryAsync,
+} from '../storage/workspace-file-records.js';
 import { type BoundedByteSource, openBoundedSourceView } from './bounded-source-view.js';
+import { type PdfTextLayerDerivative, processPdfTextLayer } from './pdf-text-layer.js';
 import type {
   WorkerContextPackageProjection,
   WorkerContextPackageSourceFileInput,
@@ -31,6 +36,8 @@ export async function prepareArtifactSourceInputs(input: {
   /** Must compare the captured version and metadata with the current owner and recheck source visibility and receiving audience. */
   readonly assertCurrent: (artifact: Readonly<Artifact>) => void;
   readonly signal?: AbortSignal;
+  /** Existing App-owned reserve used by isolated PDF staging as well as snapshot publication. */
+  readonly admission?: FileStorageAdmission;
 }): Promise<WorkerContextPackageSourceFileInput[]> {
   const workspaceRoot = input.workspaceRoot;
   const signal = input.signal ?? new AbortController().signal;
@@ -133,6 +140,50 @@ export async function prepareArtifactSourceInputs(input: {
       return bytes.subarray(0, count.bytesRead);
     };
     const inline = artifact.content.format === 'file' ? undefined : artifact.content.body;
+    const openOriginal = async function* (currentSignal: AbortSignal) {
+      check(currentSignal);
+      if (inline !== undefined) {
+        let offset = 0;
+        while (offset < inline.length) {
+          check(currentSignal);
+          let end = Math.min(offset + 16_384, inline.length);
+          if (
+            end < inline.length &&
+            inline.charCodeAt(end - 1) >= 0xd800 &&
+            inline.charCodeAt(end - 1) <= 0xdbff &&
+            inline.charCodeAt(end) >= 0xdc00 &&
+            inline.charCodeAt(end) <= 0xdfff
+          )
+            end -= 1;
+          const bytes = Buffer.from(inline.slice(offset, end), 'utf8');
+          offset = end;
+          yield bytes;
+        }
+        check(currentSignal);
+        return;
+      }
+      const current = await acquire(currentSignal);
+      try {
+        let offset = 0;
+        while (offset < byteLength) {
+          const bytes = await read(
+            current,
+            offset,
+            Math.min(CHUNK_BYTES, byteLength - offset),
+            currentSignal
+          );
+          if (!bytes.byteLength)
+            throw new Error('Artifact original ended before its admitted size.');
+          offset += bytes.byteLength;
+          check(currentSignal);
+          yield bytes;
+        }
+        await assertPinned(current, currentSignal);
+        check(currentSignal);
+      } finally {
+        await current.close();
+      }
+    };
     // Inline processing is already bounded by its existing text owner. Larger retained strings still stream exactly as originals.
     let inlineBytes =
       inline !== undefined && byteLength <= MAX_ARTIFACT_MATERIAL_TEXT_BYTES
@@ -143,6 +194,8 @@ export async function prepareArtifactSourceInputs(input: {
     const handle = artifact.content.format === 'file' ? await acquire(signal) : undefined;
     let deliveredBytes: Uint8Array;
     let projection: WorkerContextPackageProjection;
+    let representationBytes: Buffer | undefined;
+    let pdfEvidence: Pick<PdfTextLayerDerivative, 'processor' | 'pages' | 'coverage'> | undefined;
     try {
       check();
       const identity = {
@@ -152,14 +205,42 @@ export async function prepareArtifactSourceInputs(input: {
         representationId: 'original-utf8',
         representationDigest: artifact.contentDigest,
       };
+      const pdf =
+        mediaType === 'application/pdf'
+          ? await preparePdfView({
+              workspaceRoot,
+              admission: input.admission,
+              source: { ...identity, byteLength, open: openOriginal },
+              signal,
+              assertCurrent: check,
+            })
+          : undefined;
+      if (pdf && pdf.status !== 'unavailable') {
+        representationBytes = Buffer.from(pdf.derivative.text, 'utf8');
+        pdfEvidence = {
+          processor: pdf.derivative.processor,
+          pages: pdf.derivative.pages,
+          coverage: pdf.derivative.coverage,
+        };
+      }
+      check();
+      const representationDigest =
+        pdf && pdf.status !== 'unavailable'
+          ? pdf.derivative.representationDigest
+          : artifact.contentDigest;
+      const representationId =
+        pdf && pdf.status !== 'unavailable' ? pdf.derivative.representationId : 'original-utf8';
+      const representationByteLength = representationBytes?.byteLength ?? byteLength;
       const source: BoundedByteSource = {
-        identity,
-        byteLength,
+        identity: { ...identity, representationDigest, representationId },
+        byteLength: representationByteLength,
         read: async (offset, maximum, currentSignal) => {
           check(currentSignal);
-          const bytes = handle
-            ? await read(handle, offset, maximum, currentSignal)
-            : inlineBytes!.subarray(offset, offset + Math.min(maximum, CHUNK_BYTES));
+          const bytes = representationBytes
+            ? representationBytes.subarray(offset, offset + Math.min(maximum, CHUNK_BYTES))
+            : handle
+              ? await read(handle, offset, maximum, currentSignal)
+              : inlineBytes!.subarray(offset, offset + Math.min(maximum, CHUNK_BYTES));
           check(currentSignal);
           return bytes;
         },
@@ -169,19 +250,22 @@ export async function prepareArtifactSourceInputs(input: {
           check(currentSignal);
         },
       };
-      const view = !TEXT_MEDIA.has(mediaType)
-        ? { status: 'unavailable' as const, reason: 'unsupported' as const }
-        : inline !== undefined && !inlineBytes
-          ? { status: 'unavailable' as const, reason: 'resource_limited' as const }
-          : await openBoundedSourceView(
-              source,
-              {
-                maxRepresentationBytes: MAX_ARTIFACT_FILE_BYTES,
-                timeoutMs: 30_000,
-                maxEnvelopeBytes: 65_536,
-              },
-              signal
-            );
+      const view =
+        pdf?.status === 'unavailable'
+          ? pdf
+          : !TEXT_MEDIA.has(mediaType) && !representationBytes
+            ? { status: 'unavailable' as const, reason: 'unsupported' as const }
+            : inline !== undefined && !inlineBytes
+              ? { status: 'unavailable' as const, reason: 'resource_limited' as const }
+              : await openBoundedSourceView(
+                  source,
+                  {
+                    maxRepresentationBytes: MAX_ARTIFACT_FILE_BYTES,
+                    timeoutMs: 30_000,
+                    maxEnvelopeBytes: 65_536,
+                  },
+                  signal
+                );
       check();
       const page = view.status === 'ready' ? await view.preview(signal) : view;
       check();
@@ -190,18 +274,27 @@ export async function prepareArtifactSourceInputs(input: {
         projection = {
           kind: page.truncated ? 'excerpt' : 'body',
           sourceRevision: String(artifact.version),
-          representationId: 'original-utf8',
-          representationDigest: artifact.contentDigest,
-          representationByteLength: byteLength,
+          representationId,
+          representationDigest,
+          representationByteLength,
           deliveredDigest: sha256(deliveredBytes),
           ranges: [{ start: page.range.start, end: page.range.end }],
           byteLength: deliveredBytes.byteLength,
           truncated: page.truncated,
-          availability: page.truncated ? 'incomplete' : 'available',
+          availability:
+            page.truncated || pdfEvidence?.coverage.complete === false ? 'incomplete' : 'available',
           originalSnapshotPath,
+          ...(pdfEvidence
+            ? {
+                representationSnapshotPath: `representations/artifacts/${artifact.id}/${artifact.version}/pdf-text-layer.txt`,
+                pdfTextLayer: pdfEvidence,
+              }
+            : {}),
         };
       } else {
-        if (!['unsupported', 'invalid_utf8', 'resource_limited'].includes(page.reason))
+        representationBytes = undefined;
+        pdfEvidence = undefined;
+        if (!pdf && !['unsupported', 'invalid_utf8', 'resource_limited'].includes(page.reason))
           throw new Error('Artifact text representation is unavailable.');
         deliveredBytes = Buffer.from(
           JSON.stringify({ status: 'unavailable', reason: page.reason }),
@@ -210,7 +303,7 @@ export async function prepareArtifactSourceInputs(input: {
         projection = {
           kind: 'descriptor',
           sourceRevision: String(artifact.version),
-          representationId: 'unavailable-original-view-v1',
+          representationId: pdf ? 'unavailable-pdf-text-layer-v1' : 'unavailable-original-view-v1',
           representationDigest: artifact.contentDigest,
           representationByteLength: byteLength,
           deliveredDigest: sha256(deliveredBytes),
@@ -238,6 +331,21 @@ export async function prepareArtifactSourceInputs(input: {
       packagePath,
       projection,
       deliveredBytes,
+      ...(representationBytes
+        ? {
+            openRepresentation: async function* (currentSignal: AbortSignal) {
+              for (
+                let offset = 0;
+                offset < representationBytes!.byteLength;
+                offset += CHUNK_BYTES
+              ) {
+                check(currentSignal);
+                yield Buffer.from(representationBytes!.subarray(offset, offset + CHUNK_BYTES));
+              }
+              check(currentSignal);
+            },
+          }
+        : {}),
       assertUnchanged: async (currentSignal = signal) => {
         check(currentSignal);
         if (artifact.content.format === 'file') {
@@ -250,53 +358,69 @@ export async function prepareArtifactSourceInputs(input: {
         }
         check(currentSignal);
       },
-      open: async function* (currentSignal) {
-        check(currentSignal);
-        if (inline !== undefined) {
-          let offset = 0;
-          while (offset < inline.length) {
-            check(currentSignal);
-            let end = Math.min(offset + 16_384, inline.length);
-            if (
-              end < inline.length &&
-              inline.charCodeAt(end - 1) >= 0xd800 &&
-              inline.charCodeAt(end - 1) <= 0xdbff &&
-              inline.charCodeAt(end) >= 0xdc00 &&
-              inline.charCodeAt(end) <= 0xdfff
-            )
-              end -= 1;
-            const bytes = Buffer.from(inline.slice(offset, end), 'utf8');
-            offset = end;
-            yield bytes;
-          }
-          check(currentSignal);
-          return;
-        }
-        const current = await acquire(currentSignal);
-        try {
-          let offset = 0;
-          while (offset < byteLength) {
-            const bytes = await read(
-              current,
-              offset,
-              Math.min(CHUNK_BYTES, byteLength - offset),
-              currentSignal
-            );
-            if (!bytes.byteLength)
-              throw new Error('Artifact original ended before its admitted size.');
-            offset += bytes.byteLength;
-            check(currentSignal);
-            yield bytes;
-          }
-          await assertPinned(current, currentSignal);
-          check(currentSignal);
-        } finally {
-          await current.close();
-        }
-      },
+      open: openOriginal,
     });
   }
   return result;
+}
+
+/** Uses the existing private staging parent and shared App reserve; failures leave the original selected with a bounded unavailable view. */
+async function preparePdfView(input: {
+  workspaceRoot: string;
+  admission: FileStorageAdmission | undefined;
+  source: {
+    sourceKey: string;
+    revision: string;
+    originalDigest: string;
+    byteLength: number;
+    open(signal: AbortSignal): AsyncIterable<Uint8Array>;
+  };
+  signal: AbortSignal;
+  assertCurrent: () => void;
+}) {
+  if (!input.admission)
+    return { status: 'unavailable' as const, reason: 'dependency-unavailable' as const };
+  const admission = input.admission;
+  input.assertCurrent();
+  const temporaryRoot = join(dirname(input.workspaceRoot), '.staging');
+  try {
+    const directoryReservation = admission.reserve({
+      stagingBytes: 65_536n,
+      publicationBytes: 0n,
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+    });
+    try {
+      await ensureCanonicalDirectoryAsync(temporaryRoot);
+    } finally {
+      directoryReservation.release();
+    }
+  } catch {
+    input.assertCurrent();
+    return { status: 'unavailable' as const, reason: 'resource-limited' as const };
+  }
+  input.assertCurrent();
+  return processPdfTextLayer({
+    source: input.source,
+    temporaryRoot,
+    signal: input.signal,
+    reserveTemporaryBytes(bytes) {
+      const reservation = admission.reserve({
+        stagingBytes: BigInt(bytes) + 131_072n,
+        publicationBytes: 0n,
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+      });
+      return {
+        recordWritten(count) {
+          reservation.recordWritten(Number(count));
+        },
+        release() {
+          reservation.release();
+        },
+      };
+    },
+  });
 }
 
 /** Uses the same five canonical parent levels as the existing Artifact payload owner. */

@@ -492,3 +492,108 @@ it('keeps unavailable descriptor bytes fixed even when opaque identifiers requir
   expect(source!.deliveredBytes.byteLength).toBeLessThan(128);
   expect(source!.originalDigest).toBe(sha256(f.body));
 });
+
+/** Produces one small valid two-page PDF with exact xref offsets and a real text layer. */
+function selectedPdf(): Buffer {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Count 2 /Kids [4 0 R 6 0 R] >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  for (let page = 1; page <= 2; page++) {
+    const stream = `BT /F1 12 Tf 72 720 Td ${Array.from({ length: 40 }, (_, line) => `(${page}:${line} PDF retained text layer marker) Tj 0 -12 Td`).join(' ')} ET\n`;
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${objects.length + 2} 0 R >>`
+    );
+    objects.push(`<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`);
+  }
+  let text = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(text));
+    text += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(text);
+  text += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`)
+    .join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(text);
+}
+
+it('retains a selected PDF original and complete isolated text representation while delivering only its bounded preview', async () => {
+  const original = selectedPdf();
+  const f = await fixture(original, 'file', 'application/pdf');
+  const [source] = await prepareArtifactSourceInputs({ ...f.input, admission: f.admission });
+  expect(source!.projection.kind).toBe('excerpt');
+  expect(source!.projection.representationId).toMatch(/^pdf-text-layer-v1:sha256:/);
+  expect(source!.projection.representationSnapshotPath).toBe(
+    'representations/artifacts/ar_selected/1/pdf-text-layer.txt'
+  );
+  const files = packageFor(f, [source!]);
+  await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
+  const root = join(f.workspaceRoot, 'threads/th_source/turns/tu_source/context-package');
+  expect(readFileSync(join(root, source!.originalSnapshotPath))).toEqual(original);
+  const complete = readFileSync(join(root, source!.projection.representationSnapshotPath!));
+  const expected = [1, 2]
+    .map(
+      (page) =>
+        `# Page ${page}\n\n${Array.from({ length: 40 }, (_, line) => `${page}:${line} PDF retained text layer marker\n`).join('')}\n`
+    )
+    .join('');
+  expect(complete.toString('utf8')).toBe(expected);
+  expect(source!.projection.representationDigest).toBe(sha256(complete));
+  expect(source!.projection.representationDigest).not.toBe(source!.originalDigest);
+  expect(source!.projection.deliveredDigest).toBe(sha256(source!.deliveredBytes));
+  expect(source!.projection.deliveredDigest).not.toBe(source!.projection.representationDigest);
+  expect(source!.deliveredBytes.byteLength).toBeLessThanOrEqual(2048);
+  expect(
+    Buffer.from(source!.deliveredBytes).toString('utf8').split('\n').length - 1
+  ).toBeLessThanOrEqual(50);
+  const range = source!.projection.ranges[0]!;
+  expect(Buffer.from(source!.deliveredBytes)).toEqual(complete.subarray(range.start, range.end));
+  expect(source!.projection.pdfTextLayer).toMatchObject({
+    coverage: {
+      complete: true,
+      totalPages: 2,
+      processedPages: 2,
+      provesCompleteBodyAbsence: false,
+    },
+    pages: [
+      { page: 1, coordinateSpace: 'representation-utf8' },
+      { page: 2, coordinateSpace: 'representation-utf8' },
+    ],
+    processor: { id: 'poppler-pdf-text-layer-v1' },
+  });
+  expect(readFileSync(join(root, 'instructions.md'), 'utf8')).toBe('Inspect selected originals');
+  expect(
+    files.fileInventory.find((file) => file.path === source!.projection.representationSnapshotPath)
+  ).toMatchObject({
+    contentDigest: sha256(complete),
+    byteLength: complete.byteLength,
+  });
+});
+
+it('retains a selected encrypted PDF original with only an unavailable descriptor and no representation handle', async () => {
+  const original = readFileSync(
+    new URL('./fixtures/pdf-text-layer/encrypted.pdf', import.meta.url)
+  );
+  const f = await fixture(original, 'file', 'application/pdf');
+  const [source] = await prepareArtifactSourceInputs({ ...f.input, admission: f.admission });
+  expect(source!.projection).toMatchObject({
+    kind: 'descriptor',
+    availability: 'unavailable',
+    ranges: [],
+  });
+  expect(JSON.parse(Buffer.from(source!.deliveredBytes).toString('utf8'))).toMatchObject({
+    status: 'unavailable',
+    reason: 'encrypted',
+  });
+  expect(source!.projection).not.toHaveProperty('representationSnapshotPath');
+  expect(source!).not.toHaveProperty('openRepresentation');
+  const files = packageFor(f, [source!]);
+  await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
+  const root = join(f.workspaceRoot, 'threads/th_source/turns/tu_source/context-package');
+  expect(readFileSync(join(root, source!.originalSnapshotPath))).toEqual(original);
+  expect(files.fileInventory.some((file) => file.path.startsWith('representations/'))).toBe(false);
+});

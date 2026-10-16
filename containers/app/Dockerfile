@@ -78,13 +78,16 @@ WORKDIR /app/nanocore
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
+    bubblewrap \
     caddy \
     ca-certificates \
     curl \
     git \
     libsqlite3-0 \
     openssh-client \
+    poppler-utils \
     tini \
+    util-linux \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable \

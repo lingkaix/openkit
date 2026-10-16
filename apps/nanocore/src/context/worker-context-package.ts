@@ -47,9 +47,11 @@ import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
   measureCanonicalFileDescriptor,
+  readCanonicalFile,
   readCanonicalTextFile,
   syncCanonicalDirectory,
 } from '../storage/workspace-file-records.js';
+import { PDF_TEXT_LAYER_LIMITS, PdfTextLayerEvidenceSchema } from './pdf-text-layer.js';
 
 /** Stable policy version for the first accepted worker Context Package trace. */
 export const WORKER_CONTEXT_PACKAGE_POLICY_VERSION = 'worker-context-v1' as const;
@@ -119,6 +121,8 @@ export const WorkerContextPackageProjectionSchema = z.object({
   truncated: z.boolean(),
   availability: z.enum(['available', 'incomplete', 'unavailable']),
   originalSnapshotPath: IdSchema.optional(),
+  representationSnapshotPath: IdSchema.optional(),
+  pdfTextLayer: PdfTextLayerEvidenceSchema.optional(),
   tokenAccounting: z
     .strictObject({
       identity: IdSchema.max(1024),
@@ -157,6 +161,8 @@ export type WorkerContextPackageSourceFile = z.infer<typeof SourceFileSchema>;
 export interface WorkerContextPackageSourceFileInput extends WorkerContextPackageSourceFile {
   /** Bounded worker-visible UTF-8 bytes. */
   readonly deliveredBytes: Uint8Array;
+  /** Reads the complete retained derived representation in at most 64 KiB chunks, when selected. */
+  readonly openRepresentation?: ((signal: AbortSignal) => AsyncIterable<Uint8Array>) | undefined;
   /** Reads the held immutable original in chunks no larger than 64 KiB. */
   readonly open: (signal: AbortSignal) => AsyncIterable<Uint8Array>;
   /** Proves that the pinned original has not changed. */
@@ -768,10 +774,18 @@ export function createWorkerContextPackageFiles(
         if (existing) throw new Error('Worker Context Package duplicate delivered source path.');
         ordinaryFiles.push({ path: metadata.packagePath, bytes });
       }
+      if (
+        Boolean(metadata.projection.representationSnapshotPath) !==
+        Boolean(entry.openRepresentation)
+      )
+        throw new Error('Worker Context Package representation supplier mismatch.');
       sourceFileInputs.push({
         ...metadata,
         deliveredBytes: bytes,
         open: entry.open.bind(entry),
+        ...(entry.openRepresentation
+          ? { openRepresentation: entry.openRepresentation.bind(entry) }
+          : {}),
         assertUnchanged: entry.assertUnchanged.bind(entry),
       });
       return metadata;
@@ -784,6 +798,11 @@ export function createWorkerContextPackageFiles(
     [
       ...ordinaryFiles.map((file) => file.path),
       ...sourceFiles.map((entry) => entry.originalSnapshotPath),
+      ...sourceFiles.flatMap((entry) =>
+        entry.projection.representationSnapshotPath
+          ? [entry.projection.representationSnapshotPath]
+          : []
+      ),
     ],
     'package path'
   );
@@ -795,6 +814,17 @@ export function createWorkerContextPackageFiles(
       byteLength: entry.byteLength,
       contentDigest: entry.originalDigest,
     })),
+    ...sourceFiles.flatMap((entry) =>
+      entry.projection.representationSnapshotPath
+        ? [
+            {
+              path: entry.projection.representationSnapshotPath,
+              byteLength: entry.projection.representationByteLength,
+              contentDigest: entry.projection.representationDigest,
+            },
+          ]
+        : []
+    ),
   ].sort((a, b) => a.path.localeCompare(b.path));
   const contextPackageId = `ctxpkg_${input.turnId}`;
   const manifest = {
@@ -906,8 +936,22 @@ export async function writeWorkerContextPackageFiles(
       return join(canonicalWorkspaceDirectory(root, parts.slice(0, -1), true), parts.at(-1)!);
     };
     // Originals are complete before the manifest can announce readiness. Exact replay never opens a source.
-    for (const source of packageFiles.sourceFileInputs ?? [])
+    for (const source of packageFiles.sourceFileInputs ?? []) {
       await writeOriginal(pathFor(source.originalSnapshotPath), source, options);
+      if (source.projection.representationSnapshotPath) {
+        await writeOriginal(
+          pathFor(source.projection.representationSnapshotPath),
+          {
+            ...source,
+            originalSnapshotPath: source.projection.representationSnapshotPath,
+            originalDigest: source.projection.representationDigest,
+            byteLength: source.projection.representationByteLength,
+            open: source.openRepresentation!,
+          },
+          options
+        );
+      }
+    }
     for (const file of [...packageFiles.files].sort(
       (a, b) => Number(a.path === 'package.json') - Number(b.path === 'package.json')
     )) {
@@ -1787,6 +1831,29 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
         readCanonicalPackageFile(packageRoot, entry.packagePath, entry.projection.byteLength)
       );
   }
+  for (const source of trace.sourceFiles ?? []) {
+    const projection = source.projection;
+    if (!projection.representationSnapshotPath) continue;
+    const representation = readCanonicalPackageFile(
+      packageRoot,
+      projection.representationSnapshotPath,
+      projection.representationByteLength
+    );
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(representation);
+    const delivered = readCanonicalPackageFile(
+      packageRoot,
+      source.packagePath,
+      projection.byteLength
+    );
+    if (
+      !Buffer.concat(
+        projection.ranges.map((range) => representation.subarray(range.start, range.end))
+      ).equals(delivered)
+    )
+      throw new Error(
+        'Worker Context Package preview differs from its retained representation ranges.'
+      );
+  }
   const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json', 16_777_216);
   const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
   const parsedManifest = WorkerContextPackageManifestSchema.safeParse(originalManifest);
@@ -2020,6 +2087,18 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
       throw new Error('Worker Context Package duplicate source path.');
     sourcePaths.add(source.originalSnapshotPath);
     sourcePaths.add(source.packagePath);
+    const representationPath = source.projection.representationSnapshotPath;
+    if (representationPath) {
+      if (sourcePaths.has(representationPath))
+        throw new Error('Worker Context Package duplicate representation path.');
+      sourcePaths.add(representationPath);
+      const representation = trace.fileInventory.find((entry) => entry.path === representationPath);
+      if (
+        representation?.contentDigest !== source.projection.representationDigest ||
+        representation.byteLength !== source.projection.representationByteLength
+      )
+        throw new Error('Worker Context Package representation inventory mismatch.');
+    }
     const original = trace.fileInventory.find(
       (entry) => entry.path === source.originalSnapshotPath
     );
@@ -2035,7 +2114,9 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   for (const entry of trace.fileInventory) {
     safeRelativePathSegments(entry.path);
     if (
-      (entry.path.startsWith('originals/') || entry.path.startsWith('sources/')) &&
+      (entry.path.startsWith('originals/') ||
+        entry.path.startsWith('sources/') ||
+        entry.path.startsWith('representations/')) &&
       !sourcePaths.has(entry.path)
     )
       throw new Error('Worker Context Package contains an unselected source file.');
@@ -2114,7 +2195,7 @@ function canonicalWorkspaceDirectory(
   return current;
 }
 
-/** Reads one package-relative UTF-8 file through canonical directory and no-link checks. */
+/** Reads exact package bytes through canonical directory and no-link checks, with an independent metadata ceiling. */
 function readCanonicalPackageFile(
   packageRoot: string,
   relativePath: string,
@@ -2124,7 +2205,7 @@ function readCanonicalPackageFile(
   const path = join(packageRoot, ...segments);
   if (maxByteLength !== undefined && lstatSync(path).size > maxByteLength)
     throw new Error('Worker Context Package metadata exceeds its byte bound.');
-  return Buffer.from(readCanonicalTextFile(path), 'utf8');
+  return readCanonicalFile(path);
 }
 
 /** Lists the exact regular-file inventory while rejecting links and unexpected directories. */
@@ -2209,6 +2290,52 @@ function assertProjection(value: WorkerContextPackageProjection, bytes?: Uint8Ar
     total += range.end - range.start;
   }
   if (projection.originalSnapshotPath) safeRelativePathSegments(projection.originalSnapshotPath);
+  if (projection.representationSnapshotPath) {
+    safeRelativePathSegments(projection.representationSnapshotPath);
+    if (
+      !projection.representationSnapshotPath.startsWith('representations/') ||
+      projection.kind === 'descriptor' ||
+      projection.representationByteLength > PDF_TEXT_LAYER_LIMITS.maxOutputBytes
+    )
+      throw new Error('Worker Context Package representation snapshot path is invalid.');
+  }
+  if (projection.pdfTextLayer) {
+    const { processor, pages, coverage } = projection.pdfTextLayer;
+    if (
+      !projection.representationSnapshotPath ||
+      projection.kind === 'descriptor' ||
+      projection.representationId !==
+        `pdf-text-layer-v1:${sha256(Buffer.from(JSON.stringify(processor)))}` ||
+      coverage.processedPages !== pages.length ||
+      coverage.processedPages > coverage.totalPages ||
+      pages.length > processor.configuration.maxPages ||
+      projection.representationByteLength > processor.configuration.maxOutputBytes ||
+      coverage.complete !==
+        (pages.length === coverage.totalPages && pages.every((page) => page.hasText)) ||
+      !isDeepStrictEqual(
+        coverage.pagesWithoutText,
+        pages.filter((page) => !page.hasText).map((page) => page.page)
+      ) ||
+      coverage.reason !==
+        (pages.length < coverage.totalPages
+          ? 'page-limit'
+          : coverage.pagesWithoutText.length
+            ? 'pages-without-text'
+            : 'all-text-layer-pages')
+    )
+      throw new Error('Worker Context Package PDF coverage or processor identity mismatch.');
+    let previousEnd = 0;
+    for (const [index, page] of pages.entries()) {
+      if (
+        page.page !== index + 1 ||
+        page.startByte < previousEnd ||
+        page.endByte < page.startByte ||
+        page.endByte > projection.representationByteLength
+      )
+        throw new Error('Worker Context Package PDF page locator mismatch.');
+      previousEnd = page.endByte;
+    }
+  }
   if (projection.kind === 'descriptor') {
     if (
       projection.ranges.length ||
@@ -2220,7 +2347,10 @@ function assertProjection(value: WorkerContextPackageProjection, bytes?: Uint8Ar
     if (
       total !== projection.byteLength ||
       projection.truncated !== (total !== projection.representationByteLength) ||
-      projection.availability !== (projection.truncated ? 'incomplete' : 'available')
+      projection.availability !==
+        (projection.truncated || projection.pdfTextLayer?.coverage.complete === false
+          ? 'incomplete'
+          : 'available')
     )
       throw new Error('Worker Context Package representation coverage mismatch.');
     if (projection.kind === 'body' && projection.truncated)
@@ -2320,6 +2450,11 @@ function assertSourceFile(
         : entry.source.reference.objectId;
   if (revision !== entry.projection.sourceRevision)
     throw new Error('Worker Context Package source revision mismatch.');
+  if (
+    entry.projection.pdfTextLayer &&
+    (entry.source.kind !== 'artifact' || entry.mediaType !== 'application/pdf')
+  )
+    throw new Error('Worker Context Package PDF source identity mismatch.');
   assertProjection(entry.projection);
 }
 
