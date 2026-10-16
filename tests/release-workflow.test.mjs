@@ -854,7 +854,7 @@ test('CI serializes NanoHost fixture startup without changing other test-harness
       else env.RUST_TEST_THREADS = inherited;
       const result = spawnSync(
         'sh',
-        ['-eu', '-c', setup + '\nprintf %s "${RUST_TEST_THREADS-unset}"'],
+        ['-eu', '-c', `${setup}\nprintf %s "\${RUST_TEST_THREADS-unset}"`],
         { env, encoding: 'utf8' }
       );
       assert.equal(result.status, 0, id);
