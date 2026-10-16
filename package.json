@@ -28,7 +28,7 @@
     "lint:staged": "bash scripts/test-env.sh any lint-staged",
     "hooks:install": "lefthook install",
     "commitmsg:check": "bash scripts/test-env.sh any bash scripts/check-commit-msg.sh",
-    "test:unit": "bash scripts/test-env.sh any node scripts/validate-test-governance.mjs --run -- bash -c 'turbo run test && pnpm --filter @openkit/core-client... build && esbuild skills/openkit-cli.mjs --bundle --platform=node --target=node24 --format=cjs --minify --outfile=skills/openkit-ops/scripts/openkit && git diff --exit-code -- skills/openkit-ops/scripts/openkit && node --test tests/*.test.mjs'",
+    "test:unit": "bash scripts/test-env.sh any node scripts/validate-test-governance.mjs --run -- bash -c 'turbo run test && pnpm --filter @openkit/core-client... build && esbuild skills/openkit-cli.mjs --bundle --platform=node --target=node24 --format=cjs --minify --outfile=skills/openkit-ops/scripts/openkit && git diff --exit-code -- skills/openkit-ops/scripts/openkit && node scripts/release-tests.mjs --root-node'",
     "test:ci": "bash scripts/test-env.sh any node scripts/release-tests.mjs",
     "test:coverage": "bash scripts/test-env.sh any pnpm -r --if-present test:coverage",
     "test:e2e:nano": "bash scripts/test-env.sh any bash -c 'turbo run build --filter=@openkit/nanocore && pnpm --filter @openkit/nanocore run test:e2e'",

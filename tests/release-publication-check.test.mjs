@@ -12,7 +12,7 @@ import {
 } from '../scripts/release-publication-check.mjs';
 
 /** Actual local Git objects let false, missing and changed byte claims fail independently of fixtures. */
-function repository() {
+function repository({ moved = false } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'release-publication-git-'));
   after(() => rmSync(root, { recursive: true, force: true }));
   const env = {
@@ -33,7 +33,20 @@ function repository() {
   writeFileSync(
     path.join(root, '.github/workflows/ci.yml'),
     'jobs:\n' +
-      ['publish-container-images', 'github-release', 'verify-release']
+      [
+        'publish-container-images',
+        'github-release',
+        'verify-release',
+        ...(moved
+          ? [
+              'candidate-plan',
+              'candidate-images',
+              'candidate-index',
+              'candidate-registry',
+              'container-image-matrix',
+            ]
+          : []),
+      ]
         .map((n) => `  ${n}:\n    steps:\n      - run: node scripts/release-notes.mjs\n`)
         .join('')
   );
@@ -42,6 +55,33 @@ function repository() {
     "import './publication-helper.mjs';\n"
   );
   writeFileSync(path.join(root, 'scripts/publication-helper.mjs'), 'export const fixture = 1;\n');
+  if (moved) {
+    mkdirSync(path.join(root, 'containers/fixture'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'containers/images.json'),
+      JSON.stringify({
+        images: [
+          {
+            id: 'fixture',
+            release: true,
+            dockerfile: 'containers/fixture/Dockerfile',
+            smoke: 'containers/fixture/smoke.sh',
+          },
+        ],
+      })
+    );
+    writeFileSync(path.join(root, 'containers/fixture/Dockerfile'), 'FROM scratch\n');
+    writeFileSync(path.join(root, 'containers/fixture/smoke.sh'), 'exit 0\n');
+    writeFileSync(path.join(root, '.dockerignore'), 'temp\n');
+    writeFileSync(path.join(root, 'Caddyfile'), ':80\n');
+    writeFileSync(path.join(root, 'scripts/retrieval-fixture.sh'), 'exit 0\n');
+    mkdirSync(path.join(root, 'scripts/docker'));
+    writeFileSync(
+      path.join(root, 'scripts/publication-helper.mjs'),
+      "export const smoke = 'scripts/docker/smoke-image.sh';\n"
+    );
+    writeFileSync(path.join(root, 'scripts/docker/smoke-image.sh'), 'exit 0\n');
+  }
   git('add', '.');
   git('commit', '-m', 'synthetic proved baseline');
   const baseline = git('rev-parse', 'HEAD');
@@ -51,6 +91,123 @@ function repository() {
   const head = git('rev-parse', 'HEAD');
   return { root, baseline, head, git };
 }
+
+test('publication proof includes every moved job and image-construction input', () => {
+  const r = repository({ moved: true });
+  const proof = publicationInputsAt(r.root, r.head);
+  for (const name of [
+    'candidate-plan',
+    'candidate-images',
+    'candidate-index',
+    'candidate-registry',
+    'container-image-matrix',
+  ])
+    assert.ok(proof.jobs[name]);
+  for (const file of [
+    'containers/images.json',
+    'containers/fixture/Dockerfile',
+    'containers/fixture/smoke.sh',
+    '.dockerignore',
+    'Caddyfile',
+    'scripts/retrieval-fixture.sh',
+    'scripts/docker/smoke-image.sh',
+  ])
+    assert.ok(proof.files[file]);
+  assert.deepEqual(proof.candidateImageIds, ['fixture']);
+  for (const file of [
+    'Caddyfile',
+    'scripts/docker/smoke-image.sh',
+    'containers/fixture/smoke.sh',
+    'scripts/retrieval-fixture.sh',
+    '.github/workflows/ci.yml',
+  ]) {
+    writeFileSync(
+      path.join(r.root, file),
+      `${r.git('show', `${r.head}:${file}`)}\n# changed construction input\n`
+    );
+    r.git('add', file);
+    r.git('commit', '-m', 'change candidate construction');
+    assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, proof.sha256);
+  }
+});
+
+test('changing the candidate matrix producer invalidates publication proof', () => {
+  const r = repository({ moved: true });
+  const before = publicationInputsAt(r.root, r.head);
+  const workflow = r.git('show', `${r.head}:.github/workflows/ci.yml`);
+  writeFileSync(
+    path.join(r.root, '.github/workflows/ci.yml'),
+    workflow.replace(
+      '  container-image-matrix:\n',
+      '  container-image-matrix:\n    name: changed matrix\n'
+    )
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'change candidate matrix producer');
+  assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, before.sha256);
+});
+
+test('offline admission refuses a missing candidate index even when every prior gate passed', () => {
+  const r = repository({ moved: true });
+  const input = evidence();
+  const proof = publicationInputsAt(r.root, r.head);
+  input.sha = input.review.sha = input.main.sha = input.candidate.sha = r.head;
+  input.baseline.sha = input.baseline.resolvedTagSha = r.baseline;
+  for (const job of input.baseline.jobs) job.sha = r.baseline;
+  approveBaseline(input);
+  input.publicationInputs =
+    input.grant.publicationInputs =
+    input.baseline.publicationInputs =
+      proof.sha256;
+  assert.throws(
+    () => actualCheck(input, { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }),
+    /candidate run and jobs/
+  );
+  input.candidate.jobs.push({ name: 'Candidate index (fixture)', id: 999, conclusion: 'success' });
+  assert.throws(
+    () => actualCheck(input, { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }),
+    /registry evidence/
+  );
+  input.registry = {
+    sha: r.head,
+    tag: input.tag,
+    inputs: proof.sha256,
+    runId: 3,
+    attempt: 1,
+    event: 'workflow_dispatch',
+    conclusion: 'success',
+    checkedAt: '2026-10-14T00:05:00Z',
+    artifactId: 93,
+    provenance: { runId: 3, attempt: 1 },
+    candidate: { runId: input.candidate.runId, attempt: input.candidate.attempt },
+    inspectionStartedAt: '2026-10-14T00:04:00Z',
+    recordSha256: 'c'.repeat(64),
+    jobs: [{ id: 94, name: 'Prerelease registry admission', conclusion: 'success', attempt: 1 }],
+  };
+  input.identities.registryEvidenceSha256 = input.registry.recordSha256;
+  for (const change of [
+    { sha: 'd'.repeat(40) },
+    { tag: 'v0.1.0-rc.9' },
+    { inputs: 'd'.repeat(64) },
+    { artifactId: 0 },
+    { checkedAt: '2026-10-13T00:00:00Z' },
+    { recordSha256: 'd'.repeat(64) },
+    { jobs: [] },
+  ])
+    assert.throws(
+      () =>
+        actualCheck(
+          { ...input, registry: { ...input.registry, ...change } },
+          { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }
+        ),
+      /registry evidence/
+    );
+
+  assert.equal(
+    actualCheck(input, { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }).status,
+    'eligible'
+  );
+});
 const repo = repository(),
   sha = repo.head,
   hash = 'b'.repeat(64),
