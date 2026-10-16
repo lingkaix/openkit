@@ -23,6 +23,10 @@ Observed verification: the focused discovery and production Gateway suites passe
 
 The regressions use real SQLite, Goal and Pending Request owners. Their finite expected states derive from the accepted owner before the correction. They prove local lifecycle and admission behavior, not Provider quality or real Worker execution. Two helpers own recurrence and Generative in separate worktrees and do not write this feature.
 
+The final bb33f678 checks passed lint across 14 tasks, typecheck across 16 tasks and 91 root interface checks. Full CI 38899554694 passed 22 Web journeys but exposed an existing Composer race in the Material handoff journey: Send could run before the current target catalog completed, so the client rejected an empty target reference before HTTP. The accepted Composer interaction owner already requires an available target. A narrow primitive correction disables submission until that exact target is available, with a delayed-catalog regression and retained draft/request identity. Its full primitive suite passed 90 tests, typecheck, focused lint and document validation. The existing Material journey assertions and timeout are unchanged.
+
+On 2026-10-16 the engineer made express landing the default while remote CI capacity is saturated. The branch CI was cancelled after its useful failure evidence. Merge current main, regenerate the CLI and OpenAPI, obtain independent review of the combined head, then run the exact-head local gate with all affected module suites and full Web e2e. The generated CLI conflict during the main merge is resolved by generation from the merged catalog, not by selecting a handwritten bundle.
+
 ## Verification And Closeout
 
-No acceptance claim yet. Independent exact-head review and full CI are required before landing. No new record family or registry is planned.
+No acceptance claim yet. Independent exact-head review and the engineer-approved express local gate are required before landing; main-push CI remains mandatory after landing. No new record family or registry is planned.
