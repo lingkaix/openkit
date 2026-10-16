@@ -10,7 +10,7 @@ The coordinator directs D-AK-1 and D-AK-2 to land immediately after P19, as one 
 
 ## Owners And Scope
 
-The Web Product Surface Projection, Knowledge Store and existing Source/audience owners govern this change. No new API, lifecycle, data store or authority is introduced. The Web preserves exact current Source selection and original uncertain-command retries. A citation cannot alias a page in another Workspace or imply that the current content equals old cited bytes. Current user/Workspace and source audiences remain strict.
+The [Web Product Surface Projection](../../specs/20260628-web_product_surface_projection.md), [Knowledge Store](../../specs/20260703-knowledge_store_implementation.md) and [Source catalog](../../specs/20260704-workspace_data_source_catalog.md) owners govern this change. No new API, lifecycle, data store or authority is introduced. The Web preserves exact current Source selection and original uncertain-command retries. A citation cannot alias a page in another Workspace or imply that the current content equals old cited bytes. Current user/Workspace and source audiences remain strict.
 
 ## Evidence And Remaining Work
 
