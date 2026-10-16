@@ -9,6 +9,8 @@ describe('one credential-free MCP HTTP endpoint criterion', () => {
     'https://ordinary-user@example.invalid/mcp',
     'https://example.invalid/mcp#private',
     'file:///private/path',
+    'not-a-url',
+    '',
   ])('refuses unsafe endpoint across stored declaration and effective transport: %s', (endpoint) => {
     expect(McpHttpEndpointSchema.safeParse(endpoint).success).toBe(false);
     expect(McpHttpDeclarationSchema.safeParse({ kind: 'http', endpoint }).success).toBe(false);

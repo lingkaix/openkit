@@ -7,7 +7,12 @@ const SDK_MANAGED_HTTP_HEADERS = new Set(['accept', 'content-type']);
 
 /** Canonical non-secret HTTP endpoint shared by declaration, transport and browser request validation. */
 export const McpHttpEndpointSchema = z.url().refine((value) => {
-  const endpoint = new URL(value);
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    return false;
+  }
   return (
     (endpoint.protocol === 'http:' || endpoint.protocol === 'https:') &&
     endpoint.username === '' &&
