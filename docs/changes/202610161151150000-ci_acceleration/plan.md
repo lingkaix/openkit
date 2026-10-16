@@ -17,13 +17,15 @@ The coordinator confirmed the account's 20-job concurrent limit and changed the 
 
 ## Intent Revision 3 — 2026-10-16
 
-The engineer approved express landing for ordinary changes while the shared hosted pool is saturated. The coordinator requires every main push to run complete verification, including L4 Web e2e. Keep the existing one-pending-head concurrency group and never cancel an in-progress main run. Release candidates and changes to workflows or release scripts still require exact-head full CI before landing. The release admission job set and registry dependency now require L4 as well. The observer labels a complete main run `full`; admission consumes that actual label without relabeling it. A composed observation-to-admission regression catches the original mismatch; a missing, skipped, failed or duplicate L4 observation cannot admit a release.
+The engineer approved express landing for ordinary changes while the shared hosted pool is saturated. The coordinator requires every main push to run complete verification, including L4 Web e2e. Keep the existing one-pending-head concurrency group and never cancel an in-progress main run. Release candidates and changes to workflows or release scripts still require exact-head full CI before landing. The release admission job set and registry dependency now require L4 as well; a missing, skipped, failed or duplicate L4 observation cannot admit a release.
 
 ## Owners And Boundaries
 
 [Release Management](../../specs/20260829-release_management.md#candidate-ci-and-tag-reuse) owns complete deterministic admission and exact-head reuse. [Test Strategy](../../specs/20260529-test_strategy.md#coverage-expectations) owns collection equivalence, failure, skip and coverage criteria. The implementation extends the existing CI runner and release-test runner. Product suite selectors, thresholds and tests do not change. Publication jobs retain their bytes except the expressly required registry dependency on L4; the Web job adds main and complete release-gate conditions without changing its steps. A subsequent release still compares all invoked publication inputs with its proved baseline; this change does not extend the P15 scratch proof.
 
 ## Checkpoint
+
+Independent review found that the observer labels a complete main run `full`, while the original admission predicate allowed only `release-gate` on push. A composed observation-to-admission regression reproduced the refusal before correction. Admission now consumes the actual `full` label without relabeling evidence; required L4, exact source, attempt and job predicates remain mandatory.
 
 Two completed full runs, 38885937522 and 38892439146, took 21m30s and 21m52s. Each executed the same 511 Vitest files and 10,501 passing cases, including duplicate case-name cardinality. NanoCore had 366 files and 6,823 cases; Worker Shim had 30 files and 1,093 cases. The later root Node suite had 1,344 passing cases and its separate Python suite had 88. NanoHost and Retrieval Kernel retained their native and Python commands. These are observed baseline counts, not a promise that later source additions leave counts unchanged.
 
