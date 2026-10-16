@@ -47,6 +47,7 @@ RUN apt-get update \
     g++ \
     gcc \
     git \
+    imagemagick \
     jq \
     libc6-dev \
     make \
