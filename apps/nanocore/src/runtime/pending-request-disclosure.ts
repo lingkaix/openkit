@@ -1,7 +1,7 @@
 import type { ApprovalEffectPreview } from '@openkit/app-api-schemas';
 import type { Actor } from '../auth/identity.js';
 import {
-  currentWorkspaceAuthority,
+  authorizeWorkspace,
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
@@ -24,7 +24,7 @@ export function approvalCardCopy(
   };
 }
 
-/** Projects complete immutable effect for the responsible user with current Thread access. No projection or read receipt is persisted. */
+/** Projects the complete immutable effect for a currently authorized responsible user or administrator. No projection or read receipt is persisted. */
 export function projectApprovalEffect(input: {
   record: PendingRequestRecord;
   store: FsStore;
@@ -37,14 +37,10 @@ export function projectApprovalEffect(input: {
     !actor ||
     (actor.userId !== record.responsibleUserId && !administrator) ||
     (coreDb &&
-      !currentWorkspaceAuthority(
-        coreDb,
-        record.workspaceId,
-        { kind: 'user', id: actor.userId },
-        'thread.read',
-        true,
-        actor
-      )) ||
+      !authorizeWorkspace(coreDb, actor, record.workspaceId, {
+        policyOperation: 'thread.read',
+        mutating: false,
+      })) ||
     !isThreadIdVisible(store, record.workspaceId, record.threadId, actor.userId, administrator)
   )
     return { status: 'unavailable', reason: 'Current Thread access is unavailable.' };

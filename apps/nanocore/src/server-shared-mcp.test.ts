@@ -191,14 +191,17 @@ async function fixture() {
     workerMcpGateway,
     auth: {
       api: {
-        getSession: async () =>
-          sessionUserId ? { user: { id: sessionUserId } } : null,
+        getSession: async () => (sessionUserId ? { user: { id: sessionUserId } } : null),
       },
       handler: async () => new Response(null, { status: 404 }),
     },
   });
   const outputs: unknown[] = [];
-  const send = (operation: string, input: Record<string, unknown> = {}, secret: string | null = admin.secret) => {
+  const send = (
+    operation: string,
+    input: Record<string, unknown> = {},
+    secret: string | null = admin.secret
+  ) => {
     const { requestId = randomUUID(), ...body } = input;
     return app.request(`/api/app/operations/${operation}`, {
       method: 'POST',
@@ -849,7 +852,10 @@ describe('Server-shared MCP through governed Worker routes', () => {
     }
     let approvingUserId = 'user_local';
     let approvingCredential = f.admin.secret;
-    const session = authority === 'administrator-session' || authority === 'revoked-administrator-session' || authority === 'ordinary-session';
+    const session =
+      authority === 'administrator-session' ||
+      authority === 'revoked-administrator-session' ||
+      authority === 'ordinary-session';
     if (authority === 'other-administrator' || session) {
       approvingUserId = randomUUID();
       f.coreDb.db
@@ -868,21 +874,26 @@ describe('Server-shared MCP through governed Worker routes', () => {
           expiresAt: '2999-01-01T00:00:00.000Z',
         });
         approvingCredential = token.secret;
-        if (session) expect(setDefaultServerAdminTokenId(f.coreDb, approvingUserId, token.tokenId)).toBe(true);
-        if (authority === 'revoked-administrator-session') revokeOpenKitAccessTokenRecord(f.coreDb, token.tokenId);
+        if (session)
+          expect(setDefaultServerAdminTokenId(f.coreDb, approvingUserId, token.tokenId)).toBe(true);
+        if (authority === 'revoked-administrator-session')
+          revokeOpenKitAccessTokenRecord(f.coreDb, token.tokenId);
       }
     }
-    const membership = () => f.coreDb.sqlite.prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?').all(worker.workspaceId, approvingUserId);
+    const membership = () =>
+      f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .all(worker.workspaceId, approvingUserId);
     if (session) expect(membership()).toEqual([]);
     const resolutions = f.materialResolution.mock.calls.length;
     const contacts = f.upstream.methods.length;
     const approval = {
-        workspaceId: worker.workspaceId,
-        threadId: pending.threadId,
-        turnId: pending.raisingTurnId,
-        approvalRequestId: pending.requestId,
-        decision: 'granted',
-      };
+      workspaceId: worker.workspaceId,
+      threadId: pending.threadId,
+      turnId: pending.raisingTurnId,
+      approvalRequestId: pending.requestId,
+      decision: 'granted',
+    };
     const response = session
       ? await f.sessionSend(approvingUserId, 'approval.respond', approval)
       : await f.send('approval.respond', approval, approvingCredential);
@@ -897,13 +908,21 @@ describe('Server-shared MCP through governed Worker routes', () => {
     } else {
       expect(response.status, JSON.stringify(responseBody)).toBe(200);
     }
-    if (authority === 'current' || authority === 'other-administrator' || authority === 'administrator-session') {
+    if (
+      authority === 'current' ||
+      authority === 'other-administrator' ||
+      authority === 'administrator-session'
+    ) {
       expect(settled.disposition, settled.dispositionReason ?? 'No disposition reason.').toBe(
         'approved-executed'
       );
       expect(f.upstream.methods.filter((method) => method === 'tools/call')).toHaveLength(1);
       expect(settled.responsibleUserId).toBe('user_local');
-      if (session) expect(settled.decidingActorContext).toMatchObject({ kind: 'session', userId: approvingUserId });
+      if (session)
+        expect(settled.decidingActorContext).toMatchObject({
+          kind: 'session',
+          userId: approvingUserId,
+        });
       expect(listServerAuditEvents(f.coreDb)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
