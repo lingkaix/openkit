@@ -3,6 +3,8 @@ import {
   AutomationDefinitionSnapshotSchema,
   AutomationExpiredRangeSchema,
   AutomationOccurrenceSchema,
+  type AutomationRecord,
+  AutomationRecordSchema,
   MaterializedWorkspaceRootSchema,
 } from '@openkit/app-api-schemas';
 import { ReasoningEffortSchema } from '@openkit/protocol';
@@ -37,6 +39,7 @@ export const RecurringDefinitionSnapshotSchema = AutomationDefinitionSnapshotSch
 export const RecurringOccurrenceSchema = AutomationOccurrenceSchema.omit({
   resolvedSelection: true,
   schedulerStatus: true,
+  publicationIssue: true,
 }).extend({
   resolvedPayload: RecurringAdmissionPayloadSchema.nullable(),
   requiredFeatures: z.array(z.never()).optional(),
@@ -132,4 +135,18 @@ export function findAcceptedRecurringOccurrenceForQueue(
   )
     throw new Error('Accepted RecurringOccurrence contradicts its scheduler admission.');
   return occurrence;
+}
+
+/** Retained descriptive additions are ignored; unsupported required semantics fail closed. */
+export function readRecurringSchedule(json: string): AutomationRecord {
+  const value = JSON.parse(json);
+  if (
+    value.requiredFeatures !== undefined &&
+    (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length)
+  )
+    throw new Error('RecurringSchedule has unsupported required semantics.');
+  const record = AutomationRecordSchema.parse(value);
+  if (record.actor.id !== record.id || record.actor.responsibleUserId !== record.responsibleUserId)
+    throw new Error('RecurringSchedule has contradictory automation identity.');
+  return record;
 }

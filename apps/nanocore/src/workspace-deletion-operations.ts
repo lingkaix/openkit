@@ -417,6 +417,19 @@ async function advanceWorkspaceDeletion(input: {
         originalOwnerUserId: request.originalOwnerUserId,
         expectedRegistryRevision: request.expectedRegistryRevision + 1,
       });
+      // The verified closure and recovery export now retain this exact Core-homed graph.
+      // Remove children first; a failure rolls back the terminal registry transition too.
+      for (const table of [
+        'recurring_occurrences',
+        'recurring_expired_ranges',
+        'recurring_schedules',
+      ])
+        input.coreDb.sqlite
+          .prepare(`DELETE FROM ${table} WHERE workspace_id = ?`)
+          .run(input.workspaceId);
+      input.coreDb.sqlite
+        .prepare("DELETE FROM audit_events WHERE workspace_id = ? AND action LIKE 'recurring.%'")
+        .run(input.workspaceId);
       const audit = recordServerAuditEvent({
         action: 'workspace.delete',
         actor: { id: input.actorId, kind: 'user' },

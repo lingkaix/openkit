@@ -23,6 +23,7 @@ import {
   type RecurringOccurrence,
   type RecurringPreparation,
   readRecurringOccurrence,
+  readRecurringSchedule,
   recurringRequestId,
   recurringSchedulerAdmissionInput,
 } from '../storage/recurring-records.js';
@@ -57,7 +58,7 @@ export class AutomationStore {
   public listAuthorizedAutomations(workspaceIds: readonly string[]): AutomationRecord[] {
     if (!workspaceIds.length) return [];
     return this.readSchedules(
-      `status <> 'deleted' AND workspace_id IN (${workspaceIds.map(() => '?').join(',')})`,
+      `workspace_id IN (${workspaceIds.map(() => '?').join(',')})`,
       ...workspaceIds
     );
   }
@@ -226,7 +227,7 @@ export class AutomationStore {
             (json_extract(record_json, '$.intervalSeconds') * 1000) END, id LIMIT ?`)
             .all(now, now - DEADLINE_MS, now - DEADLINE_MS, SCAN_LIMIT) as JsonRow[];
           for (const row of schedules) {
-            const schedule = readSchedule(row.record_json);
+            const schedule = readRecurringSchedule(row.record_json);
             if (!admit(schedule.workspaceId)) continue;
             const next = Date.parse(schedule.nextScheduledAt!);
             const step = schedule.intervalSeconds * 1000;
@@ -260,7 +261,7 @@ export class AutomationStore {
             .prepare(`SELECT record_json FROM recurring_schedules
         WHERE status = 'active' AND next_scheduled_at <= ? ORDER BY next_scheduled_at, id LIMIT ?`)
             .all(now - DEADLINE_MS, SCAN_LIMIT - expiredRangeCount) as JsonRow[]) {
-            const schedule = readSchedule(row.record_json);
+            const schedule = readRecurringSchedule(row.record_json);
             if (admit(schedule.workspaceId)) this.accountExpiredPrefix(schedule, now, timestamp);
           }
           return selected;
@@ -642,7 +643,7 @@ export class AutomationStore {
 
   /** Writes one definition and the indexed cursor under the caller's transaction when present. */
   private writeSchedule(record: AutomationRecord, insert = false): void {
-    readSchedule(JSON.stringify(record));
+    readRecurringSchedule(JSON.stringify(record));
     const values = [
       record.workspaceId,
       record.responsibleUserId,
@@ -668,7 +669,7 @@ export class AutomationStore {
     const row = this.coreDb.sqlite
       .prepare('SELECT record_json FROM recurring_schedules WHERE id = ?')
       .get(id) as JsonRow | undefined;
-    return row ? readSchedule(row.record_json) : null;
+    return row ? readRecurringSchedule(row.record_json) : null;
   }
 
   /** Reads a bounded owner-selected definition collection. */
@@ -677,7 +678,7 @@ export class AutomationStore {
       this.coreDb.sqlite
         .prepare(`SELECT record_json FROM recurring_schedules WHERE ${where} ORDER BY id`)
         .all(...parameters) as JsonRow[]
-    ).map((row) => readSchedule(row.record_json));
+    ).map((row) => readRecurringSchedule(row.record_json));
   }
 }
 
@@ -692,17 +693,4 @@ function snapshot(schedule: AutomationRecord): RecurringOccurrence['snapshot'] {
     ...(schedule.profileId === undefined ? {} : { profileId: schedule.profileId }),
     ...(schedule.modelId === undefined ? {} : { modelId: schedule.modelId }),
   };
-}
-/** Retained descriptive additions are ignored; unsupported required semantics fail closed. */
-function readSchedule(json: string): AutomationRecord {
-  const value = JSON.parse(json);
-  if (
-    value.requiredFeatures !== undefined &&
-    (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length)
-  )
-    throw new Error('RecurringSchedule has unsupported required semantics.');
-  const record = AutomationRecordSchema.parse(value);
-  if (record.actor.id !== record.id || record.actor.responsibleUserId !== record.responsibleUserId)
-    throw new Error('RecurringSchedule has contradictory automation identity.');
-  return record;
 }

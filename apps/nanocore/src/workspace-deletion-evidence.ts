@@ -18,7 +18,7 @@ import { EvidenceBundleRecordSchema } from '@openkit/app-api-schemas';
 import { RequestIdSchema, TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
-import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
+import { listSqliteAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import { listWorkspaceUsageRecords } from './capability/usage-ledger.js';
 import { listStoredWorkspaceEvidenceBundles } from './evidence-bundles.js';
 import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
@@ -26,12 +26,18 @@ import { listWorkspaceQuarantineRecords } from './runtime/workspace-quarantine-r
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import {
+  exportRecurringPortableHistory,
+  validateRecurringPortableHistory,
+} from './storage/recurring-portable-history.js';
+import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
 } from './storage/workspace-file-records.js';
 import { listExportableWorkspaceVaultUseRecords } from './vault/vault-use-records.js';
 
 const DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const RECURRING_HISTORY_FEATURE = 'recurring-history-v1';
+const RECURRING_HISTORY_PATH = 'records/recurring-history.jsonl';
 const CLOSURE_RECORD_PATHS = [
   'records/core-workspace-registry.jsonl',
   'records/core-workspace-memberships.jsonl',
@@ -87,7 +93,10 @@ export const WorkspaceDeletionClosureSchema = z
   })
   .strip()
   .superRefine((manifest, context) => {
-    if (manifest.requiredFeatures.length > 0) {
+    if (
+      manifest.requiredFeatures.some((feature) => feature !== RECURRING_HISTORY_FEATURE) ||
+      new Set(manifest.requiredFeatures).size !== manifest.requiredFeatures.length
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'Unsupported Workspace deletion closure required feature.',
@@ -193,9 +202,7 @@ export function createWorkspaceDeletionClosure(input: {
       ],
       [
         'records/core-audit-events.jsonl',
-        listServerAuditEvents(input.coreDb).filter(
-          (event) => event.workspaceId === input.workspaceId
-        ),
+        listSqliteAuditEvents(input.coreDb.sqlite, input.workspaceId),
       ],
       [
         'records/workspace-audit-events.jsonl',
@@ -224,6 +231,10 @@ export function createWorkspaceDeletionClosure(input: {
         join(closureRoot, 'evidence', bundle.id)
       );
     }
+    const recurringHistory =
+      exportRecurringPortableHistory(input.coreDb, input.workspaceId, null) ??
+      '{"historyVersion":1,"sources":[]}';
+    writePrivateText(join(closureRoot, RECURRING_HISTORY_PATH), `${recurringHistory.trimEnd()}\n`);
     const contentInventory = listRegularFiles(closureRoot)
       .map((path) => inventoryEntry(closureRoot, path))
       .sort((left, right) => left.path.localeCompare(right.path));
@@ -238,7 +249,7 @@ export function createWorkspaceDeletionClosure(input: {
       contentDigest: digestText(JSON.stringify(contentInventory)),
       redactionLevel: 'restricted',
       sensitivity: 'internal',
-      requiredFeatures: [],
+      requiredFeatures: [RECURRING_HISTORY_FEATURE],
       extensions: {},
       closureVersion: 1,
       sourceDeploymentId: readDataRootLayoutMarker(input.dataRoot).deploymentId,
@@ -330,7 +341,18 @@ export function verifyWorkspaceDeletionClosure(input: {
       )
       .map((bundle) => bundle.id)
   );
-  assertClosureShape(input.closureRoot, retainedEvidenceIds);
+  const includesRecurringHistory = manifest.requiredFeatures.includes(RECURRING_HISTORY_FEATURE);
+  assertClosureShape(input.closureRoot, retainedEvidenceIds, includesRecurringHistory);
+  if (includesRecurringHistory) {
+    const text = readFileSync(join(input.closureRoot, RECURRING_HISTORY_PATH), 'utf8');
+    validateRecurringPortableHistory(text);
+    const history = JSON.parse(text) as { sources: { workspaceId: string }[] };
+    if (
+      history.sources.length > 1 ||
+      history.sources.some((source) => source.workspaceId !== manifest.sourceWorkspaceId)
+    )
+      throw new Error('Workspace deletion closure recurrence ownership is contradictory.');
+  }
   return { ...manifest, manifestDigest: digestText(manifestText) };
 }
 
@@ -446,7 +468,11 @@ function listRegularFiles(root: string): string[] {
   return files;
 }
 
-function assertClosureShape(root: string, retainedEvidenceIds: ReadonlySet<string>): void {
+function assertClosureShape(
+  root: string,
+  retainedEvidenceIds: ReadonlySet<string>,
+  includesRecurringHistory: boolean
+): void {
   const rootNames = new Set(readdirSync(root).sort());
   const expectedRootNames = new Set([
     'records',
@@ -462,13 +488,17 @@ function assertClosureShape(root: string, retainedEvidenceIds: ReadonlySet<strin
   const recordsRoot = join(root, 'records');
   assertCanonicalDirectory(recordsRoot);
   const recordNames = new Set(readdirSync(recordsRoot).map((name) => `records/${name}`));
+  const expectedRecordPaths = [
+    ...CLOSURE_RECORD_PATHS,
+    ...(includesRecurringHistory ? [RECURRING_HISTORY_PATH] : []),
+  ];
   if (
-    recordNames.size !== CLOSURE_RECORD_PATHS.length ||
-    CLOSURE_RECORD_PATHS.some((path) => !recordNames.has(path))
+    recordNames.size !== expectedRecordPaths.length ||
+    expectedRecordPaths.some((path) => !recordNames.has(path))
   ) {
     throw new Error('Workspace deletion closure record set is incomplete or extended.');
   }
-  for (const path of CLOSURE_RECORD_PATHS) {
+  for (const path of expectedRecordPaths) {
     const stat = lstatSync(join(root, path));
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error('Workspace deletion closure records must be regular files.');

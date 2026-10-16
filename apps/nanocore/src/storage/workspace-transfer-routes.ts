@@ -134,6 +134,7 @@ import {
 } from './generative-portability.js';
 import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
+import { exportRecurringPortableHistory } from './recurring-portable-history.js';
 import {
   artifactReviews,
   threadMaterialBindings,
@@ -1144,11 +1145,19 @@ export function createVerifiedWorkspaceExport({
     }
     runtimeProvenanceIndexes.set(bundle.id, text);
   }
-  const portableFileState = readWorkspacePortableFileState(workspaceRoot, {
+  const retainedPortableState = readWorkspacePortableFileState(workspaceRoot, {
     workspaceId,
     threads: threads.map(({ id }) => ({ threadId: id })),
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
+  const portableFileState = {
+    ...retainedPortableState,
+    recurringHistory: exportRecurringPortableHistory(
+      coreDb,
+      workspaceId,
+      retainedPortableState.recurringHistory ?? null
+    ),
+  };
   if (
     portableFileState.retrievalTraceFiles.size > 0 &&
     !deletionRecoveryAuthorized &&
