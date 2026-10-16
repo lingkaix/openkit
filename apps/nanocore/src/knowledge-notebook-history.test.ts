@@ -322,7 +322,10 @@ describe('native Workspace Notebook history and restore', () => {
     expect(large.startsWith(displayed.after)).toBe(true);
     expect(displayed.after).not.toContain('\uFFFD');
     expect(displayed.after).not.toBe(large);
-    expect(removal).toEqual({ path: 'removed.md', before: '', after: null });
+    expect(removal.path).toBe('removed.md');
+    expect(removal.after).toBeNull();
+    expect(removed.startsWith(removal.before)).toBe(true);
+    expect(removal.before).not.toBe(removed);
     expect(
       diff.body.changes.reduce(
         (bytes: number, change: { before: string | null; after: string | null }) =>
