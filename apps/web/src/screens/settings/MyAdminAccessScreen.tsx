@@ -24,8 +24,8 @@ export function MyAdminAccessScreen() {
   });
   const setDefault = useMutation({
     mutationFn: (tokenId: string) => client.operations['token.my-admin-default']({ tokenId }),
-    onSuccess: (data) => {
-      queryClient.setQueryData(QUERY_KEY, data);
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEY, exact: true });
     },
   });
 

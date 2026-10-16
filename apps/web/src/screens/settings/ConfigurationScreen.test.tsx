@@ -109,6 +109,7 @@ describe('Configuration settings', () => {
     fireEvent.change(editor, { target: { value: '{"mode":"local"}' } });
     await userEvent.click(screen.getByRole('button', { name: 'Save file' }));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(client.operations['runtime.file-read']).toHaveBeenCalledTimes(1);
     fireEvent.change(editor, { target: { value: '{"mode":"local","futureOption":true}' } });
     await act(async () => {
       await Promise.resolve();

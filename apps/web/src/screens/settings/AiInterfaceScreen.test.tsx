@@ -341,6 +341,47 @@ beforeEach(() => {
 });
 
 describe('AI interface deployment-admin workflow', () => {
+  it('shows the returned login code while a subsequent status observation is pending', async () => {
+    let finish!: (value: typeof PENDING_ACCOUNT) => void;
+    const status = vi
+      .fn()
+      .mockResolvedValueOnce(CODEX_ACCOUNT)
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          })
+      );
+    const client = makeClient({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(({ subscriptionProviderId }: { subscriptionProviderId: string }) =>
+            Promise.resolve({
+              accounts: subscriptionProviderId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+            })
+          ),
+        'provider-subscription.account-status': status,
+      },
+    });
+    const { queryClient } = renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    await userEvent.click(within(card).getByRole('button', { name: 'Start login' }));
+    expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument();
+    // A fresh status read can finish later; the current mutation still owns its immediate code.
+    act(() => {
+      void queryClient.refetchQueries({
+        queryKey: [...settingsKeys.aiInterface, 'status', 'openai-codex', 'primary'],
+        exact: true,
+      });
+    });
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument();
+    await act(async () => {
+      finish(PENDING_ACCOUNT);
+    });
+  });
+
   it('does not restore an old device-login response into a replacement account status cache', async () => {
     let finish!: (value: typeof PENDING_ACCOUNT) => void;
     const client = makeClient({
