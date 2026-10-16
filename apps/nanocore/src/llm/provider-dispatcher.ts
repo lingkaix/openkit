@@ -42,6 +42,22 @@ export interface LLMGatewayProviderDispatcherOptions {
  * Provider transport state shared across one gateway dispatch.
  */
 export interface LLMGatewayTransportContext {
+  /** Trusted per-call final-wire admission after stock assembly and native overlays. Absence adds no enforcement. */
+  readonly finalRequestAdmission?: (
+    input: {
+      readonly providerId: string;
+      readonly modelId: string;
+      /** Exact selected stock API, never inferred from a model or Provider name. */
+      readonly api: string;
+      /** Resolved adapter values; synthetic defaults do not prove physical model ceilings. */
+      readonly adapterContextWindowTokens: number;
+      readonly adapterMaxOutputTokens: number;
+      readonly payload: unknown;
+      /** Exact extra native Codex header state, or null when no such state is sent. */
+      readonly codexTurnState: string | null;
+    },
+    signal?: AbortSignal
+  ) => Promise<Readonly<Record<string, unknown>>>;
   /** Strong Worker observation boundary. Its failure aborts this inference before output conversion. */
   readonly rawOutput?: {
     /** Opens actual stock source lifetime, independent of public response cancellation. */

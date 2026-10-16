@@ -1186,6 +1186,7 @@ export class PiAiGatewayClient {
       options.samplingParams = { parallel_tool_calls: request.parallel_tool_calls };
     this.applyRequestPayloadOverlay(options, model, maxTokens, request.parallel_tool_calls);
     applyCodexTransport(options, model, transport);
+    this.bindFinalRequestAdmission(options, provider, model, transport);
     this.bindRawOutput(options, model, transport);
     return options;
   }
@@ -1265,6 +1266,10 @@ export class PiAiGatewayClient {
     if (toolChoice !== undefined) options.toolChoice = toolChoice;
     // Native features have one carrier; it never changes stock auth, cache, model or transport fields.
     envelope.fields = {
+      // Replacing stock input must not discard instructions that its serializer put in that input.
+      ...(native && envelope.input && request.instructions !== undefined
+        ? { instructions: request.instructions }
+        : {}),
       ...(native && text ? { text } : {}),
       ...(native && reasoning?.context === 'all_turns'
         ? { reasoning: { context: 'all_turns' } }
@@ -1350,8 +1355,66 @@ export class PiAiGatewayClient {
         envelope.output = envelope.output.toSorted((left, right) => left.index - right.index);
       };
     applyCodexTransport(options, selectedModel, transport);
+    this.bindFinalRequestAdmission(options, provider, selectedModel, transport);
     this.bindRawOutput(options, selectedModel, transport);
     return options;
+  }
+
+  /** Awaits trusted complete-wire admission without replacing overlays or reconstructing its returned request. */
+  private bindFinalRequestAdmission(
+    options: StreamOptions,
+    provider: ResolvedLLMProviderConfig,
+    model: Model<string>,
+    transport: LLMGatewayTransportContext
+  ): void {
+    const admit = transport.finalRequestAdmission;
+    if (!admit) return;
+    const previous = options.onPayload;
+    options.onPayload = async (payload, selected) => {
+      const overlaid = await previous?.(payload, selected);
+      try {
+        if (!modelsAreEqual(model, selected)) throw new Error();
+        const admitted = await raceProviderWithSignal(
+          () =>
+            admit(
+              Object.freeze({
+                providerId: provider.id,
+                modelId: model.id,
+                api: model.api,
+                adapterContextWindowTokens: model.contextWindow,
+                adapterMaxOutputTokens: model.maxTokens,
+                payload: overlaid === undefined ? payload : overlaid,
+                codexTurnState:
+                  model.api === 'openai-codex-responses'
+                    ? (options.headers?.['x-codex-turn-state'] ?? null)
+                    : null,
+              }),
+              options.signal
+            ),
+          options.signal
+        );
+        // The trusted callback owns bounded JSON capture and deep immutability.
+        // Never dispatch an unavailable result envelope in place of a native request.
+        const record = readRecord(admitted);
+        if (
+          !record ||
+          !Object.isFrozen(record) ||
+          ![null, Object.prototype].includes(Object.getPrototypeOf(record)) ||
+          record.kind === 'unavailable' ||
+          record.kind === 'refused'
+        )
+          throw new Error();
+        options.signal?.throwIfAborted();
+        return admitted;
+      } catch {
+        options.signal?.throwIfAborted();
+        const refusal = new GatewayUnsupportedFeatureError('final request admission');
+        // Stock normalizes hook errors into message text. Retain the existing
+        // unsupported class with fixed text, never callback values or diagnostics.
+        refusal.message = 'Unsupported feature: final request admission.';
+        throw refusal;
+      }
+    };
   }
 
   /** Composes the strong raw observer before existing native validation and stock normalization. This observes the selected native transport without changing stream selection. */
