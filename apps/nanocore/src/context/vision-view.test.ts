@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { afterEach, expect, it, vi } from 'vitest';
+import { createPdfFixture } from '../test-support/pdf-fixture.js';
 import { processVisionView } from './vision-view.js';
 
 const observations = vi.hoisted(() => ({ decodes: 0 }));
@@ -83,5 +84,18 @@ it('refuses a declared oversized raster before starting the image decoder', asyn
   const result = await processVisionView(f.input);
   expect(result.status).toBe('unavailable');
   expect(observations.decodes).toBe(0);
+  expect(f.reserved()).toBe(0);
+}, 30_000);
+
+
+it('renders only the requested PDF page and preserves its original raster crop coordinates', async () => {
+  const f = await fixture(createPdfFixture(['first page', 'second page']));
+  const result = await processVisionView({ ...f.input, mediaType: 'application/pdf', page: 2, crop: { left: 20, top: 30, width: 8, height: 6 } });
+  expect(result).toMatchObject({
+    status: 'available', page: 2, coordinateSpace: 'pdf-page-raster-72dpi',
+    originalDimensions: { width: 612, height: 792, frames: 1 },
+    crop: { left: 20, top: 30, width: 8, height: 6 },
+    delivered: { width: 8, height: 6, mediaType: 'image/jpeg' },
+  });
   expect(f.reserved()).toBe(0);
 }, 30_000);
