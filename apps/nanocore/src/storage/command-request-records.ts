@@ -1,6 +1,23 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  ArtifactIdSchema,
+  ArtifactReviewIdSchema,
+  InvitationIdSchema,
+  KnowledgeClaimIdSchema,
+  KnowledgeConflictIdSchema,
+  KnowledgeObservationIdSchema,
+  KnowledgeReviewIdSchema,
+  KnowledgeSourceIdSchema,
+  MaterialIdSchema,
+  MaterialRevisionIdSchema,
+  PresentationIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  UserIdSchema,
+  WorkerStorageTargetIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { KernelCommandError } from '../generative-kernel/errors.js';
@@ -94,6 +111,29 @@ const ConversationCommandReceiptMetadataReaderSchema =
       .nullable(),
   }).strip();
 
+/** The response discriminator selects its declared entity owner; other owners keep opaque keys. */
+const COMMAND_RESPONSE_ID_SCHEMAS: Partial<Record<CommandRequestResponseKind, z.ZodType<string>>> =
+  {
+    workspace: WorkspaceIdSchema,
+    workspace_recovery: WorkspaceIdSchema,
+    user: UserIdSchema,
+    thread: ThreadIdSchema,
+    turn: TurnIdSchema,
+    artifact: ArtifactIdSchema,
+    material: MaterialIdSchema,
+    thread_material_binding: MaterialIdSchema,
+    material_revision: MaterialRevisionIdSchema,
+    artifact_review: ArtifactReviewIdSchema,
+    workspace_invitation: InvitationIdSchema,
+    knowledge_source: KnowledgeSourceIdSchema,
+    knowledge_observation: KnowledgeObservationIdSchema,
+    knowledge_claim: KnowledgeClaimIdSchema,
+    knowledge_conflict: KnowledgeConflictIdSchema,
+    knowledge_proposal_review: KnowledgeReviewIdSchema,
+    generative_presentation: PresentationIdSchema,
+    worker_environment: WorkerStorageTargetIdSchema,
+  };
+
 const COMMAND_REQUEST_SELECT = `SELECT
   request_key AS key,
   command_name AS command,
@@ -108,7 +148,7 @@ const COMMAND_REQUEST_SELECT = `SELECT
 FROM idempotency_requests`;
 
 /**
- * Rejects unsupported receipt fields and validates the sole bounded Chat metadata exception.
+ * Validates kind-named response pointers, rejects unsupported fields and validates bounded Chat metadata.
  *
  * @param command Command that owns the receipt.
  * @param response Candidate response pointer.
@@ -122,6 +162,7 @@ export function normalizeCommandRequestResponse(
   if (Object.keys(response).some((key) => !['kind', 'id', 'conversationMetadata'].includes(key))) {
     throw new Error('Command receipt response contains unsupported fields.');
   }
+  COMMAND_RESPONSE_ID_SCHEMAS[response.kind]?.parse(response.id);
   if (response.conversationMetadata === undefined) {
     return { kind: response.kind, id: response.id };
   }
@@ -144,6 +185,7 @@ export function normalizeCommandRequestResponse(
  */
 export function recordCommandRequestRecord(dataRoot: string, record: CommandRequestRecord): void {
   const owner = commandRequestOwner(record.scope);
+  const response = normalizeCommandRequestResponse(record.command, record.response);
 
   if (owner.scope === 'workspace' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
     throw new Error(`Workspace not found: ${owner.workspaceId}`);
@@ -155,7 +197,7 @@ export function recordCommandRequestRecord(dataRoot: string, record: CommandRequ
   const db = openCommandRequestDb(dataRoot, owner);
 
   try {
-    recordCommandRequestRecordInDb(db, record);
+    recordCommandRequestRecordInDb(db, { ...record, response });
   } finally {
     db.sqlite.close();
   }
