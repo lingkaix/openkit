@@ -145,15 +145,24 @@ async function fixture(bytes: Buffer, chunkBytes = 17) {
   };
   const input = {
     source,
+    resourceProfileDigest: sha('fixture-parser-resources-v1'),
     temporaryRoot: root,
     reserveTemporaryBytes(size: number) {
       reserved += size;
+      let remaining = size;
       let held = true;
       return {
+        recordWritten(bytes: bigint) {
+          const count = Number(bytes);
+          expect(count).toBeLessThanOrEqual(remaining);
+          remaining -= count;
+          reserved -= count;
+        },
         release() {
           expect(held).toBe(true);
           held = false;
-          reserved -= size;
+          reserved -= remaining;
+          remaining = 0;
         },
       };
     },
@@ -228,6 +237,10 @@ describe('isolated PDF text-layer representation', () => {
     const first = await processPdfTextLayer(f.input);
     const again = await processPdfTextLayer(f.input);
     const configurationChanged = await processPdfTextLayer({ ...f.input, limits: { maxPages: 1 } });
+    const resourceChanged = await processPdfTextLayer({
+      ...f.input,
+      resourceProfileDigest: sha('fixture-parser-resources-v2'),
+    });
     const other = await fixture(pdf(['Beta']));
     const originalChanged = await processPdfTextLayer(other.input);
     for (const r of [first, again, configurationChanged, originalChanged])
@@ -240,6 +253,12 @@ describe('isolated PDF text-layer representation', () => {
     )
       return;
     expect(first.derivative).toEqual(again.derivative);
+    if (resourceChanged.status === 'unavailable') throw new Error(resourceChanged.reason);
+    expect(first.derivative.cacheKey).not.toBe(resourceChanged.derivative.cacheKey);
+    expect(first.derivative.representationId).not.toBe(resourceChanged.derivative.representationId);
+    expect(first.derivative.representationDigest).toBe(
+      resourceChanged.derivative.representationDigest
+    );
     expect(first.derivative.cacheKey).not.toBe(configurationChanged.derivative.cacheKey);
     expect(first.derivative.representationId).not.toBe(
       configurationChanged.derivative.representationId
@@ -362,6 +381,7 @@ describe('isolated PDF text-layer representation', () => {
     const controller = new AbortController();
     let actualParserPid: number | undefined;
     let actualLimits = '';
+    let parserStart = '';
     let observation: Promise<void> | undefined;
     observations.onParser = (pid) => {
       observation = (async () => {
@@ -375,6 +395,9 @@ describe('isolated PDF text-layer representation', () => {
               if (command === 'pdftotext') {
                 actualParserPid = current;
                 actualLimits = await readFile(`/proc/${current}/limits`, 'utf8');
+                parserStart = processIdentity(
+                  await readFile(`/proc/${current}/stat`, 'utf8')
+                ).start;
                 controller.abort();
                 return;
               }
@@ -394,6 +417,7 @@ describe('isolated PDF text-layer representation', () => {
     expect(result.reason).toBe('cancelled');
     await observation;
     expect(actualParserPid).toBeTypeOf('number');
+    await expectStopped(actualParserPid!, parserStart);
     expect(actualLimits).toMatch(/Max address space\s+536870912\s+536870912/);
     expect(actualLimits).toMatch(/Max cpu time\s+5\s+5/);
     expect(actualLimits).toMatch(/Max file size\s+0\s+0/);
@@ -446,6 +470,11 @@ describe('isolated PDF text-layer representation', () => {
       reason: 'resource-limited',
     });
     expect(f.opened()).toBe(0);
+    expect(await processPdfTextLayer({ ...f.input, resourceProfileDigest: '' })).toMatchObject({
+      status: 'unavailable',
+      reason: 'invalid-resource-profile',
+    });
+    expect(f.opened()).toBe(0);
     expect(
       await processPdfTextLayer({
         ...f.input,
@@ -489,3 +518,20 @@ describe('isolated PDF text-layer representation', () => {
     });
   });
 });
+
+/** Compare PID starttime, so reuse cannot conceal a still-running parser or kill another process. */
+function processIdentity(stat: string): { state: string; start: string } {
+  const fields = stat
+    .slice(stat.lastIndexOf(')') + 2)
+    .trim()
+    .split(/\s+/);
+  return { state: fields[0]!, start: fields[19]! };
+}
+async function expectStopped(pid: number, start: string): Promise<void> {
+  try {
+    const current = processIdentity(await readFile(`/proc/${pid}/stat`, 'utf8'));
+    expect(current.start !== start || ['Z', 'X'].includes(current.state)).toBe(true);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
