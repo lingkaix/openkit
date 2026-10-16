@@ -158,7 +158,9 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
       coreDb,
       store,
       mode: 'server',
-      ...(configured ? { discordConfig: { applicationId, publicKey }, transport: { sendAttention } } : {}),
+      ...(configured
+        ? { discordConfig: { applicationId, publicKey }, transport: { sendAttention } }
+        : {}),
       openWorkspace: repositoryWorkspaceDb,
       invokePending: async (id, input, decidingActor) => {
         nativeCalls.push({ id, input, actor: decidingActor });
@@ -244,7 +246,10 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     withoutAdapter() {
       const unconfigured = compose(false);
       const invoke = createOperationInvocation({
-        coreDb, store, mode: 'server', channelServices: unconfigured,
+        coreDb,
+        store,
+        mode: 'server',
+        channelServices: unconfigured,
         workspaceMutationAdmission: new WorkspaceMutationAdmission(),
       });
       return (id: 'channel.discord.status' | 'channel.discord.revoke') =>
@@ -284,15 +289,32 @@ describe('Discord to native Pending Request seam', () => {
     const f = fixture();
     await f.pair();
     f.services.discord!.beginPairing(actor);
-    expect(f.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM discord_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL').get(actor.userId)).toEqual({ count: 1 });
+    expect(
+      f.coreDb.sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM discord_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL'
+        )
+        .get(actor.userId)
+    ).toEqual({ count: 1 });
     const pending = f.record();
     const invoke = f.withoutAdapter();
-    expect(await invoke('channel.discord.status')).toMatchObject({
-      configured: false, sendingAvailable: false, binding: { userId: actor.userId, discordUserId },
+    expect(await invoke('channel.discord.status')).toEqual({
+      configured: false,
+      sendingAvailable: false,
+      binding: { discordUserId, pairedAt: expect.any(Number) },
     });
     expect(await invoke('channel.discord.revoke')).toBeNull();
-    expect(await invoke('channel.discord.status')).toMatchObject({ configured: false, binding: null });
-    expect(f.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM discord_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL').get(actor.userId)).toEqual({ count: 0 });
+    expect(await invoke('channel.discord.status')).toMatchObject({
+      configured: false,
+      binding: null,
+    });
+    expect(
+      f.coreDb.sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM discord_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL'
+        )
+        .get(actor.userId)
+    ).toEqual({ count: 0 });
     expect(f.sendAttention).not.toHaveBeenCalled();
     expect(f.record()).toEqual(pending);
   });

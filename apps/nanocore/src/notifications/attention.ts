@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { ApprovalRequestIdSchema, isThreadId, isUserId, isWorkspaceId, RequestIdSchema, UserInputRequestIdSchema } from '@openkit/protocol';
+import {
+  ApprovalRequestIdSchema,
+  isThreadId,
+  isUserId,
+  isWorkspaceId,
+  RequestIdSchema,
+  UserInputRequestIdSchema,
+} from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 
@@ -194,8 +201,7 @@ export class AttentionNotifications {
 
   /** Reads an internal reference; callers must use current admission before exposing it. */
   get(id: string): AttentionDelivery | null {
-    if (!RequestIdSchema.safeParse(id).success)
-      throw new AttentionError('invalid_attention_input');
+    if (!RequestIdSchema.safeParse(id).success) throw new AttentionError('invalid_attention_input');
     const row = this.sqlite.prepare(`${SELECT} WHERE a.id = ?`).get(id);
     return row ? decodeRow(row) : null;
   }
@@ -206,8 +212,7 @@ export class AttentionNotifications {
     userId: string,
     isEligible: AttentionEligibility
   ): AttentionDelivery | null {
-    if (!RequestIdSchema.safeParse(id).success)
-      throw new AttentionError('invalid_attention_input');
+    if (!RequestIdSchema.safeParse(id).success) throw new AttentionError('invalid_attention_input');
     const row = this.sqlite
       .prepare(`${SELECT} WHERE a.id = ? AND a.recipient_user_id = ?`)
       .get(id, userId);
