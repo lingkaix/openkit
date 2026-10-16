@@ -1,4 +1,4 @@
-import { type ChangeEvent, useRef, useState } from 'react';
+import { type ChangeEvent, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-aria-components';
 import { useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
@@ -139,7 +139,7 @@ function ProjectExport({
   );
 }
 
-/** Selected project-Workspace vault rebind; skeletons only this section while Vault is pending. */
+/** Selected-Workspace Vault rebind with current-read admission and ephemeral secret material. */
 function ProjectVault({
   workspaceId,
   disconnected,
@@ -151,17 +151,27 @@ function ProjectVault({
   const vaultRebind = useRebindWorkspaceVaultReference();
   const [vaultMaterial, setVaultMaterial] = useState('');
 
-  if (vault.isLoading && vault.data === undefined) {
+  useEffect(() => {
+    if (vault.isError) setVaultMaterial('');
+  }, [vault.isError]);
+
+  if (!vault.isFetchedAfterMount && !vault.isError) {
     return <Skeleton lines={8} />;
   }
 
-  const references = vault.data?.references ?? [];
+  const references = vault.isSuccess ? (vault.data?.references ?? []) : [];
   const unbound = references.filter((item) => item.status === 'unbound');
-  const writeBlocked = disconnected;
+  const writeBlocked = disconnected || !vault.isSuccess || vault.isFetching;
   const rebindError = vaultRebind.isError ? rebindWorkspaceVaultError(vaultRebind.error) : null;
 
   function submitRebind(referenceId: string) {
-    if (!vaultMaterial) return;
+    if (
+      writeBlocked ||
+      vaultRebind.isPending ||
+      !vaultMaterial ||
+      !unbound.some((reference) => reference.referenceId === referenceId)
+    )
+      return;
     const material = vaultMaterial;
     setVaultMaterial('');
     vaultRebind.submit(workspaceId, referenceId, material);
@@ -177,7 +187,7 @@ function ProjectVault({
         />
       ) : null}
       {rebindError ? <ErrorBanner message={rebindError} /> : null}
-      {!vault.isError && references.length === 0 ? (
+      {vault.isSuccess && !vault.isFetching && references.length === 0 ? (
         <EmptyState
           icon="key"
           title="No vault references"
@@ -216,7 +226,7 @@ function ProjectVault({
                     </Button>
                     <Button
                       slot="close"
-                      isDisabled={!vaultMaterial}
+                      isDisabled={writeBlocked || vaultRebind.isPending || !vaultMaterial}
                       onPress={() => submitRebind(reference.referenceId)}
                     >
                       Confirm
