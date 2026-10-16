@@ -1059,8 +1059,8 @@ describe('Same-candidate read failure recovery', () => {
     await user.click(screen.getByRole('button', { name: 'Select candidate' }));
     await screen.findByRole('alert');
     await cache.refetchQueries({ queryKey: ['artifact', ARTIFACT.workspaceId, ARTIFACT.id] });
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      "Couldn't load this artifact review."
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load this artifact review.")
     );
     expect(
       screen.queryByRole('heading', { name: PROPOSAL_ARTIFACT.title })
