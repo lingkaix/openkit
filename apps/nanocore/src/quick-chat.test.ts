@@ -2468,6 +2468,69 @@ describe('quick chat app API', () => {
     }
   });
 
+  it('refuses an oversized final Quick Chat payload before upstream dispatch', async () => {
+    const upstream = vi.fn();
+    let hookRejected = false;
+    const options = createQuickChatProviderOptions();
+    const createChatCompletion = vi.fn(async (_provider, request, _onUsage, transport) => {
+      try {
+        await transport.finalRequestAdmission?.({
+          payload: { ...request, serializerInstructions: '界'.repeat(2_000) },
+          contextWindowTokens: 16_000,
+          outputReserveTokens: 1_000,
+          codexTurnState: 'retained-native-continuity',
+        });
+      } catch {
+        hookRejected = true;
+        // Stock can flatten the trusted hook error before returning to the entry.
+        throw new Error('Stock callback failed.');
+      }
+      upstream();
+      return {
+        id: 'chat_final_admission',
+        object: 'chat.completion',
+        created: 1,
+        model: request.model,
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Should not dispatch.' },
+            finish_reason: 'stop',
+          },
+        ],
+      };
+    });
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
+      ...options,
+      gatewayConfig: {
+        ...options.gatewayConfig,
+        logicalModels: options.gatewayConfig.logicalModels.map((model) => ({
+          ...model,
+          contract: { context: 6_000 },
+        })),
+      },
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: { createChatCompletion } as unknown as PiAiGatewayClient,
+    });
+    const response = await app.request(
+      ...operationRequest('chat.quick', {}, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ input: 'A small public prompt.' }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'internal_agent_context_exceeded',
+      message: expect.stringContaining('Reduce input or retrieve a smaller excerpt.'),
+    });
+    expect(hookRejected).toBe(true);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(createChatCompletion).toHaveBeenCalledOnce();
+  });
+
   it('routes Quick Chat through one direct provider call', async () => {
     const calls: Array<{
       providerId: string;
