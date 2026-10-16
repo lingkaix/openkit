@@ -1,4 +1,6 @@
+import { Link } from 'react-router-dom';
 import { ListRow, StatusChip, type StatusTone } from '../../primitives';
+import { chatThreadPath } from '../chat/data';
 import type { AuditEventDisplayRow, PermissionDecisionDisplayRow } from './data';
 
 /**
@@ -52,7 +54,7 @@ export function RecordedTime({ value }: { value?: string }) {
 }
 
 /**
- * Renders one whitelisted audit-event row.
+ * Renders one whitelisted audit-event row with its recorded actor and lineage.
  *
  * @param props Safe audit metadata.
  */
@@ -64,6 +66,28 @@ export function AuditEventRow({ event }: { event: AuditEventDisplayRow }) {
         <p className="text-sm font-bold text-fg-strong">{event.action}</p>
         <p className="text-xs text-fg-muted">{event.summary}</p>
         <p className="text-xs text-fg-muted">{event.category}</p>
+        <p className="break-all text-xs text-fg-muted">
+          {event.actor ? `Actor: ${event.actor.kind} · ${event.actor.id}` : 'Actor not recorded'}
+        </p>
+        {event.workspaceId && event.threadId ? (
+          <Link
+            to={chatThreadPath(event.workspaceId, event.threadId)}
+            className="break-all text-xs font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
+          >
+            Open Thread {event.threadId} in Workspace {event.workspaceId}
+          </Link>
+        ) : null}
+        {event.turnId ? (
+          <p className="break-all text-xs text-fg-muted">Turn: {event.turnId}</p>
+        ) : null}
+        {event.requestId ? (
+          <p className="break-all text-xs text-fg-muted">Request: {event.requestId}</p>
+        ) : null}
+        {event.action === 'turn.interrupt' && event.outcome === 'succeeded' ? (
+          <p className="text-xs text-fg-muted">
+            Stop request accepted. Runtime cleanup is not confirmed by this event.
+          </p>
+        ) : null}
         <RecordedTime value={event.recordedAt} />
       </div>
       <StatusChip tone={status.tone} dot>
