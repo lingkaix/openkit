@@ -40,3 +40,5 @@ CapabilityCall admits optional namespaced extensions. `openkit.gateway/routeLine
 `GitFailureExplanationReaderSchema` strips descriptive additions, including nested evidence, while preserving code/status/subprocess relationships. `GitFailureExplanationSchema` remains the exact producer assertion.
 
 `src/common/object-reference.ts` owns local `{scopeId,objectId}` references. Scope paths use fixed page or retrieval-trace owner forms and call the current per-kind checks in `common/ids.ts`; they add no identifier allocation. The separate UUID rollout must tighten those owner checks. Page selectors remain Knowledge-owned stable paths. A local reference resolves only in its trusted Server and grants no access.
+
+`Turn.fileInputs` is the optional ordered inventory of exact original conversation files. Its immutable array position is the input ordinal; names are display metadata and never path segments. Canonical original bytes remain under the receiving Turn outside its JSON record. Retained absence means no file inputs. New request validation and current admission belong to the conversation and storage owners; this inventory grants no access or Worker delivery.
