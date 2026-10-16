@@ -1245,6 +1245,8 @@ pub struct EpochCoordinator {
     image_backend: DockerImageBackend,
     persistent_volumes: PersistentVolumeStore,
     physical_epoch: String,
+    /// Ended local startup observation; never a readiness or delivery witness.
+    startup_context: opentelemetry::trace::SpanContext,
     run_root: PathBuf,
     bridge: Option<OpenSandboxBridge>,
     route_projection: OuterRouteProjection,
@@ -1995,6 +1997,7 @@ impl EpochCoordinator {
             image_backend,
             persistent_volumes,
             physical_epoch,
+            startup_context: opentelemetry::trace::SpanContext::empty_context(),
             run_root: plan.run_root().to_path_buf(),
             bridge: None,
             route_projection: OuterRouteProjection::new(),
@@ -2088,6 +2091,7 @@ impl EpochCoordinator {
                 image_backend: DockerImageBackend::new(root.join("missing-docker")),
                 persistent_volumes,
                 physical_epoch: "a".repeat(64),
+                startup_context: opentelemetry::trace::SpanContext::empty_context(),
                 run_root: root.join("epoch"),
                 bridge: None,
                 route_projection: OuterRouteProjection::new(),
@@ -3442,6 +3446,99 @@ fn terminate_children(children: &mut [Child]) {
 
 #[cfg(test)]
 mod tests {
+    /// Uses real native H2 carriage and the local storage owner, without a deployed host.
+    #[tokio::test]
+    async fn native_trace_context_bounds_execution_and_survives_result_redelivery() {
+        use bytes::Bytes;
+        use opentelemetry::trace::TraceContextExt;
+        use opentelemetry::{Context, global};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        global::set_tracer_provider(provider.clone());
+        let root = std::env::temp_dir().join(format!("nanohost-tracing-{}", std::process::id()));
+        let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
+        let mut startup = crate::telemetry::Observation::start(
+            "nanohost.epoch.start", &Context::new(), Vec::new(), None,
+        );
+        startup.finish(true);
+        coordinator.startup_context = startup.context().span().span_context().clone();
+        let startup_context = coordinator.startup_context.clone();
+        let remote = "00-11111111111111111111111111111111-2222222222222222-01";
+        let (client, server) = tokio::io::duplex(4096);
+        let (mut sender, driver) = h2::client::handshake(client).await.unwrap();
+        let driver = tokio::spawn(driver);
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let requests = observed.clone();
+        let server = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(server).await.unwrap();
+            while let Some(request) = connection.accept().await {
+                let (request, mut respond) = request.unwrap();
+                let is_result = request.uri().path().ends_with("/result");
+                let headers = request.headers().clone();
+                let mut body = request.into_body();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    let chunk = chunk.unwrap();
+                    body.flow_control().release_capacity(chunk.len()).unwrap();
+                    bytes.extend_from_slice(&chunk);
+                }
+                if is_result {
+                    requests.lock().unwrap().push((headers, bytes));
+                    respond.send_response(http::Response::builder().status(204).body(()).unwrap(), true).unwrap();
+                } else {
+                    assert!(!headers.contains_key("traceparent"), "poll context is not effect parentage");
+                    let mut stream = respond.send_response(http::Response::builder()
+                        .status(200).header("traceparent", remote).header("tracestate", "test=value")
+                        .body(()).unwrap(), false).unwrap();
+                    stream.send_data(Bytes::from(serde_json::to_vec(&serde_json::json!({
+                        "requestId": "a".repeat(64), "storageRef": "storage-one", "attachmentGeneration": 1,
+                    })).unwrap()), true).unwrap();
+                }
+            }
+        });
+        let mut cursor = 9;
+        let mut command = crate::nanocore_session::poll_effect_command(
+            "http://nanocore.test", &mut sender, &mut cursor, false,
+        ).await.unwrap().unwrap();
+        assert_eq!(command.trace_context.span().span_context().trace_id().to_string(), "11111111111111111111111111111111", "command response must carry the initiating parent");
+        let original_input = command.input.clone();
+        let result = match crate::execute_effect_command(&mut coordinator, &mut command).unwrap() {
+            crate::ExecutedEffectResult::Json(result) => result,
+            _ => panic!("storage inspection returns JSON"),
+        };
+        assert_eq!(command.input, original_input, "trace context must not enter effect identity");
+        let spans = exporter.get_finished_spans().unwrap();
+        let effect = spans.iter().find(|span| span.name == "nanohost.effect").expect("local span must end before any result delivery");
+        assert_eq!(effect.parent_span_id.to_string(), "2222222222222222");
+        assert_eq!(effect.links.links.len(), 1);
+        assert_eq!(effect.links.links[0].span_context, startup_context);
+        assert_eq!(command.trace_context.span().span_context(), &effect.span_context);
+        assert_eq!(effect.status, opentelemetry::trace::Status::Ok);
+        for _ in 0..2 {
+            crate::nanocore_session::submit_effect_result("http://nanocore.test", &mut sender, &command, result.clone()).await.unwrap();
+        }
+        let requests = observed.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0], requests[1], "redelivery preserves context and exact result identity");
+        assert_eq!(crate::telemetry::extract(&requests[0].0).span().span_context().span_id(), effect.span_context.span_id());
+        assert_eq!(requests[0].0["tracestate"], "test=value");
+        assert_eq!(exporter.get_finished_spans().unwrap().len(), 2, "delivery must not retain or create execution spans");
+        let exported = format!("{spans:?}");
+        assert!(!exported.contains("storage-one"));
+        assert!(!exported.contains(root.to_str().unwrap()));
+        drop(requests);
+        driver.abort();
+        server.abort();
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+        global::set_tracer_provider(opentelemetry::trace::noop::NoopTracerProvider::new());
+        provider.shutdown().unwrap();
+    }
+
     use std::collections::{BTreeMap, BTreeSet};
     #[cfg(target_os = "linux")]
     use std::ffi::CString;

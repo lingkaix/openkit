@@ -22,6 +22,7 @@ mod openshell_release;
 mod persistent_volume;
 mod sandbox_bridge;
 mod start_barrier;
+mod telemetry;
 mod workspace_collect;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

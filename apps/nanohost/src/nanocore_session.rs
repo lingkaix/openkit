@@ -379,6 +379,8 @@ pub struct PolledEffectCommand {
     pub input: serde_json::Value,
     /// Complete verified raw body for the one `reference.import` direction.
     pub file_data: Option<RawImportFile>,
+    /// Ephemeral diagnostic parent, replaced by the ended local effect context.
+    pub trace_context: opentelemetry::Context,
 }
 
 /// Complete canonical metadata and verified bytes from one raw import response.
@@ -2163,6 +2165,7 @@ pub async fn poll_effect_command(
         kind,
         request_id,
         input,
+        trace_context: opentelemetry::Context::new(),
         file_data: None,
     }))
 }
@@ -2394,6 +2397,7 @@ async fn poll_reference_import(
         kind: RuntimeEffectKind::ImportReference,
         request_id,
         input: serde_json::json!({}),
+        trace_context: opentelemetry::Context::new(),
         file_data: Some(RawImportFile {
             slot,
             relative_path,
@@ -3442,6 +3446,7 @@ mod tests {
                 kind,
                 request_id: "a".repeat(64),
                 input: serde_json::json!({}),
+                trace_context: opentelemetry::Context::new(),
                 file_data: None,
             };
             let started = tokio::time::Instant::now();
@@ -4300,6 +4305,7 @@ mod tests {
             kind: RuntimeEffectKind::AcquireImage,
             request_id,
             input: serde_json::json!({ "imageReference": "openkit/worker:test" }),
+            trace_context: opentelemetry::Context::new(),
             file_data: None,
         };
 
@@ -4916,6 +4922,7 @@ mod tests {
             kind: RuntimeEffectKind::CreateSandbox,
             request_id: "a".repeat(64),
             input: serde_json::json!({}),
+            trace_context: opentelemetry::Context::new(),
             file_data: None,
         };
         let (client_io, server) = scripted_outer_server(
@@ -5018,6 +5025,7 @@ mod tests {
             kind: RuntimeEffectKind::CreateSandbox,
             request_id: "a".repeat(64),
             input: serde_json::json!({}),
+            trace_context: opentelemetry::Context::new(),
             file_data: None,
         };
         let mut dispositions = Vec::new();
@@ -5520,6 +5528,7 @@ mod tests {
                 kind: received.kind,
                 request_id: received.request_id.clone(),
                 input: received.input.clone(),
+                trace_context: opentelemetry::Context::new(),
                 file_data: None,
             };
             submit = match crate::execute_effect_command(coordinator, &mut command).unwrap() {
@@ -5534,6 +5543,7 @@ mod tests {
                 kind: RuntimeEffectKind::CollectWorkspace,
                 request_id: collect_request_id(),
                 input: serde_json::json!({}),
+                trace_context: opentelemetry::Context::new(),
                 file_data: None,
             });
             let outcome = {
@@ -6452,6 +6462,7 @@ mod tests {
             kind: RuntimeEffectKind::CollectWorkspace,
             request_id: collect_request_id(),
             input: serde_json::json!({}),
+            trace_context: opentelemetry::Context::new(),
             file_data: None,
         };
         let delivery = candidate_delivery(vec![0x41; 200 * 1024]);
