@@ -1907,6 +1907,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const observations: Array<() => void> = [];
     const effects: string[] = [];
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
       coreDb: f.coreDb,
       store: f.store,
       env: {},
@@ -7972,12 +7973,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
           {
             materialId: material.materialId,
             revisionId: revision.revisionId,
-            contentDigest: revision.contentDigest,
+            contentDigest: fixture.materialContentDigest,
             projection: {
               kind: 'excerpt',
               byteLength: 2_048,
               representationByteLength: 5_000,
-              representationDigest: revision.contentDigest,
+              representationDigest: fixture.materialContentDigest,
               truncated: true,
               availability: 'incomplete',
             },
@@ -7987,7 +7988,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           {
             source: { kind: 'material', revisionId: revision.revisionId },
             byteLength: 5_000,
-            originalDigest: revision.contentDigest,
+            originalDigest: fixture.materialContentDigest,
           },
         ],
       });
