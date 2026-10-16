@@ -100,15 +100,24 @@ export function ThreadStream({
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
   const focusedElement = useRef<HTMLDivElement>(null);
   const located = useRef<string | null>(null);
-  const selectedTurn = !live.isError && dashboard?.turns.find((turn) => turn.id === focusTurnId);
+  const focusedDashboard =
+    !live.isError &&
+    dashboard?.thread.id === threadId &&
+    dashboard.thread.workspaceId === workspaceId
+      ? dashboard
+      : undefined;
+  const selectedTurn = focusedDashboard?.turns.find((turn) => turn.id === focusTurnId);
   const focusKey = JSON.stringify([workspaceId, threadId, focusTurnId]);
   useEffect(() => {
-    if (!selectedTurn || items.isLoading || items.isError || !focusedElement.current) return;
+    if (!selectedTurn || items.isLoading || items.isError || !focusedElement.current) {
+      if (located.current !== focusKey) located.current = null;
+      return;
+    }
     if (located.current === focusKey) return;
     focusedElement.current.scrollIntoView({ block: 'center' });
     located.current = focusKey;
   }, [focusKey, selectedTurn, items.isLoading, items.isError]);
-  const unavailableTurn = Boolean(focusTurnId && dashboard && !live.isError && !selectedTurn);
+  const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !selectedTurn);
 
   if (items.isLoading) {
     return (
