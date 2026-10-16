@@ -66,6 +66,7 @@ import {
   useUpdateKnowledge,
   workspaceKeys,
 } from './data';
+import { NotebookHistoryPanel } from './NotebookHistoryPanel';
 
 const KIND_LABEL: Record<KnowledgeItem['kind'], string> = {
   preference: 'Preferences',
@@ -552,6 +553,7 @@ export function KnowledgeScreen() {
         />
       )}
       <div className={pagePending ? 'hidden' : undefined}>
+        <NotebookHistoryPanel workspaceId={workspaceId} />
         {addDraft.adding ? (
           <Card className="flex flex-col gap-3">
             <Eyebrow>New preference</Eyebrow>
