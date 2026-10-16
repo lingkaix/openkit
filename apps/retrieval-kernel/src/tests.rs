@@ -1473,13 +1473,14 @@ fn large_file_actual_allocations_and_peak_memory() {
             String::from_utf8_lossy(&output.stdout)
         );
         let output = String::from_utf8(output.stdout).unwrap();
-        println!(
-            "{}",
-            output
-                .lines()
-                .find(|line| line.starts_with("allocation:"))
-                .unwrap()
-        );
+        // Serial libtest can prefix nocapture output with the current test name.
+        // Retain the child's measured values and its decisive allocation/RSS assertions.
+        let measurement = output
+            .lines()
+            .find_map(|line| line.split_once("allocation: "))
+            .map(|(_, measurement)| measurement)
+            .expect("child must report actual allocation measurements");
+        println!("allocation: {measurement}");
         return;
     }
     let f = Fixture::new();
