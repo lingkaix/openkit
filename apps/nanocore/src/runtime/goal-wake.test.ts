@@ -20,7 +20,7 @@ describe('Task terminal and Goal wake shared commit', () => {
       const view = await executeGoalOperation(
         'goal.create',
         { workspaceId: ws.id, requestId: '66666666-6666-4666-8666-666666666666', intent: 'Design' },
-        { actor: { kind: 'local', userId: 'user_local' } },
+        { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
         store,
         db
       );
@@ -39,7 +39,10 @@ describe('Task terminal and Goal wake shared commit', () => {
           admittedAt: new Date().toISOString(),
         })
       );
-      const turn = store.createTurn(ws.id, task.id, 'Design', { kind: 'user', id: 'user_local' });
+      const turn = store.createTurn(ws.id, task.id, 'Design', {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      });
       installPendingRequestAdmission(store, {
         openWorkspace: (workspaceId) => openWorkspaceDb(root, workspaceId),
       });
@@ -89,7 +92,7 @@ describe('Task terminal and Goal wake shared commit', () => {
     const view = await executeGoalOperation(
       'goal.create',
       { workspaceId: ws.id, requestId: '99999999-9999-4999-8999-999999999999', intent: 'Design' },
-      { actor: { kind: 'local', userId: 'user_local' } },
+      { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
       store,
       db
     );
@@ -108,7 +111,10 @@ describe('Task terminal and Goal wake shared commit', () => {
         admittedAt: new Date().toISOString(),
       })
     );
-    const turn = store.createTurn(ws.id, task.id, 'Design', { kind: 'user', id: 'user_local' });
+    const turn = store.createTurn(ws.id, task.id, 'Design', {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const terminal = {
       ...turn,
       status: 'completed' as const,
@@ -159,7 +165,7 @@ describe('Coordinator marker admission', () => {
       const view = await executeGoalOperation(
         'goal.create',
         { workspaceId: ws.id, requestId: '88888888-8888-4888-8888-888888888888', intent: 'Design' },
-        { actor: { kind: 'local', userId: 'user_local' } },
+        { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
         store,
         db
       );
@@ -178,7 +184,7 @@ describe('Coordinator marker admission', () => {
           intent: 'Design only',
           expectedRevision: 0,
         },
-        { actor: { kind: 'local', userId: 'user_local' } },
+        { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
         store,
         db
       );
@@ -187,7 +193,15 @@ describe('Coordinator marker admission', () => {
       );
       expect(considerGoal(store, db, goal.goalId)).toBeNull();
       store.updateTurn(turn!.id, { status: 'completed', completedAt: new Date().toISOString() });
-      expect(considerGoal(store, db, goal.goalId)?.agentId).toBe('goal-coordinator');
+      const next = considerGoal(store, db, goal.goalId);
+      expect(next?.agentId).toBe('goal-coordinator');
+      store.updateTurn(next!.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: { code: 'provider_unavailable', message: 'Provider unavailable.' },
+      });
+      expect(considerGoal(store, db, goal.goalId)).toBeNull();
+      expect(readGoalView(store, db, goal.goalId).goal!.disposition).toBeNull();
     } finally {
       db.sqlite.close();
     }

@@ -16,7 +16,7 @@ describe('createSetupDiagnostics', () => {
         id: 'agent-openrouter',
         kind: 'custom',
         models: ['openai/gpt-5.2'],
-        secretRef: 'vault://missing',
+        secretRef: 'vault://vault_00000000-0000-7ac5-af56-0e09bc289ac0',
       },
     ]);
 
@@ -40,7 +40,11 @@ describe('createSetupDiagnostics', () => {
     expect(diagnostics.providers).toEqual([
       expect.objectContaining({
         id: 'agent-openrouter',
-        secret: { configured: true, marker: 'secret-ref', ref: 'vault://missing' },
+        secret: {
+          configured: true,
+          marker: 'secret-ref',
+          ref: 'vault://vault_00000000-0000-7ac5-af56-0e09bc289ac0',
+        },
       }),
     ]);
     expect(diagnostics.agents[0]?.readiness).toEqual({

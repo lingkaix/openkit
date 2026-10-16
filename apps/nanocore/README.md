@@ -14,6 +14,8 @@ The authorized Thread dashboard derives taskInputs objective summaries through t
 
 The authorized Thread dashboard projects the authenticated viewer and only recorded Item actors and assigned Turn Agents with current User or Agent display names. It exposes no email or unrelated user directory; absent names retain stable actor ids.
 
+Public `turn.interrupt` records its admitted requester and exact Workspace, Thread, Turn and request in the existing Workspace Audit family after fresh successful command execution. Replay does not add or relabel that event. The success event means Stop-request acceptance, not completed runtime cleanup; it never reuses Turn.triggerActor. Audit errors remain explicit and cannot undo a reached runtime effect. Missing historical facts or crash gaps stay unavailable, with no new replay or repair owner. `audit.workspace-list` filters Thread-scoped events by current Thread audience as well as current Workspace admission. See [Turn Interruption Attribution](../../docs/specs/20260703-audit_usage_evidence_records.md#turn-interruption-attribution).
+
 Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.
 
 Thread dashboard work status projects selected Agent, active Turn status, pending attention counts and latest Artifact only. Workspace active-work rows project recorded Turn activity without a mode label. Product mode and handoff proof comes from the owning conversation, Task or Goal result and its exact Thread, Turn and Item lineage; dashboards compute no routing decision.
@@ -57,7 +59,7 @@ The same-Sandbox peer route regression seeds history in memory and publishes com
 - local-mode implicit single-user operation
 - server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
 - optional file-backed state through `OPENKIT_DATA_ROOT`
-- implicit local actor `user_local`
+- local actor bound to the unique recorded canonical User
 - governed container Worker AgentSessions
 - provider-neutral subscription account state for `openai-codex` and `xai`
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses, with one-level function namespace identity preserved on the chat-native bridge
@@ -309,7 +311,7 @@ First prove the predecessor NanoHost effect domain fully stopped and preserve it
 
 If an existing authoritative Core, User, or Workspace SQLite database fails its boot integrity check, NanoCore stops before product admission, bootstrap credential issuance, or listener binding and leaves the original file unchanged. Derived indexes remain disposable and rebuildable.
 
-In local mode, NanoCore upserts the implicit `user_local` row on boot and accepts requests without auth headers. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
+In local mode, NanoCore allocates one canonical User only on a fresh data root and uses the unique recorded local User on later boots. Missing or ambiguous local User authority on an initialized root stops boot. Local requests use that exact recorded identity and need no auth header. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
 
 ## Release Verification
 
@@ -492,6 +494,8 @@ Artifact operations derive their HTTP bindings and admission posture from `ARTIF
 
 Automatic Assistant-to-Goal routing refuses private source input before any shared Goal write when disclosure admission is absent. Explicit Goal commands and handoffs from shared history retain their existing owner checks.
 
+Goal Coordinator Worker discovery reads only its currently authorized Workspace through native `agent.list`. Current Task setup determines readiness, and ordinary Task admission rechecks the exact selection. Plan activation and completion consumption require the captured operation and source tuple; a mismatched call leaves the exact grant available for its correct operation.
+
 Workspace MCP bindings support raw and bearer credential presentation under [Worker MCP Tool Supply](../../docs/specs/20260704-worker_mcp_tool_supply.md#credential-injection). Bearer delivery uses the SDK inside NanoCore; Worker supply remains secret-free. The HTTP plugin importer refuses an explicit `auth` object with the deferred onboarding reason and a `query` field with the unsupported-query reason, and accepts a query string already part of the endpoint URL. Run `pnpm --filter @openkit/nanocore exec vitest run src/runtime/worker-mcp-gateway.test.ts src/worker-mcp-routes.test.ts src/catalog/resource-catalog.test.ts` for the local synthetic conformance slice.
 
 The Workspace MCP update-binding operation carries optional credential bindings through the App API and CLI; supplied arrays replace the bindings and omission preserves them. It validates the binding against the current transport before publication and returns JSON `invalid_request` for malformed request bodies or invalid proposed bindings. Retained-record and response-schema failures keep the route's error code and status with the phase-neutral fixed message "The record could not be processed." Workspace MCP bindings support raw and bearer credential presentation under [Worker MCP Tool Supply](../../docs/specs/20260704-worker_mcp_tool_supply.md#credential-injection). Bearer delivery uses the SDK inside NanoCore; Worker supply remains secret-free. The HTTP plugin importer refuses an explicit `auth` object with the deferred onboarding reason and a `query` field with the unsupported-query reason, and accepts a query string already part of the endpoint URL. Run `pnpm --filter @openkit/nanocore exec vitest run src/runtime/worker-mcp-gateway.test.ts src/worker-mcp-routes.test.ts src/catalog/resource-catalog.test.ts` for the local synthetic conformance slice.
@@ -553,3 +557,7 @@ Vault injection plans and receipts preserve immutable intent and completion line
 All NanoCore Vitest unit and e2e configurations use the shared [temporary-directory setup](../../tests/support/vitest-global-setup.mjs), including the default-off real Codex gate. Workers inherit one private invocation directory; normal teardown reclaims it after success or failure. Tests close database handles and remove owned fixtures before the run-level backstop.
 
 `thread-read-state.ts` joins authenticated User-owned read receipts to current eligible completed message Items. `thread.read-state` reads without marking; `thread.mark-read` accepts displayed Item identities, or an omitted list for explicit Mark read. Existing operation admission supplies the current User and Workspace/Thread audience; callers cannot select another User. Invalid or cross-Thread identities refuse the complete batch before mutation. Conversation navigation projects unread counts from the same receipt owner.
+
+Direct Task command replay uses the current worker Turn and existing command owner. Historical Task-to-Goal replay is removed under the authorized pre-stable reset because its producer is retired. Run the complete `src/server.test.ts` suite for current replay and lineage refusal.
+
+Command receipt normalization selects the existing per-kind validator from the response discriminator before memory, SQLite or owner-directory publication and on retained-row readback. Direct Workspace, User, Thread, Turn, Artifact, Material, Review, Knowledge, invitation, presentation and Worker storage pointers use their declared owners; composite, request, Goal and native keys retain their own opaque contracts. Run the complete `src/storage/command-request-records.test.ts` suite for malformed and wrong-kind refusal, unchanged inventory, retained-row refusal and opaque-owner controls.

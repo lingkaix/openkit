@@ -2,9 +2,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { type CreateAppOptions, createApp } from './app.js';
+import type { CreateAppOptions } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import {
   ProviderSubscriptionAccountManager,
@@ -13,6 +12,8 @@ import {
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 
 const ACCOUNT_STATUS: ProviderSubscriptionAccountSnapshot = {
@@ -161,7 +162,7 @@ function createSignedInAuth(): BetterAuthServer {
     api: {
       getSession: async () => ({
         session: { id: 'session_deployment_admin_test' },
-        user: { id: 'user_session' },
+        user: { id: 'usr_00000000-0000-7691-add4-fc1fc8769319' },
       }),
     },
     handler: async () => Response.json({ status: 'auth-ok' }),
@@ -220,20 +221,20 @@ describe('deployment-admin routes', () => {
       .prepare(
         `INSERT INTO users
           (id, display_name, email, email_verified, created_at, updated_at, kind)
-         VALUES ('user_session', 'Session User', 'session@example.com', false, ?, ?, 'human')`
+         VALUES ('usr_00000000-0000-7691-add4-fc1fc8769319', 'Session User', 'session@example.com', false, ?, ?, 'human')`
       )
       .run(Date.now(), Date.now());
     const workspace = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const readonly = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const { manager, observed, vaultBackendAccess } =
       createObservedProviderSubscriptionManager(coreDb);
@@ -292,7 +293,7 @@ describe('deployment-admin routes', () => {
     ensureLocalUser(coreDb);
     const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
     });

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -9,11 +10,16 @@ import { assertCurrentMcpVaultAuthority } from '../worker-mcp-routes.js';
 import {
   createVaultGrant,
   getVaultGrant,
+  importWorkspaceVaultGrants,
   listVaultGrants,
   type NarrowVaultGrantConstraints,
   narrowVaultGrant,
 } from './vault-grants.js';
-import { createVaultReference } from './vault-references.js';
+import {
+  createVaultReference,
+  importUnboundWorkspaceVaultReference,
+  rebindWorkspaceVaultReference,
+} from './vault-references.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -26,9 +32,9 @@ function fixture(lineage?: { approvalId: string; policyDecisionId?: string }) {
   roots.push(root);
   const db: CoreDb = openCoreDb(root);
   applyMigrations(db);
-  const workspaceId = randomUUID();
+  const workspaceId = allocateEntityId('ws');
   const reference = createVaultReference(db, {
-    referenceId: randomUUID(),
+    referenceId: allocateEntityId('vault'),
     ownerScope: 'workspace',
     workspaceId,
     secretKind: 'github-token',
@@ -36,7 +42,7 @@ function fixture(lineage?: { approvalId: string; policyDecisionId?: string }) {
     backendKind: 'encrypted-file',
   });
   const grant = createVaultGrant(db, {
-    grantId: randomUUID(),
+    grantId: allocateEntityId('grant'),
     vaultReferenceId: reference.referenceId,
     ownerScope: 'workspace',
     workspaceId,
@@ -50,12 +56,12 @@ function fixture(lineage?: { approvalId: string; policyDecisionId?: string }) {
 
 describe('Vault grant narrowing', () => {
   it('refuses missing Policy lineage without issuing replacement authority', () => {
-    const { db, grant } = fixture({ approvalId: randomUUID() });
+    const { db, grant } = fixture({ approvalId: allocateEntityId('it') });
     try {
       expect(() =>
         narrowVaultGrant(db, {
           grantId: grant.grantId,
-          replacementGrantId: randomUUID(),
+          replacementGrantId: allocateEntityId('grant'),
           constraints: { targetAgentId: randomUUID() },
         })
       ).toThrow('Grant authority is not current.');
@@ -64,14 +70,47 @@ describe('Vault grant narrowing', () => {
       db.sqlite.close();
     }
   });
+  it('refuses imported history after local reference rebind, including a null Approval', () => {
+    const { db, grant, reference, workspaceId } = fixture();
+    try {
+      db.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
+      db.sqlite
+        .prepare('DELETE FROM vault_references WHERE reference_id = ?')
+        .run(reference.referenceId);
+      importUnboundWorkspaceVaultReference(db, { ...reference, workspaceId });
+      importWorkspaceVaultGrants(db, [grant]);
+      const rebound = rebindWorkspaceVaultReference(db, {
+        workspaceId,
+        referenceId: reference.referenceId,
+        backendKind: 'encrypted-file',
+        backendLocator: 'synthetic-rebound',
+        currentVersion: 1,
+      });
+      expect(rebound.status).toBe('active');
+      const imported = getVaultGrant(db, grant.grantId);
+      expect(imported).toMatchObject({ issuance: 'imported-history', approvalId: null });
+      const replacementGrantId = allocateEntityId('grant');
+      expect(() =>
+        narrowVaultGrant(db, {
+          grantId: grant.grantId,
+          replacementGrantId,
+          constraints: { targetAgentId: randomUUID() },
+        })
+      ).toThrow('Grant authority is not current.');
+      expect(getVaultGrant(db, replacementGrantId)).toBeNull();
+      expect(listVaultGrants(db)).toEqual([imported]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
   it('preserves authority facts, revokes the old binding and enforces the replacement exact target', () => {
     const { db, grant: original, reference, workspaceId } = fixture();
     try {
       const agentId = randomUUID();
-      const agentSessionId = randomUUID();
+      const agentSessionId = allocateEntityId('as');
       const result = narrowVaultGrant(db, {
         grantId: original.grantId,
-        replacementGrantId: randomUUID(),
+        replacementGrantId: allocateEntityId('grant'),
         constraints: {
           targetAgentId: agentId,
           targetAgentSessionId: agentSessionId,
@@ -148,7 +187,7 @@ describe('Vault grant narrowing', () => {
       expect(() =>
         narrowVaultGrant(db, {
           grantId: grant.grantId,
-          replacementGrantId: randomUUID(),
+          replacementGrantId: allocateEntityId('grant'),
           constraints,
         })
       ).toThrow('Grant constraints do not strictly reduce authority.');
@@ -163,17 +202,17 @@ describe('Vault grant narrowing', () => {
     try {
       const narrowed = narrowVaultGrant(db, {
         grantId: grant.grantId,
-        replacementGrantId: randomUUID(),
+        replacementGrantId: allocateEntityId('grant'),
         constraints: { targetAgentId: randomUUID() },
       }).grant;
       expect(() =>
         narrowVaultGrant(db, {
           grantId: narrowed.grantId,
-          replacementGrantId: randomUUID(),
+          replacementGrantId: allocateEntityId('grant'),
           constraints: { targetAgentId: randomUUID(), expiresAt: '2099-01-01T00:00:00.000Z' },
         })
       ).toThrow();
-      const replacementGrantId = randomUUID();
+      const replacementGrantId = allocateEntityId('grant');
       db.sqlite.exec(
         "CREATE TRIGGER reject_grant_revocation BEFORE UPDATE ON vault_grants BEGIN SELECT RAISE(ABORT, 'Synthetic revocation failure'); END"
       );

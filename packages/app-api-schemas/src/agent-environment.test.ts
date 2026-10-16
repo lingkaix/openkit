@@ -11,10 +11,10 @@ const environment = {
 };
 const record = {
   snapshotId: 'snapshot',
-  workspaceId: 'workspace',
-  turnId: 'turn',
-  threadId: 'thread',
-  agentSessionId: 'session',
+  workspaceId: 'ws_00000000-0000-70c6-8ed9-fd7af910ecca',
+  turnId: 'tu_00000000-0000-73ae-9013-1d4fd3ca2e4c',
+  threadId: 'th_00000000-0000-73eb-9a38-397e2c3d8bd1',
+  agentSessionId: 'as_00000000-0000-7149-aa22-5bae67362e8e',
   agentId: 'agent',
   packageId: 'package',
   runtimeKind: 'pi',

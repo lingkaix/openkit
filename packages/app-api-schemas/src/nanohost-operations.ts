@@ -1,3 +1,4 @@
+import { NanoHostTransportTokenIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   AbortNanoHostTransportRotationResponseSchema,
@@ -74,7 +75,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Revoke a NanoHost transport Token and fence its authority.',
-    inputSchema: z.object({ tokenId: z.string().min(1) }).strict(),
+    inputSchema: z.object({ tokenId: NanoHostTransportTokenIdSchema }).strict(),
     outputSchema: RevokeNanoHostTransportTokenResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },
@@ -88,7 +89,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'Rotate a NanoHost transport Token into the opposite configured slot.',
     inputSchema: RotateNanoHostTransportTokenRequestSchema.extend({
-      tokenId: z.string().min(1),
+      tokenId: NanoHostTransportTokenIdSchema,
     }).strict(),
     outputSchema: RotateNanoHostTransportTokenResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
@@ -102,7 +103,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Abort a NanoHost transport Token rotation and clear the successor slot.',
-    inputSchema: z.object({ tokenId: z.string().min(1) }).strict(),
+    inputSchema: z.object({ tokenId: NanoHostTransportTokenIdSchema }).strict(),
     outputSchema: AbortNanoHostTransportRotationResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },

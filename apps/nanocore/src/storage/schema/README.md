@@ -24,3 +24,5 @@ Run the focused repository tests for the changed record family, then the storage
 `goals.ts` owns Workspace SQL shapes for current Goal intent/history and wake revisions, work-intent cards, immutable Plan versions and ordinary Task citations. `task_turn_terminal_facts` is the minimal Task-owned terminal publication fact, committed with the Goal wake revision and recovered at boot. The one-way cutover in `../goal-cutover.ts` drops the seven retired Goal tables and Goal-owned checkpoints; Core migration clears and drops the Sandbox pin without removing shared records.
 
 Workspace migrations drop retired host repository and Git push tables after replaying unchanged historical setup DDL. No schema module or live repository store remains; archive codecs validate historical metadata without restoring authority.
+
+Vault grants require the closed `issuance` discriminator with no default. The Core baseline and Drizzle projection enforce `target` or `imported-history`; the importer cannot choose target issuance. This identifier cutover uses the accepted pre-stable clean-scope procedure and supplies no legacy provenance inference or data conversion.

@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ADMINISTRATOR_CLEANUP_MAX_BYTES,
@@ -49,16 +50,20 @@ const OWNERS = {
 
 const branches = {
   'workspace-deletion': {
-    target: { kind: 'workspace-deletion', workspaceId: 'ws_cleanup', requestId: 'request_cleanup' },
+    target: {
+      kind: 'workspace-deletion',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+      requestId: 'request_cleanup',
+    },
     state: { phase: 'deleted', retainedStaging: true, cleanedAt: null },
   },
   'execution-attempt': {
     target: {
       kind: 'execution-attempt',
-      attemptId: 'attempt_cleanup',
-      workspaceId: 'ws_cleanup',
-      threadId: 'thread_cleanup',
-      turnId: 'turn_cleanup',
+      attemptId: 'attempt_00000000-0000-7d53-8f4d-e8891d695441',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+      threadId: 'th_00000000-0000-7465-ae7a-1254b7992131',
+      turnId: 'tu_00000000-0000-71b9-94f9-94567395834c',
       agentSessionId: null,
     },
     state: { phase: 'closing', disposition: 'unknown' },
@@ -66,11 +71,11 @@ const branches = {
   'backend-session': {
     target: {
       kind: 'backend-session',
-      attemptId: 'attempt_cleanup',
-      workspaceId: 'ws_cleanup',
-      threadId: 'thread_cleanup',
-      turnId: 'turn_cleanup',
-      agentSessionId: 'session_cleanup',
+      attemptId: 'attempt_00000000-0000-7d53-8f4d-e8891d695441',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+      threadId: 'th_00000000-0000-7465-ae7a-1254b7992131',
+      turnId: 'tu_00000000-0000-71b9-94f9-94567395834c',
+      agentSessionId: 'as_00000000-0000-717d-94a2-aa8860a99044',
     },
     state: {
       state: 'cleanup-failed',
@@ -83,9 +88,9 @@ const branches = {
     target: {
       kind: 'agent-session-binding',
       agentSessionRuntimeBindingId: 'binding_cleanup',
-      agentSessionId: 'session_cleanup',
-      workspaceId: 'ws_cleanup',
-      threadId: 'thread_cleanup',
+      agentSessionId: 'as_00000000-0000-717d-94a2-aa8860a99044',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+      threadId: 'th_00000000-0000-7465-ae7a-1254b7992131',
     },
     state: { lifecycleState: 'closing', cleanupState: 'unknown' },
   },
@@ -106,8 +111,8 @@ const branches = {
   'worker-storage': {
     target: {
       kind: 'worker-storage',
-      storageRef: 'storage_cleanup',
-      workspaceId: 'ws_cleanup',
+      storageRef: 'wst_00000000-0000-75f1-833d-77d267ed17c1',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
       runtimeTargetId: 'runtime_cleanup',
     },
     state: { state: 'purge-pending', revision: 1, purgedAt: null },
@@ -160,19 +165,34 @@ function responseBytes(bytes: number) {
   const singleBytes = Math.floor(gap / 3);
   // The three copies account for multiples of three; revision's digit count fills the remainder.
   observation.state = { ...branches['worker-storage'].state, revision: 10 ** (gap % 3) };
-  const storageRef = `storage_cleanup${'界'.repeat(Math.floor(singleBytes / 3))}${'x'.repeat(singleBytes % 3)}`;
+  const runtimeTargetId = `runtime_cleanup${'界'.repeat(Math.floor(singleBytes / 3))}${'x'.repeat(singleBytes % 3)}`;
   for (const target of [
     observation.target,
     observation.evidence.reference,
     observation.nextInspection.target,
   ]) {
-    Object.assign(target, { storageRef });
+    Object.assign(target, { runtimeTargetId });
   }
   expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBe(bytes);
   return result;
 }
 
 describe('administrator cleanup shared schemas', () => {
+  it.each([
+    ['execution-attempt', 'attemptId'],
+    ['execution-attempt', 'workspaceId'],
+    ['execution-attempt', 'threadId'],
+    ['execution-attempt', 'turnId'],
+    ['backend-session', 'agentSessionId'],
+    ['worker-storage', 'storageRef'],
+  ] as const)('rejects a different entity kind for %s %s before projection', (source, field) => {
+    const known = item(source);
+    const wrongKind = 'usr_00000000-0000-7000-8000-000000000001';
+    for (const target of [known.target, known.evidence.reference, known.nextInspection.target])
+      Object.assign(target, { [field]: wrongKind });
+    expect(AdministratorCleanupItemSchema.safeParse(known).success).toBe(false);
+  });
+
   it('exports the exact bounded six-source contract and source owners', () => {
     expect(ADMINISTRATOR_CLEANUP_MAX_ENTRIES).toBe(100);
     expect(ADMINISTRATOR_CLEANUP_MAX_BYTES).toBe(262144);
@@ -535,7 +555,7 @@ describe('administrator cleanup shared schemas', () => {
       const target = {
         ...observation.target,
         ...('workspaceId' in observation.target
-          ? { workspaceId: `ws_${index}` }
+          ? { workspaceId: allocateEntityId('ws') }
           : { sandboxRuntimeId: `sandbox_${index}` }),
       };
       return {

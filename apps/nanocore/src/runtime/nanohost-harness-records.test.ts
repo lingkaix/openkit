@@ -4,10 +4,10 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -42,13 +42,13 @@ describe('private NanoHost Harness records', () => {
       for (let index = 2; index <= 21; index += 1) {
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'b'.repeat(64),
-          agentSessionId: `agent-session-${index}`,
+          agentSessionId: testEntityId('as', `agent-session-${index}`),
           agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-1',
-          threadId: `thread-${index}`,
+          threadId: testEntityId('th', `thread-${index}`),
           timestamp: now,
-          workspaceId: 'workspace-1',
+          workspaceId: testEntityId('ws', 'workspace-1'),
         });
         seedSubmittedAttempt(coreDb, index);
         const start = () =>
@@ -116,7 +116,7 @@ describe('private NanoHost Harness records', () => {
       ).toEqual({ count: 20 });
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -160,10 +160,10 @@ describe('private NanoHost Harness records', () => {
       expect(
         coreDb.sqlite
           .prepare(
-            "SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = 'agent-session-20'"
+            'SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
           )
-          .get()
-      ).toEqual({ attempt: 'lease-20' });
+          .get(testEntityId('as', 'agent-session-20'))
+      ).toEqual({ attempt: testEntityId('attempt', 'lease-20') });
     } finally {
       coreDb.sqlite.close();
     }
@@ -190,12 +190,12 @@ describe('private NanoHost Harness records', () => {
       for (const index of [2, 3]) {
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'b'.repeat(64),
-          agentSessionId: `agent-session-${index}`,
+          agentSessionId: testEntityId('as', `agent-session-${index}`),
           agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
           effectiveSetupGeneration: 1,
           harnessInstanceId: index === 2 ? 'harness-2' : 'harness-1',
-          threadId: `thread-${index}`,
-          workspaceId: 'workspace-1',
+          threadId: testEntityId('th', `thread-${index}`),
+          workspaceId: testEntityId('ws', 'workspace-1'),
           timestamp: now,
         });
         seedSubmittedAttempt(coreDb, index);
@@ -271,7 +271,7 @@ describe('private NanoHost Harness records', () => {
       const rows = table
         ? (coreDb.sqlite
             .prepare('SELECT * FROM scheduler_execution_attempts WHERE turn_id = ?')
-            .all('turn-1') as Record<string, unknown>[])
+            .all(testEntityId('tu', 'turn-1')) as Record<string, unknown>[])
         : [];
       expect(rows).toHaveLength(1);
       const attemptId = rows[0]!.attempt_id;
@@ -280,14 +280,21 @@ describe('private NanoHost Harness records', () => {
           "SELECT command_body_json AS body FROM harness_instance_records WHERE operation = 'turn.start'"
         )
         .get() as { body: string };
-      expect(JSON.parse(started.body)).toMatchObject({ leaseId: attemptId, turnId: 'turn-1' });
+      expect(JSON.parse(started.body)).toMatchObject({
+        leaseId: attemptId,
+        turnId: testEntityId('tu', 'turn-1'),
+      });
       expect(
         coreDb.sqlite
           .prepare(`SELECT current_attempt_id AS currentAttemptId,
         current_turn_id AS currentTurnId, lifecycle_state AS lifecycleState
         FROM agent_session_runtime_bindings WHERE agent_session_id = ?`)
-          .get('agent-session-1')
-      ).toEqual({ currentAttemptId: attemptId, currentTurnId: 'turn-1', lifecycleState: 'active' });
+          .get(testEntityId('as', 'agent-session-1'))
+      ).toEqual({
+        currentAttemptId: attemptId,
+        currentTurnId: testEntityId('tu', 'turn-1'),
+        lifecycleState: 'active',
+      });
       queueNanoHostHarnessOperation(coreDb, {
         body: { ...interruptBody(), leaseId: attemptId, purpose: 'interrupt' },
         harnessInstanceId: 'harness-1',
@@ -298,7 +305,10 @@ describe('private NanoHost Harness records', () => {
         sandboxIntegrationBindingRef: 'integration-binding-1',
         now: () => now,
       });
-      expect(interrupted!.body).toMatchObject({ leaseId: attemptId, turnId: 'turn-1' });
+      expect(interrupted!.body).toMatchObject({
+        leaseId: attemptId,
+        turnId: testEntityId('tu', 'turn-1'),
+      });
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
       ).toEqual({ count: 1 });
@@ -332,25 +342,25 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
 
       queueNanoHostHarnessOperation(coreDb, {
         body: {
           adapterId: 'codex',
           agentSessionCompatibilityKey: 'b'.repeat(64),
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
           effectiveSetupGeneration: 1,
           resume: null,
-          threadId: 'thread-1',
-          workspaceId: 'workspace-1',
+          threadId: testEntityId('th', 'thread-1'),
+          workspaceId: testEntityId('ws', 'workspace-1'),
         },
         harnessInstanceId: 'harness-1',
         operation: 'session.open',
@@ -496,7 +506,7 @@ describe('private NanoHost Harness records', () => {
       adapterVersion: 'fixture-version',
       harnessCompatibilityKey: 'b'.repeat(64),
       sessionCompatibilityKey: `sha256:${'c'.repeat(64)}`,
-      threadId: 'thread-mode-fixture',
+      threadId: testEntityId('th', 'thread-mode-fixture'),
     };
     const expected = createHash('sha256')
       .update(
@@ -630,38 +640,38 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       expect
         .soft(() =>
           openNanoHostAgentSessionBinding(coreDb, {
             agentSessionCompatibilityKey: 'c'.repeat(64),
-            agentSessionId: 'agent-session-same-thread',
+            agentSessionId: testEntityId('as', 'agent-session-same-thread'),
             agentSessionRuntimeBindingId: 'agent-session-binding-same-thread',
             effectiveSetupGeneration: 1,
             harnessInstanceId: 'harness-1',
-            threadId: 'thread-1',
+            threadId: testEntityId('th', 'thread-1'),
             timestamp: now,
-            workspaceId: 'workspace-1',
+            workspaceId: testEntityId('ws', 'workspace-1'),
           })
         )
         .toThrow();
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: 'thread-1',
-          workspaceId: 'workspace-1',
+          threadId: testEntityId('th', 'thread-1'),
+          workspaceId: testEntityId('ws', 'workspace-1'),
         })
-      ).toEqual({ agentSessionId: 'agent-session-1' });
+      ).toEqual({ agentSessionId: testEntityId('as', 'agent-session-1') });
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: 'thread-missing',
-          workspaceId: 'workspace-1',
+          threadId: testEntityId('th', 'thread-missing'),
+          workspaceId: testEntityId('ws', 'workspace-1'),
         })
       ).toBeNull();
       expect
@@ -676,13 +686,13 @@ describe('private NanoHost Harness records', () => {
       expect(() =>
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: 'agent-session-2',
+          agentSessionId: testEntityId('as', 'agent-session-2'),
           agentSessionRuntimeBindingId: 'agent-session-binding-2',
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-1',
-          threadId: 'thread-2',
+          threadId: testEntityId('th', 'thread-2'),
           timestamp: now,
-          workspaceId: 'workspace-1',
+          workspaceId: testEntityId('ws', 'workspace-1'),
         })
       ).not.toThrow();
 
@@ -711,13 +721,13 @@ describe('private NanoHost Harness records', () => {
           )
           .all()
       ).toEqual([
-        { agentSessionId: 'agent-session-1', nativeHandleState: 'pending' },
-        { agentSessionId: 'agent-session-2', nativeHandleState: 'pending' },
+        { agentSessionId: testEntityId('as', 'agent-session-1'), nativeHandleState: 'pending' },
+        { agentSessionId: testEntityId('as', 'agent-session-2'), nativeHandleState: 'pending' },
       ]);
       expect(
         coreDb.sqlite
           .prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_execution_leases'"
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tu_00000000-0000-72f1-bbf1-0357e359bf5e'"
           )
           .get()
       ).toBeUndefined();
@@ -751,29 +761,29 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       seedSubmittedAttempt(coreDb);
       queueNanoHostHarnessOperation(coreDb, {
         body: {
           aepRef: 'sandbox://aep/1',
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
           contextPackageId: 'context-package-1',
           contextRef: 'sandbox://context/1',
           deadline: '2099-01-01T00:00:00.000Z',
-          leaseId: 'lease-1',
+          leaseId: testEntityId('attempt', 'lease-1'),
           packageSnapshotId: 'package-snapshot-1',
-          threadId: 'thread-1',
-          turnId: 'turn-1',
+          threadId: testEntityId('th', 'thread-1'),
+          turnId: testEntityId('tu', 'turn-1'),
           turnSequence: 0,
-          workspaceId: 'workspace-1',
+          workspaceId: testEntityId('ws', 'workspace-1'),
         },
         harnessInstanceId: 'harness-1',
         operation: 'turn.start',
@@ -796,7 +806,7 @@ describe('private NanoHost Harness records', () => {
       });
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -835,30 +845,30 @@ describe('private NanoHost Harness records', () => {
           )
           .get('agent-session-binding-1')
       ).toEqual({
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         cleanupState: 'clean',
-        currentAttemptId: 'lease-1',
-        currentTurnId: 'turn-1',
+        currentAttemptId: testEntityId('attempt', 'lease-1'),
+        currentTurnId: testEntityId('tu', 'turn-1'),
         lifecycleState: state,
       });
       expect(() =>
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: 'agent-session-2',
+          agentSessionId: testEntityId('as', 'agent-session-2'),
           agentSessionRuntimeBindingId: 'agent-session-binding-2',
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-1',
-          threadId: 'thread-1',
+          threadId: testEntityId('th', 'thread-1'),
           timestamp: now,
-          workspaceId: 'workspace-1',
+          workspaceId: testEntityId('ws', 'workspace-1'),
         })
       ).toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: 'thread-1',
-          workspaceId: 'workspace-1',
+          threadId: testEntityId('th', 'thread-1'),
+          workspaceId: testEntityId('ws', 'workspace-1'),
         })
-      ).toEqual({ agentSessionId: 'agent-session-1' });
+      ).toEqual({ agentSessionId: testEntityId('as', 'agent-session-1') });
       coreDb.sqlite
         .prepare(
           `INSERT INTO agent_session_runtime_bindings (
@@ -867,12 +877,14 @@ describe('private NanoHost Harness records', () => {
                effective_setup_generation, native_handle_state, native_handle_digest,
                lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
                created_at, updated_at, image_digest
-             ) VALUES (?, 'harness-1', ?, 'workspace-1', 'thread-1', ?, 1, 'pending', NULL,
+             ) VALUES (?, 'harness-1', ?, ?, ?, ?, 1, 'pending', NULL,
                        'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
         )
         .run(
           'agent-session-binding-2',
-          'agent-session-2',
+          testEntityId('as', 'agent-session-2'),
+          testEntityId('ws', 'workspace-1'),
+          testEntityId('th', 'thread-1'),
           'c'.repeat(64),
           now,
           now,
@@ -880,8 +892,8 @@ describe('private NanoHost Harness records', () => {
         );
       expect(() =>
         readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: 'thread-1',
-          workspaceId: 'workspace-1',
+          threadId: testEntityId('th', 'thread-1'),
+          workspaceId: testEntityId('ws', 'workspace-1'),
         })
       ).toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
     } finally {
@@ -914,29 +926,29 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       seedSubmittedAttempt(coreDb);
       queueNanoHostHarnessOperation(coreDb, {
         body: {
           aepRef: 'sandbox://aep/1',
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
           contextPackageId: 'context-package-1',
           contextRef: 'sandbox://context/1',
           deadline: '2099-01-01T00:00:00.000Z',
-          leaseId: 'lease-1',
+          leaseId: testEntityId('attempt', 'lease-1'),
           packageSnapshotId: 'package-snapshot-1',
-          threadId: 'thread-1',
-          turnId: 'turn-1',
+          threadId: testEntityId('th', 'thread-1'),
+          turnId: testEntityId('tu', 'turn-1'),
           turnSequence: 0,
-          workspaceId: 'workspace-1',
+          workspaceId: testEntityId('ws', 'workspace-1'),
         },
         harnessInstanceId: 'harness-1',
         operation: 'turn.start',
@@ -963,7 +975,9 @@ describe('private NanoHost Harness records', () => {
         sequence: 0,
       });
       expect(command?.operationId).toMatch(/^[0-9a-f]{64}$/);
-      const attempt = observeExecutionAttempts(coreDb).find((row) => row.turn_id === 'turn-1');
+      const attempt = observeExecutionAttempts(coreDb).find(
+        (row) => row.turn_id === testEntityId('tu', 'turn-1')
+      );
       expect(attempt).toMatchObject({
         worker_control_token_hash: createHash('sha256')
           .update(Buffer.from(workerControlToken, 'base64url'))
@@ -1094,7 +1108,7 @@ describe('private NanoHost Harness records', () => {
 
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -1143,27 +1157,27 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: 'agent-session-2',
+        agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-2',
+        threadId: testEntityId('th', 'thread-2'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -1194,7 +1208,7 @@ describe('private NanoHost Harness records', () => {
             'SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings ORDER BY agent_session_id'
           )
           .all()
-      ).toEqual([{ agentSessionId: 'agent-session-2' }]);
+      ).toEqual([{ agentSessionId: testEntityId('as', 'agent-session-2') }]);
       expect(
         coreDb.sqlite
           .prepare(
@@ -1227,17 +1241,17 @@ describe('private NanoHost Harness records', () => {
       recordFinalStatus(coreDb, 'failed', 'error');
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: 'agent-session-2',
+        agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-2',
+        threadId: testEntityId('th', 'thread-2'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: `agent-session-${closedSession}`,
+          agentSessionId: testEntityId('as', `agent-session-${closedSession}`),
           agentSessionRuntimeBindingId: `agent-session-binding-${closedSession}`,
         },
         harnessInstanceId: 'harness-1',
@@ -1332,11 +1346,15 @@ describe('private NanoHost Harness records', () => {
           .all()
       ).toEqual([
         closedSession === 1
-          ? { agentSessionId: 'agent-session-2', currentTurnId: null, currentAttemptId: null }
+          ? {
+              agentSessionId: testEntityId('as', 'agent-session-2'),
+              currentTurnId: null,
+              currentAttemptId: null,
+            }
           : {
-              agentSessionId: 'agent-session-1',
-              currentTurnId: 'turn-1',
-              currentAttemptId: 'lease-1',
+              agentSessionId: testEntityId('as', 'agent-session-1'),
+              currentTurnId: testEntityId('tu', 'turn-1'),
+              currentAttemptId: testEntityId('attempt', 'lease-1'),
             },
       ]);
     } finally {
@@ -1353,7 +1371,7 @@ describe('private NanoHost Harness records', () => {
       recordFinalStatus(coreDb, 'failed', 'error');
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -1401,7 +1419,10 @@ describe('private NanoHost Harness records', () => {
                FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?`
           )
           .get('agent-session-binding-1')
-      ).toEqual({ currentTurnId: 'turn-1', currentAttemptId: 'lease-1' });
+      ).toEqual({
+        currentTurnId: testEntityId('tu', 'turn-1'),
+        currentAttemptId: testEntityId('attempt', 'lease-1'),
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1421,13 +1442,13 @@ describe('private NanoHost Harness records', () => {
       name: 'releases the Turn slot on a clean failed inspection',
     },
     {
-      expected: { active: 1, lifecycleState: 'failed', turnId: 'turn-1' },
+      expected: { active: 1, lifecycleState: 'failed', turnId: testEntityId('tu', 'turn-1') },
       inspection: { cleanupState: 'unknown', ready: false, state: 'failed' },
       interruptFirst: false,
       name: 'retains the Turn slot on an inspection without clean state',
     },
     {
-      expected: { active: 1, lifecycleState: 'active', turnId: 'turn-1' },
+      expected: { active: 1, lifecycleState: 'active', turnId: testEntityId('tu', 'turn-1') },
       inspection: null,
       interruptFirst: true,
       name: 'retains the Turn slot after a successful interrupt',
@@ -1494,7 +1515,7 @@ describe('private NanoHost Harness records', () => {
         settle(
           'session.inspect',
           {
-            agentSessionId: 'agent-session-1',
+            agentSessionId: testEntityId('as', 'agent-session-1'),
             agentSessionRuntimeBindingId: 'agent-session-binding-1',
           },
           {
@@ -1550,7 +1571,7 @@ describe('private NanoHost Harness records', () => {
     try {
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -1802,17 +1823,17 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -1837,24 +1858,24 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: 'agent-session-2',
+        agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-2',
+        threadId: testEntityId('th', 'thread-2'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       queueNanoHostHarnessOperation(coreDb, {
         body: {
           adapterId: 'codex',
           agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: 'agent-session-2',
+          agentSessionId: testEntityId('as', 'agent-session-2'),
           agentSessionRuntimeBindingId: 'agent-session-binding-2',
           effectiveSetupGeneration: 1,
           resume: null,
-          threadId: 'thread-2',
-          workspaceId: 'workspace-1',
+          threadId: testEntityId('th', 'thread-2'),
+          workspaceId: testEntityId('ws', 'workspace-1'),
         },
         harnessInstanceId: 'harness-1',
         operation: 'session.open',
@@ -1931,27 +1952,27 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: 'agent-session-2',
+        agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-2',
+        threadId: testEntityId('th', 'thread-2'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'agent-session-1',
+          agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
         },
         harnessInstanceId: 'harness-1',
@@ -2007,7 +2028,10 @@ describe('private NanoHost Harness records', () => {
             'SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings ORDER BY agent_session_id'
           )
           .all()
-      ).toEqual([{ agentSessionId: 'agent-session-1' }, { agentSessionId: 'agent-session-2' }]);
+      ).toEqual([
+        { agentSessionId: testEntityId('as', 'agent-session-1') },
+        { agentSessionId: testEntityId('as', 'agent-session-2') },
+      ]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -2040,24 +2064,24 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
 
       const sessionOpenBody = {
         adapterId: 'codex',
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         resume: null,
-        threadId: 'thread-1',
-        workspaceId: 'workspace-1',
+        threadId: testEntityId('th', 'thread-1'),
+        workspaceId: testEntityId('ws', 'workspace-1'),
       };
       queueNanoHostHarnessOperation(coreDb, {
         body: sessionOpenBody,
@@ -2099,17 +2123,17 @@ describe('private NanoHost Harness records', () => {
       seedSubmittedAttempt(coreDb);
       const turnStartBody = {
         aepRef: 'sandbox://aep/1',
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         contextPackageId: 'context-package-1',
         contextRef: 'sandbox://context/1',
         deadline: '2099-01-01T00:00:00.000Z',
-        leaseId: 'lease-1',
+        leaseId: testEntityId('attempt', 'lease-1'),
         packageSnapshotId: 'package-snapshot-1',
-        threadId: 'thread-1',
-        turnId: 'turn-1',
+        threadId: testEntityId('th', 'thread-1'),
+        turnId: testEntityId('tu', 'turn-1'),
         turnSequence: 0,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       };
       queueNanoHostHarnessOperation(coreDb, {
         body: turnStartBody,
@@ -2184,10 +2208,14 @@ describe('private NanoHost Harness records', () => {
     const coreDb = openOpeningBindingDb('openkit-harness-resume-pair-');
     try {
       for (const resume of [
-        { locator: 'agent-session-0' },
-        { digest: 'not-a-digest', locator: 'agent-session-0' },
-        { digest: 'a'.repeat(64), extra: 'forbidden', locator: 'agent-session-0' },
-        'agent-session-0',
+        { locator: testEntityId('as', 'agent-session-0') },
+        { digest: 'not-a-digest', locator: testEntityId('as', 'agent-session-0') },
+        {
+          digest: 'a'.repeat(64),
+          extra: 'forbidden',
+          locator: testEntityId('as', 'agent-session-0'),
+        },
+        testEntityId('as', 'agent-session-0'),
       ]) {
         expect(() =>
           queueNanoHostHarnessOperation(coreDb, {
@@ -2208,7 +2236,7 @@ describe('private NanoHost Harness records', () => {
         })
       ).toThrow();
 
-      const resume = { digest: 'a'.repeat(64), locator: 'agent-session-0' };
+      const resume = { digest: 'a'.repeat(64), locator: testEntityId('as', 'agent-session-0') };
       queueNanoHostHarnessOperation(coreDb, {
         body: { ...sessionOpenBody(), resume },
         harnessInstanceId: 'harness-1',
@@ -2277,8 +2305,12 @@ describe('private NanoHost Harness records', () => {
         expect(harnessOperation(coreDb)).toEqual({ operation: 'turn.start', state: 'settled' });
       };
       for (const [column, wrongValue, originalValue] of [
-        ['current_turn_id', 'turn-other', 'turn-1'],
-        ['current_attempt_id', 'lease-other', 'lease-1'],
+        ['current_turn_id', testEntityId('tu', 'turn-other'), testEntityId('tu', 'turn-1')],
+        [
+          'current_attempt_id',
+          testEntityId('attempt', 'lease-other'),
+          testEntityId('attempt', 'lease-1'),
+        ],
       ] as const) {
         coreDb.sqlite
           .prepare(
@@ -2294,20 +2326,24 @@ describe('private NanoHost Harness records', () => {
       }
 
       for (const [column, wrongValue, originalValue] of [
-        ['workspace_id', 'workspace-other', 'workspace-1'],
-        ['thread_id', 'thread-other', 'thread-1'],
-        ['turn_id', 'turn-other', 'turn-1'],
-        ['agent_session_id', 'agent-session-other', 'agent-session-1'],
+        ['workspace_id', testEntityId('ws', 'workspace-other'), testEntityId('ws', 'workspace-1')],
+        ['thread_id', testEntityId('th', 'thread-other'), testEntityId('th', 'thread-1')],
+        ['turn_id', testEntityId('tu', 'turn-other'), testEntityId('tu', 'turn-1')],
+        [
+          'agent_session_id',
+          testEntityId('as', 'agent-session-other'),
+          testEntityId('as', 'agent-session-1'),
+        ],
         ['input_ref', 'package-snapshot-other', 'package-snapshot-1'],
         ['phase', 'closed', 'open'],
       ] as const) {
         coreDb.sqlite
           .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-          .run(wrongValue, 'lease-1');
+          .run(wrongValue, testEntityId('attempt', 'lease-1'));
         expectRejected(column);
         coreDb.sqlite
           .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-          .run(originalValue, 'lease-1');
+          .run(originalValue, testEntityId('attempt', 'lease-1'));
       }
 
       recordFinalStatus(coreDb, 'completed', 'completed');
@@ -2363,13 +2399,13 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       expect(
         coreDb.sqlite
@@ -2413,23 +2449,23 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: 'agent-session-2',
+        agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-2',
+        threadId: testEntityId('th', 'thread-2'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       expect(
         coreDb.sqlite
@@ -2463,12 +2499,12 @@ describe('private NanoHost Harness records', () => {
     const digestB = `sha256:${'b'.repeat(64)}`;
     const bindingInput = {
       agentSessionCompatibilityKey: 'b'.repeat(64),
-      agentSessionId: 'agent-session-1',
+      agentSessionId: testEntityId('as', 'agent-session-1'),
       agentSessionRuntimeBindingId: 'agent-session-binding-1',
       effectiveSetupGeneration: 1,
       harnessInstanceId: 'harness-1',
-      threadId: 'thread-1',
-      workspaceId: 'workspace-1',
+      threadId: testEntityId('th', 'thread-1'),
+      workspaceId: testEntityId('ws', 'workspace-1'),
     } as const;
     try {
       applyMigrations(coreDb);
@@ -2573,23 +2609,23 @@ describe('private NanoHost Harness records', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'agent-session-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-1',
-        threadId: 'thread-1',
+        threadId: testEntityId('th', 'thread-1'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'f'.repeat(64),
-        agentSessionId: 'agent-session-2',
+        agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-2',
-        threadId: 'thread-2',
+        threadId: testEntityId('th', 'thread-2'),
         timestamp: now,
-        workspaceId: 'workspace-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
       });
       expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(digestA);
       expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-2')).toBe(digestB);
@@ -2607,26 +2643,26 @@ function concurrentTurnStartBody(index: number): Readonly<Record<string, unknown
   return {
     aepRef: `sandbox://aep/${index}`,
     contextRef: `sandbox://context/${index}`,
-    agentSessionId: `agent-session-${index}`,
+    agentSessionId: testEntityId('as', `agent-session-${index}`),
     agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
     contextPackageId: `context-package-${index}`,
     deadline: '2099-01-01T00:00:00.000Z',
-    leaseId: `lease-${index}`,
+    leaseId: testEntityId('attempt', `lease-${index}`),
     packageSnapshotId: `package-snapshot-${index}`,
-    threadId: `thread-${index}`,
-    turnId: `turn-${index}`,
+    threadId: testEntityId('th', `thread-${index}`),
+    turnId: testEntityId('tu', `turn-${index}`),
     turnSequence: 0,
-    workspaceId: 'workspace-1',
+    workspaceId: testEntityId('ws', 'workspace-1'),
   };
 }
 
 /** Returns the exact private interrupt body before its closed purpose discriminator. */
 function interruptBody(): Readonly<Record<string, unknown>> {
   return {
-    agentSessionId: 'agent-session-1',
+    agentSessionId: testEntityId('as', 'agent-session-1'),
     agentSessionRuntimeBindingId: 'agent-session-binding-1',
-    leaseId: 'lease-1',
-    turnId: 'turn-1',
+    leaseId: testEntityId('attempt', 'lease-1'),
+    turnId: testEntityId('tu', 'turn-1'),
   };
 }
 
@@ -2652,12 +2688,12 @@ function recordFinalStatus(
   recordWorkerControlAcceptedRecord(coreDb, {
     acceptedAt: now,
     lineage: {
-      agentSessionId: 'agent-session-1',
+      agentSessionId: testEntityId('as', 'agent-session-1'),
       packageSnapshotId: 'package-snapshot-1',
       requestId: 'request-1',
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      workspaceId: 'workspace-1',
+      threadId: testEntityId('th', 'thread-1'),
+      turnId: testEntityId('tu', 'turn-1'),
+      workspaceId: testEntityId('ws', 'workspace-1'),
     },
     operation: 'final_status',
     record: { sequence: 1, status, stopReason },
@@ -2671,12 +2707,12 @@ function sessionOpenBody(): Readonly<Record<string, unknown>> {
   return {
     adapterId: 'codex',
     agentSessionCompatibilityKey: 'b'.repeat(64),
-    agentSessionId: 'agent-session-1',
+    agentSessionId: testEntityId('as', 'agent-session-1'),
     agentSessionRuntimeBindingId: 'agent-session-binding-1',
     effectiveSetupGeneration: 1,
     resume: null,
-    threadId: 'thread-1',
-    workspaceId: 'workspace-1',
+    threadId: testEntityId('th', 'thread-1'),
+    workspaceId: testEntityId('ws', 'workspace-1'),
   };
 }
 
@@ -2703,13 +2739,13 @@ function openOpeningBindingDb(prefix: string): ReturnType<typeof openCoreDb> {
   });
   openNanoHostAgentSessionBinding(coreDb, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
-    agentSessionId: 'agent-session-1',
+    agentSessionId: testEntityId('as', 'agent-session-1'),
     agentSessionRuntimeBindingId: 'agent-session-binding-1',
     effectiveSetupGeneration: 1,
     harnessInstanceId: 'harness-1',
-    threadId: 'thread-1',
+    threadId: testEntityId('th', 'thread-1'),
     timestamp: now,
-    workspaceId: 'workspace-1',
+    workspaceId: testEntityId('ws', 'workspace-1'),
   });
   return coreDb;
 }
@@ -2737,29 +2773,29 @@ function openActiveTurnDb(prefix: string, maxActiveTurns = 1): ReturnType<typeof
   });
   openNanoHostAgentSessionBinding(coreDb, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
-    agentSessionId: 'agent-session-1',
+    agentSessionId: testEntityId('as', 'agent-session-1'),
     agentSessionRuntimeBindingId: 'agent-session-binding-1',
     effectiveSetupGeneration: 1,
     harnessInstanceId: 'harness-1',
-    threadId: 'thread-1',
+    threadId: testEntityId('th', 'thread-1'),
     timestamp: now,
-    workspaceId: 'workspace-1',
+    workspaceId: testEntityId('ws', 'workspace-1'),
   });
   seedSubmittedAttempt(coreDb);
   queueNanoHostHarnessOperation(coreDb, {
     body: {
       aepRef: 'sandbox://aep/1',
-      agentSessionId: 'agent-session-1',
+      agentSessionId: testEntityId('as', 'agent-session-1'),
       agentSessionRuntimeBindingId: 'agent-session-binding-1',
       contextPackageId: 'context-package-1',
       contextRef: 'sandbox://context/1',
       deadline: '2099-01-01T00:00:00.000Z',
-      leaseId: 'lease-1',
+      leaseId: testEntityId('attempt', 'lease-1'),
       packageSnapshotId: 'package-snapshot-1',
-      threadId: 'thread-1',
-      turnId: 'turn-1',
+      threadId: testEntityId('th', 'thread-1'),
+      turnId: testEntityId('tu', 'turn-1'),
       turnSequence: 0,
-      workspaceId: 'workspace-1',
+      workspaceId: testEntityId('ws', 'workspace-1'),
     },
     harnessInstanceId: 'harness-1',
     operation: 'turn.start',
@@ -2788,37 +2824,42 @@ function openActiveTurnDb(prefix: string, maxActiveTurns = 1): ReturnType<typeof
 
 /** Establishes exact authorized submitted Native attempt lineage for private Harness operations. */
 function seedSubmittedAttempt(coreDb: ReturnType<typeof openCoreDb>, index = 1): void {
+  const ownerUserId = 'usr_00000000-0000-7bb1-ad15-a58cc38146bf';
   coreDb.sqlite
     .prepare(`INSERT INTO users
     (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-    VALUES ('user-1', 'Harness fixture', 'harness@example.invalid', 0, ?, ?, 'human', 'active') ON CONFLICT(id) DO NOTHING`)
-    .run(Date.parse(now), Date.parse(now));
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'workspace-1', ownerUserId: 'user-1' });
+    VALUES (?, 'Harness fixture', 'harness@example.invalid', 0, ?, ?, 'human', 'active') ON CONFLICT(id) DO NOTHING`)
+    .run(ownerUserId, Date.parse(now), Date.parse(now));
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: testEntityId('ws', 'workspace-1'),
+    ownerUserId,
+  });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     now: () => now,
     queueEntryId: `queue-${index}`,
     requestId: `request-${index}`,
     requestedAgentId: 'agent-1',
-    threadId: `thread-${index}`,
-    triggerActor: { id: 'user-1', kind: 'user' },
-    turnId: `turn-${index}`,
+    threadId: testEntityId('th', `thread-${index}`),
+    triggerActor: { id: 'usr_00000000-0000-7bb1-ad15-a58cc38146bf', kind: 'user' },
+    turnId: testEntityId('tu', `turn-${index}`),
     turnInput: 'Wait for a human decision',
-    workspaceId: 'workspace-1',
+    workspaceId: testEntityId('ws', 'workspace-1'),
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease-${index}`,
-    agentSessionId: `agent-session-${index}`,
+    attemptId: testEntityId('attempt', `lease-${index}`),
+    agentSessionId: testEntityId('as', `agent-session-${index}`),
     inputRef: `package-snapshot-${index}`,
-    bindingRef: `turn-route-binding-${index}`,
+    bindingRef: testEntityId('tu', `turn-route-binding-${index}`),
     sessionCompatibilityKey: 'b'.repeat(64),
     operationId: `submit:turn-${index}`,
     now: () => now,
   });
   recordWorkerBackendSessionMaterializing(coreDb, {
     identity: {
-      agentSessionId: `agent-session-${index}`,
+      agentSessionId: testEntityId('as', `agent-session-${index}`),
       backendKind: 'nanohost',
       backendSessionId: `nanohost-sandbox-fixture-${index}`,
       deploymentId: 'deployment-a1',
@@ -2832,9 +2873,13 @@ function seedSubmittedAttempt(coreDb: ReturnType<typeof openCoreDb>, index = 1):
       kind: 'reference',
       imageRef: `ghcr.io/openkit/worker@sha256:${'f'.repeat(64)}`,
     },
-    lineage: { workspaceId: 'workspace-1', threadId: `thread-${index}`, turnId: `turn-${index}` },
+    lineage: {
+      workspaceId: testEntityId('ws', 'workspace-1'),
+      threadId: testEntityId('th', `thread-${index}`),
+      turnId: testEntityId('tu', `turn-${index}`),
+    },
     now: () => now,
-    sandboxBindingRef: `turn-route-binding-${index}`,
+    sandboxBindingRef: testEntityId('tu', `turn-route-binding-${index}`),
   });
 }
 

@@ -6,15 +6,18 @@ import { zstdDecompressSync } from 'node:zlib';
 import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { createTestGatewayConfig } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readGoalView } from './goal-owner.js';
 
@@ -25,7 +28,11 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Gateway Goal');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const dispatch = vi
     .fn()
     .mockResolvedValueOnce({
@@ -33,6 +40,12 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
       object: 'response',
       status: 'completed',
       output: [
+        {
+          type: 'function_call',
+          call_id: 'discover-workers',
+          name: 'agent_list',
+          arguments: '{}',
+        },
         {
           type: 'function_call',
           call_id: 'card-create',
@@ -59,6 +72,13 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
     { type: 'compaction', compactThreshold: 64000 },
   ];
   const app = createApp({
+    agentManifests: [
+      createTestAgentSetup({ agentId: 'discoverable-worker' }).manifest,
+      {
+        ...createTestAgentSetup({ agentId: 'blocked-worker' }).manifest,
+        readiness: { status: 'blocked', message: 'PRIVATE_REASON_CANARY' },
+      },
+    ],
     gatewayConfig,
     providerRegistry: new ProviderRegistry([
       {
@@ -102,9 +122,17 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
       { timeout: 10000 }
     );
     expect(dispatch.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).toContain('discoverable-worker');
+    expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).toContain('codex');
+    expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).toContain('blocked-worker');
+    expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).not.toContain(
+      'PRIVATE_REASON_CANARY'
+    );
+    expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).not.toContain('/usr/local/bin');
     expect(dispatch.mock.calls[0]?.[1].tools.map((tool: { name: string }) => tool.name)).toEqual(
       expect.arrayContaining([
         'thread_items',
+        'agent_list',
         'artifact_read',
         'turn_read',
         'evidence_runtime_list',
@@ -132,7 +160,11 @@ it('completes the real Coordinator request through stock Codex with unchanged To
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Stock Codex Goal');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const credential = `synthetic.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture' } })).toString('base64url')}.synthetic`;
   const models = createModels({
     credentials: {

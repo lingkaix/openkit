@@ -37,7 +37,7 @@ describe('workspace sync records', () => {
   it('preserves public fixture literals through canonical records, patch Artifacts and reopened public reads', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-public-fixture-'));
     const store = createDemoStore({ dataRoot });
-    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const fixture = workspaceSyncImportFixture();
     const literal = 'ghp_publicFixture sk-Latn hf_publicFixture okt_publicFixture';
     const text = `diff --git a/src/fixture.ts b/src/fixture.ts\n--- a/src/fixture.ts\n+++ b/src/fixture.ts\n@@ -0,0 +1 @@\n+${literal}\n`;
@@ -63,8 +63,11 @@ describe('workspace sync records', () => {
       applyScopedMigrations(db);
       importWorkspaceSyncRecords(db, fixture);
       db.sqlite.close();
-      db = openWorkspaceDb(dataRoot, 'ws_demo');
-      const read = listExportableWorkspaceSyncRecords(db, 'ws_demo');
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      const read = listExportableWorkspaceSyncRecords(
+        db,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(read).toEqual(fixture);
       for (const [schema, records] of [
         [schemas.ListWorkspaceInputSnapshotsResponseSchema, read.inputSnapshots],
@@ -74,7 +77,11 @@ describe('workspace sync records', () => {
         [schemas.ListWorkspaceChangeSetsResponseSchema, read.changeSets],
       ] as const)
         expect(schema.parse({ items: records })).toEqual({ items: records });
-      const item = getWorkspaceSyncReview(db, 'ws_demo', fixture.stagedReviews[0]!.review.id)!;
+      const item = getWorkspaceSyncReview(
+        db,
+        'ws_00000000-0000-7000-8000-000000000001',
+        fixture.stagedReviews[0]!.review.id
+      )!;
       expect(
         schemas.ListWorkspaceSyncReviewsResponseSchema.parse({ items: [item] }).items[0]
       ).toEqual(item);
@@ -83,7 +90,7 @@ describe('workspace sync records', () => {
       const artifactDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
       store.createArtifact({
         id: item.artifactId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: null,
         turnId: null,
         kind: 'file',
@@ -99,14 +106,17 @@ describe('workspace sync records', () => {
           sourceKind: 'direct-import',
           sourceId: 'fixture-patch-artifact',
           sourceDigest: artifactDigest,
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           requestId: 'fixture-patch-artifact',
           recordedAt: timestamp,
         },
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      const artifact = new FsStore({ dataRoot }).getArtifact('ws_demo', item.artifactId);
+      const artifact = new FsStore({ dataRoot }).getArtifact(
+        'ws_00000000-0000-7000-8000-000000000001',
+        item.artifactId
+      );
       expect(artifact.content.body).toBe(body);
       expect(artifact.contentDigest).toBe(artifactDigest);
       expect(`sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`).toBe(
@@ -118,7 +128,9 @@ describe('workspace sync records', () => {
       expect(Buffer.from(patchBytes).toString()).toBe(text);
       expect(`sha256:${createHash('sha256').update(patchBytes).digest('hex')}`).toBe(digest);
       importWorkspaceSyncRecords(db, fixture);
-      expect(listExportableWorkspaceSyncRecords(db, 'ws_demo')).toEqual(read);
+      expect(
+        listExportableWorkspaceSyncRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(read);
     } finally {
       db.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -127,7 +139,7 @@ describe('workspace sync records', () => {
 
   it('reads extended retained payloads, preserves replay bytes and mutable annotations after reopen', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-extensions-'));
-    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const fixture = workspaceSyncImportFixture();
     fixture.inputSnapshots[0]!.generatedFiles.push({ id: 'generated', target: 'generated.txt' });
     fixture.workerOutputManifests[0]!.logRefs.push({
@@ -172,7 +184,10 @@ describe('workspace sync records', () => {
     try {
       applyScopedMigrations(db);
       importWorkspaceSyncRecords(db, fixture);
-      const baseline = listExportableWorkspaceSyncRecords(db, 'ws_demo');
+      const baseline = listExportableWorkspaceSyncRecords(
+        db,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       const retained = new Map<string, string>();
       for (const table of tables) {
         const row = db.sqlite.prepare(`SELECT payload_json FROM ${table}`).get() as {
@@ -183,8 +198,11 @@ describe('workspace sync records', () => {
         retained.set(table, json);
       }
       db.sqlite.close();
-      db = openWorkspaceDb(dataRoot, 'ws_demo');
-      const read = listExportableWorkspaceSyncRecords(db, 'ws_demo');
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      const read = listExportableWorkspaceSyncRecords(
+        db,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(JSON.stringify(read)).not.toContain('futureAnnotation');
       expect(read).toEqual(baseline);
       importWorkspaceSyncRecords(db, fixture);
@@ -194,7 +212,7 @@ describe('workspace sync records', () => {
         });
       }
       updateWorkspaceSyncReviewDecision(db, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: 'swr_1',
         status: 'accepted',
         requestId: 'decision_extensions',
@@ -202,15 +220,20 @@ describe('workspace sync records', () => {
       });
       updateBackendWorkspaceHandleCleanupStatus(
         db,
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'aepsnap_1',
         'retained',
         '2026-07-05T00:01:00.000Z'
       );
       db.sqlite.close();
-      db = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(getWorkspaceSyncReview(db, 'ws_demo', 'swr_1')?.review.status).toBe('accepted');
-      expect(listBackendWorkspaceHandles(db, 'ws_demo')[0]?.cleanupStatus).toBe('retained');
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      expect(
+        getWorkspaceSyncReview(db, 'ws_00000000-0000-7000-8000-000000000001', 'swr_1')?.review
+          .status
+      ).toBe('accepted');
+      expect(
+        listBackendWorkspaceHandles(db, 'ws_00000000-0000-7000-8000-000000000001')[0]?.cleanupStatus
+      ).toBe('retained');
       for (const table of ['backend_workspace_handles', 'staged_workspace_reviews']) {
         const row = db.sqlite.prepare(`SELECT payload_json FROM ${table}`).get() as {
           payload_json: string;
@@ -225,9 +248,11 @@ describe('workspace sync records', () => {
           updatedAt: '2026-07-05T00:01:00.000Z',
         });
       }
-      expect(JSON.stringify(listExportableWorkspaceSyncRecords(db, 'ws_demo'))).not.toContain(
-        'futureAnnotation'
-      );
+      expect(
+        JSON.stringify(
+          listExportableWorkspaceSyncRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
+        )
+      ).not.toContain('futureAnnotation');
     } finally {
       db.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
@@ -236,7 +261,7 @@ describe('workspace sync records', () => {
 
   it('refuses corrupted retained patch bytes after normalizing descriptive metadata', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-corrupt-retained-'));
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(db);
       importWorkspaceSyncRecords(db, workspaceSyncImportFixture());
@@ -247,9 +272,9 @@ describe('workspace sync records', () => {
       db.sqlite
         .prepare('UPDATE staged_workspace_reviews SET patch_payload_json = ?')
         .run(JSON.stringify({ ...patch, text: `${patch.text}corrupt`, futureAnnotation: true }));
-      expect(() => getWorkspaceSyncReview(db, 'ws_demo', 'swr_1')).toThrow(
-        /patch integrity conflict/
-      );
+      expect(() =>
+        getWorkspaceSyncReview(db, 'ws_00000000-0000-7000-8000-000000000001', 'swr_1')
+      ).toThrow(/patch integrity conflict/);
     } finally {
       db.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
@@ -258,7 +283,7 @@ describe('workspace sync records', () => {
 
   it('rejects reviews without persisted input snapshot lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-missing-input-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -272,7 +297,7 @@ describe('workspace sync records', () => {
 
   it('rejects reviews without persisted materialization lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-missing-lineage-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -287,7 +312,7 @@ describe('workspace sync records', () => {
 
   it('records one linked audit event when a staged review is first stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-review-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -328,17 +353,17 @@ describe('workspace sync records', () => {
           resource: 'workspace-review:swr_1',
           severity: 'info',
           summary: 'Workspace review staged: 1 changed path, strategy git',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
       expect(evidenceBundles).toEqual([
         expect.objectContaining({
           evidence_bundle_id: 'evb_workspace_review_swr_1',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           source_kind: 'workspace-sync-review',
           summary: 'Workspace review staged: 1 changed path, strategy git',
           redacted_evidence_refs_json: JSON.stringify([
-            { kind: 'worker', ref: 'turn_1' },
+            { kind: 'worker', ref: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' },
             { kind: 'workspace-sync-patch', ref: 'artifact://patch' },
           ]),
           content_digests_json: JSON.stringify([workspacePatchDigest]),
@@ -365,7 +390,10 @@ describe('workspace sync records', () => {
       field: 'review workspace',
       invalid: () => {
         const item = workspaceReviewItem();
-        return { ...item, review: { ...item.review, workspaceId: 'ws_other' } };
+        return {
+          ...item,
+          review: { ...item.review, workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
+        };
       },
     },
     {
@@ -401,7 +429,7 @@ describe('workspace sync records', () => {
     },
   ])('rejects invalid initial workspace review $field before persistence', ({ invalid }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-ingress-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -426,7 +454,7 @@ describe('workspace sync records', () => {
 
   it('carries source ids into staged workspace review change sets', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-source-review-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -443,7 +471,7 @@ describe('workspace sync records', () => {
 
   it('treats an identical workspace change set replay as a no-op', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-change-set-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -468,7 +496,7 @@ describe('workspace sync records', () => {
 
   it('treats an identical staged workspace review replay as a no-op', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -494,7 +522,10 @@ describe('workspace sync records', () => {
   it.each([
     {
       field: 'artifactId',
-      replay: () => ({ ...workspaceReviewItem(), artifactId: 'ar_other' }),
+      replay: () => ({
+        ...workspaceReviewItem(),
+        artifactId: 'ar_00000000-0000-7dcf-9e49-194b732024ae',
+      }),
     },
     {
       field: 'patchPayload',
@@ -534,19 +565,35 @@ describe('workspace sync records', () => {
     },
   ])('rejects a same-id staged workspace review replay that changes $field', ({ replay }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       const original = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
-      const originalChangeSets = listWorkspaceChangeSets(workspaceDb, 'ws_demo');
-      const originalManifests = listWorkerOutputManifests(workspaceDb, 'ws_demo');
+      const originalChangeSets = listWorkspaceChangeSets(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      const originalManifests = listWorkerOutputManifests(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
 
       expect(() => recordWorkspaceSyncReview(workspaceDb, { item: replay() })).toThrow(/conflict/i);
-      expect(getWorkspaceSyncReview(workspaceDb, 'ws_demo', original.review.id)).toEqual(original);
-      expect(listWorkspaceChangeSets(workspaceDb, 'ws_demo')).toEqual(originalChangeSets);
-      expect(listWorkerOutputManifests(workspaceDb, 'ws_demo')).toEqual(originalManifests);
+      expect(
+        getWorkspaceSyncReview(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          original.review.id
+        )
+      ).toEqual(original);
+      expect(
+        listWorkspaceChangeSets(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(originalChangeSets);
+      expect(
+        listWorkerOutputManifests(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(originalManifests);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -572,7 +619,7 @@ describe('workspace sync records', () => {
     },
   ])('rejects a same-id workspace change set replay that changes $field', ({ replay }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-change-set-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -587,7 +634,7 @@ describe('workspace sync records', () => {
 
   it('preserves a terminal review decision when staging evidence is replayed', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-terminal-review-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -598,7 +645,7 @@ describe('workspace sync records', () => {
         reviewId: 'swr_1',
         status: 'accepted',
         updatedAt: '2026-07-05T00:01:00.000Z',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       const replayed = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
@@ -608,9 +655,10 @@ describe('workspace sync records', () => {
         status: 'accepted',
         updatedAt: '2026-07-05T00:01:00.000Z',
       });
-      expect(getWorkspaceSyncReview(workspaceDb, 'ws_demo', 'swr_1')?.review.status).toBe(
-        'accepted'
-      );
+      expect(
+        getWorkspaceSyncReview(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001', 'swr_1')
+          ?.review.status
+      ).toBe('accepted');
       expect(
         workspaceDb.sqlite
           .prepare("SELECT request_id FROM audit_events WHERE action = 'workspace.review.decide'")
@@ -623,7 +671,7 @@ describe('workspace sync records', () => {
 
   it('promotes materialization readiness evidence into the evidence bundle ledger', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-evidence-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -651,7 +699,7 @@ describe('workspace sync records', () => {
       expect(evidenceBundles).toEqual([
         expect.objectContaining({
           evidence_bundle_id: 'evb_workspace_materialization_wmr_1',
-          workspace_id: 'ws_demo',
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           source_kind: 'workspace-materialization',
           summary: 'Workspace materialization recorded: strategy git, backend openshell',
           redacted_evidence_refs_json: JSON.stringify([
@@ -664,13 +712,16 @@ describe('workspace sync records', () => {
           required_features_json: JSON.stringify(['evidence.bundle.v1']),
         }),
       ]);
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toMatchObject([
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toMatchObject([
         {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           backendType: 'openshell',
           backendVersion: '0.0.63',
           placement: 'unknown',
           phase: 'capability-negotiation',
+          agentSessionId: null,
           summary: 'Workspace materialization recorded: strategy git, backend openshell',
           policyDigest: 'sha256:policy',
           capabilitySummary: 'backend.ready',
@@ -688,7 +739,7 @@ describe('workspace sync records', () => {
 
   it('repairs an interrupted materialization handoff on exact replay', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -722,24 +773,32 @@ describe('workspace sync records', () => {
           materialization.createdAt
         );
 
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([]);
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
 
       expect(recordWorkspaceMaterializationRecords(workspaceDb, [materialization])).toEqual([
         materialization,
       ]);
       recordWorkspaceMaterializationRecords(workspaceDb, [materialization]);
 
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         expect.objectContaining({
           materializationRecordId: materialization.id,
           packageSnapshotId: 'aepsnap_crash_replay',
           workerSessionId: 'sandbox_crash_replay',
         }),
       ]);
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         expect.objectContaining({
-          agentSessionId: 'sandbox_crash_replay',
+          agentSessionId: null,
           evidenceBundleIds: [`evb_workspace_materialization_${materialization.id}`],
         }),
       ]);
@@ -759,7 +818,7 @@ describe('workspace sync records', () => {
 
   it('rolls back the complete materialization handoff when derived evidence fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materialization-atomic-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -803,9 +862,15 @@ describe('workspace sync records', () => {
         'simulated evidence write failure'
       );
 
-      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([]);
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([]);
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listWorkspaceMaterializationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -813,14 +878,16 @@ describe('workspace sync records', () => {
 
   it('records redacted backend workspace handles with materialization records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-backend-handle-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         {
           backendKind: 'openshell',
           cleanupStatus: 'pending',
@@ -829,10 +896,15 @@ describe('workspace sync records', () => {
           materializationRecordId: 'wmr_1',
           packageSnapshotId: 'aepsnap_1',
           retention: 'until-reconciliation',
-          transportRefs: [{ kind: 'materialized-root', ref: 'workspace://ws_demo/repo_default' }],
+          transportRefs: [
+            {
+              kind: 'materialized-root',
+              ref: 'workspace://ws_00000000-0000-7000-8000-000000000001/repo_default',
+            },
+          ],
           updatedAt: timestamp,
           workerSessionId: 'session_1',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ]);
     } finally {
@@ -842,7 +914,7 @@ describe('workspace sync records', () => {
 
   it('marks backend workspace handles retained from transport events without downgrading cleanup', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-backend-retained-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -850,12 +922,14 @@ describe('workspace sync records', () => {
 
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'aepsnap_1',
         'retained',
         '2026-07-05T00:01:00.000Z'
       );
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         expect.objectContaining({
           cleanupStatus: 'retained',
           updatedAt: '2026-07-05T00:01:00.000Z',
@@ -864,21 +938,23 @@ describe('workspace sync records', () => {
 
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'aepsnap_1',
         'cleaned',
         '2026-07-05T00:02:00.000Z'
       );
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'aepsnap_1',
         'retained',
         '2026-07-05T00:03:00.000Z'
       );
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         expect.objectContaining({
           cleanupStatus: 'cleaned',
           updatedAt: '2026-07-05T00:02:00.000Z',
@@ -891,7 +967,7 @@ describe('workspace sync records', () => {
 
   it('records worker output manifests before workspace change sets are reviewed', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-output-manifest-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -899,13 +975,15 @@ describe('workspace sync records', () => {
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
 
-      expect(listWorkerOutputManifests(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listWorkerOutputManifests(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         {
-          artifactIds: ['ar_workspace_review'],
+          artifactIds: ['ar_00000000-0000-7f68-b2ab-6153db8a925d'],
           backendKind: 'openshell',
           changedPaths: [{ binary: false, path: 'docs/loop.md', status: 'modified' }],
           collectedAt: timestamp,
-          evidenceRefs: [{ kind: 'worker', ref: 'turn_1' }],
+          evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' }],
           id: 'wom_wcs_1',
           ignoredOutputs: [],
           inputSnapshotId: 'wis_1',
@@ -914,7 +992,7 @@ describe('workspace sync records', () => {
           strategy: 'git',
           testOutputRefs: [],
           workerSessionId: 'sandbox_test_wmr_1',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ]);
     } finally {
@@ -924,21 +1002,31 @@ describe('workspace sync records', () => {
 
   it('returns the stored input snapshots and materialization records on exact replay', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-record-return-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
-      const snapshots = listWorkspaceInputSnapshots(workspaceDb, 'ws_demo');
-      const materializations = listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo');
+      const snapshots = listWorkspaceInputSnapshots(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      const materializations = listWorkspaceMaterializationRecords(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
 
       expect(recordWorkspaceInputSnapshots(workspaceDb, snapshots)).toEqual(snapshots);
       expect(recordWorkspaceMaterializationRecords(workspaceDb, materializations)).toEqual(
         materializations
       );
-      expect(listWorkspaceInputSnapshots(workspaceDb, 'ws_demo')).toEqual(snapshots);
-      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual(materializations);
+      expect(
+        listWorkspaceInputSnapshots(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(snapshots);
+      expect(
+        listWorkspaceMaterializationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(materializations);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -946,17 +1034,22 @@ describe('workspace sync records', () => {
 
   it('treats an identical workspace sync import as a no-op', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
-      const stored = listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo');
+      const stored = listExportableWorkspaceSyncRecords(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
 
       importWorkspaceSyncRecords(workspaceDb, stored);
 
-      expect(listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo')).toEqual(stored);
+      expect(
+        listExportableWorkspaceSyncRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(stored);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -964,7 +1057,7 @@ describe('workspace sync records', () => {
 
   it('rejects imported review lineage that does not match its change set before writing', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-lineage-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -985,7 +1078,9 @@ describe('workspace sync records', () => {
             : [],
         })
       ).toThrow(/lineage|mismatch|conflict/i);
-      expect(listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo')).toEqual({
+      expect(
+        listExportableWorkspaceSyncRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual({
         backendWorkspaceHandles: [],
         changeSets: [],
         inputSnapshots: [],
@@ -1036,7 +1131,7 @@ describe('workspace sync records', () => {
           ...input,
           workerOutputManifests: input.workerOutputManifests.map((manifest) => ({
             ...manifest,
-            artifactIds: ['ar_other'],
+            artifactIds: ['ar_00000000-0000-7dcf-9e49-194b732024ae'],
           })),
         };
       },
@@ -1050,14 +1145,14 @@ describe('workspace sync records', () => {
           ...input,
           stagedReviews: input.stagedReviews.map((review) => ({
             ...review,
-            artifactId: 'ar_other',
+            artifactId: 'ar_00000000-0000-7dcf-9e49-194b732024ae',
           })),
         };
       },
     },
   ])('rejects a conflicting $field during workspace sync import', ({ replay }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-import-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -1065,7 +1160,9 @@ describe('workspace sync records', () => {
       importWorkspaceSyncRecords(workspaceDb, original);
 
       expect(() => importWorkspaceSyncRecords(workspaceDb, replay())).toThrow(/conflict/i);
-      expect(listExportableWorkspaceSyncRecords(workspaceDb, 'ws_demo')).toEqual(original);
+      expect(
+        listExportableWorkspaceSyncRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(original);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -1079,14 +1176,14 @@ describe('workspace sync records', () => {
  */
 function workspaceReviewItem(): Parameters<typeof recordWorkspaceSyncReview>[1]['item'] {
   return {
-    artifactId: 'ar_workspace_review',
+    artifactId: 'ar_00000000-0000-7f68-b2ab-6153db8a925d',
     changeSet: {
-      artifactIds: ['ar_workspace_review'],
+      artifactIds: ['ar_00000000-0000-7f68-b2ab-6153db8a925d'],
       base: { commit: 'abc123', contentDigest: null },
       bundle: null,
       changedPaths: [{ binary: false, path: 'docs/loop.md', status: 'modified' }],
       createdAt: timestamp,
-      evidenceRefs: [{ kind: 'worker', ref: 'turn_1' }],
+      evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' }],
       head: { commit: 'def456', contentDigest: null },
       id: 'wcs_1',
       inputSnapshotId: 'wis_1',
@@ -1099,7 +1196,7 @@ function workspaceReviewItem(): Parameters<typeof recordWorkspaceSyncReview>[1][
       redaction: { notes: [], status: 'redacted' },
       resourceId: 'repo_default',
       strategy: 'git',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
     patchPayload: {
       bytes: Buffer.byteLength(workspacePatchText, 'utf8'),
@@ -1122,7 +1219,7 @@ function workspaceReviewItem(): Parameters<typeof recordWorkspaceSyncReview>[1][
       status: 'pending',
       updatedAt: timestamp,
       validation: [],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
   };
 }
@@ -1149,7 +1246,7 @@ function workspaceInputSnapshot(): Parameters<typeof recordWorkspaceInputSnapsho
     resourceKind: 'git_repository',
     sourceId: 'repo_default',
     strategy: 'git',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     writableRoots: ['repo_default'],
   };
 }
@@ -1168,14 +1265,14 @@ function workspaceMaterializationRecord(): Parameters<
     createdAt: timestamp,
     id: 'wmr_1',
     inputSnapshotId: 'wis_1',
-    materializedRootRef: 'workspace://ws_demo/repo_default',
+    materializedRootRef: 'workspace://ws_00000000-0000-7000-8000-000000000001/repo_default',
     packageSnapshotId: 'aepsnap_1',
     policyDigest: 'sha256:policy',
     readinessEvidence: [{ kind: 'backend.ready', ref: 'version:0.0.63' }],
     sourceId: 'repo_default',
     strategy: 'git',
     workerSessionId: 'session_1',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 
@@ -1233,7 +1330,7 @@ function workspaceSyncImportFixture(): Parameters<typeof importWorkspaceSyncReco
         ],
         updatedAt: timestamp,
         workerSessionId: materializationRecord.workerSessionId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
     ],
     changeSets: [item.changeSet],
@@ -1254,7 +1351,7 @@ function workspaceSyncImportFixture(): Parameters<typeof importWorkspaceSyncReco
         resourceKind: 'git_repository',
         sourceId: 'repo_default',
         strategy: 'git',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         writableRoots: ['repo_default'],
       },
     ],
@@ -1281,7 +1378,7 @@ function workspaceSyncImportFixture(): Parameters<typeof importWorkspaceSyncReco
         strategy: 'git',
         testOutputRefs: [],
         workerSessionId: materializationRecord.workerSessionId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
     ],
   };
