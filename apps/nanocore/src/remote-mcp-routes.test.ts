@@ -1324,13 +1324,13 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     const timestamp = new Date().toISOString();
     f.coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id,${testEntityId('usr', 'user_id')},status,access_level,joined_at,revision,created_at,updated_at) VALUES ('${DEMO_WORKSPACE_ID}','${FIXTURE_LOCAL_USER_ID}','active','editor',?,1,?,?)`
+        `INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,revision,created_at,updated_at) VALUES ('${DEMO_WORKSPACE_ID}','${FIXTURE_LOCAL_USER_ID}','active','editor',?,1,?,?)`
       )
       .run(timestamp, timestamp, timestamp);
     const token = f.token();
     const before = f.coreDb.sqlite
       .prepare(
-        `SELECT * FROM workspace_members WHERE workspace_id = '${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')} = '${FIXTURE_LOCAL_USER_ID}'`
+        `SELECT * FROM workspace_members WHERE workspace_id = '${DEMO_WORKSPACE_ID}' AND user_id = '${FIXTURE_LOCAL_USER_ID}'`
       )
       .get();
     for (const transport of ['http', 'mcp']) {
@@ -1376,7 +1376,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
       expect(
         f.coreDb.sqlite
           .prepare(
-            `SELECT * FROM workspace_members WHERE workspace_id = '${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')} = '${FIXTURE_LOCAL_USER_ID}'`
+            `SELECT * FROM workspace_members WHERE workspace_id = '${DEMO_WORKSPACE_ID}' AND user_id = '${FIXTURE_LOCAL_USER_ID}'`
           )
           .get()
       ).toEqual(before);
@@ -1402,7 +1402,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     expect(accepted.isError).not.toBe(true);
     const committedMember = f.coreDb.sqlite
       .prepare(
-        `SELECT * FROM workspace_members WHERE workspace_id='${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')}='${FIXTURE_LOCAL_USER_ID}'`
+        `SELECT * FROM workspace_members WHERE workspace_id='${DEMO_WORKSPACE_ID}' AND user_id='${FIXTURE_LOCAL_USER_ID}'`
       )
       .get();
     const committedReceipt = f.coreDb.sqlite
@@ -1422,7 +1422,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     expect(
       f.coreDb.sqlite
         .prepare(
-          `SELECT * FROM workspace_members WHERE workspace_id='${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')}='${FIXTURE_LOCAL_USER_ID}'`
+          `SELECT * FROM workspace_members WHERE workspace_id='${DEMO_WORKSPACE_ID}' AND user_id='${FIXTURE_LOCAL_USER_ID}'`
         )
         .get()
     ).toEqual(committedMember);

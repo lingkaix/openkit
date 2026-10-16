@@ -427,7 +427,7 @@ it('commits every definition and terminal transition with its Workspace AuditEve
   expect(
     db.sqlite
       .prepare(
-        `SELECT action, actor_json, ${testEntityId('tu', 'turn_id')} FROM audit_events WHERE action = 'recurring.occurrence.terminal'`
+        `SELECT action, actor_json, turn_id FROM audit_events WHERE action = 'recurring.occurrence.terminal'`
       )
       .get()
   ).toEqual({
@@ -543,7 +543,7 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
   expect(findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toEqual(accepted);
   db.sqlite
     .prepare(
-      `UPDATE scheduler_admission_entries SET ${testEntityId('tu', 'turn_input')} = 'changed bytes' WHERE queue_entry_id = ?`
+      `UPDATE scheduler_admission_entries SET turn_input = 'changed bytes' WHERE queue_entry_id = ?`
     )
     .run(accepted.queueEntryId);
   expect(() => findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toThrow(

@@ -10,6 +10,7 @@ import { FsStore } from '../lib/store.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -172,11 +173,11 @@ describe('workspace export verifier', () => {
     const root = freshExportRoot('recurring-empty-export-');
     const verified = writeWorkspaceExportTree({
       exportRoot: root,
-      exportId: 'wsexp_recurring',
-      sourceDeploymentId: 'dep_source',
+      exportId: testEntityId('wsexp', 'recurring-empty-export'),
+      sourceDeploymentId: testEntityId('dep', 'recurring-empty-export'),
       createdAt: timestamp,
       workspace: {
-        id: 'ws_demo',
+        id: testEntityId('ws', 'recurring-empty-export'),
         name: 'Demo',
         kind: 'code',
         status: 'active',
@@ -440,7 +441,7 @@ describe('workspace export verifier', () => {
     });
     expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest).toMatchObject({
       requiredFeatures: ['agent.resource-catalog.v1', 'workspace.recurring-triggers.v1'],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   });
 
