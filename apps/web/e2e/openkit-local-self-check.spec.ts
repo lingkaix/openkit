@@ -244,8 +244,7 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
 test('completes the fixed visible Material handoff and proposal-conflict sequence', async ({
   page,
 }) => {
-  // Cold startup, two worker turns, and two Core restarts share this bounded harness budget.
-  // Per-action and assertion timeouts still detect stalled progress.
+  // Cold startup, two worker turns, and two Core restarts share this bounded harness budget. Per-action and assertion timeouts still detect stalled progress.
   test.setTimeout(120_000);
   const browserRuntimeErrors: string[] = [];
   page.on('pageerror', (error) => browserRuntimeErrors.push(error.message));
@@ -349,7 +348,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   expect(answer.ok(), `Worker user-input response ${answer.status()}: ${await answer.text()}`).toBe(
     true
   );
-  await expect(page.getByText('You answered').last()).toBeVisible();
+  // The answer response precedes the separate canonical Item refresh on a shared test host.
+  await expect(page.getByText('You answered').last()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
   await stack.restartCore();
@@ -363,7 +363,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     secondAnswer.ok(),
     `Second worker user-input response ${secondAnswer.status()}: ${await secondAnswer.text()}`
   ).toBe(true);
-  await expect(page.getByText('You answered').last()).toBeVisible();
+  await expect(page.getByText('You answered').last()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
   const artifacts = (

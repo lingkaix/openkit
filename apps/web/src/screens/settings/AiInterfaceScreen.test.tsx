@@ -4,7 +4,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -341,6 +341,45 @@ beforeEach(() => {
 });
 
 describe('AI interface deployment-admin workflow', () => {
+  it('does not restore an old device-login response into a replacement account status cache', async () => {
+    let finish!: (value: typeof PENDING_ACCOUNT) => void;
+    const client = makeClient({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(({ subscriptionProviderId }: { subscriptionProviderId: string }) =>
+            Promise.resolve({
+              accounts: subscriptionProviderId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+            })
+          ),
+        'provider-subscription.account-login-start': vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            })
+        ),
+      },
+    });
+    const { unmount, queryClient } = renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    await userEvent.click(within(card).getByRole('button', { name: 'Start login' }));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    const pending = queryClient
+      .getMutationCache()
+      .getAll()
+      .find((item) => item.state.status === 'pending');
+    unmount();
+    queryClient.removeQueries({ queryKey: ['settings'] });
+    const key = [...settingsKeys.aiInterface, 'status', 'openai-codex', 'primary'];
+    queryClient.setQueryData(key, LOGGED_IN_ACCOUNT);
+    await act(async () => {
+      finish(PENDING_ACCOUNT);
+    });
+    await waitFor(() => expect(pending?.state.status).toBe('success'));
+    expect(queryClient.getQueryData(key)).toEqual(LOGGED_IN_ACCOUNT);
+    expect(queryClient.getMutationCache().getAll()).toContain(pending);
+  });
+
   describe.each(['openai-codex', 'xai'] as const)('%s inference observations', (providerId) => {
     const accessAt = '2026-10-02T01:00:00.000Z';
     const exhaustedAt = '2026-10-02T02:00:00.000Z';
