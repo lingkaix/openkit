@@ -2159,11 +2159,13 @@ export function registerWorkerInferenceRoutes({
                     dispatchContext
                   );
                   phase = 'stream-prepare';
+                  const prepared = await execution.prepareStream(stream);
+                  if (!rawObserver.started || !rawObserver.events) {
+                    void prepared.cancel().catch(() => undefined);
+                    failRaw(new WorkerRawOutputAuthorityError());
+                  }
                   return workerInferenceStreamResponse(
-                    rewriteGatewayStreamModel(
-                      await execution.prepareStream(stream),
-                      logicalModel.id
-                    ),
+                    rewriteGatewayStreamModel(prepared, logicalModel.id),
                     durableCall,
                     endpoint,
                     c.req.raw.signal,
@@ -2199,8 +2201,13 @@ export function registerWorkerInferenceRoutes({
                   dispatchContext
                 );
                 phase = 'stream-prepare';
+                const prepared = await execution.prepareStream(stream);
+                if (!rawObserver.started || !rawObserver.events) {
+                  void prepared.cancel().catch(() => undefined);
+                  failRaw(new WorkerRawOutputAuthorityError());
+                }
                 return workerInferenceStreamResponse(
-                  rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
+                  rewriteGatewayStreamModel(prepared, logicalModel.id),
                   durableCall,
                   endpoint,
                   c.req.raw.signal,
@@ -2229,10 +2236,17 @@ export function registerWorkerInferenceRoutes({
         if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
         return result;
       } catch (error) {
-        if (!isGatewayCancellation(error, c.req.raw.signal)) reportFailure(error);
+        // The native stop signal can wrap the private authority failure as cancellation.
+        // Preserve its durable cause instead of reporting a caller disconnect.
+        const failure = durableCall.rawOutputFailureCode
+          ? durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted'
+            ? new WorkerRawOutputBudgetExceededError()
+            : new WorkerRawOutputAuthorityError()
+          : error;
+        if (!isGatewayCancellation(failure, c.req.raw.signal)) reportFailure(failure);
         const cancelled = finishDurableLlmGatewayFailure(
           durableCall,
-          error,
+          failure,
           c.req.raw.signal,
           'worker_inference_failed',
           'worker_inference_cancelled'
@@ -2243,7 +2257,7 @@ export function registerWorkerInferenceRoutes({
             'Worker inference request was cancelled.',
             499
           );
-        throw error;
+        throw failure;
       }
     } catch (error) {
       return asWorkerInferenceError(error);

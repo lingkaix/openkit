@@ -152,7 +152,9 @@ import {
   type SchedulerWorkerStorageChoice,
   schedulerAdmissionInputHash,
 } from './scheduler-records.js';
+import { readArtifactFileText } from './storage/artifacts/file-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { resolveDataRootPath } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import {
   artifactReferenceItemId,
@@ -2981,11 +2983,30 @@ export function createConversationService({
       }
       const conversationPrompt = [
         chatInput.input,
-        ...artifacts.map((artifact) =>
-          artifact.content.format === 'file'
-            ? `Artifact ${artifact.title} (${artifact.id} v${artifact.version}, ${artifact.contentDigest}): ${artifact.content.mediaType}, ${artifact.content.byteLength} bytes.`
-            : `Artifact ${artifact.title} (${artifact.id} v${artifact.version}, ${artifact.contentDigest}):\n${new TextDecoder().decode(Buffer.from(artifact.content.body, 'utf8').subarray(0, 2048), { stream: true }).split('\n').slice(0, 50).join('\n')}`
-        ),
+        ...artifacts.map((artifact) => {
+          const identity = `Artifact ${artifact.title} (${artifact.id} v${artifact.version}, ${artifact.contentDigest})`;
+          const content = artifact.content;
+          if (content.format === 'file') {
+            const textMedia =
+              content.mediaType === 'text/plain' ||
+              content.mediaType === 'text/markdown' ||
+              content.mediaType === 'application/json';
+            const text = textMedia
+              ? readArtifactFileText({
+                  workspaceRoot: resolveDataRootPath(coreDb!.dataRoot, 'workspaces', workspaceId),
+                  artifactId: artifact.id,
+                  version: artifact.version,
+                  byteLength: content.byteLength,
+                  contentDigest: artifact.contentDigest,
+                  maximumBytes: 2048,
+                })
+              : null;
+            return text !== null && text.split('\n').length <= 50
+              ? `${identity}:\n${text}`
+              : `${identity}: ${content.mediaType}, ${content.byteLength} bytes.`;
+          }
+          return `${identity}:\n${new TextDecoder().decode(Buffer.from(content.body, 'utf8').subarray(0, 2048), { stream: true }).split('\n').slice(0, 50).join('\n')}`;
+        }),
       ]
         .filter(Boolean)
         .join('\n\n');

@@ -29,7 +29,7 @@ Each increment includes owner alignment, local guides, focused regressions, inte
 
 ## Checkpoint
 
-The fixture and oracle branch at 3b8ea153 is merged. No production change has landed. WIP 5f5f21b6 is pushed as a backup, and main a1f2c6b8 is merged. Exact file storage, streaming and raw accounting are implemented and under integration checks. D01 and ZIP are separate landable features.
+The fixture and oracle branch at 3b8ea153 is merged. No production change has landed. Backups through c2ac67d6 are pushed, and main a1f2c6b8 is merged. D01 has its own pushed branch; ZIP implementation f9309891 is pushed and awaits its separate integration. Exact file storage, streaming and raw accounting are implemented and under integration checks. D01 and ZIP are separate landable features.
 
 ## Verification
 

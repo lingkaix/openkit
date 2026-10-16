@@ -73,7 +73,7 @@ interface WorkerInferenceDispatchCall {
 /** Minimal dispatcher fake for worker inference route tests. */
 class FakeWorkerInferenceDispatcher {
   /** The fake's fixed Provider output is fully known before public delivery; it supplies source proof independently of its held HTTP streams. */
-  private observeSource(context: LLMGatewayDispatchContext, text = ''): void {
+  public observeSource(context: LLMGatewayDispatchContext, text = ''): void {
     const boundary = context.transport?.rawOutput;
     if (!boundary) return;
     const settle = boundary.sourceStarted();
@@ -745,7 +745,10 @@ function postRawWorkerResponses(
 }
 
 describe('worker inference routes', () => {
-  it('refuses successful Provider output without native raw observation proof', async () => {
+  it.each([
+    false,
+    true,
+  ])('refuses successful Provider output without native raw observation proof (stream=%s)', async (stream) => {
     const fixture = createWorkerInferenceRouteFixture();
     vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementation(
       async (_provider, request) => ({
@@ -756,9 +759,22 @@ describe('worker inference routes', () => {
         status: 'completed',
       })
     );
+    vi.spyOn(fixture.dispatcher, 'createResponsesStream').mockResolvedValue(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: {"type":"response.output_text.delta","delta":"unobserved"}\n\n'
+            )
+          );
+          controller.close();
+        },
+      })
+    );
     const response = await postWorkerResponses(fixture, {
       model: WORKER_LOGICAL_MODEL_ID,
       input: 'Observe exactly',
+      stream,
     });
     expect(response.status).toBe(503);
     const workspaceDb = openWorkspaceDb(
@@ -2811,17 +2827,20 @@ describe('slice 1d round 2 terminal frame closeout', () => {
         },
       ];
       let index = 0;
-      const dispatch = vi.spyOn(f.dispatcher, 'createResponsesStream').mockResolvedValue(
-        new ReadableStream({
-          pull(controller) {
-            if (index < frames.length)
-              controller.enqueue(
-                new TextEncoder().encode(`data: ${JSON.stringify(frames[index++])}\n\n`)
-              );
-            else controller.close();
-          },
-        })
-      );
+      const dispatch = vi
+        .spyOn(f.dispatcher, 'createResponsesStream')
+        .mockImplementation(async (_provider, _request, context) => {
+          f.dispatcher.observeSource(context, 'released');
+          return new ReadableStream({
+            pull(controller) {
+              if (index < frames.length)
+                controller.enqueue(
+                  new TextEncoder().encode(`data: ${JSON.stringify(frames[index++])}\n\n`)
+                );
+              else controller.close();
+            },
+          });
+        });
       const response = await postWorkerResponses(f, {
         input: 'Hello',
         model: WORKER_LOGICAL_MODEL_ID,
@@ -2905,7 +2924,8 @@ describe('slice 3c Worker native effort and immutable package', () => {
     const request = dispatched.mock.calls[0]?.[1];
     if (expected === undefined) expect(request).not.toHaveProperty('reasoning');
     else expect(request).toMatchObject({ reasoning: { effort: expected } });
-    expect(received).toEqual([expected]);
+    // Stock Completions maps an omitted Core effort through this model's disabled-thinking value.
+    expect(received).toEqual([expected ?? 'none']);
     expect(f.environmentPackage).toEqual(admittedPackage);
     const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_demo');
     applyScopedMigrations(db);

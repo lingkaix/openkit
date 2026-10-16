@@ -1834,7 +1834,7 @@ mod tests {
             .0
             .split_whitespace()
             .collect::<String>();
-        assert!(export.contains("stage.length() > request.byte_length"));
+        assert!(export.contains("stage.length()>request.byte_length"));
         assert!(export.contains("stage.complete(None)"));
         let stage = include_str!("file_transfer.rs");
         assert!(
