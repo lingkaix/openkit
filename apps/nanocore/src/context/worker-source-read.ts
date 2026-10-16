@@ -31,6 +31,7 @@ import {
   type SourceViewUnavailable,
   type SourceViewUnavailableReason,
 } from './bounded-source-view.js';
+import type { MediaByteSource } from './media-process.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   readWorkerContextPackageTrace,
@@ -228,22 +229,7 @@ export async function readWorkerSourceSnapshot(input: {
     const envelopeBytes = 65_536 - Buffer.byteLength(JSON.stringify(extra), 'utf8');
     if (envelopeBytes < 128) return unavailable('resource_limited');
     if (Buffer.byteLength(relative, 'utf8') > 4096) return unavailable('resource_limited');
-    const parts = [
-      'threads',
-      input.threadId,
-      'turns',
-      input.turnId,
-      'context-package',
-      ...relative.split('/'),
-    ];
-    for (const part of parts) assertSafeWorkspacePathSegment(part, 'Context Package path');
-    let path = input.workspaceRoot;
-    assertCanonicalDirectory(path);
-    for (const part of parts.slice(0, -1)) {
-      path = join(path, part);
-      assertCanonicalDirectory(path);
-    }
-    path = join(path, parts.at(-1)!);
+    const path = sourceSnapshotPath(input, relative);
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       input.signal?.throwIfAborted();
@@ -310,6 +296,67 @@ export async function readWorkerSourceSnapshot(input: {
           : 'unavailable'
     );
   }
+}
+
+/** Streams the exact retained original to an explicitly requested source-owned processor. This factory opens no current source or arbitrary host path and creates no access grant. */
+export function workerSourceOriginal(input: {
+  readonly workspaceRoot: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly source: WorkerContextPackageSourceFile;
+  readonly assertCurrent: () => void;
+}): MediaByteSource {
+  const source = structuredClone(input.source);
+  return {
+    sourceKey: `${source.source.reference.scopeId}/${source.source.reference.objectId}`,
+    revision: source.projection.sourceRevision,
+    originalDigest: source.originalDigest,
+    byteLength: source.byteLength,
+    async *open(signal) {
+      signal.throwIfAborted();
+      input.assertCurrent();
+      const path = sourceSnapshotPath(input, source.originalSnapshotPath);
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const pinned = await file.stat({ bigint: true });
+        if (!pinned.isFile() || pinned.nlink !== 1n || pinned.size !== BigInt(source.byteLength))
+          throw new BoundedSourceError('corrupt');
+        let position = 0;
+        while (position < source.byteLength) {
+          signal.throwIfAborted();
+          input.assertCurrent();
+          const bytes = Buffer.alloc(Math.min(65_536, source.byteLength - position));
+          const { bytesRead } = await file.read(bytes, 0, bytes.length, position);
+          signal.throwIfAborted();
+          input.assertCurrent();
+          if (!bytesRead) throw new BoundedSourceError('corrupt');
+          position += bytesRead;
+          yield bytes.subarray(0, bytesRead);
+        }
+        signal.throwIfAborted();
+        input.assertCurrent();
+        if (!sameFile(pinned, await file.stat({ bigint: true })) || !sameFile(pinned, await lstat(path, { bigint: true })))
+          throw new BoundedSourceError('stale');
+        input.assertCurrent();
+      } finally {
+        await file.close();
+      }
+    },
+  };
+}
+
+/** Resolves only one inventory-owned snapshot path through canonical no-link directories. */
+function sourceSnapshotPath(input: { workspaceRoot: string; threadId: string; turnId: string }, relative: string): string {
+  if (Buffer.byteLength(relative, 'utf8') > 4096) throw new BoundedSourceError('resource_limited');
+  const parts = ['threads', input.threadId, 'turns', input.turnId, 'context-package', ...relative.split('/')];
+  for (const part of parts) assertSafeWorkspacePathSegment(part, 'Context Package path');
+  let path = input.workspaceRoot;
+  assertCanonicalDirectory(path);
+  for (const part of parts.slice(0, -1)) {
+    path = join(path, part);
+    assertCanonicalDirectory(path);
+  }
+  return join(path, parts.at(-1)!);
 }
 
 /** Detects mutation or replacement of the held immutable snapshot, without reopening current sources. */
