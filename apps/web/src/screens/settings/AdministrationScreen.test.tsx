@@ -1235,7 +1235,7 @@ describe('Administration', () => {
   it.each([
     'connection',
     'candidate',
-  ])('disables and ignores Apply after %s read failure while the confirmation is open', async (failedRead) => {
+  ])('blocks and ignores Apply after %s read failure while the confirmation is open', async (failedRead) => {
     const user = userEvent.setup();
     const applyAdministrationConfiguration = vi.fn();
     let connected = true;
@@ -1264,14 +1264,21 @@ describe('Administration', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
     expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
+    const confirmation = screen.getByRole('button', { name: 'Apply configuration' });
     connected = false;
     await act(async () => {
       await queryClient.invalidateQueries();
     });
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
-    );
-    await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+    if (failedRead === 'candidate') {
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+      await user.click(confirmation);
+    } else {
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
+      );
+      await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+    }
     expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
   });
 
@@ -1479,12 +1486,17 @@ describe('Administration', () => {
   });
 
   it('hides private candidate facts after typed denial and a later failed Items retry until success', async () => {
-    const client = makeClient({}, {
-      'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
-      'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
-      'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+    const client = makeClient(
+      {},
+      {
+        'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: 1, retryDelay: 0 } },
     });
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 0 } } });
     renderScreen(client, queryClient);
     const queryKey = ['items', QUICK_CHAT.id, ADMIN_THREAD.id];
     try {
@@ -1492,27 +1504,45 @@ describe('Administration', () => {
       let failRetry!: () => void;
       vi.mocked(client.operations['thread.items'])
         .mockRejectedValueOnce(new ApiCallError(403, 'private-items-denied'))
-        .mockImplementation(() => new Promise((_resolve, reject) => {
-          failRetry = () => reject(new ApiCallError(500, 'private-items-unavailable'));
-        }));
-      await act(async () => { void queryClient.invalidateQueries({ queryKey, exact: true }); });
+        .mockImplementation(
+          () =>
+            new Promise((_resolve, reject) => {
+              failRetry = () => reject(new ApiCallError(500, 'private-items-unavailable'));
+            })
+        );
+      await act(async () => {
+        void queryClient.invalidateQueries({ queryKey, exact: true });
+      });
       await waitFor(() => expect(failRetry).toBeDefined());
       expect(queryClient.getQueryState(queryKey)?.error).toBeNull();
-      expect(queryClient.getQueryState(queryKey)?.fetchFailureReason).toMatchObject({ status: 403 });
+      expect(queryClient.getQueryState(queryKey)?.fetchFailureReason).toMatchObject({
+        status: 403,
+      });
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
       await act(async () => failRetry());
-      await waitFor(() => expect(queryClient.getQueryState(queryKey)?.error).toMatchObject({ status: 500 }));
-      await waitFor(() => expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument());
+      await waitFor(() =>
+        expect(queryClient.getQueryState(queryKey)?.error).toMatchObject({ status: 500 })
+      );
+      await waitFor(() =>
+        expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument()
+      );
       let restoreItems!: () => void;
-      vi.mocked(client.operations['thread.items']).mockImplementation(() => new Promise((resolve) => {
-        restoreItems = () => resolve({ items: [CONFIG_ITEM] });
-      }));
-      await act(async () => { void queryClient.refetchQueries({ queryKey, exact: true }); });
+      vi.mocked(client.operations['thread.items']).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            restoreItems = () => resolve({ items: [CONFIG_ITEM], nextCursor: null });
+          })
+      );
+      await act(async () => {
+        void queryClient.refetchQueries({ queryKey, exact: true });
+      });
       await waitFor(() => expect(restoreItems).toBeDefined());
       expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
       await act(async () => restoreItems());
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled());
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled()
+      );
       expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
     } finally {
       await act(() => queryClient.cancelQueries({ queryKey, exact: true }));
@@ -1562,7 +1592,9 @@ describe('Administration', () => {
     expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
     expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
     await act(async () => allowParent());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled()
+    );
     expect(client.operations['thread.read']).toHaveBeenCalledWith({
       workspaceId: QUICK_CHAT.id,
       threadId: ADMIN_THREAD.id,
