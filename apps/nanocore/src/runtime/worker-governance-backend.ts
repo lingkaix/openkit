@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   MaterializedWorkspaceRoot,
   StagedWorkspaceReview,
@@ -16,7 +17,13 @@ import {
 } from '@openkit/config-schema';
 import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
-import { skillSnapshotPath } from '../catalog/resource-catalog.js';
+import {
+  CatalogContentUnavailableError,
+  CatalogIntegrityError,
+  CatalogNotFoundError,
+  loadWorkspaceResourceCatalog,
+  readWorkspaceSkillSnapshot,
+} from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { ExecutionBackend } from './execution-backend.js';
@@ -447,11 +454,14 @@ export async function prepareNanoHostContextPackageImports(
 }
 
 /**
- * Reads verified Skill snapshot files into import-only worker-supply identities.
+ * Projects the catalog's verified retained entry collection into worker-supply imports.
  *
- * @param environmentPackage Admitted AEP whose supply inventory is authoritative.
+ * Directory and executable facts remain in the AEP inventory; the existing import contract carries file bytes only.
+ *
+ * @param environmentPackage Admitted AEP whose exact selection must match retained catalog authority.
  * @param dataRoot Workspace data root holding catalog snapshots.
  * @returns Sorted regular-file imports, or an empty list when no Skills are supplied.
+ * @throws CatalogNotFoundError or CatalogIntegrityError when retained supply or its AEP claims are unavailable or changed.
  */
 async function prepareWorkerSupplyImports(
   environmentPackage: AgentEnvironmentPackage,
@@ -467,32 +477,66 @@ async function prepareWorkerSupplyImports(
     throw new Error('Worker supply imports require a data root.');
   }
   const inputPaths = workerSessionInputPaths(environmentPackage.scope.agentSessionId);
-  const imports: NanoHostContextPackageImport[] = [];
-  for (const skill of skills) {
+  const selected = skills.map((skill) => {
     const digest = skill.integrity?.sha256;
-    const inventory = skill.inventory;
-    if (!digest || !inventory) {
-      throw new Error(`Worker supply skill is missing verified inventory: ${skill.id}`);
+    if (!digest || !skill.inventory) {
+      throw new CatalogIntegrityError(
+        `Worker supply skill is missing verified inventory: ${skill.id}`
+      );
     }
-    const snapshot = skillSnapshotPath(
+    const { entries, version } = readWorkspaceSkillSnapshot({
       dataRoot,
-      environmentPackage.scope.workspaceId,
-      skill.id,
-      digest
+      digest,
+      entryId: skill.id,
+      workspaceId: environmentPackage.scope.workspaceId,
+    });
+    if (
+      skill.digestFormat !== version.digestFormat ||
+      skill.version !== (version.publisherVersion ?? digest) ||
+      skill.sourceRef !== `catalog:skill:${skill.id}:${digest}` ||
+      !isDeepStrictEqual(skill.inventory, version.inventory) ||
+      !isDeepStrictEqual(skill.lineage, {
+        baseDigest: version.provenance.baseDigest,
+        pluginMemberKey: version.provenance.pluginMemberKey,
+        pluginVersionDigest: version.provenance.pluginVersionDigest,
+      })
+    ) {
+      throw new CatalogIntegrityError(
+        `Worker Skill supply does not match its retained catalog version: ${skill.id}`
+      );
+    }
+    return { digest, entries, skill, version };
+  });
+  // Check the whole captured selection after all reads, without following later default or pin changes.
+  const current = loadWorkspaceResourceCatalog(dataRoot, environmentPackage.scope.workspaceId);
+  const imports: NanoHostContextPackageImport[] = [];
+  for (const { digest, entries, skill, version } of selected) {
+    const retained = current.skills.versions.find(
+      (item) => item.entryId === skill.id && item.digest === digest
     );
-    const files = inventory
-      .filter((entry) => entry.kind === 'file')
-      .slice()
+    if (
+      !current.skills.entries.some(
+        (item) => item.id === skill.id && item.availability === 'available'
+      ) ||
+      !retained
+    ) {
+      throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${skill.id}`);
+    }
+    if (retained.contentState === 'purged') {
+      throw new CatalogContentUnavailableError(`Skill content was purged: ${skill.id}/${digest}`);
+    }
+    if (!isDeepStrictEqual(retained, version)) {
+      throw new CatalogIntegrityError(
+        `Skill version changed during Worker supply admission: ${skill.id}/${digest}`
+      );
+    }
+    const files = entries
+      .filter((entry) => entry.kind !== 0)
       .sort((left, right) => left.path.localeCompare(right.path));
     for (const file of files) {
-      if (!file.sha256) {
-        throw new Error(`Worker supply file is missing digest: ${skill.id}/${file.path}`);
-      }
-      const body = await readFile(join(snapshot, file.path));
-      const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-      if (contentDigest !== file.sha256 || body.byteLength !== file.size) {
-        throw new Error(`Worker supply file digest mismatch: ${skill.id}/${file.path}`);
-      }
+      // The shared reader proved both this captured body and its exact inventory row.
+      const body = file.content!;
+      const contentDigest = version.inventory.find((row) => row.path === file.path)!.sha256!;
       imports.push({
         body,
         byteLength: body.byteLength,

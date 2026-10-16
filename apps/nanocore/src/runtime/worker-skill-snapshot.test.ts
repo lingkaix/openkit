@@ -65,11 +65,11 @@ describe('exact retained Worker Skill delivery', () => {
   const agentSetup = createTestAgentSetup({ skillIds: ['repo-guidelines'] });
 
   /** Resolves the current/pinned selection through the real AEP owner. */
-  function resolvePackage(): AgentEnvironmentPackage {
+  function resolvePackage(selectedSetup = agentSetup): AgentEnvironmentPackage {
     return AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSetup,
+        agentSetup: selectedSetup,
         agentSessionId: 'as_exact_skill',
         backend: { kind: 'openshell' },
         coreDb,
@@ -344,6 +344,56 @@ describe('exact retained Worker Skill delivery', () => {
       },
     });
     await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+  });
+
+  it.each([
+    'aep',
+    'native',
+  ] as const)('checks the complete %s selection after a later Skill read revokes an earlier Skill', async (boundary) => {
+    const second = importWorkspaceSkill({
+      activate: true,
+      createdAt: '2026-10-05T00:00:00.000Z',
+      dataRoot: coreDb.dataRoot,
+      displayName: 'Second Skill',
+      expectedRevision: first.catalog.revision,
+      producer: { id: 'user_local', kind: 'user' },
+      tree: [
+        {
+          kind: 'file',
+          path: 'SKILL.md',
+          contentBase64: Buffer.from(
+            '---\nname: second-skill\ndescription: Second guidance.\n---\nSecond Skill.\n'
+          ).toString('base64'),
+        },
+      ],
+      workspaceId: turn.workspaceId,
+    });
+    const selectedSetup = createTestAgentSetup({ skillIds: ['repo-guidelines', 'second-skill'] });
+    environmentPackage = resolvePackage(selectedSetup);
+    const source = join(
+      skillSnapshotPath(coreDb.dataRoot, turn.workspaceId, 'second-skill', second.version.digest),
+      'SKILL.md'
+    );
+    const original = fs.readFileSync;
+    let changed = false;
+    vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
+      const bytes = original(path, options);
+      if (String(path) === source && !changed) {
+        changed = true;
+        removeWorkspaceSkill({
+          dataRoot: coreDb.dataRoot,
+          workspaceId: turn.workspaceId,
+          entryId: 'repo-guidelines',
+          expectedRevision: second.catalog.revision,
+        });
+      }
+      return bytes;
+    });
+    syncBuiltinESMExports();
+    if (boundary === 'aep')
+      expect(() => resolvePackage(selectedSetup)).toThrow(CatalogNotFoundError);
+    else await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+    expect(changed).toBe(true);
   });
 
   it('refuses current selection when its retained version metadata is missing', () => {
