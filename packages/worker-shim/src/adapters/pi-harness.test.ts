@@ -494,6 +494,7 @@ describe('Pi Harness integration', () => {
               Buffer.from(chunk.data.data, 'base64').toString() === `answer-${index + 1}`
           ).toBe(true);
         }
+      } finally {
         console.info(
           JSON.stringify({
             issue: 130,
@@ -510,11 +511,12 @@ describe('Pi Harness integration', () => {
               turn: turnIds.indexOf(turnId),
               ...event,
             })),
-            canonical: 'two correlated completed finals with matching synthetic content',
-            incident: 'INCONCLUSIVE: self-stop not reproduced; other terminal classes unobserved',
+            captureFailure: captureFailure ?? null,
+            incident: native.some((event) => event.stopReason === 'aborted')
+              ? 'INCONCLUSIVE: native abort observed; inspect the correlated terminal sequence'
+              : 'INCONCLUSIVE: self-stop not reproduced in the observed sequence',
           })
         );
-      } finally {
         proxy.closeAllConnections();
         await new Promise<void>((resolve) => proxy.close(() => resolve()));
       }
