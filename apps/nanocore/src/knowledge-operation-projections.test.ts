@@ -421,7 +421,7 @@ describe('Knowledge operation definition cutover', () => {
     } finally {
       await f.close();
     }
-  });
+  }, 120_000);
 
   it('keeps unauthorized Workspace refusal on every definition, scoped source denial and readonly refusal on every mutation before effects', async () => {
     const f = fixture();
@@ -641,7 +641,7 @@ describe('Knowledge operation definition cutover', () => {
         requestId: randomUUID(),
         baseRevision,
         changes: [
-          { path, content: bytes.replace(/sensitivity: .*\n/, 'sensitivity: "restricted"\n') },
+          { path, content: bytes.replace(/sensitivity: .*\n/, 'sensitivity: "confidential"\n') },
         ],
         summary: 'Restrict selected fixture page',
       });

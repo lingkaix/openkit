@@ -105,7 +105,7 @@ Workspace clone/remint rewrites scope and source IDs using existing portability 
 
 ## Current Implementation Projection
 
-Unactivated cutover components provide fresh Workspace Git notebooks, fixed-base human publication, current authorized pinned reads, saved-candidate human Review with bounded reverse and explicit removal, and public Workspace history/diff/restore. Historical bodies use current canonical source/audience admission; denied history rows withhold their summary, producer and changed paths. Restore uses the common publisher and creates a new commit; its selected normalized diff supports explicit removal confirmation. Scoped virtual Agent editing, full required-review invocation, Memory/forget suppression and other cross-owner joins remain incomplete. These components do not activate or accept the Notebook cutover.
+Workspace Git read and write paths implement fresh notebooks, fixed-base human publication, current authorized pinned reads, saved-candidate human Review with bounded reverse and explicit removal, and public Workspace history/diff/restore. Historical bodies use current canonical source/audience admission; denied history rows withhold their summary, producer and changed paths. Restore uses the common publisher and creates a new commit; its selected normalized diff supports explicit removal confirmation. The integrated public and Web joins enable this Workspace behavior when landed. User and Server Memory, scoped virtual Agent editing and full required-review invocation, forget suppression, and full historical trace and archive disclosure closure remain incomplete. This projection does not accept complete Notebook, Memory or P20 behavior.
 
 ## Implementation Cutover And Acceptance
 
