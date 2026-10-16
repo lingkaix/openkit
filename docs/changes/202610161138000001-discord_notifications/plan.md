@@ -14,7 +14,7 @@ Source: engineer assignment to lane L-CH on 2026-10-16, P23, the shared lane bri
 
 [Communication](../../core/communication.md) owns the channel boundary. [Pending Requests](../../specs/20260930-pending_requests.md) owns exact responses and request attention. [Permissions](../../core/permissions.md) owns current authority and audience admission. Existing storage, operation definitions, configuration, and Web design owners remain binding. Use the recommended D07 scope with Discord. Direct decisions admit exact approval denials and non-secret question answers, in private direct messages only. Approval grants return to the App for the existing decision-strength confirmation. Email sends links only. Unknown sends and unknown response dispatch stay separate from Core outcomes.
 
-## Checkpoint
+## Closeout Summary
 
 Maincf092a5b is merged in0ea9dc5d. Manual merge resolutions preserve both the complete delegated-maintenance schema and the Discord schema, both sets of guide paragraphs, and each native composition join. OpenAPI and CLI were regenerated from the merged definitions. P14 has not reached main. Both Builder branches and the Test Author corrections are merged, and helper write ownership is closed. The primary owns the composed paths; the independent Reviewer owns no production path. No real vendor or host operation occurred.
 
@@ -26,7 +26,7 @@ Review corrected prior-user Web cache retention, missing usable grant links, dup
 
 Complete the final merged checks and exact-head independent review, push, and run the full CI gate. Fetch and merge current main before landing; use the accepted identifier owner if P14 has landed. Acquire the landing window only after CI passes. Land through protocolv2 and watch the main-push gate. A real bot account and separately authorized send remain later proof; their absence does not block this fake-backed feature.
 
-## Verification
+## Verification Evidence
 
 Local fake-backed verification is complete. The independent Reviewer has inspected the actual source, merge resolutions, regressions, and named execution outputs. Its exact-head report and full CI remain landing preconditions; this record does not substitute for either gate. Real bot registration, account operation, and sending are outside this verification and remain separately authorized proof.
 
