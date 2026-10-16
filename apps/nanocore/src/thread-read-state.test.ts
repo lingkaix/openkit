@@ -3,10 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -24,7 +23,7 @@ describe('User-owned Thread read receipts', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'thread-read-state-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
+    const localUserId = ensureLocalUser(coreDb);
     onTestFinished(() => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -34,12 +33,12 @@ describe('User-owned Thread read receipts', () => {
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
-      ownerUserId: LOCAL_USER_ID,
+      ownerUserId: localUserId,
     });
     const thread = store.createThread(workspace.id, 'Read receipts');
     const turn = store.createTurn(workspace.id, thread.id, 'Prompt', {
       kind: 'user',
-      id: LOCAL_USER_ID,
+      id: localUserId,
     });
     const base = {
       workspaceId: workspace.id,
@@ -55,7 +54,7 @@ describe('User-owned Thread read receipts', () => {
       ...base,
       id: OWN,
       type: 'user-message',
-      actor: { kind: 'user', id: LOCAL_USER_ID },
+      actor: { kind: 'user', id: localUserId },
       text: 'Prompt',
     });
     store.createItem({
@@ -67,7 +66,7 @@ describe('User-owned Thread read receipts', () => {
       text: 'Still writing',
     });
     const secret = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: LOCAL_USER_ID,
+      ownerUserId: localUserId,
       scope: 'workspace',
       workspaceIds: [workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
