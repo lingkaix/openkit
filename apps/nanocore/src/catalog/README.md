@@ -24,3 +24,5 @@ Run the affected `resource-catalog`, durable-write, catalog-operation and portab
 The [Skill owner](../../../../docs/specs/20260711-skill_catalog_versioning_pinning.md), [Plugin owner](../../../../docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md) and [MCP owner](../../../../docs/specs/20260907-mcp_catalog_management.md) define the contracts.
 
 The ecosystem import conventions follow the pinned MIT source documented in THIRD-PARTY-NOTICES.md. skill-source.ts parses locators and YAML without network, process execution or authority; acquisition and discovery still require the existing authenticated import boundary. No upstream CLI or telemetry runs.
+
+Source acquisition components stage a complete bounded package before catalog admission. `skill-local-source.ts` belongs to the explicitly authorized caller filesystem boundary and must never accept a remote caller's Core host path. `skill-git-source.ts` reads an exact resolved commit with ordinary Git plumbing, no checkout, hooks or ambient Git credentials; its temporary repository is removed after staging. Discovery, Git and local acquisition are not yet wired into public import or update checks.
