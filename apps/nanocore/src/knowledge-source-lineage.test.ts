@@ -75,7 +75,7 @@ describe('direct Knowledge saved-source lineage', () => {
         sourceReferences: [`source:${source.id}@${source.contentDigest}`],
       });
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: LOCAL_USER_ID,
         scope: 'workspace-readonly',
         workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
@@ -322,6 +322,8 @@ describe('direct Knowledge saved-source lineage', () => {
           ...fields,
           workspaceId: DEMO_WORKSPACE_ID,
           requestId: crypto.randomUUID(),
+          baseRevision: before.notebookRevision,
+          knowledgePageId: 'private-interpretation',
         })
       ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
       expect(
@@ -346,6 +348,9 @@ describe('direct Knowledge saved-source lineage', () => {
         ...fields,
         workspaceId: personal.id,
         requestId: crypto.randomUUID(),
+        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: personal.id }))
+          .notebookRevision,
+        knowledgePageId: 'private-interpretation',
         sourceReferences: [`source:${personalSource.id}@${personalSource.contentDigest}`],
       };
       const entry = await f.client.operations['knowledge.create'](personalCommand);
@@ -354,6 +359,8 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceId: personal.id,
         knowledgeEntryId: entry.id,
         requestId: crypto.randomUUID(),
+        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: personal.id }))
+          .notebookRevision,
         title: 'Updated private interpretation',
       };
       const updated = await f.client.operations['knowledge.update'](update);
@@ -470,18 +477,28 @@ describe('direct Knowledge saved-source lineage', () => {
       const before = await f.client.operations['knowledge.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
-      await expect(
-        f.client.operations['knowledge.create']({
-          workspaceId: DEMO_WORKSPACE_ID,
-          requestId: crypto.randomUUID(),
-          baseRevision: before.notebookRevision,
-          knowledgePageId: 'must-not-publish',
-          kind: 'project-context',
-          title: 'Must not publish',
-          content: 'The reading room opens at eight.',
-          sourceReferences: [reference],
-        })
-      ).rejects.toMatchObject({ status: 400, code: 'invalid_request' });
+      const requestId = crypto.randomUUID();
+      const scope = { workspaceId: DEMO_WORKSPACE_ID, actorId: LOCAL_USER_ID };
+      expect(f.store.getCommandRequest('knowledge.create', requestId, scope)).toBeNull();
+      const refusal = await f.client.operations['knowledge.create']({
+        workspaceId: DEMO_WORKSPACE_ID,
+        requestId,
+        baseRevision: before.notebookRevision,
+        knowledgePageId: 'must-not-publish',
+        kind: 'project-context',
+        title: 'Must not publish',
+        content: 'The reading room opens at eight.',
+        sourceReferences: [reference],
+      }).catch((error: unknown) => error);
+      // Missing/corrupt immutable captured bytes require recovery; invalid selection remains a request error.
+      expect(refusal).toMatchObject(
+        condition === 'changed-bytes' || condition === 'missing-bytes'
+          ? { status: 409, code: 'recovery_required' }
+          : { status: 400, code: 'invalid_request' }
+      );
+      expect(JSON.stringify(refusal)).not.toContain('The reading room opens at eight.');
+      expect(JSON.stringify(refusal)).not.toContain('Changed captured bytes.');
+      expect(f.store.getCommandRequest('knowledge.create', requestId, scope)).toBeNull();
       expect(
         await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
       ).toEqual(before);
