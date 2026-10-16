@@ -1,4 +1,7 @@
-import { SubmitConversationResponseSchema, ThreadDashboardResponseSchema } from '@openkit/app-api-schemas';
+import {
+  SubmitConversationResponseSchema,
+  ThreadDashboardResponseSchema,
+} from '@openkit/app-api-schemas';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -238,21 +241,38 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
 
 /** Reads canonical Turn ids before this isolated fixture answers a pending question. */
 async function threadTurnIds(threadId: string): Promise<Set<string>> {
-  const dashboard = ThreadDashboardResponseSchema.parse(await getJson('/api/app/operations/thread.dashboard', {
-    workspaceId: 'ws_demo', threadId,
-  }));
+  const dashboard = ThreadDashboardResponseSchema.parse(
+    await getJson('/api/app/operations/thread.dashboard', {
+      workspaceId: 'ws_demo',
+      threadId,
+    })
+  );
   return new Set(dashboard.turns.map((turn) => turn.id));
 }
 
 /** The answer acknowledgement resolves the question before its separate outcome-delivery Turn finishes. Wait for that real Turn before restarting Core or reading its outputs. */
-async function waitForAnswerTurn(threadId: string, priorTurnIds: ReadonlySet<string>): Promise<void> {
-  await expect.poll(async () => {
-    const dashboard = ThreadDashboardResponseSchema.parse(await getJson('/api/app/operations/thread.dashboard', {
-      workspaceId: 'ws_demo', threadId,
-    }));
-    const delivered = dashboard.turns.filter((turn) => !priorTurnIds.has(turn.id));
-    return delivered.length === 1 && delivered[0]!.status === 'completed';
-  }, { timeout: 15_000, message: 'The answer must complete its separate canonical outcome-delivery Turn.' }).toBe(true);
+async function waitForAnswerTurn(
+  threadId: string,
+  priorTurnIds: ReadonlySet<string>
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const dashboard = ThreadDashboardResponseSchema.parse(
+          await getJson('/api/app/operations/thread.dashboard', {
+            workspaceId: 'ws_demo',
+            threadId,
+          })
+        );
+        const delivered = dashboard.turns.filter((turn) => !priorTurnIds.has(turn.id));
+        return delivered.length === 1 && delivered[0]!.status === 'completed';
+      },
+      {
+        timeout: 15_000,
+        message: 'The answer must complete its separate canonical outcome-delivery Turn.',
+      }
+    )
+    .toBe(true);
 }
 
 /**
