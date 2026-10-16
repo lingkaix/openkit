@@ -637,16 +637,29 @@ test('a used parent directory prevents all independent reads and component effec
   assert.deepEqual(f.calls, []);
 });
 
-for (const reason of ['machine-binding', 'app-helper-identity', 'canonical-docker-posture', 'app-web-attribution', 'invented-private-marker']) {
+for (const reason of [
+  'machine-binding',
+  'app-helper-identity',
+  'canonical-docker-posture',
+  'app-web-attribution',
+  'invented-private-marker',
+]) {
   test(`App prerequisite retains only a closed identity reason: ${reason}`, async (t) => {
     const f = await fixture(t);
     f.io.identities = async () => {
-      throw Object.assign(Error('invented-private-marker'), { code: 'operator-identity-unavailable', operatorReason: reason });
+      throw Object.assign(Error('invented-private-marker'), {
+        code: 'operator-identity-unavailable',
+        operatorReason: reason,
+      });
     };
-    await assert.rejects(run(f), (error) => reason === 'invented-private-marker' ? error.message.includes('App observation or effect unavailable') : error.message.includes(`App prerequisite unavailable (${reason})`));
+    await assert.rejects(run(f), (error) =>
+      reason === 'invented-private-marker'
+        ? error.message.includes('App observation or effect unavailable')
+        : error.message.includes(`App prerequisite unavailable (${reason})`)
+    );
     assert.ok(!f.calls.includes('app-update.prepare'));
     assert.ok(!f.calls.includes('app-update.start'));
-    const saved = await fs.readFile(path.join(f.evidence, 'app', 'app-result.json'), 'utf8');
+    const saved = await fs.readFile(path.join(f.evidence, 'components-result.json'), 'utf8');
     assert.doesNotMatch(saved, /invented-private-marker/);
   });
 }
