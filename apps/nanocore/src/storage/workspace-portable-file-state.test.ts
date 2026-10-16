@@ -138,7 +138,7 @@ describe('workspace portable file state', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-entry-'));
     try {
       initializeNotebook(workspaceRoot);
-      const threadId = 'th_00000000-0000-4000-8000-000000000881';
+      const threadId = testEntityId('th', 'portable-trace-owner');
       const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
       mkdirSync(traceDirectory, { recursive: true });
       const tempPath = join(
@@ -163,7 +163,7 @@ describe('workspace portable file state', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-file-'));
     try {
       initializeNotebook(workspaceRoot);
-      const threadId = 'th_00000000-0000-4000-8000-000000000881';
+      const threadId = testEntityId('th', 'portable-trace-owner');
       const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
       mkdirSync(traceDirectory, { recursive: true });
       writeFileSync(
@@ -639,7 +639,7 @@ describe('workspace portable file state', () => {
     const thread = store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
       visibility: 'workspace',
     });
-    const traceId = 'krt_00000000-0000-4000-8000-000000000882';
+    const traceId = testEntityId('krt', 'portable-trace-export');
     const reference = {
       scopeId: `retrieval-trace/thread/${workspaceId}/${thread.id}`,
       objectId: traceId,
