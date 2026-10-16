@@ -15,7 +15,11 @@ const OBSERVED = '2026-10-16T00:00:00.000Z';
 const UPDATED = '2026-10-15T12:00:00.000Z';
 const BRANCHES = [
   {
-    target: { kind: 'workspace-deletion', workspaceId: 'ws_3c919bf6-f4bd-7d60-8755-c67c20dcf237', requestId: 'request-one' },
+    target: {
+      kind: 'workspace-deletion',
+      workspaceId: 'ws_3c919bf6-f4bd-7d60-8755-c67c20dcf237',
+      requestId: 'request-one',
+    },
     state: { phase: 'deleted', retainedStaging: true, cleanedAt: null },
   },
   {

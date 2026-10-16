@@ -546,7 +546,10 @@ describe('ensureLayout', () => {
     ensureLayout(root);
 
     expectDirectory(join(root, 'server', 'db'));
-    expectDirectory(join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'db'));
+    expect(readdirSync(join(root, 'users'))).toEqual([]);
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    ensureUserLayout(root, userId);
+    expectDirectory(join(root, 'users', userId, 'db'));
   });
 
   it('keeps core.sqlite under the server ownership scope', async () => {

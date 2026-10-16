@@ -112,27 +112,42 @@ const ConversationCommandReceiptMetadataReaderSchema =
   }).strip();
 
 /** The response discriminator selects its declared entity owner; other owners keep opaque keys. */
-const COMMAND_RESPONSE_ID_SCHEMAS: Partial<Record<CommandRequestResponseKind, z.ZodType<string>>> =
-  {
-    workspace: WorkspaceIdSchema,
-    workspace_recovery: WorkspaceIdSchema,
-    user: UserIdSchema,
-    thread: ThreadIdSchema,
-    turn: TurnIdSchema,
-    artifact: ArtifactIdSchema,
-    material: MaterialIdSchema,
-    thread_material_binding: MaterialIdSchema,
-    material_revision: MaterialRevisionIdSchema,
-    artifact_review: ArtifactReviewIdSchema,
-    workspace_invitation: InvitationIdSchema,
-    knowledge_source: KnowledgeSourceIdSchema,
-    knowledge_observation: KnowledgeObservationIdSchema,
-    knowledge_claim: KnowledgeClaimIdSchema,
-    knowledge_conflict: KnowledgeConflictIdSchema,
-    knowledge_proposal_review: KnowledgeReviewIdSchema,
-    generative_presentation: PresentationIdSchema,
-    worker_environment: WorkerStorageTargetIdSchema,
-  };
+const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<string> | null> = {
+  workspace: WorkspaceIdSchema,
+  workspace_invitation: InvitationIdSchema,
+  workspace_member: null,
+  workspace_recovery: WorkspaceIdSchema,
+  workspace_deletion: null,
+  user: UserIdSchema,
+  knowledge: null,
+  knowledge_source: KnowledgeSourceIdSchema,
+  knowledge_observation: KnowledgeObservationIdSchema,
+  knowledge_claim: KnowledgeClaimIdSchema,
+  knowledge_conflict: KnowledgeConflictIdSchema,
+  thread: ThreadIdSchema,
+  turn: TurnIdSchema,
+  approval: null,
+  pending_request: null,
+  git_push_record: null,
+  artifact: ArtifactIdSchema,
+  artifact_review: ArtifactReviewIdSchema,
+  workspace_sync_review: null,
+  knowledge_proposal: null,
+  knowledge_proposal_review: KnowledgeReviewIdSchema,
+  goal: null,
+  goal_plan: null,
+  goal_review: null,
+  pending_user_turn: null,
+  steering_terminal_outcome: null,
+  material: MaterialIdSchema,
+  material_revision: MaterialRevisionIdSchema,
+  thread_material_binding: MaterialIdSchema,
+  light_app: null,
+  light_app_record: null,
+  light_app_batch: null,
+  generative_presentation: PresentationIdSchema,
+  worker_environment: WorkerStorageTargetIdSchema,
+};
 
 const COMMAND_REQUEST_SELECT = `SELECT
   request_key AS key,
@@ -161,6 +176,9 @@ export function normalizeCommandRequestResponse(
 ): CommandRequestResponse {
   if (Object.keys(response).some((key) => !['kind', 'id', 'conversationMetadata'].includes(key))) {
     throw new Error('Command receipt response contains unsupported fields.');
+  }
+  if (!Object.hasOwn(COMMAND_RESPONSE_ID_SCHEMAS, response.kind)) {
+    throw new Error('Command receipt response kind is unsupported.');
   }
   COMMAND_RESPONSE_ID_SCHEMAS[response.kind]?.parse(response.id);
   if (response.conversationMetadata === undefined) {

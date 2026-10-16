@@ -177,25 +177,44 @@ describe('kind-named command response pointers', () => {
     const workspace = store.createWorkspace('Closed receipt kind');
     const memory = new FsStore();
     const input = {
-      command: 'task.start' as const, requestId: 'closed-kind',
-      scope: { workspaceId: workspace.id }, inputHash: 'owned-input',
+      command: 'task.start' as const,
+      requestId: 'closed-kind',
+      scope: { workspaceId: workspace.id },
+      inputHash: 'owned-input',
       response: { kind: 'turn' as const, id: testEntityId('tu', 'closed-receipt-kind') },
-      createdAt: '2026-10-06T00:00:00.000Z', expiresAt: '2999-01-01T00:00:00.000Z',
+      createdAt: '2026-10-06T00:00:00.000Z',
+      expiresAt: '2999-01-01T00:00:00.000Z',
     };
     const original = store.recordCommandRequest(input);
     const db = openWorkspaceDb(root, workspace.id);
     try {
-      const untrusted = { ...input.response, kind: 'future-core-kind' } as unknown as CommandRequestResponse;
-      expect(() => normalizeCommandRequestResponse(input.command, untrusted)).toThrow('kind is unsupported');
-      expect(() => memory.recordCommandRequest({ ...input, response: untrusted })).toThrow('kind is unsupported');
+      const untrusted = {
+        ...input.response,
+        kind: 'future-core-kind',
+      } as unknown as CommandRequestResponse;
+      expect(() => normalizeCommandRequestResponse(input.command, untrusted)).toThrow(
+        'kind is unsupported'
+      );
+      expect(() => memory.recordCommandRequest({ ...input, response: untrusted })).toThrow(
+        'kind is unsupported'
+      );
       expect(memory.listCommandRequests()).toEqual([]);
-      const rows = () => db.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all();
+      const rows = () =>
+        db.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all();
       const before = rows();
-      expect(() => recordCommandRequestRecordInDb(db, { ...original, response: untrusted })).toThrow('kind is unsupported');
+      expect(() =>
+        recordCommandRequestRecordInDb(db, { ...original, response: untrusted })
+      ).toThrow('kind is unsupported');
       expect(rows()).toEqual(before);
-      expect(db.sqlite.prepare('UPDATE idempotency_requests SET response_kind = ? WHERE request_key = ?').run('future-core-kind', original.key).changes).toBe(1);
+      expect(
+        db.sqlite
+          .prepare('UPDATE idempotency_requests SET response_kind = ? WHERE request_key = ?')
+          .run('future-core-kind', original.key).changes
+      ).toBe(1);
       const corrupted = rows();
-      expect(() => getCommandRequestRecordFromDb(db, original.key, input.createdAt)).toThrow('kind is unsupported');
+      expect(() => getCommandRequestRecordFromDb(db, original.key, input.createdAt)).toThrow(
+        'kind is unsupported'
+      );
       expect(rows()).toEqual(corrupted);
     } finally {
       db.sqlite.close();
