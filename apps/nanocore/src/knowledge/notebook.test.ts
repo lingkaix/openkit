@@ -96,6 +96,44 @@ afterEach(async () => {
 });
 
 describe('KnowledgeNotebook real Git content publication', () => {
+  it.each([
+    'commit',
+    'tree',
+    'blob',
+  ] as const)('rejects a selected %s object whose bytes do not match its Git identity', async (type) => {
+    const { repositoryPath, notebook, revision } = await fixture({
+      'a.md': page('A', 'Exact selected body'),
+    });
+    const object =
+      type === 'commit'
+        ? revision
+        : await git(repositoryPath, [
+            'rev-parse',
+            type === 'tree' ? `${revision}^{tree}` : `${revision}:pages/a.md`,
+          ]);
+    const original = await new Promise<Buffer>((resolve, reject) => {
+      execFile(
+        'git',
+        ['--git-dir', repositoryPath, 'cat-file', type, object],
+        { encoding: 'buffer' },
+        (error, bytes) => (error ? reject(error) : resolve(bytes))
+      );
+    });
+    const changed = Buffer.from(original);
+    if (type === 'blob') changed[changed.length - 2] = 'X'.charCodeAt(0);
+    else if (type === 'commit') changed[changed.indexOf('Create notebook')] = 'X'.charCodeAt(0);
+    else changed[changed.length - 1] = changed[changed.length - 1]! ^ 1;
+    const objectPath = path.join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
+    await chmod(objectPath, 0o600);
+    await writeFile(
+      objectPath,
+      deflateSync(Buffer.concat([Buffer.from(`${type} ${changed.length}\0`), changed]))
+    );
+    expect(() => notebook.readRevision(revision, ['a.md'])).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+  });
+
   it('returns bounded metadata history without reading any page body', async () => {
     const { notebook, revision } = await fixture({ 'a.md': page('A', 'BODY-MUST-STAY-UNREAD') });
     const versions = [revision];
