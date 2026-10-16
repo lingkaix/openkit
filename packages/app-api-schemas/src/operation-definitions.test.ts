@@ -89,10 +89,20 @@ describe('automation, scheduler and recovery definitions', () => {
       ['automation.list', {}, false],
       [
         'automation.create',
-        { workspaceId: 'ws_demo', name: 'Morning', cron: '*', prompt: 'Work' },
+        {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          name: 'Morning',
+          intervalSeconds: 60,
+          prompt: 'Work',
+        },
         true,
       ],
-      ['automation.update', { automationId: 'auto_one', status: 'enabled' }, true],
+      [
+        'automation.update',
+        { automationId: 'auto_one', expectedRevision: 1, status: 'paused' },
+        true,
+      ],
       ['automation.delete', { automationId: 'auto_one' }, true],
       ['scheduler.list', { workspaceId: 'ws_demo' }, false],
       ['scheduler.retry', { workspaceId: 'ws_demo', queueEntryId: 'queue_one' }, true],
