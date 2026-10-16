@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -16,9 +16,13 @@ import {
   isWorkspaceOperationAuthorized,
 } from '../auth/operation-authorizer.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
+import { AutomationStore } from '../lib/automation-store.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { recurringTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createApp } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { readPublishedTurnFileRecords } from './workspace-file-records.js';
@@ -182,39 +186,107 @@ describe('Workspace JSON transfer cutover', () => {
     expect(cachedTexts()).toEqual(['A', 'C']);
   });
 
-  it('refuses an unpublished cached Turn change instead of serializing it after a failed write', async () => {
-    const { root, store, app } = fixture();
+  it('exports canonical recurring Turn data after an actual update persistence failure', async () => {
+    const { root, db, store, app } = fixture();
     const thread = store.listThreads('ws_demo')[0]!;
-    const turn = store.createTurn(
-      'ws_demo',
-      thread.id,
-      'Inspect retained bytes',
-      { kind: 'user', id: 'user_local' },
-      null,
-      { status: 'pending' }
+    const instant = '2026-10-16T00:00:00.000Z';
+    const schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
+    const schedule = schedules.createAutomation('user_local', {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      name: 'Inspect retained bytes',
+      prompt: 'Inspect retained bytes',
+      intervalSeconds: 5,
+    });
+    schedules.updateAutomation('user_local', schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: instant,
+    });
+    const occurrence = schedules.collectScanCandidates(instant)[0]!;
+    schedules.commitAttempt(occurrence.id, 2, {
+      kind: 'ready',
+      payload: {
+        backendId: 'modeled',
+        requestedAgentId: 'worker',
+        profileRef: null,
+        modelId: 'exact-model',
+        workspaceRoots: [],
+        workspaceCwd: null,
+      },
+    });
+    const entry = requireSchedulerAdmissionEntry(
+      db,
+      schedules.getOccurrence(occurrence.id).queueEntryId!
     );
-    const published = readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id);
-    expect(published).not.toBeNull();
-    expect(published?.turn.status).toBe('pending');
-    // Fail before the persistence owner publishes files; the actual Store has already advanced its cache.
-    const fault = vi
-      .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
-      .mockImplementationOnce(() => {
-        throw new Error('Publication interrupted');
-      });
+    const turn = store.createTurn(
+      entry.workspaceId,
+      entry.threadId,
+      entry.turnInput,
+      entry.triggerActor,
+      null,
+      {
+        turnId: entry.turnId,
+        status: 'pending',
+        agentId: entry.requestedAgentId,
+        executorKind: 'worker',
+        reasoningEffort: entry.reasoningEffort,
+      }
+    );
+    const published = readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id)!;
+    expect(published.turn.status).toBe('pending');
+    const turnRoot = join(root, 'workspaces', 'ws_demo', 'threads', thread.id, 'turns', turn.id);
+    const turnPath = join(turnRoot, 'turn.json');
+    const sourceBytes = new Map(
+      ['turn.json', 'items.jsonl'].map((name) => [name, readFileSync(join(turnRoot, name))])
+    );
+    const rename = nodeFs.renameSync;
+    let faults = 0;
+    // Refuse the real file replacement after updateTurn has advanced the derivative cache.
+    nodeFs.renameSync = ((from, to) => {
+      if (String(to) === turnPath) {
+        faults++;
+        throw new Error('Turn replacement interrupted');
+      }
+      rename(from, to);
+    }) as typeof nodeFs.renameSync;
+    syncBuiltinESMExports();
     try {
-      expect(() => store.updateTurn(turn.id, { status: 'running' })).toThrow(
-        'Publication interrupted'
-      );
+      expect(() =>
+        store.updateTurn(turn.id, {
+          status: 'running',
+          agentId: 'failed-cache-agent',
+          agentSessionId: 'as_failed_cache',
+        })
+      ).toThrow('Turn replacement interrupted');
     } finally {
-      fault.mockRestore();
+      nodeFs.renameSync = rename;
+      syncBuiltinESMExports();
     }
-    expect(store.getTurn('ws_demo', thread.id, turn.id).status).toBe('running');
-    expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
+    expect(faults).toBe(1);
+    expect(store.getTurn('ws_demo', thread.id, turn.id)).toMatchObject({
+      status: 'running',
+      agentId: 'failed-cache-agent',
+      agentSessionId: 'as_failed_cache',
+    });
+    expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: 'ws_demo' })
     );
-    expect(exported.status).toBe(500);
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = await exported.json();
+    const exportedTurns = readFileSync(
+      join(root, 'server', 'exports', 'workspaces', 'ws_demo', exportId, 'records', 'turns.jsonl'),
+      'utf8'
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(exportedTurns).toEqual([published.turn]);
+    expect(JSON.stringify(exportedTurns)).not.toContain('failed-cache');
+    for (const [name, bytes] of sourceBytes) {
+      expect(readFileSync(join(turnRoot, name))).toEqual(bytes);
+    }
     expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
   });
 
