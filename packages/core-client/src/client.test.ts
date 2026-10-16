@@ -134,6 +134,8 @@ function workspace() {
 /** Returns one authorized Workspace summary for sharing-client tests. */
 function authorizedWorkspaceSummary() {
   return {
+    membershipStatus: 'active',
+    accessCause: 'membership',
     effectiveRole: 'owner',
     membershipRevision: 1,
     ownerUserId: 'user_1',
@@ -1592,6 +1594,8 @@ describe('createCoreClient', () => {
           items: [
             {
               workspace: workspace(),
+              membershipStatus: 'active',
+              accessCause: 'membership',
               effectiveRole: 'owner',
               membershipRevision: 1,
               ownerUserId: 'user_local',
@@ -1659,7 +1663,14 @@ describe('createCoreClient', () => {
           eventFamilies: [],
         },
       },
-      'POST /api/app/operations/workspace.read': { body: workspace() },
+      'POST /api/app/operations/workspace.read': {
+        body: {
+          ...workspace(),
+          ownerUserId: 'user_local',
+          membershipStatus: 'active',
+          accessCause: 'membership',
+        },
+      },
       'POST /api/app/operations/workspace.update': { body: workspace() },
       'POST /api/app/operations/knowledge.list': { body: { items: [knowledge] } },
       'POST /api/app/operations/knowledge.create': { body: knowledge },
@@ -1920,9 +1931,12 @@ describe('createCoreClient', () => {
     });
 
     await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.5.0' });
-    await expect(client.operations['workspace.read']({ workspaceId: 'ws_demo' })).resolves.toEqual(
-      workspace()
-    );
+    await expect(client.operations['workspace.read']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+      ...workspace(),
+      ownerUserId: 'user_local',
+      membershipStatus: 'active',
+      accessCause: 'membership',
+    });
     await expect(
       client.operations['workspace.update']({ ...{ status: 'archived' }, workspaceId: 'ws_demo' })
     ).resolves.toEqual(workspace());

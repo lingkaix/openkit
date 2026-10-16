@@ -8,6 +8,7 @@ import { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
 import { ARTIFACT_OPERATION_DEFINITIONS } from './artifact-operations.js';
 import { ATTENTION_OPERATION_DEFINITIONS } from './attention-operations.js';
 import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
+import { CALLER_OPERATION_DEFINITIONS } from './caller-operations.js';
 import { CATALOG_OPERATION_DEFINITIONS } from './catalog-operations.js';
 import {
   CONVERSATION_OPERATION_DEFINITIONS,
@@ -94,6 +95,7 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
 
 /** Statically composed product contracts. */
 export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
+  CALLER_OPERATION_DEFINITIONS,
   RUNTIME_CONFIG_OPERATION_DEFINITIONS,
   PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
   VAULT_OPERATION_DEFINITIONS,
@@ -173,4 +175,5 @@ export function operationModelInput(
 export { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 export { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
 export { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
+export { CALLER_OPERATION_DEFINITIONS } from './caller-operations.js';
 export { WORKER_ENVIRONMENT_OPERATION_DEFINITIONS } from './worker-environment-operations.js';

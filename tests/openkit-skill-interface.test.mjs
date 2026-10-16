@@ -1797,6 +1797,73 @@ for (const [label, executable] of [
     );
   });
 
+  test(`${label} CLI discovers and invokes the canonical caller read with exact optional scope`, async () => {
+    for (const query of ['whoami', 'caller identity']) {
+      const result = await runCli(['ops', 'search', query], {}, '{}', [], undefined, executable);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.ok(JSON.parse(result.stdout).data.some((entry) => entry.id === 'caller.read'));
+    }
+    for (const input of [{}, { workspaceId: 'ws_owned' }]) {
+      const data = {
+        userId: 'user_caller',
+        credential: { kind: 'token', scope: 'server-admin' },
+        ...(input.workspaceId
+          ? {
+              workspace: {
+                workspaceId: 'ws_owned',
+                ownerUserId: 'user_caller',
+                membershipStatus: null,
+                accessCause: 'administrator',
+                observedAt: '2026-10-15T00:00:00.000Z',
+                counts: { threads: 1, turns: 2, items: 3, artifacts: 4 },
+              },
+            }
+          : {}),
+      };
+      const result = await runCli(
+        ['ops', 'call', 'caller.read', '--input', '-'],
+        {
+          OPENKIT_NANOCORE_URL: 'http://caller.test',
+          OPENKIT_NANOCORE_TOKEN: 'okt_caller_fixture',
+        },
+        JSON.stringify(input),
+        [
+          dataModule(`
+          globalThis.fetch = async (url, options) => {
+            if (url !== 'http://caller.test/api/app/operations/caller.read' || options.method !== 'POST') throw new Error('Noncanonical caller route');
+            if (JSON.stringify(JSON.parse(options.body)) !== ${JSON.stringify(JSON.stringify(input))}) throw new Error('Changed caller selection');
+            if (new Headers(options.headers).get('authorization') !== 'Bearer okt_caller_fixture') throw new Error('Missing caller credential');
+            return new Response(${JSON.stringify(JSON.stringify(data))}, { headers: { 'content-type': 'application/json' } });
+          };
+        `),
+        ],
+        undefined,
+        executable
+      );
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.command, 'ops.call');
+      assert.equal(envelope.operation, 'caller.read');
+      assert.deepEqual(envelope.data, data);
+      assert.doesNotMatch(result.stdout + result.stderr, /okt_caller_fixture/);
+    }
+    const rejected = await runCli(
+      ['ops', 'call', 'caller.read', '--input', '-'],
+      {},
+      '{"userId":"user_other"}',
+      [
+        dataModule(
+          "globalThis.fetch = async () => { process.stderr.write('caller-invalid-input-network\\n'); throw new Error('Invalid caller input reached network'); };"
+        ),
+      ],
+      undefined,
+      executable
+    );
+    assert.equal(rejected.code, 2);
+    assert.equal(JSON.parse(rejected.stdout).error.code, 'invalid_input');
+    assert.doesNotMatch(rejected.stderr, /caller-invalid-input-network/);
+  });
+
   test(`${label} CLI bounded discovery aliases retain canonical operation identities`, async () => {
     for (const [query, expected] of [
       [

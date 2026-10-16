@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { chatKeys, useWorkspaceSummaries, workspaceBelongsToCaller } from '../chat/data';
 import { useWorkspaceStore, WORKSPACE_SELECTION_STORAGE_KEY } from '../workspace-store';
+import * as accountData from './data';
 import { type AccountWorkspaceSummary, useSelfLeave, useWorkspaceOwnerManagement } from './data';
+import { MembersScreen } from './MembersScreen';
 import { accountAdmissionKey } from './session';
 
 const PROJECT_WORKSPACE: WorkspaceRecord = {
@@ -42,6 +44,8 @@ function summary(
 ): AccountWorkspaceSummary {
   return {
     effectiveRole,
+    membershipStatus: 'active',
+    accessCause: 'membership',
     membershipRevision: 17,
     ownerUserId: 'user-owner',
     registryRevision: 9,
@@ -151,6 +155,48 @@ beforeEach(() => {
 });
 
 describe('account selected Workspace', () => {
+  it('requires a membership revision for Leave and submits the exact admitted revision', async () => {
+    const selectedWorkspace = { ...summary(PROJECT_WORKSPACE, 'editor'), membershipRevision: null };
+    const mutate = vi.fn();
+    const selfLeave = {
+      // Keep hook eligibility true so this check decides the screen's revision guard.
+      canLeave: true,
+      leave: { error: null, isError: false, isPending: false, mutate },
+      selectedWorkspace,
+      selectedWorkspaceId: PROJECT_WORKSPACE.id,
+    } as unknown as ReturnType<typeof useSelfLeave>;
+    const owner = {
+      canManage: false,
+      effectiveWorkspace: selectedWorkspace,
+      selectedWorkspaceId: PROJECT_WORKSPACE.id,
+      transferOwnership: { data: undefined, error: null, isError: false },
+    } as ReturnType<typeof useWorkspaceOwnerManagement>;
+    const leaveHook = vi.spyOn(accountData, 'useSelfLeave').mockReturnValue(selfLeave);
+    const ownerHook = vi.spyOn(accountData, 'useWorkspaceOwnerManagement').mockReturnValue(owner);
+    try {
+      const view = render(<MembersScreen />);
+      expect(screen.getByText(PROJECT_WORKSPACE.name)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Leave Workspace' })).not.toBeInTheDocument();
+      expect(mutate).not.toHaveBeenCalled();
+
+      const admitted = { ...selectedWorkspace, membershipRevision: 37 };
+      leaveHook.mockReturnValue({ ...selfLeave, selectedWorkspace: admitted });
+      ownerHook.mockReturnValue({ ...owner, effectiveWorkspace: admitted });
+      view.rerender(<MembersScreen />);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: 'Leave Workspace' }));
+      expect(mutate).not.toHaveBeenCalled();
+      await user.click(screen.getByRole('button', { name: 'Confirm leave' }));
+      expect(mutate).toHaveBeenCalledExactlyOnceWith({
+        expectedRevision: 37,
+        workspaceId: PROJECT_WORKSPACE.id,
+      });
+    } finally {
+      leaveHook.mockRestore();
+      ownerHook.mockRestore();
+    }
+  });
+
   it('restores a validated explicit selection on Account after reload', async () => {
     useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
     useWorkspaceStore.getState().setCurrentWorkspaceId(PROJECT_WORKSPACE.id);

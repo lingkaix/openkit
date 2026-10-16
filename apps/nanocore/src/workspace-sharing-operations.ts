@@ -48,8 +48,8 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import type { CoreDb } from './storage/db.js';
+import { resolveWorkspaceRole } from './workspace-membership.js';
 import {
-  type AuthorizedWorkspaceRegistryFact,
   acceptWorkspaceInvitation,
   type CreateWorkspaceInvitationResult,
   changeWorkspaceMemberAccess,
@@ -60,7 +60,6 @@ import {
   getWorkspaceMember,
   getWorkspaceRegistryFact,
   leaveWorkspace,
-  listAuthorizedWorkspaceRegistryFacts,
   listMyWorkspaceInvitations,
   listWorkspaceInvitations,
   listWorkspaceMembers,
@@ -920,34 +919,48 @@ function requireShareableWorkspace(coreDb: CoreDb, workspaceId: string): void {
 }
 
 /**
- * Projects owner Workspace registry facts for a current usable administrator Web session or presented administrator bearer on active Workspaces without a manufactured membership.
+ * Reads actual relationship facts after current admission, keeping administrator eligibility separate.
  *
- * Migrated private reads pass current Administrator Eligibility into the visibility check; read-only credentials stay read-only, and retained route guards and the Turn event stream keep the ordinary audience check until cutover.
- * Synthetic membershipRevision: 1 is not a membership compare-and-set value.
- *
- * @param coreDb Core Workspace authority.
- * @param actor Authenticated request actor.
- * @param workspaceId Canonical Workspace id already admitted by the authorizer set.
- * @returns Owner fact for an active registry row, or null when the actor lacks current Administrator Eligibility.
+ * @param coreDb Current Workspace, User and Token authority.
+ * @param actor Authenticated caller.
+ * @param workspaceId Exact Workspace selected by the caller or its admitted candidate set.
+ * @returns Actual owner, membership and revision facts plus the current Workspace access cause.
  */
-function serverAdminAuthorizedWorkspaceFact(
+export function readAuthorizedWorkspaceRelation(coreDb: CoreDb, actor: Actor, workspaceId: string) {
+  if (
+    !isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+      mutating: false,
+      policyOperation: 'workspace.read',
+    })
+  )
+    throw accessDenied();
+  return projectWorkspaceRelation(
+    coreDb,
+    actor.userId,
+    workspaceId,
+    isCurrentDeploymentAdministrator(coreDb, actor)
+  );
+}
+
+/** Projects actual Core relationship facts for current reads and already admitted lifecycle outcomes. */
+function projectWorkspaceRelation(
   coreDb: CoreDb,
-  actor: Actor,
-  workspaceId: string
-): AuthorizedWorkspaceRegistryFact | null {
-  if (!isCurrentDeploymentAdministrator(coreDb, actor)) {
-    return null;
-  }
+  userId: string,
+  workspaceId: string,
+  administratorEligible: boolean
+) {
   const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
-  if (!registry) {
-    return null;
+  if (!registry || (!administratorEligible && !resolveWorkspaceRole(coreDb, workspaceId, userId))) {
+    throw accessDenied();
   }
+  const member = getWorkspaceMember(coreDb, workspaceId, userId);
   return {
-    workspaceId: registry.workspaceId,
     ownerUserId: registry.ownerUserId,
     registryRevision: registry.registryRevision,
-    effectiveRole: 'owner',
-    membershipRevision: 1,
+    effectiveRole: member?.effectiveRole ?? null,
+    membershipRevision: member?.revision ?? null,
+    membershipStatus: member?.status ?? null,
+    accessCause: administratorEligible ? ('administrator' as const) : ('membership' as const),
   };
 }
 
@@ -969,19 +982,8 @@ function authorizedWorkspaceSummary(
   workspaceId: string,
   administratorEligible = false
 ): AuthorizedWorkspaceSummary {
-  const membership = listAuthorizedWorkspaceRegistryFacts(coreDb, userId).find(
-    (candidate) => candidate.workspaceId === workspaceId
-  );
-  const registry = administratorEligible ? getWorkspaceRegistryFact(coreDb, workspaceId) : null;
-  const fact =
-    membership ??
-    (registry ? { ...registry, effectiveRole: 'owner', membershipRevision: 1 } : null);
-  if (!fact) throw accessDenied();
   return AuthorizedWorkspaceSummarySchema.parse({
-    effectiveRole: fact.effectiveRole,
-    membershipRevision: fact.membershipRevision,
-    ownerUserId: fact.ownerUserId,
-    registryRevision: fact.registryRevision,
+    ...projectWorkspaceRelation(coreDb, userId, workspaceId, administratorEligible),
     workspace: store.getWorkspace(workspaceId),
   });
 }
@@ -1329,25 +1331,13 @@ export function readAuthorizedWorkspaces(
   workspaceIds: readonly string[]
 ) {
   try {
-    const facts = new Map(
-      listAuthorizedWorkspaceRegistryFacts(coreDb, actor.userId).map((fact) => [
-        fact.workspaceId,
-        fact,
-      ])
-    );
     return ListAuthorizedWorkspacesResponseSchema.parse({
-      items: workspaceIds.map((workspaceId) => {
-        const fact =
-          facts.get(workspaceId) ?? serverAdminAuthorizedWorkspaceFact(coreDb, actor, workspaceId);
-        if (!fact) throw accessDenied();
-        return AuthorizedWorkspaceSummarySchema.parse({
-          effectiveRole: fact.effectiveRole,
-          membershipRevision: fact.membershipRevision,
-          ownerUserId: fact.ownerUserId,
-          registryRevision: fact.registryRevision,
+      items: workspaceIds.map((workspaceId) =>
+        AuthorizedWorkspaceSummarySchema.parse({
+          ...readAuthorizedWorkspaceRelation(coreDb, actor, workspaceId),
           workspace: store.getWorkspace(workspaceId),
-        });
-      }),
+        })
+      ),
     });
   } catch (error) {
     throwSharingError(error);

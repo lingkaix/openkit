@@ -224,7 +224,7 @@ describe('Workspace sharing routes', () => {
     });
   });
 
-  it('projects owner summaries for usable server-admin bearer without membership', async () => {
+  it('projects actual ownership without membership for a usable server-admin bearer', async () => {
     const fixture = createFixture();
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -249,8 +249,11 @@ describe('Workspace sharing routes', () => {
 
     expect(body.items).toEqual([
       expect.objectContaining({
-        effectiveRole: 'owner',
-        membershipRevision: 1,
+        ownerUserId: 'user_owner',
+        membershipStatus: null,
+        accessCause: 'administrator',
+        effectiveRole: null,
+        membershipRevision: null,
         workspace: expect.objectContaining({ id: fixture.workspaceId }),
       }),
     ]);
