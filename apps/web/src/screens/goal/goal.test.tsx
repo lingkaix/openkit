@@ -901,3 +901,39 @@ describe('Exact decision retry', () => {
     expect(screen.queryByRole('button', { name: 'Use feedback range' })).not.toBeInTheDocument();
   });
 });
+
+
+describe('Same-candidate read failure recovery', () => {
+  it('hides denied facts while retaining authored feedback, range and uncertain choice identity', async () => {
+    const user = userEvent.setup();
+    const read = vi.fn().mockResolvedValueOnce(PROPOSAL_ARTIFACT)
+      .mockRejectedValueOnce(new ApiCallError(403, 'Denied'))
+      .mockResolvedValue(PROPOSAL_ARTIFACT);
+    const select = vi.fn().mockRejectedValue(new Error('unknown selection result'));
+    const client = makeClient({ operations: {
+      'artifact.read': read,
+      'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+      'artifact.review.select': select,
+    } });
+    const cache = renderApp(`/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`, client);
+    await user.type(await screen.findByRole('textbox', { name: 'Range start' }), '2');
+    await user.type(screen.getByRole('textbox', { name: 'Range end' }), '9');
+    await user.click(screen.getByRole('button', { name: 'Use feedback range' }));
+    await user.type(screen.getByRole('textbox', { name: 'Review feedback' }), 'Preserve this feedback');
+    await user.type(screen.getByRole('textbox', { name: 'Selection reason' }), 'Preserve this reason');
+    await user.click(screen.getByRole('button', { name: 'Select candidate' }));
+    await screen.findByRole('alert');
+    await cache.refetchQueries({ queryKey: ['artifact', ARTIFACT.workspaceId, ARTIFACT.id] });
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load this artifact review.");
+    expect(screen.queryByRole('heading', { name: PROPOSAL_ARTIFACT.title })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Review feedback' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Preserve this reason')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('textbox', { name: 'Review feedback' })).toHaveValue('Preserve this feedback');
+    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue('Preserve this reason');
+    expect(screen.getByRole('button', { name: 'Clear feedback range' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Select candidate' }));
+    await waitFor(() => expect(select).toHaveBeenCalledTimes(2));
+    expect(select.mock.calls[0][0]).toEqual(select.mock.calls[1][0]);
+  });
+});
