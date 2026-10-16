@@ -1,5 +1,5 @@
 import { WorkspaceMcpCredentialBindingSchema } from '@openkit/config-schema/mcp-credentials';
-import { RequestIdSchema } from '@openkit/protocol';
+import { RequestIdSchema, ResourceCandidateIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 const CATALOG_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -99,7 +99,7 @@ export const SkillCatalogCandidateSchema = z
       .nullable(),
     disposition: z.enum(['proposed', 'withdrawn', 'rejected', 'promoted']),
     entryId: z.string().regex(CATALOG_ID),
-    id: z.string().min(1),
+    id: ResourceCandidateIdSchema,
     producer: SkillCatalogProducerSchema,
     submitter: SkillCatalogProducerSchema.nullable(),
     summary: z.string().min(1),

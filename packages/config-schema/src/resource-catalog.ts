@@ -1,3 +1,4 @@
+import { ResourceCandidateIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 import {
@@ -101,7 +102,7 @@ export const SkillCandidateRecordSchema = z
     disposition: z.enum(['proposed', 'withdrawn', 'rejected', 'promoted']),
     entryId: ResourceCatalogIdSchema,
     evidenceRefs: z.array(z.string().min(1)).default([]),
-    id: z.string().min(1),
+    id: ResourceCandidateIdSchema,
     producer: CatalogProducerSchema,
     submitter: CatalogProducerSchema.nullable().default(null),
     summary: z.string().min(1).max(4_096),

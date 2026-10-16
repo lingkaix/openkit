@@ -1,5 +1,4 @@
 import { z } from 'zod';
-
 import {
   AgentIdSchema,
   AgentSessionIdSchema,
@@ -9,6 +8,7 @@ import {
   ThreadIdSchema,
   TurnIdSchema,
   UsageRecordIdSchema,
+  UserIdSchema,
   WorkspaceIdSchema,
 } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
@@ -35,7 +35,7 @@ export const UsageUnitSchema = z.enum([
 export const UsageRecordSchema = z.object({
   id: UsageRecordIdSchema,
   workspaceId: WorkspaceIdSchema,
-  responsibleUserId: z.string().min(1).nullable(),
+  responsibleUserId: UserIdSchema.nullable(),
   threadId: ThreadIdSchema.nullable(),
   turnId: TurnIdSchema.nullable(),
   itemId: ItemIdSchema.nullable().default(null),

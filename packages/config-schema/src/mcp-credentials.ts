@@ -1,3 +1,4 @@
+import { VaultGrantIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 const MCP_SLOT_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -27,7 +28,7 @@ export const WorkspaceMcpCredentialSinkSchema = z.discriminatedUnion('kind', [
 export const WorkspaceMcpCredentialBindingSchema = z
   .object({
     slot: z.string().regex(MCP_SLOT_ID),
-    vaultGrantId: z.string().min(1),
+    vaultGrantId: VaultGrantIdSchema,
     sink: WorkspaceMcpCredentialSinkSchema,
     // Omission preserves retained raw bytes and their effective digest.
     presentation: z.enum(['raw', 'bearer']).optional(),

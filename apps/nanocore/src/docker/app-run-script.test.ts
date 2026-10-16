@@ -120,7 +120,7 @@ describe('app run script', () => {
 
   it('does not copy a process-env provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const storePath = join(workspaceRoot, 'store.json');
     const secret = 'fake-provider-secret-from-process-env';
     mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
@@ -149,7 +149,7 @@ describe('app run script', () => {
       {
         workspaceResources: [
           [
-            'ws_demo',
+            'ws_00000000-0000-7000-8000-000000000001',
             {
               agents: [
                 {
@@ -179,7 +179,7 @@ describe('app run script', () => {
 
   it('does not copy a secrets-file provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const secretsPath = join(dataRoot, 'secrets', 'openkit.env');
     const storePath = join(workspaceRoot, 'store.json');
     const secret = 'fake-provider-secret-from-env-file';
@@ -212,7 +212,7 @@ describe('app run script', () => {
       {
         workspaceResources: [
           [
-            'ws_demo',
+            'ws_00000000-0000-7000-8000-000000000001',
             {
               agents: [
                 {
@@ -278,7 +278,7 @@ if [[ "\${1:-}" == rm ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == run ]]; then
-  printf '%s\\0' "\$@" > "\${DOCKER_ARGV_FILE}"
+  printf '%s\\0' "$@" > "\${DOCKER_ARGV_FILE}"
   exit 0
 fi
 exit 99

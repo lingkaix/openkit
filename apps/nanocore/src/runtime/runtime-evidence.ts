@@ -312,7 +312,8 @@ export function recordMaterializationRuntimeEvidence(
     turnId: null,
     goalId: null,
     taskId: null,
-    agentSessionId: record.workerSessionId,
+    // Materialization retains a native worker handle, not a logical AgentSession owner.
+    agentSessionId: null,
     backendType: record.backendKind,
     backendVersion: materializationBackendVersion(record),
     placement: 'unknown',

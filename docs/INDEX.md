@@ -265,6 +265,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/cookbooks/docker-app.md` — Docker App Image
 - `docs/cookbooks/docker-test-env.md` — Test Execution Image
 - `docs/cookbooks/go-setup.md` — Go Setup Cookbook
+- `docs/cookbooks/identifier-cutover.md` — Identifier Cutover And Protected Accounts
 - `docs/cookbooks/nanohost-real-use-host.md` — NanoHost Real-Use Host
 - `docs/cookbooks/openshell-upgrade.md` — OpenShell Upgrade
 - `docs/cookbooks/persistent-live-acceptance.md` — Persistent Live Acceptance

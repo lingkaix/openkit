@@ -1,5 +1,6 @@
 import {
   type ActorRef,
+  deriveEntityId,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
   type StopReason,
@@ -691,7 +692,7 @@ function recordTerminalCheckpointRuntimeUsage(
   const call = startCapabilityCall({
     agentSessionId: checkpoint.workerSessionId,
     authorityActor,
-    callId: `cap_runtime_${checkpoint.checkpointId}`,
+    callId: deriveEntityId('cap', ['runtime', checkpoint.checkpointId]),
     capabilityId: 'runtime.worker_turn',
     family: 'runtime',
     operation: 'worker.checkpoint.terminal',
@@ -715,7 +716,6 @@ function recordTerminalCheckpointRuntimeUsage(
         quantity: 1,
         source: 'worker-checkpoint-terminal',
         unit: 'sandbox_sessions',
-        usageId: `use_runtime_${checkpoint.checkpointId}`,
       },
     ],
     workspaceDb,

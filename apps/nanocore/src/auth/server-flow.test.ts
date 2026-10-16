@@ -311,7 +311,7 @@ describe('server auth flow', () => {
       importUnboundWorkspaceVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'First user private reference',
-        referenceId: 'vault_first_user_private',
+        referenceId: 'vault_00000000-0000-7312-8435-278be4a9a6a4',
         secretKind: 'api-token',
         workspaceId: firstWorkspace.id,
       });

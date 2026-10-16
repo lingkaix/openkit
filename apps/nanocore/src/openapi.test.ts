@@ -34,6 +34,7 @@ import {
 } from './openapi.js';
 import { validateAppOpenApiDocument } from './openapi-validation.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 
 const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
   APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())
@@ -633,7 +634,7 @@ describe('app api openapi projection', () => {
           completedAt: '2026-07-05T00:00:02.000Z',
           errorCode: null,
           family: 'llm',
-          id: 'cap_openapi',
+          id: 'cap_00000000-0000-7afc-8ec6-deb0b2cc5976',
           operation: 'responses.create',
           redactionClass: 'metadata-only',
           startedAt: '2026-07-05T00:00:01.000Z',
@@ -641,11 +642,11 @@ describe('app api openapi projection', () => {
           summary: null,
           threadId: null,
           turnId: null,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
       usageRecords: [],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const ajv = new Ajv2020({ allErrors: true, strict: false });
     ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu);
@@ -1458,7 +1459,7 @@ describe('app api openapi projection', () => {
   it('preserves preparation and recovery constraints in runtime JSON Schema and generated OpenAPI', () => {
     const document = createAppOpenApiDocument();
     const digest = `sha256:${'a'.repeat(64)}`;
-    const common = { administrationThreadId: 'thread_admin' };
+    const common = { administrationThreadId: testEntityId('th', 'thread_admin') };
     const preparation = {
       ...common,
       configuration: { fileId: 'agents/codex.agent.jsonc', expectedRevision: digest },
@@ -1467,7 +1468,11 @@ describe('app api openapi projection', () => {
     };
     const recovery = {
       ...common,
-      recoverFrom: { artifactId: 'artifact_authored', artifactVersion: 1, contentDigest: digest },
+      recoverFrom: {
+        artifactId: testEntityId('ar', 'artifact_authored'),
+        artifactVersion: 1,
+        contentDigest: digest,
+      },
     };
     const ajv = new Ajv2020({ strict: false, validateFormats: false });
     for (const [operation, body] of [

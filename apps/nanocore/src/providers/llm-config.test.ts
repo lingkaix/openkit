@@ -78,7 +78,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
         id: 'xai',
         kind: 'direct',
         models: ['grok-4'],
-        secretRef: 'vault://xai',
+        secretRef: 'vault://vault_00000000-0000-7230-9979-3ef301686c38',
         vendor: 'xai',
       },
       () => 'xai-api-key'
@@ -113,9 +113,10 @@ describe('resolveProviderProfileToLLMConfig', () => {
         id: 'vault-provider',
         kind: 'direct',
         models: ['model'],
-        secretRef: 'vault://provider_vault',
+        secretRef: 'vault://vault_00000000-0000-7f4f-89a1-f9a4db9f7d9d',
       },
-      (secretRef) => (secretRef === 'vault://provider_vault' ? 'sk-vault' : null)
+      (secretRef) =>
+        secretRef === 'vault://vault_00000000-0000-7f4f-89a1-f9a4db9f7d9d' ? 'sk-vault' : null
     );
 
     expect(provider).toMatchObject({
@@ -131,7 +132,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
         id: 'missing-provider',
         kind: 'direct',
         models: ['model'],
-        secretRef: 'vault://provider_missing',
+        secretRef: 'vault://vault_00000000-0000-798c-9b64-a72fb18794ac',
       },
       () => null
     );
@@ -150,10 +151,11 @@ describe('resolveProviderProfileToLLMConfig', () => {
         id: 'google',
         kind: 'direct',
         models: ['gemini-2.5-pro'],
-        secretRef: 'vault://provider_google',
+        secretRef: 'vault://vault_00000000-0000-7652-9153-59e509aca382',
         vendor: 'google',
       },
-      (secretRef) => (secretRef === 'vault://provider_google' ? 'sk-google' : null)
+      (secretRef) =>
+        secretRef === 'vault://vault_00000000-0000-7652-9153-59e509aca382' ? 'sk-google' : null
     );
 
     expect(provider).toMatchObject({
@@ -171,9 +173,10 @@ describe('resolveProviderProfileToLLMConfig', () => {
         id: 'custom-proxy',
         kind: 'custom',
         models: ['custom-chat'],
-        secretRef: 'vault://provider_custom_proxy',
+        secretRef: 'vault://vault_00000000-0000-7be3-a5df-9eb51c70ed98',
       },
-      (secretRef) => (secretRef === 'vault://provider_custom_proxy' ? 'sk-custom' : null)
+      (secretRef) =>
+        secretRef === 'vault://vault_00000000-0000-7be3-a5df-9eb51c70ed98' ? 'sk-custom' : null
     );
 
     expect(provider).toMatchObject({
@@ -203,9 +206,10 @@ describe('resolveProviderProfileToLLMConfig', () => {
         id: 'direct-provider',
         kind: 'direct',
         models: ['direct-chat'],
-        secretRef: 'vault://provider_direct',
+        secretRef: 'vault://vault_00000000-0000-78ba-8a4b-60d484bc5149',
       },
-      (secretRef) => (secretRef === 'vault://provider_direct' ? 'sk-direct' : null)
+      (secretRef) =>
+        secretRef === 'vault://vault_00000000-0000-78ba-8a4b-60d484bc5149' ? 'sk-direct' : null
     );
 
     expect(provider).toMatchObject({
@@ -244,7 +248,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
           kind: 'direct',
           models: ['configured-model'],
           readiness: { status },
-          secretRef: 'vault://provider_unavailable',
+          secretRef: 'vault://vault_00000000-0000-7965-933d-6b51cc983845',
         },
         credentialResolver
       )
@@ -261,7 +265,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
         kind: 'direct',
         models: ['configured-model'],
         ...(status ? { readiness: { status } } : {}),
-        secretRef: 'vault://provider_runnable',
+        secretRef: 'vault://vault_00000000-0000-73e3-b8d4-7b543574a38d',
       },
       credentialResolver
     );

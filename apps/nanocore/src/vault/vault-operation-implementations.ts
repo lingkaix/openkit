@@ -1,13 +1,12 @@
 import { Buffer } from 'node:buffer';
-import { randomUUID } from 'node:crypto';
 import type {
   OperationOutput,
   VAULT_OPERATION_DEFINITIONS,
   VaultAdminWorkspaceReference,
   WorkspaceVaultGrant,
 } from '@openkit/app-api-schemas';
-
 import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
+import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import { loadProviderProfiles } from '../config/providers-loader.js';
@@ -36,6 +35,7 @@ import {
   createVaultReference,
   createVaultReferenceWithInsertEvidence,
   getVaultReference,
+  listVaultReferences,
   listWorkspaceVaultReferences,
   rebindWorkspaceVaultReference,
   revokeVaultReference,
@@ -48,8 +48,6 @@ import {
 
 const VAULT_UNLOCK_FAILURE_LIMIT = 5;
 const VAULT_UNLOCK_FAILURE_WINDOW_MS = 60_000;
-const CODEX_AUTH_JSON_VAULT_GRANT_ID = 'grant_codex_auth_json';
-const CODEX_AUTH_JSON_VAULT_REFERENCE_ID = 'vault_codex_auth_json';
 const CODEX_AUTH_JSON_TARGET_PATH = '/sandbox/.codex/auth.json';
 const SAFE_PROVIDER_API_KEY_REFERENCE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -307,7 +305,7 @@ export function createVaultOperationImplementations(
       if (backend.health().state !== 'available')
         return vaultFailure('Vault backend is not available.', 'vault_backend_not_available', 423);
       if (action === 'create') {
-        const referenceId = `vault_${randomUUID()}`;
+        const referenceId = allocateEntityId('vault');
         const inventory = backend.store({
           referenceId,
           material: input.material!,
@@ -375,7 +373,7 @@ export function createVaultOperationImplementations(
             400
           );
         const grant = createVaultGrant(coreDb, {
-          grantId: `grant_${randomUUID()}`,
+          grantId: allocateEntityId('grant'),
           vaultReferenceId: referenceId,
           ownerScope: 'workspace',
           workspaceId,
@@ -475,7 +473,11 @@ export function createVaultOperationImplementations(
       const profile = matchingProfiles[0]!;
       const referenceId = profile.secretRef ? readVaultReferenceId(profile.secretRef) : null;
 
-      if (!referenceId || !SAFE_PROVIDER_API_KEY_REFERENCE_ID.test(referenceId)) {
+      if (
+        !referenceId ||
+        !isEntityId('vault', referenceId) ||
+        !SAFE_PROVIDER_API_KEY_REFERENCE_ID.test(referenceId)
+      ) {
         return providerApiKeyError(
           c,
           'Provider profile does not use a supported Vault API-key reference.',
@@ -727,7 +729,12 @@ export function createVaultOperationImplementations(
 
         return vaultFailure('Vault backend is not available.', 'vault_backend_not_available', 423);
       }
-      if (getVaultReference(coreDb, CODEX_AUTH_JSON_VAULT_REFERENCE_ID)) {
+      if (
+        listVaultReferences(coreDb).some(
+          (reference) =>
+            reference.ownerScope === 'server' && reference.secretKind === 'codex-auth-json'
+        )
+      ) {
         recordVaultAdminAudit(c, {
           action: 'vault.bootstrap_codex_auth_json',
           errorCode: 'vault_codex_auth_json_exists',
@@ -750,27 +757,29 @@ export function createVaultOperationImplementations(
           throw new Error('Codex auth JSON must decode to a JSON object.');
         }
 
+        const referenceId = allocateEntityId('vault');
+        const grantId = allocateEntityId('grant');
         backend.store({
           material: authJson,
           metadata: { ownerScope: 'server' },
-          referenceId: CODEX_AUTH_JSON_VAULT_REFERENCE_ID,
+          referenceId: referenceId,
         });
         createVaultReference(coreDb, {
           backendKind: backend.kind,
-          backendLocator: `${backend.kind}://server/vault/${CODEX_AUTH_JSON_VAULT_REFERENCE_ID}`,
+          backendLocator: `${backend.kind}://server/vault/${referenceId}`,
           displayName: 'Codex auth JSON',
           ownerScope: 'server',
-          referenceId: CODEX_AUTH_JSON_VAULT_REFERENCE_ID,
+          referenceId: referenceId,
           secretKind: 'codex-auth-json',
         });
         createVaultGrant(coreDb, {
           allowedInjectionPaths: ['runtime-file'],
           expiresAt: input.expiresAt ?? null,
-          grantId: CODEX_AUTH_JSON_VAULT_GRANT_ID,
+          grantId: grantId,
           lifetime: 'agent-session',
           ownerScope: 'server',
           subjectSummary: 'Codex auth JSON runtime-file injection',
-          vaultReferenceId: CODEX_AUTH_JSON_VAULT_REFERENCE_ID,
+          vaultReferenceId: referenceId,
         });
         recordVaultAdminAudit(c, {
           action: 'vault.bootstrap_codex_auth_json',
@@ -781,9 +790,9 @@ export function createVaultOperationImplementations(
         return {
           backendKind: backend.kind,
           expiresAt: input.expiresAt ?? null,
-          grantId: CODEX_AUTH_JSON_VAULT_GRANT_ID,
+          grantId: grantId,
           grantScope: 'agent-session',
-          referenceId: CODEX_AUTH_JSON_VAULT_REFERENCE_ID,
+          referenceId: referenceId,
           secretKind: 'codex-auth-json',
           targetPath: CODEX_AUTH_JSON_TARGET_PATH,
         } as OperationOutput<'vault.bootstrap-codex-auth'>;
@@ -1054,7 +1063,7 @@ export function createVaultOperationImplementations(
         return coreDb.sqlite.transaction(() => {
           const result = narrowVaultGrant(coreDb, {
             grantId: source.grantId,
-            replacementGrantId: randomUUID(),
+            replacementGrantId: allocateEntityId('grant'),
             constraints: input.constraints,
           });
           recordVaultAdminAuditEvent({

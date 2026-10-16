@@ -9,11 +9,11 @@ import {
 import { createCoreClient } from '@openkit/core-client';
 import { ApiErrorSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -32,7 +32,11 @@ function catalogFixture() {
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('MCP binding workspace');
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: workspace.id });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: workspace.id,
+  });
   const app = createApp({ coreDb, dataRoot, store });
   return { app, coreDb, dataRoot, workspace };
 }
@@ -90,7 +94,7 @@ describe('resource catalog operations', () => {
     const f = catalogFixture();
     try {
       createVaultReference(f.coreDb, {
-        referenceId: 'vault_binding_synthetic',
+        referenceId: 'vault_00000000-0000-796e-9f65-da34836d04d3',
         displayName: 'Synthetic MCP token',
         ownerScope: 'workspace',
         workspaceId: f.workspace.id,
@@ -99,8 +103,8 @@ describe('resource catalog operations', () => {
         backendLocator: 'synthetic',
       });
       const grant = createVaultGrant(f.coreDb, {
-        grantId: 'grant_binding_synthetic',
-        vaultReferenceId: 'vault_binding_synthetic',
+        grantId: 'grant_00000000-0000-7fb6-8f22-bece61eb0941',
+        vaultReferenceId: 'vault_00000000-0000-796e-9f65-da34836d04d3',
         ownerScope: 'workspace',
         workspaceId: f.workspace.id,
         allowedInjectionPaths: ['gateway-only'],
@@ -255,7 +259,7 @@ describe('resource catalog operations', () => {
       const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
       const binding = {
         slot: 'token',
-        vaultGrantId: 'grant_binding_synthetic',
+        vaultGrantId: 'grant_00000000-0000-7fb6-8f22-bece61eb0941',
         sink:
           invalid === 'transport-sink'
             ? { kind: 'env', name: 'TOKEN' }
@@ -320,7 +324,7 @@ describe('resource catalog operations', () => {
     const workspace = store.createWorkspace('Catalog workspace');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const app = createApp({ coreDb, dataRoot, store });
@@ -417,7 +421,7 @@ describe('resource catalog operations', () => {
     const workspace = store.createWorkspace('Catalog workspace');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const app = createApp({ coreDb, dataRoot, store });

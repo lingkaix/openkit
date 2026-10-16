@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
 import {
   listWorkspaceCapabilityCalls,
@@ -24,6 +24,8 @@ import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { assembleAssistantCommandRun, runAssistantCommand } from './assistant-command-run.js';
 import {
@@ -94,19 +96,23 @@ async function fixture(selected = true, description?: string) {
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Assistant command run');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(`INSERT INTO users
       (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-      VALUES ('skill-reader', 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
-    .run(Date.now(), Date.now());
+      VALUES (?, 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
+    .run(testEntityId('usr', 'skill-reader'), Date.now(), Date.now());
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
       (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-      VALUES (?, 'skill-reader', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
-    .run(workspace.id, timestamp, timestamp, timestamp);
-  const actor: Actor = { kind: 'session', userId: 'skill-reader' };
+      VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+    .run(workspace.id, testEntityId('usr', 'skill-reader'), timestamp, timestamp, timestamp);
+  const actor: Actor = { kind: 'session', userId: testEntityId('usr', 'skill-reader') };
   const thread = store.createThread(workspace.id, 'Assistant command');
   const turn = store.createTurn(
     workspace.id,
@@ -137,7 +143,7 @@ async function fixture(selected = true, description?: string) {
         expectedRevision: 0,
         activate: true,
         createdAt: '2026-10-15T00:00:00.000Z',
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         tree: [
           {
             kind: 'file',
@@ -249,7 +255,7 @@ function changeDefault(f: Fixture) {
     expectedRevision: loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId).revision,
     activate: true,
     createdAt: '2026-10-16T00:00:00.000Z',
-    producer: { kind: 'user', id: 'user_local' },
+    producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     tree: [
       {
         kind: 'file',
@@ -419,7 +425,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
       workspaceId: f.workspaceId,
-      responsibleUserId: 'skill-reader',
+      responsibleUserId: testEntityId('usr', 'skill-reader'),
       requestId: null,
       threadId: f.threadId,
       turnId: f.turn.id,
@@ -558,9 +564,9 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const f = await fixture();
     f.coreDb.sqlite
       .prepare(
-        "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = 'skill-reader'"
+        "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
       )
-      .run(f.workspaceId);
+      .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
     expect(
       authorizeWorkspace(f.coreDb, f.actor, f.workspaceId, {
         mutating: false,
@@ -600,15 +606,15 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       if (condition === 'downgraded')
         f.coreDb.sqlite
           .prepare(
-            "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = 'skill-reader'"
+            "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
           )
-          .run(f.workspaceId);
+          .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
       else
         f.coreDb.sqlite
           .prepare(
-            "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = 'skill-reader'"
+            "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
           )
-          .run(f.workspaceId);
+          .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
       return result;
     });
 
@@ -624,7 +630,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId)).toEqual([
       expect.objectContaining({
         capabilityCallId: calls[0]!.id,
-        responsibleUserId: 'skill-reader',
+        responsibleUserId: testEntityId('usr', 'skill-reader'),
       }),
     ]);
     expect(
@@ -683,7 +689,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       expect(records.filter((record) => record.capabilityCallId === call.id)).toEqual([
         expect.objectContaining({
           requestId: null,
-          responsibleUserId: 'skill-reader',
+          responsibleUserId: testEntityId('usr', 'skill-reader'),
           workspaceId: f.workspaceId,
           threadId: f.threadId,
           turnId: f.turn.id,
@@ -874,7 +880,10 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const f = await fixture();
     let input = f.input;
     if (condition === 'actor')
-      input = { ...input, actor: { kind: 'session', userId: 'user_local' } };
+      input = {
+        ...input,
+        actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      };
     if (condition === 'turn')
       input = {
         ...input,
@@ -882,7 +891,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           f.workspaceId,
           f.threadId,
           'Another turn.',
-          { kind: 'user', id: 'skill-reader' },
+          { kind: 'user', id: testEntityId('usr', 'skill-reader') },
           null,
           { captureCoverage: { scope: 'server', value: 'off' } }
         ),
@@ -892,15 +901,18 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         ...input,
         gateway: {
           ...input.gateway,
-          promptCacheScope: { sessionId: f.threadId, workspaceId: 'another-workspace' },
+          promptCacheScope: {
+            sessionId: f.threadId,
+            workspaceId: testEntityId('ws', 'another-workspace'),
+          },
         },
       };
     if (condition === 'revoked')
       f.coreDb.sqlite
         .prepare(
-          "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ? AND user_id = 'skill-reader'"
+          "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ? AND user_id = ?"
         )
-        .run(f.workspaceId);
+        .run(f.workspaceId, testEntityId('usr', 'skill-reader'));
     if (condition === 'removed' || condition === 'missing-version') {
       const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
       if (condition === 'removed') catalog.skills.entries[0]!.availability = 'removed';

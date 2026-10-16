@@ -15,7 +15,7 @@ import { AdministrationScreen } from '../settings/AdministrationScreen';
 import { useWorkspaceStore, WORKSPACE_SELECTION_STORAGE_KEY } from '../workspace-store';
 
 const TIMESTAMP = '2026-10-15T00:00:00.000Z';
-const CALLER_ID = 'user_current';
+const CALLER_ID = 'usr_00000000-0000-7ed7-bc55-952204fd7048';
 
 /** Builds complete current records; relationship expectations come from the owning contracts. */
 function workspace(id: string, name: string, kind: WorkspaceRecord['kind'] = 'general') {
@@ -30,13 +30,13 @@ function workspace(id: string, name: string, kind: WorkspaceRecord['kind'] = 'ge
   };
 }
 
-const FOREIGN_QUICK_CHAT = workspace('ws_foreign_quick', 'Foreign Personal Workspace', 'personal');
-const FOREIGN_PROJECT = workspace('ws_foreign_project', 'Foreign project');
-const REMOVED_PROJECT = workspace('ws_removed_project', 'Former membership');
-const OWN_QUICK_CHAT = workspace('ws_own_quick', 'My Personal Workspace', 'personal');
-const OWN_PROJECT = workspace('ws_own_project', 'My project');
-const SHARED_EDITOR = workspace('ws_shared_editor', 'Shared editor project');
-const SHARED_VIEWER = workspace('ws_shared_viewer', 'Shared viewer project');
+const FOREIGN_QUICK_CHAT = workspace('ws_00000000-0000-7f53-b5e9-3e693166a2dc', 'Foreign Personal Workspace', 'personal');
+const FOREIGN_PROJECT = workspace('ws_00000000-0000-7ddd-a7d6-01ec32964976', 'Foreign project');
+const REMOVED_PROJECT = workspace('ws_00000000-0000-761c-962b-efd73f3a20f2', 'Former membership');
+const OWN_QUICK_CHAT = workspace('ws_00000000-0000-7cf3-8a92-8b574e4c1bf2', 'My Personal Workspace', 'personal');
+const OWN_PROJECT = workspace('ws_00000000-0000-7288-a428-32334d5b78c6', 'My project');
+const SHARED_EDITOR = workspace('ws_00000000-0000-7836-b93a-c6c5ddad2cea', 'Shared editor project');
+const SHARED_VIEWER = workspace('ws_00000000-0000-7fa2-b563-755762707b95', 'Shared viewer project');
 
 /** Administrator access preserves absent or removed membership instead of creating an owner role. */
 function administratorOnly(
@@ -48,7 +48,7 @@ function administratorOnly(
     effectiveRole: null,
     membershipRevision: membershipStatus === 'removed' ? 7 : null,
     membershipStatus,
-    ownerUserId: 'user_other',
+    ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     registryRevision: 3,
     workspace: record,
   };
@@ -65,7 +65,7 @@ function activeMembership(
     effectiveRole,
     membershipRevision: 5,
     membershipStatus: 'active',
-    ownerUserId: effectiveRole === 'owner' ? CALLER_ID : 'user_other',
+    ownerUserId: effectiveRole === 'owner' ? CALLER_ID : 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     registryRevision: 3,
     workspace: record,
   };
@@ -229,13 +229,13 @@ describe('Workspace relationship consumers', () => {
         .getAllByRole('button')
         .map((button) => button.getAttribute('aria-label'))
     ).toEqual([
-      `Open ${FOREIGN_QUICK_CHAT.name} owned by user_other`,
-      `Open ${FOREIGN_PROJECT.name} owned by user_other`,
-      `Open ${REMOVED_PROJECT.name} owned by user_other`,
+      `Open ${FOREIGN_QUICK_CHAT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
+      `Open ${FOREIGN_PROJECT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
+      `Open ${REMOVED_PROJECT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
     ]);
     await user.click(
       within(others).getByRole('button', {
-        name: `Open ${target.name} owned by user_other`,
+        name: `Open ${target.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
       })
     );
     expect(screen.getByLabelText('Selected workspace')).toHaveTextContent(target.id);

@@ -5,7 +5,7 @@ describe('administration catalog application client', () => {
   it('sends exact human confirmation and validates the persistence/reload response', async () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     const candidate = {
-      artifactId: 'candidate',
+      artifactId: 'ar_01890f3e-0000-7000-8000-000000000071',
       artifactVersion: 1 as const,
       contentDigest: digest,
     };

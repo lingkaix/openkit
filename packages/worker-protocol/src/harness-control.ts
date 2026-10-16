@@ -1,4 +1,11 @@
-import { GitFailureExplanationReaderSchema, GitFailureExplanationSchema } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  GitFailureExplanationReaderSchema,
+  GitFailureExplanationSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { NativeEnvironmentValuesSchema } from './native-environment.js';
 
@@ -88,7 +95,7 @@ export const HarnessRouteCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}
 
 /** Resume pair recorded for the predecessor AgentSession: its id and its accepted handle digest. */
 export const HarnessResumeSchema = z
-  .object({ digest: HarnessSha256HexSchema, locator: HarnessIdentitySchema })
+  .object({ digest: HarnessSha256HexSchema, locator: AgentSessionIdSchema })
   .strict();
 
 /** Resume pair carried by `session.open`. */
@@ -110,7 +117,7 @@ export const HarnessRuntimeEnvironmentSchema = z
   .refine((value) => Object.keys(value).length <= 128);
 
 const AgentSessionSelectorShape = {
-  agentSessionId: HarnessIdentitySchema,
+  agentSessionId: AgentSessionIdSchema,
   agentSessionRuntimeBindingId: HarnessIdentitySchema,
 };
 
@@ -124,8 +131,8 @@ const HarnessSessionOpenQueuedBodyCoreSchema = z
     agentSessionCompatibilityKey: HarnessSha256HexSchema,
     effectiveSetupGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     resume: HarnessResumeSchema.nullable(),
-    threadId: HarnessIdentitySchema,
-    workspaceId: HarnessIdentitySchema,
+    threadId: ThreadIdSchema,
+    workspaceId: WorkspaceIdSchema,
   })
   .strict();
 
@@ -139,10 +146,10 @@ const HarnessTurnStartQueuedBodyCoreSchema = z
     deadline: HarnessIdentitySchema.refine((value) => !Number.isNaN(Date.parse(value))),
     leaseId: HarnessIdentitySchema,
     packageSnapshotId: HarnessIdentitySchema,
-    threadId: HarnessIdentitySchema,
-    turnId: HarnessIdentitySchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     turnSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-    workspaceId: HarnessIdentitySchema,
+    workspaceId: WorkspaceIdSchema,
   })
   .strict();
 
@@ -179,7 +186,7 @@ const HarnessTurnInterruptBodyCoreSchema = z
     ...AgentSessionSelectorShape,
     leaseId: HarnessIdentitySchema,
     purpose: z.literal('interrupt'),
-    turnId: HarnessIdentitySchema,
+    turnId: TurnIdSchema,
   })
   .strict();
 

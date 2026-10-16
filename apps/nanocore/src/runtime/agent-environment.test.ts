@@ -25,7 +25,6 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
 import { loadAgentManifests } from '../config/agents-loader.js';
 import {
@@ -42,12 +41,14 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
-import { createVaultGrant } from '../vault/vault-grants.js';
+import { createVaultGrant, importWorkspaceVaultGrants } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
@@ -89,11 +90,14 @@ const resolveAgentEnvironmentPackageMetadata: typeof resolveMetadata = (input) =
 const resolveAgentSessionCompatibilityKey: typeof resolveCompatibility = (input) =>
   resolveCompatibility(preparedInput(input));
 
-const USER_TRIGGER_ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
+const USER_TRIGGER_ACTOR = {
+  kind: 'user',
+  id: 'usr_00000000-0000-7000-8000-000000000001',
+} as const satisfies ActorRef;
 const AUTOMATION_TRIGGER_ACTOR = {
   kind: 'automation',
-  id: 'automation_release',
-  responsibleUserId: 'user_local',
+  id: 'auto_00000000-0000-77df-8c37-4f4fdb2227b8',
+  responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
 } as const satisfies ActorRef;
 
 /**
@@ -195,7 +199,12 @@ function createTurnFixture(
   serverAdminTokenId?: string
 ) {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', input, triggerActor);
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    input,
+    triggerActor
+  );
   if (coreDb) {
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
@@ -220,7 +229,7 @@ function prepareCredentialAttemptFixture(
 ): void {
   recordTestExecutionAttempt(coreDb, {
     entry: requireSchedulerAdmissionEntry(coreDb, `queue_${turn.id}`),
-    attemptId: `lease_${turn.id}`,
+    attemptId: testEntityId('attempt', `lease_${turn.id}`),
     agentSessionId,
     inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
     bindingRef: `lease-token:${turn.id}`,
@@ -250,7 +259,7 @@ describe('agent environment package resolver', () => {
       return resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ network }),
-        agentSessionId: 'as_encoding',
+        agentSessionId: 'as_00000000-0000-7895-8bf8-bb6a8790a424',
         backend: { kind: 'openshell' },
         createdAt: '2026-10-08T00:00:00.000Z',
         turn,
@@ -289,7 +298,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
-      agentSessionId: 'as_review',
+      agentSessionId: 'as_00000000-0000-71a6-8411-162df1495423',
       backend: { kind: 'openshell' },
       turn: createTurnFixture('Use the authored writable root'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -327,12 +336,17 @@ describe('agent environment package resolver', () => {
       expect.objectContaining({ id: `${id}-output`, registerAsArtifacts: true })
     );
     expect(outputs).toContainEqual(
-      expect.objectContaining({ path: '/openkit/sessions/as_review/outputs' })
+      expect.objectContaining({
+        path: '/openkit/sessions/as_00000000-0000-71a6-8411-162df1495423/outputs',
+      })
     );
   });
 
   it('declares the generated session-private output slot without authored roots', () => {
-    for (const agentSessionId of ['as_output_a', 'as_output_b']) {
+    for (const agentSessionId of [
+      'as_00000000-0000-7c9c-b4e7-e63935d82972',
+      'as_00000000-0000-73ec-a8b5-63b6ea02f99c',
+    ]) {
       const resolved = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup(),
@@ -368,7 +382,7 @@ describe('agent environment package resolver', () => {
     const setup = createTestSetup();
     const input = {
       agentSetup: { ...setup, manifest: { ...setup.manifest, resources } },
-      agentSessionId: 'session_resource_refusal',
+      agentSessionId: 'as_00000000-0000-7426-8df2-e55089bbdb33',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Respect authored resource intent'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -398,7 +412,7 @@ describe('agent environment package resolver', () => {
         ...setup,
         manifest: { ...setup.manifest, ...(resources ? { resources } : {}) },
       },
-      agentSessionId: 'session_resource_empty',
+      agentSessionId: 'as_00000000-0000-7ecf-b59f-13550be570d8',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Use supported default resources'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -438,7 +452,7 @@ describe('agent environment package resolver', () => {
     if (!result.setup) throw new Error('Expected the shipped DeepSeek setup to resolve.');
     const input = {
       agentSetup: result.setup,
-      agentSessionId: 'session_deepseek_template',
+      agentSessionId: 'as_00000000-0000-7001-b4c5-8b4af882f9c3',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Resolve the shipped DeepSeek Agent'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -478,7 +492,7 @@ describe('agent environment package resolver', () => {
     if (!result.setup) throw new Error('Expected the shipped Codex setup.');
     const input = {
       agentSetup: result.setup,
-      agentSessionId: 'session_codex_template',
+      agentSessionId: 'as_00000000-0000-7457-afb9-637a90c8f930',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Resolve the shipped Codex Agent'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -505,7 +519,7 @@ describe('agent environment package resolver', () => {
   it('previews a future Turn without fabricating admitted capture coverage', () => {
     const input = {
       agentSetup: createTestSetup(),
-      agentSessionId: 'session_unadmitted',
+      agentSessionId: 'as_00000000-0000-74aa-82e0-950d23a646f3',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Plan without capture admission'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -526,7 +540,7 @@ describe('agent environment package resolver', () => {
     };
     const input = {
       agentSetup: setup,
-      agentSessionId: 'session_models',
+      agentSessionId: 'as_00000000-0000-7a8d-adea-a1c24d14f076',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Model admission'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -574,7 +588,7 @@ describe('agent environment package resolver', () => {
   it('projects exact admitted capture coverage without partitioning session compatibility', () => {
     const input = {
       agentSetup: createTestSetup(),
-      agentSessionId: 'session_capture',
+      agentSessionId: 'as_00000000-0000-7bdf-9f78-5d5577660e04',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Use immutable capture admission'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -600,13 +614,16 @@ describe('agent environment package resolver', () => {
   it('keeps Turn capture addresses out of AgentSession compatibility', () => {
     const input = {
       agentSetup: createTestSetup(),
-      agentSessionId: 'session_capture',
+      agentSessionId: 'as_00000000-0000-7bdf-9f78-5d5577660e04',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('first capture'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
-    const next = { ...input, turn: { ...input.turn, id: 'turn_next_capture' } };
+    const next = {
+      ...input,
+      turn: { ...input.turn, id: 'tu_00000000-0000-7f0b-9cb7-31f82cc108e7' },
+    };
     expect(resolveAgentSessionCompatibilityKey(next)).toBe(
       resolveAgentSessionCompatibilityKey(input)
     );
@@ -622,12 +639,12 @@ describe('agent environment package resolver', () => {
           {
             id: 'test_key',
             targetEnvVarName: 'TEST_KEY',
-            vaultGrantId: 'grant_missing',
+            vaultGrantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
             visibility: 'runtime-env',
           },
         ],
       }),
-      agentSessionId: 'session_missing_capture',
+      agentSessionId: 'as_00000000-0000-7ac4-9c81-26d001fa7434',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Reject missing capture admission'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -643,7 +660,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ mcpIds }),
-        agentSessionId: 'session_repository',
+        agentSessionId: 'as_00000000-0000-753a-b10c-0ebcb84232ce',
         backend: { kind: 'openshell' },
         createdAt: '2026-09-15T00:00:00.000Z',
         requestId: 'request_repository',
@@ -663,7 +680,7 @@ describe('agent environment package resolver', () => {
     const common = {
       captureCoverage: { scope: 'server', value: 'off' } as const,
       agentSetup: createTestSetup(),
-      agentSessionId: 'session_1',
+      agentSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_1',
       turn,
@@ -684,7 +701,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
-      agentSessionId: 'session_actor_1',
+      agentSessionId: 'as_00000000-0000-7d98-86f8-9943227e2e8a',
       backend: {
         kind: 'openshell',
       },
@@ -751,7 +768,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: setupResult.setup,
-      agentSessionId: 'session_parameters',
+      agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
       backend: { kind: 'openshell' },
       turn: createTurnFixture('Use admitted model parameters'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -834,7 +851,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: setupResult.setup,
-      agentSessionId: 'session_parameters',
+      agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
       backend: { kind: 'openshell' },
       turn: createTurnFixture('Use admitted model parameters'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -899,7 +916,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: setupResult.setup,
-        agentSessionId: 'session_future_1',
+        agentSessionId: 'as_00000000-0000-79e4-bdc8-22e0bffb506f',
         backend: {
           kind: 'openshell',
         },
@@ -948,7 +965,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup(),
-        agentSessionId: 'session_remote_1',
+        agentSessionId: 'as_00000000-0000-7581-a639-c25303fc0e23',
         backend: {
           gatewayUrl: 'https://gateway.example.test',
           kind: 'openshell',
@@ -969,7 +986,7 @@ describe('agent environment package resolver', () => {
     const turn = createTurnFixture('Reject authority conflict');
     const common = {
       captureCoverage: { scope: 'server', value: 'off' } as const,
-      agentSessionId: 'session_reject_1',
+      agentSessionId: 'as_00000000-0000-76c8-91aa-7a4046e1d69a',
       backend: {
         kind: 'openshell' as const,
       },
@@ -1123,7 +1140,7 @@ describe('agent environment package resolver', () => {
         dataRoot,
         displayName: 'Repo guidelines',
         expectedRevision: 0,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
             contentBase64: Buffer.from(
@@ -1139,7 +1156,7 @@ describe('agent environment package resolver', () => {
       const resolved = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
-        agentSessionId: 'session_skill_1',
+        agentSessionId: 'as_00000000-0000-7d9f-81e8-a2e097eb7865',
         backend: { kind: 'openshell' },
         coreDb,
         createdAt: '2026-09-08T00:00:00.000Z',
@@ -1155,9 +1172,11 @@ describe('agent environment package resolver', () => {
           integrity: { sha256: created.version.digest },
           materialization: {
             kind: 'filesystem-copy',
-            targetPath: '/openkit/sessions/session_skill_1/supply/inputs/repo-guidelines',
+            targetPath:
+              '/openkit/sessions/as_00000000-0000-7d9f-81e8-a2e097eb7865/supply/inputs/repo-guidelines',
           },
-          target: '/openkit/sessions/session_skill_1/supply/inputs/repo-guidelines',
+          target:
+            '/openkit/sessions/as_00000000-0000-7d9f-81e8-a2e097eb7865/supply/inputs/repo-guidelines',
         }),
       ]);
     } finally {
@@ -1177,7 +1196,7 @@ describe('agent environment package resolver', () => {
         dataRoot,
         displayName: 'Repo guidelines',
         expectedRevision: 0,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
             contentBase64: Buffer.from(
@@ -1204,7 +1223,7 @@ describe('agent environment package resolver', () => {
         displayName: 'Repo guidelines',
         expectedRevision: pinned.revision,
         id: 'repo-guidelines',
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
             contentBase64: Buffer.from(
@@ -1220,7 +1239,7 @@ describe('agent environment package resolver', () => {
       const resolved = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
-        agentSessionId: 'session_skill_pin',
+        agentSessionId: 'as_00000000-0000-7a07-b3be-8e7403e54e25',
         backend: { kind: 'openshell' },
         coreDb,
         createdAt: '2026-09-08T00:02:00.000Z',
@@ -1251,7 +1270,7 @@ describe('agent environment package resolver', () => {
         mcpIds: ['github'],
         skillIds: [],
       }),
-      agentSessionId: 'session_supply_1',
+      agentSessionId: 'as_00000000-0000-73d3-aaea-d34a3ecb6216',
       backend: {
         kind: 'openshell',
       },
@@ -1327,7 +1346,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
-      agentSessionId: 'session_context_1',
+      agentSessionId: 'as_00000000-0000-7407-8ae0-870e6bf1d899',
       backend: {
         kind: 'openshell',
       },
@@ -1339,7 +1358,7 @@ describe('agent environment package resolver', () => {
           id: `context_${turn.id}`,
           sourceKind: 'materialized-dir',
           sourcePath: '/private/context-package',
-          workerPath: '/openkit/sessions/session_context_1/context',
+          workerPath: '/openkit/sessions/as_00000000-0000-7407-8ae0-870e6bf1d899/context',
         },
       },
       requestId: 'req_context_1',
@@ -1363,7 +1382,7 @@ describe('agent environment package resolver', () => {
           kind: 'generated',
           pathRef: `threads/${turn.threadId}/turns/${turn.id}/context-package`,
         },
-        target: '/openkit/sessions/session_context_1/context',
+        target: '/openkit/sessions/as_00000000-0000-7407-8ae0-870e6bf1d899/context',
       },
     ]);
   });
@@ -1373,7 +1392,7 @@ describe('agent environment package resolver', () => {
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup(),
-        agentSessionId: 'session_filesystem',
+        agentSessionId: 'as_00000000-0000-7a14-9b20-132fd02f8c2a',
         backend: { kind: 'openshell' },
         createdAt: '2026-07-18T00:00:00.000Z',
         requestId: 'req_filesystem',
@@ -1401,7 +1420,7 @@ describe('agent environment package resolver', () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
-      agentSessionId: 'session_source_1',
+      agentSessionId: 'as_00000000-0000-7f9a-a2be-60960ced8d95',
       backend: {
         kind: 'openshell',
       },
@@ -1449,7 +1468,10 @@ describe('agent environment package resolver', () => {
       inputs: [{ id: 'repo', target: '/workspace/worktrees/wsl_selected_predecessor' }],
       outputs: [
         { id: 'repo-output', path: '/workspace/worktrees/wsl_selected_predecessor' },
-        { id: 'turn-output-root', path: '/openkit/sessions/session_source_1/outputs' },
+        {
+          id: 'turn-output-root',
+          path: '/openkit/sessions/as_00000000-0000-7f9a-a2be-60960ced8d95/outputs',
+        },
       ],
     });
     expect(resolved.runtime.command.workingDirectory).toBe(
@@ -1475,7 +1497,7 @@ describe('agent environment package resolver', () => {
     const declaration: AgentEnvironmentCredentialDeclaration = {
       id: 'anthropic_api_key',
       targetEnvVarName: 'ANTHROPIC_API_KEY',
-      vaultGrantId: 'grant_anthropic_api_key',
+      vaultGrantId: 'grant_00000000-0000-7000-ba44-0798272a184c',
       visibility: 'runtime-env',
     };
     const runtimeEnvCredentials: Array<{
@@ -1488,37 +1510,37 @@ describe('agent environment package resolver', () => {
     recordWorkspaceOwnerMembership({
       coreDb,
       now: new Date(now),
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 21) });
     vaultUnlockState.backend().store({
       material: 'direct_secret_value',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_anthropic_api_key',
+      referenceId: testEntityId('vault', 'vault_anthropic_api_key'),
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_anthropic_api_key',
+      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7833-a8dd-41b91bb76bb1',
       displayName: 'Anthropic API key',
       now: () => now,
       ownerScope: 'server',
-      referenceId: 'vault_anthropic_api_key',
+      referenceId: testEntityId('vault', 'vault_anthropic_api_key'),
       secretKind: 'provider-api-key',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_anthropic_api_key',
+      grantId: 'grant_00000000-0000-7000-ba44-0798272a184c',
       lifetime: 'agent-session',
       now: () => now,
       ownerScope: 'server',
-      targetAgentSessionId: 'session_direct_1',
-      vaultReferenceId: 'vault_anthropic_api_key',
+      targetAgentSessionId: 'as_00000000-0000-7cc7-8867-edb4d3f5bad9',
+      vaultReferenceId: testEntityId('vault', 'vault_anthropic_api_key'),
     });
 
     try {
       const turn = createTurnFixture('Run Pi directly', coreDb, AUTOMATION_TRIGGER_ACTOR);
-      prepareCredentialAttemptFixture(coreDb, turn, 'session_direct_1');
+      prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7cc7-8867-edb4d3f5bad9');
       const resolve = () =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -1538,7 +1560,7 @@ describe('agent environment package resolver', () => {
             logicalModelId: 'claude',
             requiredCapabilities: [],
           }),
-          agentSessionId: 'session_direct_1',
+          agentSessionId: 'as_00000000-0000-7cc7-8867-edb4d3f5bad9',
           backend: {
             kind: 'openshell',
           },
@@ -1579,7 +1601,7 @@ describe('agent environment package resolver', () => {
         {
           credentialValue: 'direct_secret_value',
           materialVersion: 1,
-          vaultReferenceId: 'vault_anthropic_api_key',
+          vaultReferenceId: testEntityId('vault', 'vault_anthropic_api_key'),
           targetEnvVarName: 'ANTHROPIC_API_KEY',
         },
       ]);
@@ -1596,18 +1618,18 @@ describe('agent environment package resolver', () => {
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
       // A submitted Native process awaiting exact adoption has revoked mediated route authority.
       recordSchedulerExecutionOperation(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         operationId: `submit:${turn.id}`,
         submission: true,
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
         heartbeatTimeoutMs: 30_000,
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         workerSequence: 1,
         heartbeatTimeoutMs: 30_000,
       });
@@ -1628,14 +1650,14 @@ describe('agent environment package resolver', () => {
             workspaceId: turn.workspaceId,
             threadId: turn.threadId,
             turnId: turn.id,
-            agentSessionId: 'session_direct_1',
+            agentSessionId: 'as_00000000-0000-7cc7-8867-edb4d3f5bad9',
             packageSnapshotId: `aepsnap_${turn.id}_session_direct_1`,
           },
         })
       ).toEqual({ status: 'rejected', reason: 'reconnect-required' });
       // Native mediated routes reject adoption independently; the generic AEP resolver owns Core phase authority.
       markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         cause: 'authority-revoked',
       });
       expect(resolve).toThrow(TurnStartValidationError);
@@ -1647,7 +1669,10 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('materializes a Workspace-bound credential requirement without exposing its value', () => {
+  it.each([
+    'target',
+    'imported-history',
+  ] as const)('enforces %s issuance at the AEP effect boundary', (issuance) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-workspace-binding-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -1662,72 +1687,90 @@ describe('agent environment package resolver', () => {
     recordWorkspaceOwnerMembership({
       coreDb,
       now: new Date(now),
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 24) });
     vaultUnlockState.backend().store({
       material: 'workspace_github_secret',
-      metadata: { ownerScope: 'workspace', workspaceId: 'ws_demo' },
-      referenceId: 'vault_workspace_github',
+      metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      referenceId: testEntityId('vault', 'vault_workspace_github'),
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_workspace_github',
+      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-781d-86a3-4dc252e03399',
       displayName: 'Workspace GitHub token',
       now: () => now,
       ownerScope: 'workspace',
-      referenceId: 'vault_workspace_github',
+      referenceId: testEntityId('vault', 'vault_workspace_github'),
       secretKind: 'provider-api-key',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    createVaultGrant(coreDb, {
+    const grant = createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_workspace_github',
+      grantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
       lifetime: 'agent-session',
       now: () => now,
       ownerScope: 'workspace',
       targetAgentId: 'agent_codex_host',
-      targetAgentSessionId: 'session_workspace_binding',
-      vaultReferenceId: 'vault_workspace_github',
-      workspaceId: 'ws_demo',
+      targetAgentSessionId: 'as_01890f3e-0000-7000-8000-000000000061',
+      vaultReferenceId: testEntityId('vault', 'vault_workspace_github'),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+
+    if (issuance === 'imported-history') {
+      coreDb.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
+      importWorkspaceVaultGrants(coreDb, [grant]);
+    }
+    const backendResolver = vi.fn(() => vaultUnlockState.backend());
 
     try {
       const turn = createTurnFixture('Use the Workspace GitHub account', coreDb);
-      prepareCredentialAttemptFixture(coreDb, turn, 'session_workspace_binding');
-      const resolved = resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSetup: createTestSetup({
-          credentialDeclarations: [
-            {
-              id: 'github_token',
-              requirementId: 'github-token',
-              targetEnvVarName: 'GITHUB_TOKEN',
-              vaultGrantId: 'grant_workspace_github',
-              visibility: 'runtime-env',
-            },
-          ],
-          requiredCapabilities: [],
-        }),
-        agentSessionId: 'session_workspace_binding',
-        backend: { kind: 'openshell' },
-        coreDb,
-        createdAt: now,
-        requestId: 'req_workspace_binding',
-        runtimeEnvCredentialSink: (credential) =>
-          runtimeEnvCredentials.push(credential.credentialValue),
-        turn,
-        triggerActor: USER_TRIGGER_ACTOR,
-        vaultBackend: () => vaultUnlockState.backend(),
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      });
+      prepareCredentialAttemptFixture(coreDb, turn, 'as_01890f3e-0000-7000-8000-000000000061');
+      const resolve = () =>
+        resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSetup: createTestSetup({
+            credentialDeclarations: [
+              {
+                id: 'github_token',
+                requirementId: 'github-token',
+                targetEnvVarName: 'GITHUB_TOKEN',
+                vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
+                visibility: 'runtime-env',
+              },
+            ],
+            requiredCapabilities: [],
+          }),
+          agentSessionId: 'as_01890f3e-0000-7000-8000-000000000061',
+          backend: { kind: 'openshell' },
+          coreDb,
+          createdAt: now,
+          requestId: 'req_workspace_binding',
+          runtimeEnvCredentialSink: (credential) =>
+            runtimeEnvCredentials.push(credential.credentialValue),
+          turn,
+          triggerActor: USER_TRIGGER_ACTOR,
+          vaultBackend: backendResolver,
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        });
 
+      if (issuance === 'imported-history') {
+        expect(resolve).toThrow();
+        expect(backendResolver).not.toHaveBeenCalled();
+        expect(runtimeEnvCredentials).toEqual([]);
+        expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        expect(listVaultUseRecords(coreDb)).toEqual([]);
+        return;
+      }
+      const resolved = resolve();
+      expect(backendResolver).toHaveBeenCalled();
       expect(resolved.credentials.declarations).toEqual([
         expect.objectContaining({
           requirementId: 'github-token',
-          vaultGrantId: 'grant_workspace_github',
+          vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
         }),
       ]);
       expect(runtimeEnvCredentials).toEqual(['workspace_github_secret']);
@@ -1753,8 +1796,8 @@ describe('agent environment package resolver', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 27) });
     const app = createApp({ coreDb, dataRoot, vaultUnlockState });
@@ -1769,14 +1812,14 @@ describe('agent environment package resolver', () => {
       });
     try {
       const secretResponse = await post('vault.secret-create', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         secretKind: 'github-token',
         material: 'public-worker-canary',
       });
       expect(secretResponse.status).toBe(200);
       const reference = await secretResponse.json();
       const grantResponse = await post('vault.grant-create', {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         referenceId: reference.referenceId,
         injectionPath: 'runtime-env',
       });
@@ -1788,7 +1831,7 @@ describe('agent environment package resolver', () => {
         vi.spyOn(backend, 'listReferences').mockImplementation((scope) =>
           listReferences(scope).map((entry) =>
             entry.referenceId === reference.referenceId
-              ? { ...entry, workspaceId: 'ws_other' }
+              ? { ...entry, workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' }
               : entry
           )
         );
@@ -1806,7 +1849,7 @@ describe('agent environment package resolver', () => {
         health: 'Vault backend is unavailable for worker credential injection.',
       }[failure];
       const turn = createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
-      prepareCredentialAttemptFixture(coreDb, turn, 'session_public_github');
+      prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7791-97f9-e9eb064522fc');
       expect(() =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -1822,7 +1865,7 @@ describe('agent environment package resolver', () => {
             ],
             requiredCapabilities: [],
           }),
-          agentSessionId: 'session_public_github',
+          agentSessionId: 'as_00000000-0000-7791-97f9-e9eb064522fc',
           backend: { kind: 'openshell' },
           coreDb,
           createdAt: '2026-07-18T00:00:00.000Z',
@@ -1853,7 +1896,7 @@ describe('agent environment package resolver', () => {
     const declaration: AgentEnvironmentCredentialDeclaration = {
       id: 'preview_api_key',
       targetEnvVarName: 'PREVIEW_API_KEY',
-      vaultGrantId: 'grant_preview_api_key',
+      vaultGrantId: 'grant_00000000-0000-790b-98eb-af128df0b61f',
       visibility: 'runtime-env',
     };
     const agentSetup = createTestSetup({
@@ -1876,7 +1919,7 @@ describe('agent environment package resolver', () => {
     let vaultBackendCalls = 0;
 
     applyMigrations(coreDb);
-    const triggerActor = { kind: 'user', id: 'user_admin_preview' } as const;
+    const triggerActor = { kind: 'user', id: 'usr_00000000-0000-757a-97ca-a24badb207a8' } as const;
     coreDb.sqlite
       .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
       VALUES (?, 'Preview Admin', 'preview-admin@example.test', false, ?, ?, 'human', 'active')`)
@@ -1898,31 +1941,31 @@ describe('agent environment package resolver', () => {
     recordWorkspaceOwnerMembership({
       coreDb,
       now: new Date(now),
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_preview_api_key',
+      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-73c9-a5a9-f1550bf98d52',
       displayName: 'Preview API key',
       now: () => now,
       ownerScope: 'server',
-      referenceId: 'vault_preview_api_key',
+      referenceId: testEntityId('vault', 'vault_preview_api_key'),
       secretKind: 'provider-api-key',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_preview_api_key',
+      grantId: 'grant_00000000-0000-790b-98eb-af128df0b61f',
       lifetime: 'agent-session',
       now: () => now,
       ownerScope: 'server',
-      targetAgentSessionId: 'session_preview_1',
-      vaultReferenceId: 'vault_preview_api_key',
+      targetAgentSessionId: 'as_00000000-0000-7250-b7fc-372a479a99cc',
+      vaultReferenceId: testEntityId('vault', 'vault_preview_api_key'),
     });
 
     try {
       const compatibilityKey = resolveAgentSessionCompatibilityKey({
-        agentSessionId: 'session_preview_1',
+        agentSessionId: 'as_00000000-0000-7250-b7fc-372a479a99cc',
         agentSetup,
         backend: { kind: 'openshell' },
         coreDb,
@@ -1941,7 +1984,7 @@ describe('agent environment package resolver', () => {
         workspaceRoots: [],
       } as Parameters<typeof resolveAgentSessionCompatibilityKey>[0]);
       const metadataPackage = resolveAgentEnvironmentPackageMetadata({
-        agentSessionId: 'session_preview_1',
+        agentSessionId: 'as_00000000-0000-7250-b7fc-372a479a99cc',
         agentSetup,
         backend: { kind: 'openshell' },
         coreDb,
@@ -1969,7 +2012,7 @@ describe('agent environment package resolver', () => {
       revokeOpenKitAccessTokenRecord(coreDb, 'token_admin_preview', new Date(now));
       expect(() =>
         resolveAgentEnvironmentPackageMetadata({
-          agentSessionId: 'session_preview_1',
+          agentSessionId: 'as_00000000-0000-7250-b7fc-372a479a99cc',
           agentSetup,
           backend: { kind: 'openshell' },
           coreDb,
@@ -1986,7 +2029,7 @@ describe('agent environment package resolver', () => {
       const keyForContextDigest = (character: string) => {
         const environmentPackage = resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
-          agentSessionId: 'session_context_digest',
+          agentSessionId: 'as_00000000-0000-767d-819d-fd4cbe8a0a2d',
           agentSetup: createTestSetup(),
           backend: { kind: 'openshell' },
           createdAt: now,
@@ -1997,7 +2040,7 @@ describe('agent environment package resolver', () => {
               id: `context_${turn.id}`,
               sourceKind: 'materialized-dir',
               sourcePath: `/private/context-${character}`,
-              workerPath: '/openkit/sessions/session_context_digest/context',
+              workerPath: '/openkit/sessions/as_00000000-0000-767d-819d-fd4cbe8a0a2d/context',
             },
           },
           requestId: 'req_context_digest',
@@ -2030,30 +2073,30 @@ describe('agent environment package resolver', () => {
     recordWorkspaceOwnerMembership({
       coreDb,
       now: new Date(now),
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_stale_authority',
+      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-77f5-b221-5a369e1e1273',
       displayName: 'Stale authority credential',
       now: () => now,
       ownerScope: 'server',
-      referenceId: 'vault_stale_authority',
+      referenceId: testEntityId('vault', 'vault_stale_authority'),
       secretKind: 'provider-api-key',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_stale_authority',
+      grantId: 'grant_00000000-0000-7e74-bd0a-0c158798ac75',
       lifetime: 'agent-session',
       now: () => now,
       ownerScope: 'server',
-      targetAgentSessionId: 'session_stale_authority',
-      vaultReferenceId: 'vault_stale_authority',
+      targetAgentSessionId: 'as_00000000-0000-71da-ba96-faf8de3b9ca6',
+      vaultReferenceId: testEntityId('vault', 'vault_stale_authority'),
     });
     coreDb.sqlite
       .prepare("UPDATE users SET status = 'disabled', updated_at = ? WHERE id = ?")
-      .run(Date.parse(now), 'user_local');
+      .run(Date.parse(now), 'usr_00000000-0000-7000-8000-000000000001');
 
     try {
       let error: unknown;
@@ -2065,7 +2108,7 @@ describe('agent environment package resolver', () => {
               {
                 id: 'stale_authority',
                 targetEnvVarName: 'STALE_AUTHORITY_SECRET',
-                vaultGrantId: 'grant_stale_authority',
+                vaultGrantId: 'grant_00000000-0000-7e74-bd0a-0c158798ac75',
                 visibility: 'runtime-env',
               },
             ],
@@ -2081,7 +2124,7 @@ describe('agent environment package resolver', () => {
             ],
             requiredCapabilities: [],
           }),
-          agentSessionId: 'session_stale_authority',
+          agentSessionId: 'as_00000000-0000-71da-ba96-faf8de3b9ca6',
           backend: {
             kind: 'openshell',
           },
@@ -2120,14 +2163,20 @@ describe('agent environment package resolver', () => {
       expectedError: 'Credential requirement binding must use a Workspace grant: scope_user',
       grantTarget: {},
       name: 'user',
-      referenceScope: { ownerScope: 'user' as const, userId: 'user_other' },
+      referenceScope: {
+        ownerScope: 'user' as const,
+        userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      },
       triggerActor: AUTOMATION_TRIGGER_ACTOR,
     },
     {
       expectedError: 'Credential requirement binding must use a Workspace grant: scope_workspace',
       grantTarget: {},
       name: 'workspace',
-      referenceScope: { ownerScope: 'workspace' as const, workspaceId: 'ws_other' },
+      referenceScope: {
+        ownerScope: 'workspace' as const,
+        workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+      },
       triggerActor: USER_TRIGGER_ACTOR,
     },
     {
@@ -2159,8 +2208,8 @@ describe('agent environment package resolver', () => {
     });
     const now = '2026-07-18T00:00:00.000Z';
     const declarationId = `scope_${name}`;
-    const referenceId = `vault_${declarationId}`;
-    const grantId = `grant_${declarationId}`;
+    const referenceId = testEntityId('vault', `vault_${declarationId}`);
+    const grantId = testEntityId('grant', `grant_${declarationId}`);
     const runtimeEnvCredentials: string[] = [];
 
     applyMigrations(coreDb);
@@ -2186,7 +2235,7 @@ describe('agent environment package resolver', () => {
       now: () => now,
       ...referenceScope,
       ...grantTarget,
-      targetAgentSessionId: 'session_scope_1',
+      targetAgentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
       vaultReferenceId: referenceId,
     });
 
@@ -2218,7 +2267,7 @@ describe('agent environment package resolver', () => {
             ],
             requiredCapabilities: [],
           }),
-          agentSessionId: 'session_scope_1',
+          agentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
           backend: {
             kind: 'openshell',
           },
@@ -2257,37 +2306,37 @@ describe('agent environment package resolver', () => {
     recordWorkspaceOwnerMembership({
       coreDb,
       now: new Date(now),
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 22) });
     vaultUnlockState.backend().store({
       material: 'missing_sink_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_missing_sink',
+      referenceId: testEntityId('vault', 'vault_missing_sink'),
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_missing_sink',
+      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-79a8-9c3f-b3f3bb9abdb5',
       displayName: 'Missing sink credential',
       now: () => now,
       ownerScope: 'server',
-      referenceId: 'vault_missing_sink',
+      referenceId: testEntityId('vault', 'vault_missing_sink'),
       secretKind: 'provider-api-key',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_missing_sink',
+      grantId: 'grant_00000000-0000-7e74-bdd2-996eccd67587',
       lifetime: 'agent-session',
       now: () => now,
       ownerScope: 'server',
-      targetAgentSessionId: 'session_missing_sink',
-      vaultReferenceId: 'vault_missing_sink',
+      targetAgentSessionId: 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672',
+      vaultReferenceId: testEntityId('vault', 'vault_missing_sink'),
     });
 
     try {
       const turn = createTurnFixture('Reject missing sink', coreDb, AUTOMATION_TRIGGER_ACTOR);
-      prepareCredentialAttemptFixture(coreDb, turn, 'session_missing_sink');
+      prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672');
       expect(() =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -2297,7 +2346,7 @@ describe('agent environment package resolver', () => {
               {
                 id: 'missing_sink',
                 targetEnvVarName: 'ANTHROPIC_API_KEY',
-                vaultGrantId: 'grant_missing_sink',
+                vaultGrantId: 'grant_00000000-0000-7e74-bdd2-996eccd67587',
                 visibility: 'runtime-env',
               },
             ],
@@ -2314,7 +2363,7 @@ describe('agent environment package resolver', () => {
             logicalModelId: 'claude',
             requiredCapabilities: [],
           }),
-          agentSessionId: 'session_missing_sink',
+          agentSessionId: 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672',
           backend: {
             kind: 'openshell',
           },
@@ -2343,7 +2392,7 @@ describe('agent environment package resolver', () => {
     const turn = createTurnFixture('Reject backend-local inference');
     const common = {
       captureCoverage: { scope: 'server', value: 'off' } as const,
-      agentSessionId: 'session_backend_local_1',
+      agentSessionId: 'as_00000000-0000-77fd-9abd-2be1e88aca0a',
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_backend_local_1',
       turn,
@@ -2381,7 +2430,7 @@ describe('agent environment package resolver', () => {
     });
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'session_network_defaults_1',
+      agentSessionId: 'as_00000000-0000-7f6f-826c-6958e5c73c81',
       agentSetup: setup,
       backend: {
         kind: 'openshell',
@@ -2425,7 +2474,11 @@ describe('public network AEP admission', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const store = createDemoStore({ dataRoot });
     const turn = createTurnFixture('Public boot admission', coreDb);
     const agentSetup = createTestSetup({ network });
@@ -2505,7 +2558,7 @@ describe('public network AEP admission', () => {
     };
     const input: PrepareAgentSessionForTurnInput = {
       agentSetup,
-      freshAgentSessionId: 'session_public_boot',
+      freshAgentSessionId: 'as_00000000-0000-76ac-93aa-e38a291394eb',
       requestId: null,
       turn,
       turnInput: 'Public boot admission',
@@ -2559,9 +2612,13 @@ describe('public network AEP admission', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       tokenId: 'token_public',
       scope: 'server-admin',
       workspaceIds: [],
@@ -2607,7 +2664,7 @@ describe('public network AEP admission', () => {
     };
     const input = {
       agentSetup,
-      agentSessionId: 'session_public',
+      agentSessionId: 'as_00000000-0000-77db-8827-1428c320f258',
       backend: { kind: 'openshell' as const },
       coreDb,
       captureCoverage: { scope: 'server' as const, value: 'off' as const },
@@ -2619,7 +2676,7 @@ describe('public network AEP admission', () => {
     try {
       const preview = resolveAgentEnvironmentPackageMetadata(input);
       expect(preview.policy.network?.rules).toContainEqual({ ...network[0], action: 'allow' });
-      prepareCredentialAttemptFixture(coreDb, turn, 'session_public');
+      prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-77db-8827-1428c320f258');
       const resolved = resolveAgentEnvironmentPackage(input);
       const canonicalBytes = JSON.stringify(resolved);
       const uppercaseSetup = createTestSetup({
@@ -2746,7 +2803,7 @@ describe('public network AEP admission', () => {
     const input = {
       captureCoverage: { scope: 'server' as const, value: 'off' as const },
       agentSetup: createTestSetup({ network }),
-      agentSessionId: 'session_public_missing',
+      agentSessionId: 'as_00000000-0000-7ccf-863b-bd6e69a9430a',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('No current metadata'),
       triggerActor: USER_TRIGGER_ACTOR,
@@ -2779,7 +2836,7 @@ it.each([
       },
       logicalModels: { ...setup.logicalModels, allowed: [model] },
     },
-    agentSessionId: 'session_effort',
+    agentSessionId: 'as_00000000-0000-72de-9f15-4d6e5bc250fb',
     backend: { kind: 'openshell' as const },
     turn: {
       ...createTurnFixture('Effort projection'),

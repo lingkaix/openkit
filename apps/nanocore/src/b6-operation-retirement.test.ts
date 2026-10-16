@@ -7,13 +7,13 @@ import {
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createVaultGrant } from './vault/vault-grants.js';
 import {
@@ -24,34 +24,42 @@ import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const reads = [
-  ['usage.read', '/api/app/workspaces/ws_demo/capability-usage', { workspaceId: 'ws_demo' }],
-  ['audit.workspace-list', '/api/app/workspaces/ws_demo/audit/events', { workspaceId: 'ws_demo' }],
+  [
+    'usage.read',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/capability-usage',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+  ],
+  [
+    'audit.workspace-list',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/audit/events',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+  ],
   ['audit.server-list', '/api/app/audit/events', {}],
   [
     'evidence.bundle-list',
-    '/api/app/workspaces/ws_demo/evidence-bundles',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/evidence-bundles',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
   ],
   [
     'evidence.runtime-list',
-    '/api/app/workspaces/ws_demo/runtime-evidence',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/runtime-evidence',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
   ],
   [
     'permission.workspace-list',
-    '/api/app/workspaces/ws_demo/permission-decisions',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/permission-decisions',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
   ],
   ['permission.server-list', '/api/app/permission-decisions', {}],
   [
     'environment.snapshot-list',
-    '/api/app/workspaces/ws_demo/agent-environment/snapshots',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/agent-environment/snapshots',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
   ],
   [
     'environment.snapshot-read',
-    '/api/app/workspaces/ws_demo/agent-environment/snapshots/aepsnap_b6',
-    { workspaceId: 'ws_demo', snapshotId: 'aepsnap_b6' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/agent-environment/snapshots/aepsnap_b6',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', snapshotId: 'aepsnap_b6' },
   ],
   ['app.search', '/api/app/search?q=Demo', { query: 'Demo' }],
 ] as const;
@@ -91,16 +99,16 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
         },
       },
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'as_1',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       backend: {
         kind: 'openshell',
       },
       requestId: 'req_1',
       turn: {
-        id: 'turn_1',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         items: [],
         status: 'running',
         error: null,
@@ -108,7 +116,7 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
         startedAt: '2026-07-06T00:00:00.000Z',
         completedAt: null,
         durationMs: null,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
       turnInput: 'Run tests',
       workspaceCwd: '/workspace',
@@ -143,72 +151,89 @@ const vaultCases = [
   ],
   [
     'vault.secret-create',
-    '/api/app/workspaces/ws_demo/vault/secrets',
-    { workspaceId: 'ws_demo', secretKind: 'github-token', material: 'synthetic-b6-material' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/secrets',
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      secretKind: 'github-token',
+      material: 'synthetic-b6-material',
+    },
     'POST',
   ],
   [
     'vault.secret-rotate',
-    '/api/app/workspaces/ws_demo/vault/secrets/vault_b6/rotate',
-    { workspaceId: 'ws_demo', referenceId: 'vault_b6', material: 'synthetic-b6-next' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/secrets/vault_00000000-0000-70a7-af6b-8038e2c48211/rotate',
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
+      material: 'synthetic-b6-next',
+    },
     'POST',
   ],
   [
     'vault.secret-revoke',
-    '/api/app/workspaces/ws_demo/vault/secrets/vault_b6/revoke',
-    { workspaceId: 'ws_demo', referenceId: 'vault_b6' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/secrets/vault_00000000-0000-70a7-af6b-8038e2c48211/revoke',
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
+    },
     'POST',
   ],
   [
     'vault.grant-create',
-    '/api/app/workspaces/ws_demo/vault/grants',
-    { workspaceId: 'ws_demo', referenceId: 'vault_b6' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/grants',
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
+    },
     'POST',
   ],
   [
     'vault.grant-revoke',
-    '/api/app/workspaces/ws_demo/vault/grants/grant_b6/revoke',
-    { workspaceId: 'ws_demo', grantId: 'grant_b6' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/grants/grant_00000000-0000-721d-811b-4545a740e396/revoke',
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      grantId: 'grant_00000000-0000-721d-811b-4545a740e396',
+    },
     'POST',
   ],
   [
     'vault.reference-rebind',
-    '/api/app/workspaces/ws_demo/vault/references/vault_imported/rebind',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/references/vault_00000000-0000-7f9a-ae09-1112bc878c49/rebind',
     {
-      workspaceId: 'ws_demo',
-      referenceId: 'vault_imported',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
       materialBase64: 'c3ludGhldGljLWI2LW1hdGVyaWFs',
     },
     'POST',
   ],
   [
     'vault.reference-list',
-    '/api/app/workspaces/ws_demo/vault/references',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/references',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     'GET',
   ],
   [
     'vault.grant-list',
-    '/api/app/workspaces/ws_demo/vault/grants',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/grants',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     'GET',
   ],
   [
     'vault.injection-plan-list',
-    '/api/app/workspaces/ws_demo/vault/injection-plans',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/injection-plans',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     'GET',
   ],
   [
     'vault.injection-receipt-list',
-    '/api/app/workspaces/ws_demo/vault/injection-receipts',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/injection-receipts',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     'GET',
   ],
   [
     'vault.use-list',
-    '/api/app/workspaces/ws_demo/vault/use-records',
-    { workspaceId: 'ws_demo' },
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/vault/use-records',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     'GET',
   ],
   ['vault.server-use-list', '/api/app/vault/use-records', {}, 'GET'],
@@ -234,7 +259,11 @@ describe('B6 binding retirement', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
@@ -242,24 +271,28 @@ describe('B6 binding retirement', () => {
     if (id !== 'vault.unlock') vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 9) });
     if (id !== 'vault.unlock') {
       vaultUnlockState.backend().store({
-        referenceId: 'vault_b6',
+        referenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
         material: 'synthetic-b6-material',
-        metadata: { ownerScope: 'workspace', workspaceId: 'ws_demo' },
+        metadata: {
+          ownerScope: 'workspace',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
       });
       createVaultReference(coreDb, {
-        referenceId: 'vault_b6',
+        referenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         displayName: 'github-token',
         secretKind: 'github-token',
         backendKind: 'encrypted-file',
-        backendLocator: 'encrypted-file://workspace/ws_demo/vault/vault_b6',
+        backendLocator:
+          'encrypted-file://workspace/ws_00000000-0000-7000-8000-000000000001/vault/vault_00000000-0000-70a7-af6b-8038e2c48211',
       });
       createVaultGrant(coreDb, {
-        grantId: 'grant_b6',
-        vaultReferenceId: 'vault_b6',
+        grantId: 'grant_00000000-0000-721d-811b-4545a740e396',
+        vaultReferenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         allowedInjectionPaths: ['gateway-only'],
         targetCapabilityId: null,
         lifetime: 'workspace',
@@ -267,8 +300,8 @@ describe('B6 binding retirement', () => {
     }
     if (id === 'vault.reference-rebind')
       importUnboundWorkspaceVaultReference(coreDb, {
-        referenceId: 'vault_imported',
-        workspaceId: 'ws_demo',
+        referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         displayName: 'Imported token',
         secretKind: 'github-token',
         backendKind: 'encrypted-file',
@@ -284,12 +317,12 @@ describe('B6 binding retirement', () => {
           kind: 'custom',
           defaultModel: 'model-demo',
           models: ['model-demo'],
-          secretRef: 'vault://provider_b6',
+          secretRef: 'vault://vault_00000000-0000-7dd5-b4e6-1486873453ee',
         })
       );
     }
     if (id === 'environment.snapshot-read') {
-      const db = openWorkspaceDb(dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(db);
       try {
         recordAgentEnvironmentPackageSnapshot(db, {

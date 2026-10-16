@@ -24,8 +24,8 @@ describe('Worker Coordinator explicit selection', () => {
       entryIntent: 'explicit_task',
       prompt: 'Use Codex naming in this prompt, but implement the focused fix.',
       readiness: [readyCandidate],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.selectedWorkerCandidate).toEqual(readyCandidate);
@@ -40,8 +40,8 @@ describe('Worker Coordinator explicit selection', () => {
       entryIntent: 'explicit_task',
       prompt: 'Implement the failing quick chat test and run the focused suite.',
       readiness: [READY_CODEX, READY_OPENCODE],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -59,8 +59,8 @@ describe('Worker Coordinator explicit selection', () => {
       entryIntent: 'explicit_task',
       prompt: 'Implement the release dashboard and run focused tests.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.delegationDraft).toMatchObject({
@@ -68,8 +68,8 @@ describe('Worker Coordinator explicit selection', () => {
       source: 'worker-coordinator',
       mode: 'automation',
       prompt: 'Implement the release dashboard and run focused tests.',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       target: {
         agentId: 'agent_codex',
       },
@@ -77,8 +77,8 @@ describe('Worker Coordinator explicit selection', () => {
         maxWorkerIterations: 1,
       },
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
     });
     expect(decision.delegationDraft).not.toHaveProperty('runMode');
@@ -90,8 +90,8 @@ describe('Worker Coordinator explicit selection', () => {
       entryIntent: 'explicit_task',
       prompt: 'Implement the release dashboard and run focused tests.',
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.workerRequest).toEqual({
@@ -102,8 +102,8 @@ describe('Worker Coordinator explicit selection', () => {
         'The worker reports verification evidence or a clear blocker.',
       ],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
       resources: [],
       expectedArtifacts: [
@@ -145,8 +145,8 @@ describe('Worker Coordinator explicit selection', () => {
       entryIntent: 'explicit_task',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision.decision).toBe('worker_turn');
@@ -158,8 +158,8 @@ describe('Worker Coordinator explicit selection', () => {
         'The worker reports verification evidence or a clear blocker.',
       ],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
       resources: [],
       expectedArtifacts: [
@@ -199,8 +199,8 @@ describe('Worker Coordinator explicit selection', () => {
       entryIntent: 'explicit_task',
       prompt: 'Use OpenCode to inspect the project and propose the smallest fix.',
       readiness: [READY_CODEX, READY_OPENCODE],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -217,8 +217,8 @@ describe('Worker Coordinator explicit selection', () => {
       entryIntent: 'explicit_task',
       prompt: 'Implement the focused fix.',
       readiness: [],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(decision).toMatchObject({
@@ -248,8 +248,8 @@ describe('explicit Task delegation', () => {
       entryIntent: 'explicit_task',
       prompt,
       readiness: [READY_CODEX],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
     expect(decision).toMatchObject({
       decision: 'worker_turn',
@@ -265,8 +265,8 @@ describe('explicit Task delegation', () => {
       entryIntent: 'explicit_task',
       prompt: 'Help.',
       readiness: [{ ...READY_CODEX, readiness: 'blocked' }],
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+      threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
     expect(decision).toMatchObject({
       decision: 'blocked',

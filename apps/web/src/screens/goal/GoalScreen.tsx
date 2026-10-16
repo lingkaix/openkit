@@ -152,9 +152,25 @@ export function GoalScreen() {
       <header>
         <h1>{goal.intent}</h1>
         <StatusChip tone="neutral">{goal.disposition?.kind ?? 'Open'}</StatusChip>
+        <p>Responsible person: {goal.responsibleUserId}</p>
         <p>Worker results remain evidence until a person accepts completion.</p>
       </header>
       {error}
+      {goal.disposition?.kind === 'accepted' && (
+        <section className="space-y-3">
+          <h2>Accepted completion</h2>
+          <p>Accepted by {goal.disposition.actorId}</p>
+          <p>{goal.disposition.candidate.summary}</p>
+          <h3>Unresolved work at acceptance</h3>
+          {goal.disposition.candidate.unresolvedWork.length ? (
+            <p className="whitespace-pre-wrap">
+              {goal.disposition.candidate.unresolvedWork.join('\n')}
+            </p>
+          ) : (
+            <p>None recorded.</p>
+          )}
+        </section>
+      )}
       <section aria-label="Current intent" className="space-y-3">
         <h2>Current intent</h2>
         <p>
@@ -245,6 +261,14 @@ export function GoalScreen() {
               {request.state} · {request.resolution ?? 'Awaiting response'}
               {request.reason ? ` · ${request.reason}` : ''}
             </p>
+            {request.decidingActorId && <p>Decision by {request.decidingActorId}</p>}
+            {!closed &&
+              request.resolution === 'granted' &&
+              request.claim === 'unclaimed' &&
+              !request.disposition && (
+                <p>Granted; waiting for the Goal owner to apply this exact decision.</p>
+              )}
+            {request.disposition && <p>Decision outcome: {request.disposition}</p>}
             <pre className="whitespace-pre-wrap break-words">
               {JSON.stringify(request.exactIntent, null, 2)}
             </pre>
@@ -298,7 +322,7 @@ export function GoalScreen() {
                   {task.missing
                     ? 'Missing Task: unresolved'
                     : task.turns.map((turn) => `${turn.turnId}: ${turn.status}`).join(', ') ||
-                      'No Turn recorded'}
+                      'Reserved; no Task Turn admitted.'}
                 </p>
               </li>
             ))}

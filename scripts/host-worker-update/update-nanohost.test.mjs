@@ -168,7 +168,7 @@ async function fixture(t, platform = 'linux/amd64') {
     const archive = isOld ? old : candidate;
     const runtimeTarget = {
       identityId: 'configured-host',
-      deploymentId: 'configured-deployment',
+      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000001',
       connectionGeneration: isOld ? 7 : 8,
       physicalEpoch: (isOld ? 'a' : 'b').repeat(64),
       predecessorFenced: true,
@@ -579,8 +579,8 @@ for (const [label, mutate] of [
   [
     'changed deployment',
     (host) => {
-      host.runtimeTarget.deploymentId = 'other';
-      host.inspection.deploymentId = 'other';
+      host.runtimeTarget.deploymentId = 'dep_0190f4c8-0000-7000-8000-000000000002';
+      host.inspection.deploymentId = 'dep_0190f4c8-0000-7000-8000-000000000002';
     },
   ],
   [
@@ -662,7 +662,7 @@ test('the actual Worker stage accepts this separate restored replacement evidenc
         previousPhysicalEpoch: result.before.physicalEpoch,
         nanoHostReplacementReference: result.reference,
         prepare: {
-          administrationThreadId: 'private-administration-thread',
+          administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
           requestId: '55555555-5555-4555-8555-555555555555',
           configuration: { expectedRevision: imageDigest, fileId: 'agents/worker.agent.jsonc' },
           target: { kind: 'agent', agentId: 'worker' },

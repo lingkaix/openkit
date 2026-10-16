@@ -9,8 +9,8 @@ import { AccessTokensScreen } from './AccessTokensScreen';
 const TIMESTAMP = '2026-08-30T00:00:00.000Z';
 const RAW_TOKEN = 'okt_issued_once_never_cached';
 const RECORD = {
-  tokenId: 'tok_1',
-  ownerUserId: 'user_owner',
+  tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+  ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
   scope: 'server-admin' as const,
   workspaceIds: [],
   status: 'active' as const,
@@ -32,7 +32,7 @@ function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
       'token.revoke': vi.fn().mockResolvedValue({ record: { ...RECORD, status: 'revoked' } }),
       'token.rotate': vi.fn().mockResolvedValue({
         token: RAW_TOKEN,
-        record: { ...RECORD, tokenId: 'tok_2' },
+        record: { ...RECORD, tokenId: 'tok_00000000-0000-7c9e-a136-86e094ee0dc9' },
         rotatedRecord: { ...RECORD, status: 'rotated' },
       }),
       ...app,
@@ -58,14 +58,17 @@ describe('Access tokens administration', () => {
     const client = makeClient();
     const { queryClient } = renderScreen(client);
 
-    expect(await screen.findByText('tok_1')).toBeInTheDocument();
-    await user.type(screen.getByLabelText('Owner user id'), 'user_owner');
+    expect(await screen.findByText('tok_00000000-0000-71d2-a336-a862021357ff')).toBeInTheDocument();
+    await user.type(
+      screen.getByLabelText('Owner user id'),
+      'usr_00000000-0000-7011-88df-c2b1e8466b6f'
+    );
     await user.click(screen.getByRole('button', { name: 'Issue token' }));
 
     await waitFor(() =>
       expect(client.operations['token.create']).toHaveBeenCalledWith(
         expect.objectContaining({
-          ownerUserId: 'user_owner',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           scope: 'server-admin',
         })
       )
@@ -99,15 +102,19 @@ describe('Access tokens administration', () => {
     const client = makeClient();
     const { queryClient } = renderScreen(client);
 
-    expect(await screen.findByText('tok_1')).toBeInTheDocument();
+    expect(await screen.findByText('tok_00000000-0000-71d2-a336-a862021357ff')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Revoke' }));
     await waitFor(() =>
-      expect(client.operations['token.revoke']).toHaveBeenCalledWith({ tokenId: 'tok_1' })
+      expect(client.operations['token.revoke']).toHaveBeenCalledWith({
+        tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+      })
     );
 
     await user.click(screen.getByRole('button', { name: 'Rotate' }));
     await waitFor(() =>
-      expect(client.operations['token.rotate']).toHaveBeenCalledWith({ tokenId: 'tok_1' })
+      expect(client.operations['token.rotate']).toHaveBeenCalledWith({
+        tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+      })
     );
     expect(await screen.findByLabelText('Issued token')).toHaveValue(RAW_TOKEN);
 
