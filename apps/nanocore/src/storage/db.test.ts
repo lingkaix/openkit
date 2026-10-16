@@ -50,7 +50,9 @@ describe('scoped storage databases', () => {
 
       const tables = listTables(userDb.sqlite);
 
-      expect(statSync(userDbPath(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b')).isFile()).toBe(true);
+      expect(
+        statSync(userDbPath(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b')).isFile()
+      ).toBe(true);
       expect(tables).toEqual([
         '__drizzle_migrations',
         'idempotency_requests',
