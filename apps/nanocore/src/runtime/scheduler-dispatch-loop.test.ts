@@ -571,9 +571,7 @@ describe('scheduler dispatch loop', () => {
           threadId: handle.turn.threadId,
           turnId: handle.turn.id,
         }))
-      ).toEqual([
-        { queueEntryId: entry.queueEntryId, threadId: thread.id, turnId: entry.turnId },
-      ]);
+      ).toEqual([{ queueEntryId: entry.queueEntryId, threadId: thread.id, turnId: entry.turnId }]);
       expect(executor.prepareCalls).toEqual([{ threadId: thread.id, turnId: accepted.turnId }]);
       expect(executor.calls).toEqual([
         expect.objectContaining({ input: 'Exact monthly input', turnId: accepted.turnId }),
