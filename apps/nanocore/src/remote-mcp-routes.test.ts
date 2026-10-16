@@ -38,6 +38,7 @@ import { operationRequest } from './test-support/operation-request.js';
 import * as materialOwners from './workspace-materials.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Real isolated credential, membership and Kernel owners behind the App listener. */
 async function fixture(
@@ -98,9 +99,11 @@ async function fixture(
       workspaceIds: ['ws_demo'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-  const automationStore = new AutomationStore();
+  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
   const app = createApp({
     automationStore,
+    workspaceMutationAdmission,
     coreDb,
     dataRoot,
     store,
@@ -492,7 +495,8 @@ describe('remote MCP App endpoint', () => {
     const automation = f.automationStore.createAutomation('user_remote_mcp', {
       workspaceId: 'ws_demo',
       name: 'Existing',
-      cron: '*',
+      intervalSeconds: 60,
+      threadId: 'th_demo',
       prompt: 'Work',
     });
     const thread = f.store.createThread('ws_demo', 'Recovery admission');
@@ -527,9 +531,18 @@ describe('remote MCP App endpoint', () => {
       for (const [operation, input] of [
         [
           'automation.create',
-          { workspaceId: 'ws_demo', name: 'Blocked', cron: '*', prompt: 'Work' },
+          {
+            workspaceId: 'ws_demo',
+            name: 'Blocked',
+            intervalSeconds: 60,
+            threadId: 'th_demo',
+            prompt: 'Work',
+          },
         ],
-        ['automation.update', { automationId: automation.id, status: 'enabled' }],
+        [
+          'automation.update',
+          { automationId: automation.id, expectedRevision: 1, name: 'Updated' },
+        ],
         ['automation.delete', { automationId: automation.id }],
         ['scheduler.retry', { workspaceId: 'ws_demo', queueEntryId: 'queue_b9_retry' }],
         ['scheduler.cancel', { workspaceId: 'ws_demo', queueEntryId: 'queue_b9_cancel' }],
@@ -557,7 +570,7 @@ describe('remote MCP App endpoint', () => {
         const mcp = await f.call('call', { operation, input }, token.secret);
         expect(mcp.isError).toBe(true);
         expect(JSON.parse(mcp.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
-        expect(f.automationStore.listAutomations('user_remote_mcp')).toEqual([automation]);
+        expect(f.automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([automation]);
         expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry')).toEqual(beforeRetry);
         expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_cancel')).toEqual(beforeCancel);
         expect(f.store.getTurnById(turn.id)).toEqual(beforeTurn);
@@ -583,19 +596,21 @@ describe('remote MCP App endpoint', () => {
     const automation = f.automationStore.createAutomation('user_remote_mcp', {
       workspaceId: 'ws_demo',
       name: 'Existing',
-      cron: '*',
+      intervalSeconds: 60,
+      threadId: 'th_demo',
       prompt: 'Work',
     });
     try {
       for (const [operation, input] of [
-        ['automation.update', { automationId: automation.id, status: 'enabled' }],
+        [
+          'automation.update',
+          { automationId: automation.id, expectedRevision: 1, name: 'Updated' },
+        ],
         ['automation.delete', { automationId: automation.id }],
       ] as const) {
         const denied = await f.call('call', { operation, input }, readonly.secret);
         expect(denied.isError).toBe(true);
-        expect(f.automationStore.getAutomation('user_remote_mcp', automation.id)).toEqual(
-          automation
-        );
+        expect(f.automationStore.getAutomation(automation.id)).toEqual(automation);
       }
       const deleted = await f.call(
         'call',
@@ -604,11 +619,17 @@ describe('remote MCP App endpoint', () => {
       );
       expect(deleted.isError).not.toBe(true);
       expect(JSON.parse(deleted.content[0].text)).toBeNull();
-      expect(f.automationStore.listAutomations('user_remote_mcp')).toEqual([]);
+      expect(f.automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([]);
+      expect(f.automationStore.getAutomation(automation.id)).toMatchObject({
+        status: 'deleted',
+        actor: automation.actor,
+        revision: 2,
+      });
       const retained = f.automationStore.createAutomation('user_remote_mcp', {
         workspaceId: 'ws_demo',
         name: 'Retained',
-        cron: '*',
+        intervalSeconds: 60,
+        threadId: 'th_demo',
         prompt: 'Work',
       });
       revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
@@ -621,7 +642,7 @@ describe('remote MCP App endpoint', () => {
         token.secret
       );
       expect(revoked.status).toBe(401);
-      expect(f.automationStore.getAutomation('user_remote_mcp', retained.id)).toEqual(retained);
+      expect(f.automationStore.getAutomation(retained.id)).toEqual(retained);
     } finally {
       f.coreDb.sqlite.close();
     }

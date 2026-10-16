@@ -15,6 +15,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Real authorized former bindings and their exact protected records. */
 describe('migrated execution route retirement', () => {
@@ -35,11 +36,13 @@ describe('migrated execution route retirement', () => {
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-    const automationStore = new AutomationStore();
+    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
     const automation = automationStore.createAutomation('user_local', {
       workspaceId: 'ws_demo',
       name: 'Retained',
-      cron: '*',
+      intervalSeconds: 60,
+      threadId: 'th_demo',
       prompt: 'Work',
     });
     const thread = store.createThread('ws_demo', 'Retirement');
@@ -68,18 +71,24 @@ describe('migrated execution route retirement', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     const recoveryScope = { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id };
-    const app = createApp({ coreDb, dataRoot, store, automationStore });
+    const app = createApp({ coreDb, dataRoot, store, automationStore, workspaceMutationAdmission });
     const binding = {
       'automation.list': ['GET', '/api/app/automations', undefined],
       'automation.create': [
         'POST',
         '/api/app/automations',
-        { workspaceId: 'ws_demo', name: 'Unexpected', cron: '*', prompt: 'Work' },
+        {
+          workspaceId: 'ws_demo',
+          name: 'Unexpected',
+          intervalSeconds: 60,
+          threadId: 'th_demo',
+          prompt: 'Work',
+        },
       ],
       'automation.update': [
         'PATCH',
         `/api/app/automations/${automation.id}`,
-        { status: 'enabled' },
+        { expectedRevision: 1, name: 'Updated' },
       ],
       'automation.delete': ['DELETE', `/api/app/automations/${automation.id}`, undefined],
       'scheduler.list': ['GET', '/api/app/workspaces/ws_demo/scheduler/admissions', undefined],
@@ -107,7 +116,7 @@ describe('migrated execution route retirement', () => {
         ...(binding[2] ? { body: JSON.stringify(binding[2]) } : {}),
       });
       expect(response.status, await response.text()).toBe(404);
-      expect(automationStore.listAutomations('user_local')).toEqual([automation]);
+      expect(automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([automation]);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_retirement')).toEqual(beforeQueue);
       expect(store.getTurnById(turn.id)).toEqual(beforeTurn);
       expect(
@@ -123,10 +132,11 @@ describe('migrated execution route retirement', () => {
         'automation.create': {
           workspaceId: 'ws_demo',
           name: 'Unexpected',
-          cron: '*',
+          intervalSeconds: 60,
+          threadId: 'th_demo',
           prompt: 'Work',
         },
-        'automation.update': { automationId: automation.id, status: 'enabled' },
+        'automation.update': { automationId: automation.id, expectedRevision: 1, name: 'Updated' },
         'automation.delete': { automationId: automation.id },
         'scheduler.list': { workspaceId: 'ws_demo' },
         'scheduler.retry': { workspaceId: 'ws_demo', queueEntryId: 'queue_retirement' },
@@ -167,13 +177,20 @@ describe('migrated execution route retirement', () => {
         ).toBeNull();
       } else if (operation === 'automation.delete') {
         expect(await canonical.text()).toBe('');
-        expect(automationStore.listAutomations('user_local')).toEqual([]);
+        expect(automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([]);
+        expect(automationStore.getAutomation(automation.id)).toMatchObject({
+          status: 'deleted',
+          actor: automation.actor,
+          revision: 2,
+        });
       } else if (operation === 'automation.update') {
-        expect(automationStore.getAutomation('user_local', automation.id)).toMatchObject({
-          status: 'enabled',
+        expect(automationStore.getAutomation(automation.id)).toMatchObject({
+          status: 'paused',
+          name: 'Updated',
+          revision: 2,
         });
       } else if (operation === 'automation.create') {
-        expect(automationStore.listAutomations('user_local')).toHaveLength(2);
+        expect(automationStore.listAuthorizedAutomations(['ws_demo'])).toHaveLength(2);
       }
     } finally {
       workspaceDb.sqlite.close();

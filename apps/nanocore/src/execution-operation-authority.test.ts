@@ -28,18 +28,20 @@ describe('execution operation authority', () => {
   it.each([
     'session',
     'token',
-  ] as const)('uses current %s administrator eligibility and refuses stale authority before changing child records', async (kind) => {
+  ] as const)('uses current %s Workspace authority and preserves private child and revoked credential boundaries', async (kind) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b9-authority-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-    const automationStore = new AutomationStore();
+    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
     const automation = automationStore.createAutomation('user_other', {
       workspaceId: 'ws_demo',
       name: 'Other owner',
-      cron: '*',
+      intervalSeconds: 60,
+      threadId: 'th_demo',
       prompt: 'Work',
     });
     const thread = store.createThread('ws_demo', 'Private queue', undefined, 'conversation', {
@@ -71,7 +73,7 @@ describe('execution operation authority', () => {
       coreDb,
       automationStore,
       requestStore: () => store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission,
       inflightCommands: new WeakMap(),
       repositoryWorkspaceDb: (id) => {
         const db = openWorkspaceDb(dataRoot, id);
@@ -80,10 +82,26 @@ describe('execution operation authority', () => {
       },
     });
     try {
-      const hidden = await app.request(
-        ...operationRequest('automation.delete', { automationId: automation.id })
+      const memberEdit = await app.request(
+        ...operationRequest('automation.update', {
+          automationId: automation.id,
+          expectedRevision: 1,
+          name: 'Edited by Workspace owner',
+        })
       );
-      expect(hidden.status).toBe(403);
+      expect(memberEdit.status, await memberEdit.clone().text()).toBe(200);
+      const edited = automationStore.getAutomation(automation.id);
+      expect(edited).toMatchObject({
+        name: 'Edited by Workspace owner',
+        revision: 2,
+        responsibleUserId: 'user_other',
+        actor: automation.actor,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edited'")
+          .get()
+      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: 'user_local' }) });
       const queueBefore = requireSchedulerAdmissionEntry(coreDb, 'queue_admin');
       const privateDenied = await app.request(
         ...operationRequest('scheduler.retry', {
@@ -93,7 +111,7 @@ describe('execution operation authority', () => {
       );
       expect(privateDenied.status).toBe(404);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_admin')).toEqual(queueBefore);
-      expect(automationStore.getAutomation('user_other', automation.id)).toEqual(automation);
+      expect(automationStore.getAutomation(automation.id)).toEqual(edited);
       const token = createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: 'user_local',
         scope: 'server-admin',
@@ -111,7 +129,7 @@ describe('execution operation authority', () => {
               tokenWorkspaceIds: [],
             };
       const listed = await app.request(...operationRequest('automation.list', {}));
-      await expect(listed.json()).resolves.toEqual({ items: [automation] });
+      await expect(listed.json()).resolves.toEqual({ items: [edited] });
       const queueList = await app.request(
         ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
       );
@@ -119,7 +137,12 @@ describe('execution operation authority', () => {
         (await queueList.json()).items.map((row: { queueEntryId: string }) => row.queueEntryId)
       ).toEqual(['queue_admin']);
       const update = await app.request(
-        ...operationRequest('automation.update', { automationId: automation.id, status: 'enabled' })
+        ...operationRequest('automation.update', {
+          automationId: automation.id,
+          expectedRevision: 2,
+          status: 'active',
+          scheduledAt: '2999-01-01T00:00:00.000Z',
+        })
       );
       expect(update.status).toBe(200);
       const retried = await app.request(
@@ -129,16 +152,29 @@ describe('execution operation authority', () => {
         })
       );
       expect(retried.status).toBe(200);
-      const updated = automationStore.getAutomation('user_other', automation.id);
+      const updated = automationStore.getAutomation(automation.id);
       const retriedRow = requireSchedulerAdmissionEntry(coreDb, 'queue_admin');
       revokeOpenKitAccessTokenRecord(coreDb, token.record.tokenId);
-      expect(
-        (
-          await app.request(
-            ...operationRequest('automation.delete', { automationId: automation.id })
-          )
-        ).status
-      ).toBe(403);
+      const deletion = await app.request(
+        ...operationRequest('automation.delete', { automationId: automation.id })
+      );
+      expect(deletion.status).toBe(kind === 'token' ? 403 : 204);
+      if (kind === 'session') {
+        expect(automationStore.getAutomation(automation.id)).toMatchObject({
+          status: 'deleted',
+          responsibleUserId: 'user_other',
+          actor: automation.actor,
+        });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              "SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.deleted'"
+            )
+            .get()
+        ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: 'user_local' }) });
+      } else {
+        expect(automationStore.getAutomation(automation.id)).toEqual(updated);
+      }
       const cancelled = await app.request(
         ...operationRequest('scheduler.cancel', {
           workspaceId: 'ws_demo',
@@ -146,7 +182,6 @@ describe('execution operation authority', () => {
         })
       );
       expect(cancelled.status).toBe(kind === 'token' ? 403 : 404);
-      expect(automationStore.getAutomation('user_other', automation.id)).toEqual(updated);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_admin')).toEqual(retriedRow);
     } finally {
       coreDb.sqlite.close();

@@ -131,11 +131,11 @@ function createFixture() {
     id: 'user_local',
   });
   const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign thread');
-  const automationStore = new AutomationStore();
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'user_local' },
   };
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
   const app = new Hono<{ Variables: AuthVariables }>();
   let administrationHandlerReads = 0;
   let deleteWorkspaceHandlerReads = 0;
@@ -620,7 +620,8 @@ describe('central Workspace operation authorizer', () => {
 
   it('admits the complete automation body Workspace through native invocation', async () => {
     const body = {
-      cron: '0 9 * * *',
+      intervalSeconds: 60,
+      threadId: fixture.turn.threadId,
       name: 'Morning status',
       prompt: 'Summarize current work.',
       workspaceId: fixture.workspace.id,
@@ -844,7 +845,8 @@ describe('central Workspace operation authorizer', () => {
         {},
         {
           body: JSON.stringify({
-            cron: '0 9 * * *',
+            intervalSeconds: 60,
+            threadId: fixture.turn.threadId,
             name: 'Denied mutation',
             prompt: 'Do not create this.',
             workspaceId: fixture.workspace.id,
@@ -877,7 +879,8 @@ describe('central Workspace operation authorizer', () => {
         {},
         {
           body: JSON.stringify({
-            cron: '0 9 * * *',
+            intervalSeconds: 60,
+            threadId: fixture.turn.threadId,
             name: 'Fenced mutation',
             prompt: 'Do not create this.',
             workspaceId: fixture.workspace.id,
