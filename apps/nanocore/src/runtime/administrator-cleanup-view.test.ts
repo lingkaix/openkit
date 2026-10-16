@@ -585,14 +585,24 @@ describe('administrator runtime cleanup view', () => {
 
   it('fails the operation when current authority storage is missing', async () => {
     const input = fixture();
-    input.coreDb.sqlite.exec('DROP TABLE openkit_access_tokens');
-    await expect(async () => read(input)).rejects.toThrow();
+    const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
+    vi.spyOn(input.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
+      if (sql.includes('openkit_access_tokens')) {
+        throw new Error('injected authority storage failure');
+      }
+      return prepare(sql);
+    });
+    await expect(async () => read(input)).rejects.toThrow('injected authority storage failure');
   });
 
   it.each(TABLES)('keeps independent source observations when %s is unavailable', async (table) => {
     const input = fixture();
     populate(input.coreDb);
-    input.coreDb.sqlite.exec(`ALTER TABLE ${table} RENAME TO unavailable_${table}`);
+    const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
+    vi.spyOn(input.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
+      if (sql.includes(table)) throw new Error(`unavailable_${table}`);
+      return prepare(sql);
+    });
     const result = await read(input);
     const source = SOURCES[TABLES.indexOf(table)];
     expect(result.sources.find((entry) => entry.source === source)).toEqual({
