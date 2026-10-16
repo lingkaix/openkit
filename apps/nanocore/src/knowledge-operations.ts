@@ -21,7 +21,6 @@ import {
   RegisterKnowledgeSourceResponseSchema,
   ResolveKnowledgeConflictResponseSchema,
   ReverseKnowledgeProposalResponseSchema,
-  SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
 import { type ActorRef, ListKnowledgeEntriesResponseSchema } from '@openkit/protocol';
 import { z } from 'zod';

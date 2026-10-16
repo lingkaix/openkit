@@ -89,7 +89,7 @@ async function call(
     },
     body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
   });
-  return { status: response.status, body: (await response.json()) as any };
+  return { status: response.status, body: await response.json() };
 }
 /** Hash bytes independently of the Proposal reader. */
 function digest(bytes: string) {
