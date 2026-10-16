@@ -10,7 +10,7 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
-import { deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
@@ -35,6 +35,7 @@ import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from './lib/store.js';
+import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import * as privateInvocationOwners from './operation-invocation.js';
@@ -452,6 +453,63 @@ function conversationBody(input: {
   });
 }
 
+/** Proposes the exact ordinary Task payload, then completes the Assistant before human selection. */
+function taskProposalProvider(input: string, agentId: string) {
+  let calls = 0;
+  const createResponses = vi.fn(async () =>
+    ++calls === 1
+      ? {
+          id: 'task-proposal',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'function_call',
+              name: 'task_start',
+              call_id: 'propose-exact-task',
+              arguments: JSON.stringify({ input, agentId }),
+            },
+          ],
+        }
+      : {
+          id: 'task-confirmation',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'Select whether to start this exact work.' }],
+            },
+          ],
+        }
+  );
+  return { createResponses, client: { createResponses } as unknown as PiAiGatewayClient };
+}
+
+/** Builds the public human answer from the canonical request's exact question identity. */
+function confirmTaskRequest(
+  item: Extract<
+    ReturnType<typeof SubmitConversationResponseSchema.parse>['item'],
+    { type: 'user-input-request' }
+  >,
+  requestId: string
+) {
+  return operationRequest(
+    'question.answer',
+    { userInputRequestId: item.userInputRequestId },
+    {
+      body: JSON.stringify({
+        requestId,
+        workspaceId: item.workspaceId,
+        threadId: item.threadId,
+        answers: { [item.questions[0]!.id]: ['Confirm exact handoff'] },
+      }),
+    }
+  );
+}
+
 /**
  * Computes the canonical SHA-256 digest for exact UTF-8 Artifact content.
  *
@@ -578,7 +636,7 @@ async function waitForSelectedWorkerLoopCloseout(input: {
 }
 
 describe('Assistant pending input', () => {
-  it('hands a clarified task to a new shared Task Thread without command receipts', async () => {
+  it('hands a confirmed exact task to a new shared Task Thread without nested command receipts', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-assistant-outcome-task-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -586,12 +644,15 @@ describe('Assistant pending input', () => {
     const store = createDemoStore({ dataRoot });
     const executor = new HoldingTurnExecutor(coreDb);
     const setup = createTestAgentSetup();
+    const brief = 'Implement a bounded README correction and run its focused tests.';
+    const provider = taskProposalProvider(brief, setup.manifest.id);
     const app = createApp({
       coreDb,
       dataRoot,
       store,
       agentManifests: [setup.manifest],
       turnExecutor: executor,
+      llmPiAiClient: provider.client,
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -620,27 +681,27 @@ describe('Assistant pending input', () => {
       expect(initial.status, await initial.clone().text()).toBe(202);
       const first = SubmitConversationResponseSchema.parse(await initial.json());
       expect(first.outcome).toBe('clarification-needed');
-      const requestId = `ui_chat_clarify_${first.turn.id}`;
+      expect(first.item).toMatchObject({
+        type: 'user-input-request',
+        assistantHandoff: {
+          kind: 'task',
+          targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          input: brief,
+          agentId: setup.manifest.id,
+        },
+      });
+      if (first.item.type !== 'user-input-request') throw new Error('Expected exact confirmation.');
+      expect(provider.createResponses).toHaveBeenCalledTimes(2);
+      expect(executor.launches).toBe(0);
+      const originalReceipt = structuredClone(
+        store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000000881', {
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        })
+      );
       const answerPending = app.request(
-        ...operationRequest(
-          'question.answer',
-          { userInputRequestId: requestId },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              userInputRequestId: requestId,
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              requestId: '00000000-0000-4000-8000-000000000882',
-              answers: {
-                chat_clarification: [
-                  'Implement a bounded README correction and run its focused tests.',
-                ],
-              },
-            }),
-          }
-        )
+        ...confirmTaskRequest(first.item, '00000000-0000-4000-8000-000000000882')
       );
       // Scheduler 83 requires complete publication before eligibility, not a minimum queued interval.
       // Automatic dispatch may already own this exact admission when the answer publishes it.
@@ -719,19 +780,50 @@ describe('Assistant pending input', () => {
           .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
           .some((turn) => turn.agentId === setup.manifest.id)
       );
-      expect(task).toMatchObject({ visibility: 'workspace' });
+      expect(task).toMatchObject({
+        visibility: 'workspace',
+        parentThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      });
+      expect(JSON.parse(executor.inputs[0]!).objective).toBe(brief);
       expect(executor.startContexts).toHaveLength(1);
+      expect(provider.createResponses).toHaveBeenCalledTimes(2);
       expect(
         store.listCommandRequests().filter((receipt) => receipt.command === 'conversation.submit')
       ).toHaveLength(1);
       expect(
         store.listCommandRequests().filter((receipt) => receipt.command === 'task.start')
       ).toHaveLength(0);
+      expect(
+        store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000000881', {
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        })
+      ).toEqual(originalReceipt);
+      await vi.waitFor(() => {
+        expect(
+          observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === lease.turnId)
+        ).toMatchObject({ phase: 'closed' });
+        const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          expect(
+            getWorkerCheckpoint(
+              db,
+              'ws_00000000-0000-7000-8000-000000000001',
+              task!.id,
+              lease.turnId
+            )
+          ).toBeNull();
+        } finally {
+          db.sqlite.close();
+        }
+      });
     } finally {
       executor.completion.resolve();
       if (executor.launches) await executor.finished.promise;
       await setImmediate();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });
@@ -2123,6 +2215,7 @@ describe('Task durable admission response', () => {
     const executor = new HoldingTurnExecutor(coreDb);
     executor.failCloseout = entry === 'closeout-failure';
     const setup = createTestAgentSetup();
+    const provider = taskProposalProvider(input, setup.manifest.id);
     const app = createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot,
@@ -2130,6 +2223,7 @@ describe('Task durable admission response', () => {
       turnExecutor: executor,
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      ...(entry === 'assistant' ? { llmPiAiClient: provider.client } : {}),
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -2221,10 +2315,6 @@ describe('Task durable admission response', () => {
     let turnId: string | undefined;
     try {
       await vi.waitFor(() => expect(responseObserved).toBe(true));
-      turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
-      })[0]!.turnId;
       let completionObserved = false;
       void executor.finished.promise.then(() => {
         completionObserved = true;
@@ -2241,10 +2331,47 @@ describe('Task durable admission response', () => {
       const result = token ? JSON.parse(wire.result.content[0].text) : wire;
       if (entry === 'assistant') {
         const accepted = SubmitConversationResponseSchema.parse(result);
-        expect(accepted.outcome).toBe('task-handoff');
+        expect(accepted.outcome).toBe('clarification-needed');
         expect(accepted.turn.status).toBe('completed');
-        expect(accepted.handoff?.statusItemId).toBe(accepted.item.id);
+        expect(accepted.item).toMatchObject({
+          type: 'user-input-request',
+          assistantHandoff: {
+            kind: 'task',
+            targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            input,
+            agentId: setup.manifest.id,
+          },
+        });
+        expect(executor.launches).toBe(0);
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          })
+        ).toEqual([]);
+        if (accepted.item.type !== 'user-input-request') throw new Error('Expected confirmation.');
+        const answer = await app.request(
+          ...confirmTaskRequest(accepted.item, '0190f4c8-0000-7000-8000-000000000611')
+        );
+        expect(answer.status, await answer.clone().text()).toBe(200);
+        await vi.waitFor(() =>
+          expect(
+            listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              statuses: ['queued', 'admitted'],
+            })
+          ).toHaveLength(1)
+        );
+        turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          statuses: ['queued', 'admitted'],
+        })[0]!.turnId;
+        expect(provider.createResponses).toHaveBeenCalledTimes(2);
       } else {
+        turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+        })[0]!.turnId;
         const accepted = StartTaskModeResponseSchema.parse(result);
         expect(['queued', 'running']).toContain(accepted.state);
         expect(accepted.turn.id).toBe(turnId);
@@ -2252,13 +2379,14 @@ describe('Task durable admission response', () => {
         expect(accepted.completion ?? null).toBeNull();
         expect(accepted.evidence).toEqual({ itemIds: [], artifactIds: [], reviewIds: [] });
       }
+      const workerThreadId = store.getTurnById(turnId).threadId;
       const receipt = receiptAtResponse!;
       expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
       expect(receipt).toMatchObject({ command, requestId, response: { kind: 'turn' } });
       if (entry === 'assistant') {
         expect(receipt.response.conversationMetadata).toMatchObject({
-          resultKind: 'task-handoff',
-          downstream: { kind: 'task', turnId },
+          resultKind: 'clarification',
+          downstream: null,
         });
         expect(store.listCommandRequests().filter((r) => r.command === 'task.start')).toHaveLength(
           0
@@ -2269,19 +2397,12 @@ describe('Task durable admission response', () => {
       const replayWire = await replay.json();
       const replayResult = token ? JSON.parse(replayWire.result.content[0].text) : replayWire;
       if (entry === 'assistant') {
-        const current = SubmitConversationResponseSchema.parse(replayResult);
-        expect(current.turn.id).toBe(result.turn.id);
-        expect(current.turn.status).toBe(store.getTurnById(result.turn.id).status);
-        expect(current.handoff?.statusItemId).toBe(result.handoff.statusItemId);
-        expect(
-          store.getCommandRequest(command, requestId, scope)!.response.conversationMetadata
-        ).toMatchObject({
-          downstream: { kind: 'task', turnId },
-        });
+        expect(SubmitConversationResponseSchema.parse(replayResult)).toEqual(result);
+        expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
       } else expect(StartTaskModeResponseSchema.parse(replayResult).turn.id).toBe(turnId);
       // Check launch only after the durable receipt and exact current-owner replay.
       if (entry === 'assistant') {
-        const publicationProbe = await runSchedulerDispatchLoop({
+        await runSchedulerDispatchLoop({
           coreDb,
           store,
           turnExecutor: executor,
@@ -2298,39 +2419,6 @@ describe('Task durable admission response', () => {
           gatewayConfig: createTestGatewayConfig(),
           maxDispatches: 1,
         });
-        const publicationDb = openWorkspaceDb(
-          coreDb.dataRoot,
-          'ws_00000000-0000-7000-8000-000000000001'
-        );
-        try {
-          console.info(
-            'assistant-publication-probe',
-            JSON.stringify({
-              result: publicationProbe,
-              queued: listQueuedSchedulerAdmissionEntries(coreDb).map(
-                ({ queueEntryId, requestId, turnId, threadId, status, backendId, inputHash }) => ({
-                  queueEntryId,
-                  requestId,
-                  turnId,
-                  threadId,
-                  status,
-                  backendId,
-                  inputHash,
-                })
-              ),
-              receipts: publicationDb.sqlite
-                .prepare('SELECT request_id, response_id, response_json FROM idempotency_requests')
-                .all(),
-              sources: publicationDb.sqlite
-                .prepare(
-                  'SELECT request_id, thread_id, delivery_turn_id, delivery_cause, state FROM pending_requests'
-                )
-                .all(),
-            })
-          );
-        } finally {
-          publicationDb.sqlite.close();
-        }
       }
       await vi.waitFor(() => expect(executor.launches).toBe(1));
       const currentAttempt = observeExecutionAttempts(coreDb).find(
@@ -2422,7 +2510,7 @@ describe('Task durable admission response', () => {
           'turn.read',
           {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: store.getTurnById(turnId).threadId,
+            threadId: workerThreadId,
             turnId,
           },
           { method: 'GET' }
@@ -2433,10 +2521,7 @@ describe('Task durable admission response', () => {
       const itemsRead = await app.request(
         ...operationRequest(
           'thread.items',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: store.getTurnById(turnId).threadId,
-          },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: workerThreadId },
           { method: 'GET' }
         )
       );
@@ -2456,12 +2541,7 @@ describe('Task durable admission response', () => {
         expect(terminalReplay.status).toBe(token ? 200 : 202);
         const terminalWire = await terminalReplay.json();
         if (entry === 'assistant') {
-          const current = SubmitConversationResponseSchema.parse(terminalWire);
-          expect(current.turn).toMatchObject({
-            id: result.turn.id,
-            status: store.getTurnById(result.turn.id).status,
-          });
-          expect(current.handoff?.statusItemId).toBe(result.handoff.statusItemId);
+          expect(SubmitConversationResponseSchema.parse(terminalWire)).toEqual(result);
         } else {
           const terminal = StartTaskModeResponseSchema.parse(
             token ? JSON.parse(terminalWire.result.content[0].text) : terminalWire
@@ -2478,18 +2558,17 @@ describe('Task durable admission response', () => {
         const checkpoint = getWorkerCheckpoint(
           workspaceDb,
           'ws_00000000-0000-7000-8000-000000000001',
-          store.getTurnById(turnId).threadId,
+          workerThreadId,
           turnId
         );
-        if (entry === 'closeout-failure' || entry === 'assistant')
-          expect(checkpoint?.stage).toBe('completed');
+        if (entry === 'closeout-failure') expect(checkpoint?.stage).toBe('completed');
         else expect(checkpoint).toBeNull();
       } finally {
         workspaceDb.sqlite.close();
       }
       expect(
         checkpointDeletion.mock.calls.filter(([, , , clearedTurnId]) => clearedTurnId === turnId)
-      ).toHaveLength(entry === 'direct' || entry === 'remote-mcp' ? 1 : 0);
+      ).toHaveLength(entry === 'closeout-failure' ? 0 : 1);
       const closedAttempt = observeExecutionAttempts(coreDb).filter(
         (attempt) =>
           attempt.turn_id ===
@@ -2518,6 +2597,15 @@ describe('Task durable admission response', () => {
 
       expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
       expect(executor.launches).toBe(1);
+      if (entry === 'assistant') {
+        expect(provider.createResponses).toHaveBeenCalledTimes(2);
+        expect(store.listCommandRequests().filter((r) => r.command === 'task.start')).toHaveLength(
+          0
+        );
+        expect(
+          store.listCommandRequests().filter((r) => r.command === 'conversation.submit')
+        ).toHaveLength(1);
+      }
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2543,7 +2631,7 @@ describe('Task terminal replay closeout ownership', () => {
     { entry: 'direct', failCollection: true },
     { entry: 'assistant', failCollection: false },
     { entry: 'assistant', failCollection: true },
-  ] as const)('joins the original $entry closeout during terminal replay (failure=$failCollection)', async ({
+  ] as const)('preserves $entry closeout ownership during exact replay (failure=$failCollection)', async ({
     entry,
     failCollection,
   }) => {
@@ -2553,7 +2641,10 @@ describe('Task terminal replay closeout ownership', () => {
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     const executor = new HoldingTurnExecutor(coreDb);
+    executor.failCloseout = entry === 'assistant' && failCollection;
     const setup = createTestAgentSetup();
+    const brief = 'Implement a focused change and run its tests.';
+    const provider = taskProposalProvider(brief, setup.manifest.id);
     const app = createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot,
@@ -2561,6 +2652,7 @@ describe('Task terminal replay closeout ownership', () => {
       turnExecutor: executor,
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      ...(entry === 'assistant' ? { llmPiAiClient: provider.client } : {}),
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -2587,7 +2679,7 @@ describe('Task terminal replay closeout ownership', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId,
-              input: 'Implement a focused change and run its tests.',
+              input: brief,
               ...(entry === 'assistant'
                 ? { targetRef: 'internal-role:assistant', artifactRefs: [] }
                 : {}),
@@ -2617,12 +2709,18 @@ describe('Task terminal replay closeout ownership', () => {
     const loopCloseout =
       entry === 'assistant'
         ? vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation(async (...args) => {
-            const result = await originalLoop(...args);
+            let result: Awaited<ReturnType<typeof originalLoop>> | undefined;
+            let failure: unknown;
+            try {
+              result = await originalLoop(...args);
+            } catch (error) {
+              failure = error;
+            }
             collecting.resolve();
             await release.promise;
             try {
-              if (failCollection) throw new Error('Controlled Assistant Task closeout failure.');
-              return result;
+              if (failure) throw failure;
+              return result!;
             } finally {
               collected.resolve();
             }
@@ -2636,13 +2734,44 @@ describe('Task terminal replay closeout ownership', () => {
       expect(admitted.status, await admitted.clone().text()).toBe(202);
       const admittedBody = await admitted.json();
       const receipt = store.getCommandRequest(command, requestId, scope)!;
-      const downstream = receipt.response.conversationMetadata?.downstream;
-      const turnId: string =
-        entry === 'assistant' && downstream?.kind === 'task'
-          ? downstream.turnId
-          : admittedBody.turn.id;
+      let turnId: string = admittedBody.turn.id;
+      let answerBody: unknown;
+      let answerRequest: ReturnType<typeof confirmTaskRequest> | undefined;
       if (entry === 'assistant') {
-        const publicationProbe = await runSchedulerDispatchLoop({
+        const confirmation = SubmitConversationResponseSchema.parse(admittedBody);
+        expect(confirmation.outcome).toBe('clarification-needed');
+        expect(confirmation.item).toMatchObject({
+          type: 'user-input-request',
+          assistantHandoff: {
+            kind: 'task',
+            targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            input: brief,
+            agentId: setup.manifest.id,
+          },
+        });
+        expect(executor.launches).toBe(0);
+        if (confirmation.item.type !== 'user-input-request')
+          throw new Error('Expected exact Task confirmation.');
+        answerRequest = confirmTaskRequest(
+          confirmation.item,
+          '0190f4c8-0000-7000-8000-000000000612'
+        );
+        const answer = await app.request(...answerRequest);
+        expect(answer.status, await answer.clone().text()).toBe(200);
+        answerBody = await answer.json();
+        await vi.waitFor(() =>
+          expect(
+            listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              statuses: ['queued', 'admitted'],
+            })
+          ).toHaveLength(1)
+        );
+        turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          statuses: ['queued', 'admitted'],
+        })[0]!.turnId;
+        await runSchedulerDispatchLoop({
           coreDb,
           store,
           turnExecutor: executor,
@@ -2659,44 +2788,11 @@ describe('Task terminal replay closeout ownership', () => {
           gatewayConfig: createTestGatewayConfig(),
           maxDispatches: 1,
         });
-        const publicationDb = openWorkspaceDb(
-          coreDb.dataRoot,
-          'ws_00000000-0000-7000-8000-000000000001'
-        );
-        try {
-          console.info(
-            'assistant-publication-probe',
-            JSON.stringify({
-              result: publicationProbe,
-              queued: listQueuedSchedulerAdmissionEntries(coreDb).map(
-                ({ queueEntryId, requestId, turnId, threadId, status, backendId, inputHash }) => ({
-                  queueEntryId,
-                  requestId,
-                  turnId,
-                  threadId,
-                  status,
-                  backendId,
-                  inputHash,
-                })
-              ),
-              receipts: publicationDb.sqlite
-                .prepare('SELECT request_id, response_id, response_json FROM idempotency_requests')
-                .all(),
-              sources: publicationDb.sqlite
-                .prepare(
-                  'SELECT request_id, thread_id, delivery_turn_id, delivery_cause, state FROM pending_requests'
-                )
-                .all(),
-            })
-          );
-        } finally {
-          publicationDb.sqlite.close();
-        }
       }
       await vi.waitFor(() => expect(executor.launches).toBe(1));
       executor.completion.resolve();
       await collecting.promise;
-      // The real collector's terminal proof is available before the injected asynchronous hold.
+      // The Worker outcome is durable; the native failure keeps its backend closeout incomplete.
       expect(store.getTurnById(turnId).status).toBe('completed');
       expect(
         observeExecutionAttempts(coreDb).filter(
@@ -2708,13 +2804,19 @@ describe('Task terminal replay closeout ownership', () => {
               turnId,
             }.turnId
         )[0]?.phase
-      ).toBe('closed');
+      ).toBe(entry === 'assistant' && failCollection ? 'closing' : 'closed');
       let replayObserved = false;
       replay = submit().then((response) => {
         replayObserved = true;
         return response;
       });
-      await setImmediate();
+      if (entry === 'assistant') {
+        await vi.waitFor(() => expect(replayObserved).toBe(true));
+        const answerReplay = await app.request(...answerRequest!);
+        expect(answerReplay.status, await answerReplay.clone().text()).toBe(200);
+        expect(await answerReplay.json()).toEqual(answerBody);
+        expect(executor.launches).toBe(1);
+      } else await setImmediate();
       const collectorEntriesDuringHold = closeoutOwner.mock.calls.length;
       const replayObservedDuringHold = replayObserved;
       release.resolve();
@@ -2725,10 +2827,10 @@ describe('Task terminal replay closeout ownership', () => {
         status: result.status,
       }).toEqual({
         collectorEntriesDuringHold: 1,
-        replayObservedDuringHold: false,
-        status: failCollection ? 409 : 202,
+        replayObservedDuringHold: entry === 'assistant',
+        status: entry === 'direct' && failCollection ? 409 : 202,
       });
-      if (failCollection) {
+      if (entry === 'direct' && failCollection) {
         await expect(result.json()).resolves.toMatchObject({ code: 'recovery_required' });
       } else if (entry === 'assistant') {
         expect(await result.json()).toEqual(admittedBody);
@@ -2741,7 +2843,7 @@ describe('Task terminal replay closeout ownership', () => {
       }
       expect(closeoutOwner).toHaveBeenCalledTimes(1);
       expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
-      // Once the owner settles it is removed: ordinary receipt-based recovery remains available.
+      // Direct replay can recover after collection; native selection receipts keep their accepted result.
       const subsequent = await submit();
       expect(subsequent.status).toBe(202);
       expect(closeoutOwner).toHaveBeenCalledTimes(
@@ -2749,6 +2851,65 @@ describe('Task terminal replay closeout ownership', () => {
       );
       expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
       expect(executor.launches).toBe(1);
+      if (entry === 'assistant') {
+        await collected.promise;
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          const workerThreadId = store.getTurnById(turnId).threadId;
+          if (failCollection) {
+            const retained = getWorkerCheckpoint(
+              workspaceDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              workerThreadId,
+              turnId
+            );
+            expect(retained).toMatchObject({ stage: 'completed', stopReason: 'completed' });
+            await expect(
+              classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                coreDb,
+                store,
+                workspaceDb,
+                checkpoint: retained!,
+              })
+            ).rejects.toMatchObject({ code: 'recovery_required' });
+            expect(
+              getWorkerCheckpoint(
+                workspaceDb,
+                'ws_00000000-0000-7000-8000-000000000001',
+                workerThreadId,
+                turnId
+              )
+            ).toEqual(retained);
+            expect(collector).not.toHaveBeenCalled();
+          } else {
+            await vi.waitFor(() =>
+              expect(
+                getWorkerCheckpoint(
+                  workspaceDb,
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  workerThreadId,
+                  turnId
+                )
+              ).toBeNull()
+            );
+            expect(collector).toHaveBeenCalledTimes(1);
+          }
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+        expect(provider.createResponses).toHaveBeenCalledTimes(2);
+        expect(JSON.parse(executor.inputs[0]!).objective).toBe(brief);
+        expect(store.listCommandRequests().filter((r) => r.command === 'task.start')).toHaveLength(
+          0
+        );
+        expect(
+          store.listCommandRequests().filter((r) => r.command === 'conversation.submit')
+        ).toHaveLength(1);
+        const answerReplay = await app.request(...answerRequest!);
+        expect(answerReplay.status, await answerReplay.clone().text()).toBe(200);
+        expect(await answerReplay.json()).toEqual(answerBody);
+        expect(executor.launches).toBe(1);
+      }
     } finally {
       executor.completion.resolve();
       release.resolve();
@@ -3926,7 +4087,7 @@ function assistantWiringFixture(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const actorUserId = memberCredential
-    ? testEntityId('usr', 'assistant-member')
+    ? allocateEntityId('usr')
     : 'usr_00000000-0000-7000-8000-000000000001';
   if (memberCredential) {
     const timestamp = new Date().toISOString();
@@ -4271,6 +4432,21 @@ describe('#144 real Assistant command wiring', () => {
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());
       expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
+        'workspace_state_read',
+        'thread_history_read',
+        'knowledge_search',
+        'workspace_create',
+        'task_start',
+        'goal_create',
+        'goal_intent_revise',
+        'goal_card_create',
+        'goal_card_edit',
+        'goal_card_cancel',
+        'memory_page_read',
+        'memory_page_create',
+        'memory_page_update',
+        'memory_page_delete',
+        'memory_page_propose',
         'skill_read',
         'kernel_apps_list',
         'kernel_apps_create',
@@ -4908,7 +5084,7 @@ describe('#144 real Assistant command wiring', () => {
       workspaceId: testEntityId('ws', 'another-workspace'),
       threadId: testEntityId('th', 'another-thread'),
       turnId: testEntityId('tu', 'another-turn'),
-      entryScope: 'chat.quick',
+      entryScope: 'untrusted-entry',
       requestId: '00000000-0000-4000-8000-000000001499',
       kind: 'unknown',
       signal: { aborted: false },
@@ -5007,7 +5183,7 @@ describe('#144 real Assistant command wiring', () => {
             .run('ws_00000000-0000-7000-8000-000000000001', f.actorUserId);
         if (condition === 'audience')
           Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
-            privateOwnerUserId: testEntityId('usr', 'another-user'),
+            privateOwnerUserId: allocateEntityId('usr'),
           });
         if (condition === 'removed') {
           const catalog = loadWorkspaceResourceCatalog(
@@ -5315,7 +5491,7 @@ describe('#144 real Assistant command wiring', () => {
       .mockImplementationOnce(async (...args) => {
         const result = await final(...args);
         Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
-          privateOwnerUserId: testEntityId('usr', 'another-user'),
+          privateOwnerUserId: allocateEntityId('usr'),
         });
         return result;
       });

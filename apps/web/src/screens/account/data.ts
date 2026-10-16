@@ -372,7 +372,7 @@ export function useWorkspaceMemberManagement() {
   const canManage =
     (effectiveWorkspace?.membershipStatus === 'active' ||
       effectiveWorkspace?.accessCause === 'administrator') &&
-    effectiveWorkspace.workspace.kind !== 'quick-chat';
+    effectiveWorkspace.workspace.kind !== 'personal';
   const members = useQuery({
     queryKey: memberManagementKeys.members(selectedWorkspaceId ?? ''),
     queryFn: () =>

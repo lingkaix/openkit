@@ -478,7 +478,7 @@ describe('Assistant progressive Skill reads', () => {
       threadId: testEntityId('th', 'another-thread'),
       turnId: testEntityId('tu', 'another-turn'),
       kind: 'worker',
-      entryScope: 'chat.quick',
+      entryScope: 'untrusted-entry',
       requestId: '00000000-0000-4000-8000-000000000145',
     };
     const missing = { ...admitted } as Record<string, unknown>;

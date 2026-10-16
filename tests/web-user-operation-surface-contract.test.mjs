@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 264;
+const EXPECTED_CATALOG_SIZE = 263;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 186;
+const EXPECTED_INCLUDED_SIZE = 185;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -68,7 +68,6 @@ const WEB_OPERATION_GROUPS = {
   },
   'App utilities': {
     'caller.read': { disposition: 'workflow', surface: 'Account' },
-    'chat.quick': { disposition: 'workflow', surface: 'Chat' },
     'agent.health-refresh': { disposition: 'live', surface: 'Agents' },
     'app.search': { disposition: 'workflow', surface: 'Overview' },
     'turn.feedback': { disposition: 'live', surface: 'Chat' },

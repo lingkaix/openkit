@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -15,7 +16,7 @@ import {
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
 import { deriveEntityId } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
@@ -1008,6 +1009,48 @@ describe('worker Context Package owner', () => {
         authorities: { ...fixture.authorities, readThreadParent: () => origin },
       })
     ).toEqual(fixture.trace);
+  });
+
+  it('accepts null Knowledge for a confirmed outcome only through its exact current source proof', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-confirmed-outcome-'));
+    onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
+    const turnId = deriveEntityId('tu', { confirmedOutcomeFixture: 'source-bound' });
+    const fixture = createLiveNullKnowledgeFixture(workspaceRoot, { turnId });
+    const proof = vi.fn(() => ({
+      sourceTurnId: 'confirmed-source-turn',
+      sourceInputHash: sha256('frozen-source'),
+    }));
+    expect(() =>
+      writeWorkerContextPackageTrace({
+        authorities: fixture.authorities,
+        trace: fixture.trace,
+        workspaceRoot,
+      })
+    ).toThrow('Task Knowledge selection authority is contradictory');
+    const authorities = { ...fixture.authorities, readAssistantTaskHandoffSource: proof };
+    expect(
+      writeWorkerContextPackageTrace({ authorities, trace: fixture.trace, workspaceRoot })
+    ).toEqual(fixture.trace);
+    expect(proof).toHaveBeenCalledWith({
+      workspaceId: fixture.trace.workspaceId,
+      threadId: fixture.trace.threadId,
+      turnId,
+      requestId: fixture.trace.requestId,
+      workerRequest: WORKER_REQUEST_BYTES,
+    });
+    const selectors = {
+      workspaceRoot,
+      workspaceId: fixture.trace.workspaceId,
+      threadId: fixture.trace.threadId,
+      turnId,
+    };
+    expect(readWorkerContextPackageTrace({ authorities, ...selectors })).toEqual(fixture.trace);
+    expect(() =>
+      readWorkerContextPackageTrace({
+        authorities: { ...authorities, readAssistantTaskHandoffSource: () => null },
+        ...selectors,
+      })
+    ).toThrow('Task Knowledge selection authority is contradictory');
   });
 
   it('accepts null Knowledge only for the exact persisted user Chat-subordinate Turn', () => {

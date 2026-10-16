@@ -131,7 +131,7 @@ async function selectWorkspace(page: Page, name: string): Promise<void> {
   const navigation = page.getByRole('navigation', {
     name: /Primary workspace navigation|Settings sections/,
   });
-  await navigation.getByRole('button', { name: 'Quick Chat', exact: true }).click();
+  await navigation.getByRole('button', { name: 'Personal', exact: true }).click();
   await page.getByRole('menuitem', { name, exact: true }).click();
   await expect(navigation.getByRole('button', { name, exact: true })).toBeVisible();
 }

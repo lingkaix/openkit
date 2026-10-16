@@ -27,7 +27,7 @@ export interface RecordWorkspaceOwnerMembershipInput {
   now?: Date;
 }
 
-/** Input for ensuring one active user's built-in Quick Chat Workspace. */
+/** Input for ensuring one active user's built-in personal Workspace. */
 export interface EnsureUserQuickChatWorkspaceInput {
   /** Core database that owns canonical user and Workspace relationships. */
   coreDb: CoreDb;
@@ -38,7 +38,7 @@ export interface EnsureUserQuickChatWorkspaceInput {
 }
 
 /**
- * Ensures one active user's built-in Quick Chat Workspace and owner relationship.
+ * Ensures one active user's built-in personal Workspace and owner relationship.
  *
  * @param input Canonical user, Core relationship store, and shared Workspace store.
  * @throws WorkspaceOwnerMembershipRemovedError when the retained owner membership is removed.
@@ -46,7 +46,7 @@ export interface EnsureUserQuickChatWorkspaceInput {
  */
 export function ensureUserQuickChatWorkspace(input: EnsureUserQuickChatWorkspaceInput): void {
   if (!isCanonicalUserActive(input.coreDb, input.userId)) {
-    throw new Error('Quick Chat workspace requires an active canonical user.');
+    throw new Error('Personal workspace requires an active canonical user.');
   }
   const workspace = input.store.ensureQuickChatWorkspace(input.userId);
   recordWorkspaceOwnerMembership({

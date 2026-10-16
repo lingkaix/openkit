@@ -646,7 +646,7 @@ describe('Workspace sharing routes', () => {
     ).toEqual({ count: 1 });
   });
 
-  it('rejects administrator recovery for the owner-only Quick Chat Workspace', async () => {
+  it('rejects administrator recovery for the owner-only personal Workspace', async () => {
     const fixture = createFixture();
     const workspaceId = quickChatWorkspaceIdForUser('usr_00000000-0000-7011-88df-c2b1e8466b6f');
     recordWorkspaceOwnerMembership({
@@ -685,7 +685,9 @@ describe('Workspace sharing routes', () => {
     );
 
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({ code: 'quick_chat_not_shareable' });
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'personal_workspace_not_shareable',
+    });
     expect(
       fixture.coreDb.sqlite
         .prepare(

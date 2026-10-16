@@ -31,7 +31,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   };
   const quickChatWorkspace = {
     id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-    kind: 'quick-chat',
+    kind: 'personal',
     status: 'active',
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -104,7 +104,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   );
   writeFileSync(
     join(quickChatRoot, 'config', 'workspace.jsonc'),
-    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Quick Chat', defaultAgentId: null } }, null, 2)}\n`
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Personal', defaultAgentId: null } }, null, 2)}\n`
   );
   writeFileSync(
     join(threadRoot, 'thread.json'),

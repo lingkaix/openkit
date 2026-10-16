@@ -8528,55 +8528,6 @@
         }
       }
     },
-    "/api/app/operations/chat.quick": {
-      "post": {
-        "operationId": "chat.quick",
-        "tags": [
-          "chat"
-        ],
-        "summary": "Run one completed non-streaming Quick Chat in the actor’s own Workspace.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/chat.quick.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Run one completed non-streaming Quick Chat in the actor’s own Workspace.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/chat.quick.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/operations/conversation.targets": {
       "post": {
         "operationId": "conversation.targets",
@@ -29588,7 +29539,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -29732,7 +29683,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -29836,7 +29787,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -29877,7 +29828,7 @@
               "research",
               "operations",
               "general",
-              "quick-chat"
+              "personal"
             ]
           },
           "status": {
@@ -29999,7 +29950,7 @@
                   "research",
                   "operations",
                   "general",
-                  "quick-chat"
+                  "personal"
                 ]
               },
               "status": {
@@ -30214,6 +30165,13 @@
                   "enum": [
                     "conversation",
                     "administration"
+                  ]
+                },
+                "threadSource": {
+                  "type": "string",
+                  "enum": [
+                    "conversation",
+                    "worker"
                   ]
                 },
                 "visibility": {
@@ -30486,7 +30444,7 @@
                         "research",
                         "operations",
                         "general",
-                        "quick-chat"
+                        "personal"
                       ]
                     },
                     "status": {
@@ -31768,7 +31726,7 @@
                   "research",
                   "operations",
                   "general",
-                  "quick-chat"
+                  "personal"
                 ]
               },
               "status": {
@@ -34631,7 +34589,7 @@
                       "research",
                       "operations",
                       "general",
-                      "quick-chat"
+                      "personal"
                     ]
                   },
                   "status": {
@@ -35476,7 +35434,7 @@
                           "research",
                           "operations",
                           "general",
-                          "quick-chat"
+                          "personal"
                         ]
                       },
                       "status": {
@@ -35655,6 +35613,13 @@
                     "administration"
                   ]
                 },
+                "threadSource": {
+                  "type": "string",
+                  "enum": [
+                    "conversation",
+                    "worker"
+                  ]
+                },
                 "visibility": {
                   "type": "string",
                   "enum": [
@@ -35788,6 +35753,13 @@
               "administration"
             ]
           },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
+            ]
+          },
           "visibility": {
             "type": "string",
             "enum": [
@@ -35883,6 +35855,13 @@
             "enum": [
               "conversation",
               "administration"
+            ]
+          },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
             ]
           },
           "visibility": {
@@ -35989,6 +35968,13 @@
               "administration"
             ]
           },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
+            ]
+          },
           "visibility": {
             "type": "string",
             "enum": [
@@ -36084,6 +36070,13 @@
             "enum": [
               "conversation",
               "administration"
+            ]
+          },
+          "threadSource": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "worker"
             ]
           },
           "visibility": {
@@ -36412,6 +36405,140 @@
                     "completedAt",
                     "type",
                     "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
                   ],
                   "additionalProperties": false
                 },
@@ -37131,6 +37258,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -38232,6 +38419,13 @@
                   "administration"
                 ]
               },
+              "threadSource": {
+                "type": "string",
+                "enum": [
+                  "conversation",
+                  "worker"
+                ]
+              },
               "visibility": {
                 "type": "string",
                 "enum": [
@@ -38629,6 +38823,140 @@
                           "completedAt",
                           "type",
                           "text"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "workspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "threadId": {
+                            "type": "string",
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "turnId": {
+                            "type": "string",
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          "parentItemId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "causationId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "completedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "type": {
+                            "type": "string",
+                            "const": "context-summary"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "environmentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "sourceRange": {
+                            "type": "object",
+                            "properties": {
+                              "firstItemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "lastItemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "itemCount": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "sourceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              },
+                              "evidenceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "firstItemId",
+                              "lastItemId",
+                              "itemCount",
+                              "sourceDigest",
+                              "evidenceDigest"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "previousSummary": {
+                            "type": "object",
+                            "properties": {
+                              "itemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "digest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "itemId",
+                              "digest"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "threadId",
+                          "turnId",
+                          "status",
+                          "createdAt",
+                          "completedAt",
+                          "type",
+                          "text",
+                          "environmentDigest",
+                          "sourceRange"
                         ],
                         "additionalProperties": false
                       },
@@ -39348,6 +39676,66 @@
                               ],
                               "additionalProperties": false
                             }
+                          },
+                          "assistantHandoff": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "task"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "input": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  },
+                                  "agentId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "modelId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "input"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "goal"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "intent": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "intent"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -41409,6 +41797,140 @@
                     },
                     "status": {
                       "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "status": {
+                      "type": "string",
                       "enum": [
                         "in_progress",
                         "completed",
@@ -42104,6 +42626,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -43720,6 +44302,140 @@
                     },
                     "status": {
                       "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "status": {
+                      "type": "string",
                       "enum": [
                         "in_progress",
                         "completed",
@@ -44415,6 +45131,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -46120,6 +46896,140 @@
                     },
                     "status": {
                       "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "status": {
+                      "type": "string",
                       "enum": [
                         "in_progress",
                         "completed",
@@ -46815,6 +47725,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -64051,57 +65021,6 @@
         ],
         "additionalProperties": false
       },
-      "chat.quick.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "input": {
-            "type": "string",
-            "minLength": 1
-          },
-          "stream": {
-            "type": "boolean",
-            "const": false
-          }
-        },
-        "required": [
-          "input"
-        ],
-        "additionalProperties": false
-      },
-      "chat.quick.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "status": {
-            "type": "string",
-            "const": "completed"
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          },
-          "modelId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "content": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "status",
-          "workspaceId",
-          "modelId",
-          "content"
-        ],
-        "additionalProperties": false
-      },
       "conversation.targets.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -64364,6 +65283,13 @@
                       "enum": [
                         "conversation",
                         "administration"
+                      ]
+                    },
+                    "threadSource": {
+                      "type": "string",
+                      "enum": [
+                        "conversation",
+                        "worker"
                       ]
                     },
                     "visibility": {
@@ -64946,6 +65872,140 @@
                         "completedAt",
                         "type",
                         "text"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "status": {
+                          "type": "string",
+                          "const": "completed"
+                        },
+                        "parentItemId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "causationId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "context-summary"
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        },
+                        "environmentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "sourceRange": {
+                          "type": "object",
+                          "properties": {
+                            "firstItemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "lastItemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "itemCount": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "sourceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "evidenceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "firstItemId",
+                            "lastItemId",
+                            "itemCount",
+                            "sourceDigest",
+                            "evidenceDigest"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "previousSummary": {
+                          "type": "object",
+                          "properties": {
+                            "itemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "digest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "itemId",
+                            "digest"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "status",
+                        "createdAt",
+                        "completedAt",
+                        "type",
+                        "text",
+                        "environmentDigest",
+                        "sourceRange"
                       ],
                       "additionalProperties": false
                     },
@@ -65665,6 +66725,66 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "assistantHandoff": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "task"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                },
+                                "agentId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "modelId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "goal"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "intent": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "intent"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -67153,6 +68273,140 @@
                   },
                   "status": {
                     "type": "string",
+                    "const": "completed"
+                  },
+                  "parentItemId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "causationId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "completedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "context-summary"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536
+                  },
+                  "environmentDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "sourceRange": {
+                    "type": "object",
+                    "properties": {
+                      "firstItemId": {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "lastItemId": {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "itemCount": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sourceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "evidenceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "firstItemId",
+                      "lastItemId",
+                      "itemCount",
+                      "sourceDigest",
+                      "evidenceDigest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "previousSummary": {
+                    "type": "object",
+                    "properties": {
+                      "itemId": {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "itemId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "id",
+                  "workspaceId",
+                  "threadId",
+                  "turnId",
+                  "status",
+                  "createdAt",
+                  "completedAt",
+                  "type",
+                  "text",
+                  "environmentDigest",
+                  "sourceRange"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "status": {
+                    "type": "string",
                     "enum": [
                       "in_progress",
                       "completed",
@@ -67848,6 +69102,66 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "assistantHandoff": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "task"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "input": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "agentId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "modelId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "input"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "goal"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "intent": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "intent"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -69335,6 +70649,140 @@
                         },
                         "status": {
                           "type": "string",
+                          "const": "completed"
+                        },
+                        "parentItemId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "causationId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "context-summary"
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        },
+                        "environmentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "sourceRange": {
+                          "type": "object",
+                          "properties": {
+                            "firstItemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "lastItemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "itemCount": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "sourceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "evidenceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "firstItemId",
+                            "lastItemId",
+                            "itemCount",
+                            "sourceDigest",
+                            "evidenceDigest"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "previousSummary": {
+                          "type": "object",
+                          "properties": {
+                            "itemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "digest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "itemId",
+                            "digest"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "status",
+                        "createdAt",
+                        "completedAt",
+                        "type",
+                        "text",
+                        "environmentDigest",
+                        "sourceRange"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "status": {
+                          "type": "string",
                           "enum": [
                             "in_progress",
                             "completed",
@@ -70030,6 +71478,66 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "assistantHandoff": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "task"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                },
+                                "agentId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "modelId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "goal"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "intent": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "intent"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -84588,6 +86096,140 @@
                         },
                         "status": {
                           "type": "string",
+                          "const": "completed"
+                        },
+                        "parentItemId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "causationId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "context-summary"
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        },
+                        "environmentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "sourceRange": {
+                          "type": "object",
+                          "properties": {
+                            "firstItemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "lastItemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "itemCount": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "sourceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "evidenceDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "firstItemId",
+                            "lastItemId",
+                            "itemCount",
+                            "sourceDigest",
+                            "evidenceDigest"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "previousSummary": {
+                          "type": "object",
+                          "properties": {
+                            "itemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "digest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "itemId",
+                            "digest"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "status",
+                        "createdAt",
+                        "completedAt",
+                        "type",
+                        "text",
+                        "environmentDigest",
+                        "sourceRange"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "status": {
+                          "type": "string",
                           "enum": [
                             "in_progress",
                             "completed",
@@ -85283,6 +86925,66 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "assistantHandoff": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "task"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                },
+                                "agentId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "modelId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "goal"
+                                },
+                                "targetWorkspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "intent": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "targetWorkspaceId",
+                                "intent"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -86771,6 +88473,140 @@
                   },
                   "status": {
                     "type": "string",
+                    "const": "completed"
+                  },
+                  "parentItemId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "causationId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "completedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "context-summary"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536
+                  },
+                  "environmentDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "sourceRange": {
+                    "type": "object",
+                    "properties": {
+                      "firstItemId": {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "lastItemId": {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "itemCount": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sourceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "evidenceDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "firstItemId",
+                      "lastItemId",
+                      "itemCount",
+                      "sourceDigest",
+                      "evidenceDigest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "previousSummary": {
+                    "type": "object",
+                    "properties": {
+                      "itemId": {
+                        "type": "string",
+                        "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "itemId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "id",
+                  "workspaceId",
+                  "threadId",
+                  "turnId",
+                  "status",
+                  "createdAt",
+                  "completedAt",
+                  "type",
+                  "text",
+                  "environmentDigest",
+                  "sourceRange"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "status": {
+                    "type": "string",
                     "enum": [
                       "in_progress",
                       "completed",
@@ -87466,6 +89302,66 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "assistantHandoff": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "task"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "input": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "agentId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "modelId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "input"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "goal"
+                          },
+                          "targetWorkspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "intent": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "targetWorkspaceId",
+                          "intent"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -98069,7 +99965,7 @@
                           "research",
                           "operations",
                           "general",
-                          "quick-chat"
+                          "personal"
                         ]
                       },
                       "status": {
@@ -99041,7 +100937,7 @@
                       "research",
                       "operations",
                       "general",
-                      "quick-chat"
+                      "personal"
                     ]
                   },
                   "status": {
@@ -100719,7 +102615,7 @@
                   "research",
                   "operations",
                   "general",
-                  "quick-chat"
+                  "personal"
                 ]
               },
               "status": {
@@ -100825,5 +102721,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d4b38667667be2f246520a54774b926de6d2b634ab10161a08aa06b92ead540f"
+  "x-openkit-source-digest": "sha256:e5a78fef7a5dac766066b3b0c33daf312c5f1ffaef1081db6f3c995e0f776174"
 }

@@ -858,13 +858,13 @@ function requireCoreDb(coreDb: CoreDb | undefined): CoreDb {
   return coreDb;
 }
 
-/** Rejects the deterministic owner-only Quick Chat Workspace without opening its content. */
+/** Rejects the deterministic owner-only personal Workspace without opening its content. */
 function requireShareableWorkspace(coreDb: CoreDb, workspaceId: string): void {
   const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
   if (registry && workspaceId === quickChatWorkspaceIdForUser(registry.ownerUserId)) {
     throw new OperationError(
-      'quick_chat_not_shareable',
-      'Quick Chat workspaces cannot be shared.',
+      'personal_workspace_not_shareable',
+      'Personal Workspaces cannot be shared.',
       409
     );
   }

@@ -354,8 +354,7 @@ export function workspaceBelongsToCaller(item: WorkspaceAdmission): boolean {
 export function callerQuickChatWorkspace(summaries: readonly WorkspaceAdmission[] | undefined) {
   return (
     summaries?.find(
-      (item) =>
-        item.workspace.kind === 'quick-chat' && item.isOwner && workspaceBelongsToCaller(item)
+      (item) => item.workspace.kind === 'personal' && item.isOwner && workspaceBelongsToCaller(item)
     )?.workspace ?? null
   );
 }
