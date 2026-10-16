@@ -11,9 +11,10 @@ import { AutomationsScreen } from './AutomationsScreen';
 import { ChannelsScreen } from './ChannelsScreen';
 import { TIER_B_SURFACE_IDS } from './data';
 
-const EXPECTED_TIER_B_SURFACE_IDS = ['automations', 'channels'] as const;
+const EXPECTED_REVIEW_FIXTURE_IDS = ['automations', 'channels'] as const;
+const EXPECTED_TIER_B_SURFACE_IDS = ['channels'] as const;
 
-/** Minimal client — Tier-B demos use sample fixtures, not live reads. */
+/** Minimal client for internal review screens that render sample fixtures. */
 function makeClient(): CoreClient {
   return {
     app: {},
@@ -48,9 +49,17 @@ function Providers({ children, path }: { children?: ReactNode; path: string }) {
   );
 }
 
-describe('WP-8 Tier-B surface catalog', () => {
-  it('keeps fixture ownership limited to the remaining Tier-B demos', () => {
-    expect(TIER_B_SURFACE_IDS).toEqual(EXPECTED_TIER_B_SURFACE_IDS);
+describe('WP-8 surface catalog and internal review fixtures', () => {
+  it('keeps the exact internal review fixture inventory', () => {
+    expect(TIER_B_SURFACE_IDS).toEqual(EXPECTED_REVIEW_FIXTURE_IDS);
+  });
+
+  it('publishes the live Automations surface separately from its internal review fixture', () => {
+    const surface = surfaceById('automations');
+    expect(surface).toMatchObject({ tier: 'A', path: '/automations', nav: 'workspace-compact' });
+    expect(isSurfaceLive(surface!)).toBe(true);
+    expect(surfacesInGroup('workspace-compact').map((s) => s.id)).toContain('automations');
+    expect(surfacesInGroup('demos').map((s) => s.id)).not.toContain('automations');
   });
 
   it.each(EXPECTED_TIER_B_SURFACE_IDS)('keeps %s flag-off (isSurfaceLive false)', (id) => {
@@ -80,8 +89,8 @@ describe('WP-8 Tier-B surface catalog', () => {
   });
 });
 
-describe('WP-8 Tier-B screens — frame headings', () => {
-  it('Automations renders list and create panel', async () => {
+describe('WP-8 internal review screens — frame headings', () => {
+  it('the Automations review fixture renders list and create panel', async () => {
     render(
       <Providers path="/automations">
         <AutomationsScreen />
