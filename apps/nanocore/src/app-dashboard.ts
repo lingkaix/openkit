@@ -533,12 +533,16 @@ export function readThreadDashboard(input: {
     .listArtifacts(workspaceId)
     .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId, administratorEligible));
   const visibleArtifactIds = new Set(visibleArtifacts.map((artifact) => artifact.id));
-  const turns = store.listThreadTurns(workspaceId, threadId).map((turn) => ({
-    ...turn,
-    items: turn.items.filter(
-      (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
-    ),
-  }));
+  const turns = store.listThreadTurns(workspaceId, threadId).map((candidate) => {
+    // Scoped reads refuse an unresolved candidate; internal cached Turns still preserve Thread exclusion.
+    const turn = store.getTurn(workspaceId, threadId, candidate.id);
+    return {
+      ...turn,
+      items: turn.items.filter(
+        (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
+      ),
+    };
+  });
   const threadItems = store.listThreadItems(workspaceId, threadId);
   const participants = new Map<string, ThreadDashboardResponse['participants'][number]>();
   const authors = [

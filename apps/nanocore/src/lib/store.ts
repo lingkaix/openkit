@@ -96,6 +96,7 @@ import {
   parseOwnedKnowledgeEntry,
   publishCanonicalPath,
   readCanonicalTextFile,
+  readPublishedTurnFileRecords,
   readWorkspaceKnowledgePage,
   readWorkspaceTurnEvents,
   serializeKnowledgeProposalRecord,
@@ -1189,6 +1190,8 @@ export class FsStore {
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private turnAdmissionHooks: TurnAdmissionHooks | null = null;
   private terminalHookDepth = 0;
+  // Volatile write containment only; canonical files remain the sole publication authority.
+  private readonly interruptedTurnPublication = new Map<string, string>();
   private readonly dataRoot: string | null;
 
   public constructor(options: FsStoreOptions = {}) {
@@ -1402,6 +1405,72 @@ export class FsStore {
   }
 
   /**
+   * Refuses file persistence after unresolved initial Turn publication in this Store.
+   *
+   * A fresh Store must validate canonical history; a later successful read cannot lift this refusal.
+   *
+   * @param workspaceId Workspace whose aggregate or Turn append would write files.
+   * @throws Error when an interrupted initial publication requires inspection.
+   */
+  public assertWorkspaceFilePersistenceAvailable(workspaceId: string): void {
+    const turnId = this.interruptedTurnPublication.get(workspaceId);
+    if (turnId) {
+      throw new Error(
+        `recovery_required: Workspace ${workspaceId} requires inspection after interrupted Turn publication ${turnId}; reopen the Store from canonical history before further file writes.`
+      );
+    }
+  }
+
+  /**
+   * Contains a failed first publication without retrying, rewriting or deleting canonical history.
+   *
+   * @param turn Candidate created by this invocation.
+   * @param previousThread Thread projection before the candidate was installed.
+   */
+  private containInterruptedTurnCreation(turn: Turn, previousThread: Thread): void {
+    if (this.dataRoot) {
+      try {
+        const published = readPublishedTurnFileRecords(
+          this.dataRoot,
+          turn.workspaceId,
+          turn.threadId,
+          turn.id
+        );
+        if (
+          published &&
+          isDeepStrictEqual(published.turn, turn) &&
+          isDeepStrictEqual(published.captureCoverage, this.turnCaptureCoverage.get(turn.id))
+        ) {
+          return;
+        }
+        const turnRoot = join(
+          this.dataRoot,
+          'workspaces',
+          turn.workspaceId,
+          'threads',
+          turn.threadId,
+          'turns',
+          turn.id
+        );
+        // Missing required files are not proof that the whole directory is absent.
+        if (lstatSync(turnRoot, { throwIfNoEntry: false })) {
+          this.interruptedTurnPublication.set(turn.workspaceId, turn.id);
+          return;
+        }
+      } catch {
+        this.interruptedTurnPublication.set(turn.workspaceId, turn.id);
+        return;
+      }
+    }
+    // No canonical directory exists to be pruned by a later aggregate write.
+    this.turns.delete(turn.id);
+    this.streams.delete(turn.id);
+    this.turnCaptureCoverage.delete(turn.id);
+    this.turnExecutors.delete(turn.id);
+    this.threads.set(previousThread.id, previousThread);
+  }
+
+  /**
    * Projects one workspace's in-memory state into its canonical file records.
    *
    * @param workspaceId Workspace to persist.
@@ -1413,6 +1482,7 @@ export class FsStore {
     updateWorkspaceConfigName = false,
     exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
   ): void {
+    this.assertWorkspaceFilePersistenceAvailable(workspaceId);
     if (!this.dataRoot) {
       return;
     }
@@ -2697,6 +2767,7 @@ export class FsStore {
     configVersion: number | null = null,
     options: CreateTurnOptions = {}
   ): Turn {
+    this.assertWorkspaceFilePersistenceAvailable(workspaceId);
     const timestamp = options.startedAt ?? now();
     const turnId = options.turnId ?? `tu_${this.turns.size + 1}`;
 
@@ -2738,7 +2809,12 @@ export class FsStore {
       timers: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
-    this.persist(workspaceId);
+    try {
+      this.persist(workspaceId);
+    } catch (error) {
+      this.containInterruptedTurnCreation(turn, thread);
+      throw error;
+    }
     this.turnAdmissionHooks?.onAdmitted?.(turn);
     return this.getTurnById(turn.id);
   }
@@ -2795,6 +2871,9 @@ export class FsStore {
 
     if (!turn || turn.workspaceId !== workspaceId || turn.threadId !== threadId) {
       throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+    }
+    if (this.interruptedTurnPublication.get(workspaceId) === turnId) {
+      this.assertWorkspaceFilePersistenceAvailable(workspaceId);
     }
 
     return turn;
@@ -2863,6 +2942,7 @@ export class FsStore {
       throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     }
 
+    this.assertWorkspaceFilePersistenceAvailable(turn.workspaceId);
     const unsupportedField = Object.keys(input).find(
       (field) =>
         ![
@@ -2951,6 +3031,7 @@ export class FsStore {
     const item = ItemSchema.parse(input);
     const existing = this.items.get(item.id);
     const turn = this.getTurnById(item.turnId);
+    this.assertWorkspaceFilePersistenceAvailable(turn.workspaceId);
     if (turn.workspaceId !== item.workspaceId || turn.threadId !== item.threadId) {
       throw new Error(`Item has invalid turn lineage: ${item.id}`);
     }
@@ -3039,6 +3120,7 @@ export class FsStore {
     }
 
     const turn = this.getTurnById(item.turnId);
+    this.assertWorkspaceFilePersistenceAvailable(turn.workspaceId);
     let patch: Partial<Item> = input;
     if (isSealedTurnTerminal(turn.status)) {
       if (admission?.category === 'display-projection-refresh') {
@@ -3428,6 +3510,7 @@ export class FsStore {
   public rollbackArtifactCreation(artifactId: string): void {
     const artifact = this.artifacts.get(artifactId);
     if (!artifact) return;
+    this.assertWorkspaceFilePersistenceAvailable(artifact.workspaceId);
     if (artifact.version !== 1)
       throw new ArtifactAuthorityError(
         'recovery_required',
@@ -4647,6 +4730,7 @@ export class FsStore {
     }
 
     const turn = this.getTurnById(turnId);
+    this.assertWorkspaceFilePersistenceAvailable(turn.workspaceId);
     const projectedRequestId = projectTurnEventRequestId(
       event.requestId,
       event.workspaceId,

@@ -959,7 +959,7 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
  * @param workspaceId Owning Workspace id.
  * @param threadId Owning Thread id.
  * @param turnId Turn directory id.
- * @returns Canonical Turn and complete append-order Item revisions, or null when either required file is missing.
+ * @returns Canonical Turn, complete Item revisions and immutable capture pair, or null when either required file is missing.
  * @throws Error when the Turn schema, lineage, or Item history cannot be read.
  */
 export function readPublishedTurnFileRecords(
@@ -967,7 +967,11 @@ export function readPublishedTurnFileRecords(
   workspaceId: string,
   threadId: string,
   turnId: string
-): { readonly turn: Turn; readonly itemRevisions: readonly Item[] } | null {
+): {
+  readonly turn: Turn;
+  readonly itemRevisions: readonly Item[];
+  readonly captureCoverage: CaptureCoverageBinding | null;
+} | null {
   assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   assertSafeWorkspacePathSegment(threadId, 'Thread id');
   assertSafeWorkspacePathSegment(turnId, 'Turn id');
@@ -1003,6 +1007,7 @@ export function readPublishedTurnFileRecords(
   return {
     turn: TurnReaderSchema.parse({ ...turnWithoutItems, items: history.items }),
     itemRevisions: history.revisions,
+    captureCoverage: turnWithoutItems.captureCoverage ?? null,
   };
 }
 
