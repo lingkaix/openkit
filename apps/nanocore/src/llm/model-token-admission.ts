@@ -46,8 +46,7 @@ export interface ModelTokenCountReceipt {
   readonly requestDigest: string;
   readonly accountingIdentity: string;
   readonly inputTokens: number;
-  /** Included in inputTokens; never added a second time. */
-  readonly imageTokens: number;
+  /** Binds all present media; their cost is already included in inputTokens. */
   readonly imageFactsDigest: string;
   /** Must include all instructions, history, tools, media and supplied native state. */
   readonly coverage: 'complete-request';
@@ -106,7 +105,6 @@ export interface ModelTokenAdmission extends ModelTokenCountInput {
   readonly kind: 'admitted';
   readonly accountingIdentity: string;
   readonly inputTokens: number;
-  readonly imageTokens: number;
   readonly outputReserveTokens: number;
   readonly totalTokens: number;
 }
@@ -432,9 +430,6 @@ export async function admitModelRequest(
       receipt.model.providerId !== model.providerId ||
       receipt.requestDigest !== countInput.requestDigest ||
       !count(receipt.inputTokens) ||
-      !count(receipt.imageTokens) ||
-      receipt.imageTokens > receipt.inputTokens ||
-      (captured.imageFacts.length > 0 ? receipt.imageTokens === 0 : receipt.imageTokens !== 0) ||
       receipt.imageFactsDigest !== countInput.imageFactsDigest ||
       typeof receipt.accountingIdentity !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/.test(receipt.accountingIdentity)
@@ -448,7 +443,6 @@ export async function admitModelRequest(
       kind: 'admitted',
       accountingIdentity: receipt.accountingIdentity,
       inputTokens: receipt.inputTokens,
-      imageTokens: receipt.imageTokens,
       outputReserveTokens,
       totalTokens: receipt.inputTokens + outputReserveTokens,
     });

@@ -24,7 +24,6 @@ function receipt(input: ModelTokenCountInput, tokens = 10): ModelTokenCountRecei
     accountingIdentity: 'fixture-counter/v1',
     coverage: 'complete-request',
     inputTokens: tokens,
-    imageTokens: 0,
   };
 }
 
@@ -77,7 +76,7 @@ function imageAdmission(api: TokenModelIdentity['api'] = 'responses'): ModelToke
         detail: 'high',
       },
     ],
-    counter: async (input) => ({ ...receipt(input, 50), imageTokens: 40 }),
+    counter: async (input) => receipt(input, 50),
   });
 }
 
@@ -299,8 +298,6 @@ describe('complete model token admission', () => {
     { inputTokens: NaN },
     { inputTokens: Infinity },
     { inputTokens: Number.MAX_SAFE_INTEGER + 1 },
-    { imageTokens: -1 },
-    { imageTokens: 11 },
     { requestDigest: `sha256:${'0'.repeat(64)}` },
     { imageFactsDigest: `sha256:${'0'.repeat(64)}` },
     { model: { ...model, modelId: 'different' } },
@@ -348,7 +345,6 @@ describe('complete model token admission', () => {
       expect(await admitModelRequest(imageAdmission(api))).toMatchObject({
         kind: 'admitted',
         inputTokens: 50,
-        imageTokens: 40,
         totalTokens: 82,
       });
     }
@@ -383,12 +379,12 @@ describe('complete model token admission', () => {
     expect(counter).not.toHaveBeenCalled();
   });
 
-  it('refuses image counts that omit media or charge more media than total input', async () => {
-    for (const imageTokens of [0, 51])
+  it('refuses a count that does not bind the actual image facts', async () => {
+    for (const imageFactsDigest of ['', `sha256:${'0'.repeat(64)}`])
       expect(
         await admitModelRequest({
           ...imageAdmission(),
-          counter: async (input) => ({ ...receipt(input, 50), imageTokens }),
+          counter: async (input) => ({ ...receipt(input, 50), imageFactsDigest }),
         })
       ).toEqual({ kind: 'unavailable', reason: 'invalid-count-receipt' });
   });
