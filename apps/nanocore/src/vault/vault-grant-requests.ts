@@ -826,8 +826,8 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             'The request was already consumed or invalidated.',
             409
           );
-        const grantId = `grant_${randomUUID()}`;
-        const policyDecisionId = `pd_${randomUUID()}`;
+        const grantId = randomUUID();
+        const policyDecisionId = randomUUID();
         let coreAttempted = false;
         try {
           const access = authorizeWorkspace(

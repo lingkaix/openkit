@@ -20598,7 +20598,7 @@
             "properties": {
               "referenceId": {
                 "type": "string",
-                "pattern": "^vault_[A-Za-z0-9_-]+$"
+                "minLength": 1
               },
               "expiresAt": {
                 "type": "string",
@@ -20725,7 +20725,7 @@
             "properties": {
               "referenceId": {
                 "type": "string",
-                "pattern": "^vault_[A-Za-z0-9_-]+$"
+                "minLength": 1
               },
               "expiresAt": {
                 "type": "string",
@@ -21038,7 +21038,7 @@
                   "properties": {
                     "referenceId": {
                       "type": "string",
-                      "pattern": "^vault_[A-Za-z0-9_-]+$"
+                      "minLength": 1
                     },
                     "expiresAt": {
                       "type": "string",
@@ -21352,7 +21352,7 @@
             "properties": {
               "referenceId": {
                 "type": "string",
-                "pattern": "^vault_[A-Za-z0-9_-]+$"
+                "minLength": 1
               },
               "expiresAt": {
                 "type": "string",
@@ -99921,5 +99921,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:66a7a30232cb5b6568e4c628c59be6d7cfff158d16a474f6f0fbf30b92258b4b"
+  "x-openkit-source-digest": "sha256:9f17a8d02805e109642a48a6c366fdf04d4349dc94753cce171ef93d2d4d5df9"
 }

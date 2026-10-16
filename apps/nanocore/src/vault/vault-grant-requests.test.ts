@@ -226,24 +226,16 @@ async function prepare(
   });
   expect(thread.status).toBe(200);
   const threadId = (await thread.json()).id;
-  const referenceId = `vault_${randomUUID()}`;
-  f.vaultUnlockState.backend().store({
-    referenceId,
-    material: 'synthetic-resolution-canary',
-    metadata: ownerScope === 'server' ? { ownerScope } : { ownerScope, workspaceId },
-  });
-  createVaultReference(f.coreDb, {
-    referenceId,
-    ownerScope,
-    ...(ownerScope === 'workspace' ? { workspaceId } : {}),
-    secretKind: 'mcp-credential',
-    displayName: 'Synthetic shared credential',
-    backendKind: 'encrypted-file',
-    backendLocator:
-      ownerScope === 'server'
-        ? `encrypted-file://server/vault/${referenceId}`
-        : `encrypted-file://workspace/${workspaceId}/vault/${referenceId}`,
-  });
+  const reference = await f.send(
+    ownerScope === 'server' ? 'vault.server-mcp-secret-create' : 'vault.secret-create',
+    {
+      ...(ownerScope === 'server' ? { requestId: randomUUID() } : {}),
+      material: 'synthetic-resolution-canary',
+      ...(ownerScope === 'workspace' ? { workspaceId, secretKind: 'mcp-credential' } : {}),
+    }
+  );
+  expect(reference.status).toBe(200);
+  const referenceId = (await reference.json()).referenceId as string;
   const terms = {
     referenceId,
     ownerScope,

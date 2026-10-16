@@ -6,6 +6,7 @@ import { CreateWorkspaceVaultGrantRequestSchema } from './vault-admin.js';
 
 /** Exact non-secret bounds admitted by the two current grant issuers. */
 export const VaultGrantRequestTermsSchema = CreateWorkspaceVaultGrantRequestSchema.safeExtend({
+  referenceId: z.string().min(1),
   ownerScope: z.enum(['workspace', 'server']),
   lifetime: z.enum(['workspace', 'server']),
   injectionPath: z.enum(['gateway-only', 'runtime-env']),
@@ -79,7 +80,7 @@ export const VaultGrantRequestViewSchema = z
     canApprove: z.boolean(),
     canIssue: z.boolean(),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => addRawSecretIssues(value, ctx, []));
 
 /** Request inventory contains no credential material or credential authentication context. */
@@ -89,7 +90,7 @@ export const ListVaultGrantRequestsResponseSchema = z
     threadId: ThreadIdSchema,
     items: z.array(VaultGrantRequestViewSchema),
   })
-  .strict();
+  .strip();
 
 /** Supported exact terms; this type is neither an approval nor a VaultGrant. */
 export type VaultGrantRequestTerms = z.infer<typeof VaultGrantRequestTermsSchema>;
