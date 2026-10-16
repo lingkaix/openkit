@@ -13,6 +13,7 @@ import {
 } from '../screens/chat/data';
 import { AppSearch } from '../screens/operations';
 import { useWorkspaceStore } from '../screens/workspace-store';
+import { AssistantEntry } from './AssistantEntry';
 import { ConversationGoalGroups, type ConversationRow } from './ConversationGoalGroups';
 import { type NavGroup, type Surface, surfacesInGroup } from './surfaces';
 
@@ -278,6 +279,9 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
       ) : (
         <>
           <NavSection group="primary" pathname={pathname} go={go} />
+          {workspace?.kind === 'general' ? (
+            <NavRow icon="settings" label="Members" onPress={() => go('/settings/account')} />
+          ) : null}
           {workspace ? (
             <>
               <hr className="my-2 border-0 border-t border-separator" />
@@ -285,7 +289,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                 <p className="px-3 pb-1 pt-3 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
                   Conversations
                 </p>
-                <NavRow icon="add" label="New conversation" onPress={() => go('/chat')} />
+                <AssistantEntry key={`assistant:${workspace.id}`} workspaceId={workspace.id} />
                 {navigation.isPending ? (
                   <p className="px-3 text-xs text-fg-muted">Loading conversations…</p>
                 ) : null}
