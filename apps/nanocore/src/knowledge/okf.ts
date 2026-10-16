@@ -78,6 +78,8 @@ const DEFAULT_REVIEW_STATE_VALUES = [
   'needs-review',
 ];
 const DEFAULT_SENSITIVITY_VALUES = ['public', 'normal', 'internal', 'confidential'];
+// Restricted is a known denial label; recognizing it does not widen a schema's allowed values.
+const KNOWN_SENSITIVITY_VALUES = [...DEFAULT_SENSITIVITY_VALUES, 'restricted'];
 const DEFAULT_FRESHNESS_VALUES = [
   'evergreen',
   'time-bound',
@@ -297,6 +299,20 @@ export function validateOpenKitKnowledgeProfile(
     }
   }
 
+  for (const [field, known] of [
+    ['review_state', DEFAULT_REVIEW_STATE_VALUES],
+    ['sensitivity', KNOWN_SENSITIVITY_VALUES],
+    ['freshness', DEFAULT_FRESHNESS_VALUES],
+  ] as const) {
+    const value = document.frontmatter[field];
+    if (typeof value === 'string' && !known.includes(value))
+      errors.push({
+        code: `profile.invalid_${field}`,
+        field,
+        message: `OpenKit Knowledge Profile field ${field} has unsupported governance semantics.`,
+      });
+  }
+
   for (const field of PROFILE_TIMESTAMP_FIELDS) {
     const value = document.frontmatter[field];
 
@@ -414,6 +430,21 @@ export function parseScopeKnowledgeSchema(content: string): ParseScopeKnowledgeS
         message: `Scope knowledge schema field ${field} must include at least one value.`,
       });
     }
+  }
+
+  for (const [field, values, known] of [
+    ['allowed_statuses', schema.allowedStatuses, DEFAULT_STATUS_VALUES],
+    ['allowed_review_states', schema.allowedReviewStates, DEFAULT_REVIEW_STATE_VALUES],
+    ['allowed_sensitivities', schema.allowedSensitivities, KNOWN_SENSITIVITY_VALUES],
+    ['allowed_freshness', schema.allowedFreshness, DEFAULT_FRESHNESS_VALUES],
+  ] as const) {
+    if (values.some((value) => !known.includes(value)))
+      errors.push({
+        code: 'scope_schema.unsupported_governance_value',
+        field,
+        message:
+          'Scope schemas may narrow known governance values, not add new authority semantics.',
+      });
   }
 
   return errors.length === 0
@@ -612,6 +643,7 @@ export function updateOkfFrontmatter(input: {
   readonly path: string;
   readonly content: string;
   readonly updates: Readonly<Record<string, unknown>>;
+  readonly removeFields?: readonly string[];
   readonly body?: string;
 }): string {
   const parsed = parseOkfDocument({ path: input.path, content: input.content });
@@ -624,11 +656,36 @@ export function updateOkfFrontmatter(input: {
   if (errors.length > 0 || !yaml.document) {
     throw new Error('OKF frontmatter cannot be updated because its YAML mapping is invalid.');
   }
+  for (const field of input.removeFields ?? []) yaml.document.delete(field);
   for (const [field, value] of Object.entries(input.updates)) {
     yaml.document.set(field, value);
   }
   const serialized = yaml.document.toString({ lineWidth: 0 });
   return `---\n${serialized}---\n${input.body ?? framing.body}`;
+}
+
+/** Edits a plain schema mapping through the shared safe YAML boundary; the trusted callback validates existing facts before updates. */
+export function updateKnowledgeSchemaFields(input: {
+  readonly content: string;
+  readonly updates: (
+    fields: Readonly<Record<string, unknown>>
+  ) => Readonly<Record<string, unknown>>;
+  readonly removeFields?: readonly string[];
+}): string {
+  const errors: KnowledgeValidationError[] = [];
+  const yaml = parseYamlMapping(input.content, errors);
+  collectSecretLikeErrors(yaml.value, errors);
+  if (errors.length > 0 || !yaml.document)
+    throw new Error('Knowledge schema fields cannot be updated because the mapping is invalid.');
+  const updates = input.updates(yaml.value);
+  for (const field of input.removeFields ?? []) yaml.document.delete(field);
+  for (const [field, value] of Object.entries(updates)) yaml.document.set(field, value);
+  const content = yaml.document.toString({ lineWidth: 0 });
+  const finalMapping = parseYamlMapping(content, errors);
+  collectSecretLikeErrors(finalMapping.value, errors);
+  if (errors.length > 0 || !finalMapping.document)
+    throw new Error('Knowledge schema fields cannot be updated because the result is invalid.');
+  return content;
 }
 
 /**

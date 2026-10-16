@@ -2,12 +2,15 @@ import { KnowledgeOwnerScopeSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   knowledgeReferenceErrors,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   stringListFrontmatterField,
+  updateKnowledgeSchemaFields,
   updateOkfFrontmatter,
   validateOpenKitKnowledgeProfile,
   validateScopeKnowledgeSchema,
@@ -662,3 +665,163 @@ function governedPage(input: {
     ].join('\n'),
   });
 }
+
+describe('managed OKF field removal', () => {
+  it('removes obsolete keys without null substitutes while preserving annotations and exact body', () => {
+    const body = '# Exact body\n\nPreserve spacing.  \r\n';
+    const content = [
+      '---',
+      'type: KnowledgePage',
+      '# Historical description',
+      'future_metadata: {nested: [one, two]}',
+      'owner_scope: {kind: workspace, workspaceId: workspace-a}',
+      'openkit_revision: 3',
+      '---',
+      body,
+    ].join('\n');
+    const result = updateOkfFrontmatter({
+      path: 'page.md',
+      content,
+      updates: { scope: workspace },
+      removeFields: ['owner_scope', 'openkit_revision'],
+    });
+    const parsed = parseOkfDocument({ path: 'page.md', content: result });
+    expect(parsed.ok).toBe(true);
+    expect(parsed.document?.frontmatter).not.toHaveProperty('owner_scope');
+    expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_revision');
+    expect(parsed.document?.frontmatter.future_metadata).toEqual({ nested: ['one', 'two'] });
+    expect(parsed.document?.frontmatter.scope).toEqual(workspace);
+    expect(result).toContain('# Historical description');
+    expect(parsed.document?.body).toBe(body);
+  });
+});
+
+describe('managed schema mapping edits', () => {
+  it('checks original ownership before transformation and retains unknown schema values and comments', () => {
+    const original =
+      '# Keep this schema note.\nschema_version: legacy\nowner_scope: {kind: workspace, workspaceId: workspace-a}\nfuture_metadata: {nested: [one, two]}\n';
+    let observed: unknown;
+    const result = updateKnowledgeSchemaFields({
+      content: original,
+      updates: (fields) => {
+        observed = fields.owner_scope;
+        return { schema_version: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION, scope: workspace };
+      },
+      removeFields: ['owner_scope'],
+    });
+    expect(observed).toEqual(workspace);
+    expect(result).toContain('# Keep this schema note.');
+    let retainedFields: Readonly<Record<string, unknown>> = {};
+    updateKnowledgeSchemaFields({
+      content: result,
+      updates: (fields) => {
+        retainedFields = fields;
+        return {};
+      },
+    });
+    expect(retainedFields.future_metadata).toEqual({ nested: ['one', 'two'] });
+    expect(result).not.toContain('owner_scope:');
+    expect(result).toContain('scope:');
+  });
+
+  it.each([
+    '[]',
+    'key: [invalid',
+    'key: one\nkey: two',
+    'key: &cycle {again: *cycle}',
+    '1: value',
+    'description: secret',
+  ])('refuses unsafe original mappings before invoking a trusted edit: %s', (content) => {
+    let invoked = false;
+    expect(() =>
+      updateKnowledgeSchemaFields({
+        content,
+        updates: () => {
+          invoked = true;
+          return { schema_version: 'target' };
+        },
+      })
+    ).toThrow();
+    expect(invoked).toBe(false);
+  });
+
+  it('preserves a trusted callback refusal and refuses unsafe final metadata', () => {
+    const refusal = new Error('Bounded migration refusal.');
+    expect(() =>
+      updateKnowledgeSchemaFields({
+        content: 'schema_version: old',
+        updates: () => {
+          throw refusal;
+        },
+      })
+    ).toThrow(refusal);
+    expect(() =>
+      updateKnowledgeSchemaFields({
+        content: 'schema_version: old',
+        updates: () => ({ private_key: 'never publish' }),
+      })
+    ).toThrow(/result is invalid/);
+  });
+});
+
+describe('governed core semantics', () => {
+  it.each([
+    ['review_state', 'allowedReviewStates'],
+    ['sensitivity', 'allowedSensitivities'],
+    ['freshness', 'allowedFreshness'],
+  ] as const)('rejects unknown %s even when a custom schema permits it', (field, schemaField) => {
+    const parsed = governedPage({});
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('Expected a valid generic fixture.');
+    const document = {
+      ...parsed.document,
+      frontmatter: { ...parsed.document.frontmatter, [field]: 'future-authority' },
+    };
+    expect(
+      parseOkfDocument({
+        path: 'external.md',
+        content: `---\ntype: DomainNote\n${field}: future-authority\n---\nExternal body.`,
+      }).ok
+    ).toBe(true);
+    expect(validateOpenKitKnowledgeProfile(document).errors).toContainEqual(
+      expect.objectContaining({ code: `profile.invalid_${field}`, field })
+    );
+    const report = validateScopeKnowledgeSchema(document, {
+      ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+      [schemaField]: ['future-authority'],
+    });
+    expect(report.conformance).not.toBe('scope-schema-valid');
+  });
+
+  it.each([
+    'allowed_review_states',
+    'allowed_sensitivities',
+    'allowed_freshness',
+    'allowed_statuses',
+  ])('rejects unknown configured governance values in %s before using a schema', (field) => {
+    const content = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
+      new RegExp(`${field}:.*`),
+      `${field}: [future-authority]`
+    );
+    expect(parseScopeKnowledgeSchema(content).ok).toBe(false);
+  });
+
+  it('recognizes restricted sensitivity without widening an existing schema allowlist', () => {
+    const parsed = governedPage({});
+    if (!parsed.ok) throw new Error('Expected a valid generic fixture.');
+    const document = {
+      ...parsed.document,
+      frontmatter: { ...parsed.document.frontmatter, sensitivity: 'restricted' },
+    };
+    expect(validateOpenKitKnowledgeProfile(document).errors).toEqual([]);
+    expect(validateScopeKnowledgeSchema(document).errors).toContainEqual(
+      expect.objectContaining({ code: 'scope_schema.sensitivity_not_allowed' })
+    );
+    expect(
+      validateScopeKnowledgeSchema(document, {
+        ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+        allowedSensitivities: ['restricted'],
+      }).conformance
+    ).toBe('scope-schema-valid');
+  });
+});
