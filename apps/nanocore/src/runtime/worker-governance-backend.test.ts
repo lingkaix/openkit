@@ -159,6 +159,8 @@ describe('NanoHost worker governance helpers', () => {
   });
 
   it('imports verified Skill files after the canonical AEP', async () => {
+    const skillBody =
+      '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n';
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-supply-import-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -177,7 +179,7 @@ describe('NanoHost worker governance helpers', () => {
         producer: { id: 'user_local', kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(skillBody, 'utf8').toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },
@@ -206,7 +208,8 @@ describe('NanoHost worker governance helpers', () => {
       });
       expect(imports.map((item) => item.slot)).toEqual(['package-config', 'worker-supply']);
       expect(imports[1]).toMatchObject({
-        byteLength: Buffer.byteLength('# Hello\n'),
+        body: Buffer.from(skillBody, 'utf8'),
+        byteLength: Buffer.byteLength(skillBody),
         relativePath: 'as_nanohost_1/supply/inputs/repo-guidelines/SKILL.md',
         slot: 'worker-supply',
       });
@@ -214,6 +217,7 @@ describe('NanoHost worker governance helpers', () => {
         created.version.inventory.find((entry) => entry.path === 'SKILL.md')?.sha256
       );
     } finally {
+      coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     }
   });

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentCaptureCoverage,
@@ -31,7 +32,13 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
+import {
+  CatalogContentUnavailableError,
+  CatalogIntegrityError,
+  CatalogNotFoundError,
+  loadWorkspaceResourceCatalog,
+  readWorkspaceSkillSnapshot,
+} from '../catalog/resource-catalog.js';
 import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
@@ -1031,7 +1038,7 @@ function workspaceInputSource(
 }
 
 /**
- * Resolves catalog-approved Skill snapshots against release-owned adapter supply qualification.
+ * Verifies exact catalog Skill snapshots against release-owned adapter supply qualification.
  *
  * @param skillIds Worker Skill ids requested by the selected agent.
  * @param adapter Runtime adapter that will consume the supply.
@@ -1040,6 +1047,7 @@ function workspaceInputSource(
  * @param agentSessionId Exact AgentSession identity owning the supply input paths.
  * @returns Catalog-resolved Skill supply entries.
  * @throws DeterministicAgentPreparationError when the adapter has no declared filesystem Skill form.
+ * @throws CatalogNotFoundError or CatalogIntegrityError when selected retained supply is unavailable or changed.
  */
 function resolveWorkerSkillSupply(
   skillIds: string[],
@@ -1057,26 +1065,53 @@ function resolveWorkerSkillSupply(
     .map(([id]) => id);
   const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
   const { supplyRoot } = workerSessionInputPaths(agentSessionId);
-  return skillIds.map((skillId) => {
+  const selected = skillIds.map((skillId) => {
     const entry = catalog.skills.entries.find((item) => item.id === skillId);
     const pin = catalog.skills.pins.find((item) => item.entryId === skillId);
     const digest = pin?.digest ?? entry?.currentDigest;
-    const version = catalog.skills.versions.find(
-      (item) => item.entryId === skillId && item.digest === digest
-    );
-    if (!entry || entry.availability !== 'available' || !digest || !version) {
-      throw new Error(`Worker supply catalog entry not found: skill:${skillId}`);
+    if (!entry || entry.availability !== 'available' || !digest) {
+      throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${skillId}`);
     }
     if (!allowedRuntimeAdapters.includes(adapter)) {
       throw new DeterministicAgentPreparationError(
         `Worker skill catalog entry is not allowed for ${adapter}: ${entry.id}`
       );
     }
+    const { version } = readWorkspaceSkillSnapshot({
+      dataRoot,
+      digest,
+      entryId: skillId,
+      workspaceId,
+    });
+    return { digest, entry, pin, version };
+  });
+  // Recheck the complete selection after collection; a later Skill read can revoke an earlier entry.
+  const current = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
+  return selected.map(({ digest, entry, pin, version }) => {
+    const retained = current.skills.versions.find(
+      (item) => item.entryId === entry.id && item.digest === digest
+    );
+    if (
+      !current.skills.entries.some(
+        (item) => item.id === entry.id && item.availability === 'available'
+      ) ||
+      !retained
+    ) {
+      throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${entry.id}`);
+    }
+    if (retained.contentState === 'purged') {
+      throw new CatalogContentUnavailableError(`Skill content was purged: ${entry.id}/${digest}`);
+    }
+    if (!isDeepStrictEqual(retained, version)) {
+      throw new CatalogIntegrityError(
+        `Skill version changed during Worker supply admission: ${entry.id}/${digest}`
+      );
+    }
     const targetPath = `${supplyRoot}/${entry.id}`;
     return {
       allowedRuntimeAdapters,
       allowedWorkspaceScopes: ['workspace'],
-      digestFormat: 'openkit-tree-v1' as const,
+      digestFormat: version.digestFormat,
       id: entry.id,
       integrity: { sha256: digest },
       inventory: version.inventory,
