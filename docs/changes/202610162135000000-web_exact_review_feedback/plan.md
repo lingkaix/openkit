@@ -8,7 +8,7 @@ branch: lane/web-p27
 
 ## Intent and Authority
 
-Coordinator21:35 authorizes P27 source work on approved P17 correction0a779b12 before its landing, with the recommended D04/D05 and existing Review paths. The branch normally merges approved updated P17 head73db1d03, which contains0a779b12 and actual landed Web main. P27 will land only after P17 is on main. Keep ProposalReview.tsx untouched until then. P26 remains separate and ready for actual P19. Work Resource Interaction owns the bounded range and choice contracts; the Web projection owns their UI. Existing Review, command, input and Context Package owners retain their responsibilities.
+Coordinator21:35 authorizes P27 source work on approved P17 correction0a779b12 before its landing, with the recommended D04/D05 and existing Review paths. The branch normally merges approved updated P17 head73db1d03, which contains0a779b12 and actual landed Web main. P27 will land only after P17 is on main. Keep ProposalReview.tsx untouched until then. P26 remains separate and ready for actual P19. [Work Resource Interaction](../../specs/20260713-work_resource_interaction_model.md) owns the bounded range and choice contracts; the [Web projection](../../specs/20260628-web_product_surface_projection.md) owns their UI. Existing Review, command, input and Context Package owners retain their responsibilities.
 
 ## Scope and Method
 
