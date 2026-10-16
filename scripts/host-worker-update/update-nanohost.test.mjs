@@ -662,7 +662,7 @@ test('the actual Worker stage accepts this separate restored replacement evidenc
         previousPhysicalEpoch: result.before.physicalEpoch,
         nanoHostReplacementReference: result.reference,
         prepare: {
-          administrationThreadId: 'private-administration-thread',
+          administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
           requestId: '55555555-5555-4555-8555-555555555555',
           configuration: { expectedRevision: imageDigest, fileId: 'agents/worker.agent.jsonc' },
           target: { kind: 'agent', agentId: 'worker' },
