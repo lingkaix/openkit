@@ -83,7 +83,7 @@ Thread lists, search, notification and Artifact/widget access obey `20260909-thr
 
 ## Decision
 
-Web is the product projection for every currently supported canonical-user or Workspace-authorized NanoCore operation. Page names and mockups are not the inventory authority. The included universe is the 147 `PUBLIC_OPERATION_ACCESS` entries whose scope is `user` or `workspace`, excluding the two Gateway-actor compatibility operations. That 147 equals the 195 catalog entries minus 46 server-scoped deployment-admin or bootstrap operations minus those two Gateway-actor operations.
+Web is the product projection for every currently supported canonical-user or Workspace-authorized NanoCore operation. Page names and mockups are not the inventory authority. The included universe is the 185 `PUBLIC_OPERATION_ACCESS` entries whose scope is `user` or `workspace`, excluding the two Gateway-actor compatibility operations. That 185 equals the 263 catalog entries minus 76 server-scoped deployment-admin or bootstrap operations minus those two Gateway-actor operations.
 
 One product workflow MAY project several operations. Web MUST consume existing Core and App API contracts through `@openkit/core-client` and MUST NOT invent runtime, Policy, Knowledge, Workspace Sync, portability, scheduling, or recovery semantics.
 
@@ -95,7 +95,7 @@ The four `automation.list`, `automation.create`, `automation.update`, and `autom
 
 ### Inclusion and exclusions
 
-An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`. The count of that set is 186. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
+An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`. The count of that set is 185. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
 
 The following are excluded from ordinary-user Web and MUST NOT appear on a published ordinary-user route:
 
@@ -152,7 +152,7 @@ Every included operation MUST have exactly one of the following dispositions:
 - `workflow`: no dedicated control, but a named published workflow already projects the operation's user-visible behavior or authoritative state.
 - `roadmap`: the endpoint is callable and in-scope, but the owning capability is not release-ready as a truthful product feature. The gap stays unpublished and MUST name an existing Roadmap item.
 
-The disposition guard is inventory and admission evidence. It MUST prove inclusion of the 147-operation set, uniqueness of each key's disposition, closed disposition shape, and that a `live` or `workflow` disposition names a surface that is currently Tier A. It cannot by itself detect a false workflow behavior claim.
+The disposition guard is inventory and admission evidence. It MUST prove inclusion of the 185-operation set, uniqueness of each key's disposition, closed disposition shape, and that a `live` or `workflow` disposition names a surface that is currently Tier A. It cannot by itself detect a false workflow behavior claim.
 
 Creation: when the included catalog gains a key, the disposition guard MUST fail until exactly one disposition is recorded. Update: shipping a truthful published projection moves `roadmap` to `live` or `workflow`. Termination: when a key leaves the included set, its disposition MUST be removed; leftover dispositions MUST fail the guard. Retry of a Core operation follows that operation's existing Core and client error contract. Dispositions are repository artifacts and have no session retry of their own. Recovery of a false `live` or `workflow` behavior claim is not a guard verdict: focused UI tests plus independent review of the actual diff decide whether the named workflow is reachable and truthful, and a false claim MUST NOT become silent repair or a browser-owned success.
 

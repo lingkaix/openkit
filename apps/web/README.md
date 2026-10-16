@@ -451,4 +451,4 @@ Workspace Vault includes `VaultGrantRequestsPanel` for supported non-secret requ
 
 ### Workspace membership controls
 
-Account membership controls permit every active member to invite, revoke, remove non-owner members and transfer ownership, subject to current server Policy and conflicts. Every invitation grants full membership; there is no access-tier selector. Actual owner identity keeps transfer-before-owner-leave controls separate from operation eligibility. Administrator-only access remains visibly separate from actual membership.
+Account membership controls permit every active member to invite, revoke, remove non-owner members and transfer ownership, subject to current server Policy and conflicts. Every invitation grants full membership; there is no access-tier selector. Actual owner identity keeps transfer-before-owner-leave controls separate from operation eligibility. Administrator-only access remains visibly separate from actual membership. Member removal and ownership-transfer confirmations belong to the exact Workspace and member; changing the selected Workspace closes an open confirmation.

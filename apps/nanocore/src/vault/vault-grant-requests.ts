@@ -22,8 +22,7 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { recordPermissionDecision } from '../policy/permission-decisions.js';
-import { evaluateWorkspaceMemberAccess } from '../policy/workspace-access.js';
+import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
 import {
@@ -837,16 +836,16 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             { policyOperation: 'vault.admin', mutating: true }
           );
           if (!access) throw new Error('Current Policy refusal.');
-          recordPermissionDecision({
+          // Administrator eligibility does not create a Workspace membership fact.
+          recordProductPermissionDecision({
             workspaceDb: db,
             ownerScope: 'workspace',
             workspaceId: input.workspaceId,
             decisionId: policyDecisionId,
-            policyDecision: evaluateWorkspaceMemberAccess({
-              operation: 'vault.admin',
-            }),
-            policyEngineVersion: 'policy-kernel:v1',
-            policySnapshotId: 'workspace-member-baseline:v1',
+            result: 'allow',
+            reasonCode: 'reviewed_vault_grant_administrator_authorized',
+            policyEngineVersion: 'nanocore-vault-policy:v1',
+            policySnapshotId: 'reviewed_vault_grant_issue',
             subjectSummary: { kind: 'user', id: record.decidingActorContext!.userId },
             action: 'vault.admin',
             resourceSummary: {

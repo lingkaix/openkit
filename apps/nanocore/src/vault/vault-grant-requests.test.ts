@@ -322,9 +322,15 @@ it.each([
     try {
       expect(
         db.sqlite
-          .prepare('SELECT result, approval_id FROM permission_decisions WHERE decision_id = ?')
+          .prepare(
+            'SELECT result, approval_id, policy_snapshot_id FROM permission_decisions WHERE decision_id = ?'
+          )
           .get(actual.policyDecisionId)
-      ).toEqual({ result: 'allow', approval_id: request.approvalRequestId });
+      ).toEqual({
+        result: 'allow',
+        approval_id: request.approvalRequestId,
+        policy_snapshot_id: 'reviewed_vault_grant_issue',
+      });
     } finally {
       db.sqlite.close();
     }
@@ -1126,10 +1132,10 @@ it('does not substitute a session replacement Token for the credential that deci
   }
 });
 
-it('records the actual administrator decision without changing the responsible requester', async () => {
+it.each(['workspace', 'server'] as const)('records the actual administrator decision without changing the responsible requester for %s', async (scope) => {
   const f = fixture();
   try {
-    const source = await prepare(f);
+    const source = await prepare(f, scope);
     const request = await (
       await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
     ).json();
@@ -1158,11 +1164,53 @@ it('records the actual administrator decision without changing the responsible r
       reviewer.secret
     );
     expect(issued.status).toBe(200);
-    expect(await issued.json()).toMatchObject({
+    const result = await issued.json();
+    expect(result).toMatchObject({
       responsibleUserId: 'user_local',
       decidingActorId: reviewerId,
       disposition: 'approved-executed',
     });
+    expect(
+      f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .all(source.workspaceId, reviewerId)
+    ).toEqual([]);
+    const grant = getVaultGrant(f.coreDb, result.grantId)!;
+    expect(grant.approvalId).toBe(request.approvalRequestId);
+    const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
+    try {
+      const decisions = db.sqlite
+        .prepare<[], { context_summary_json: string; audit_event_id: string }>(
+          "SELECT decision_id, policy_engine_version, policy_snapshot_id, result, reason_code, subject_summary_json, context_summary_json, approval_id, audit_event_id FROM permission_decisions WHERE enforcement_point = 'vault.grant-issue'"
+        )
+        .all();
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({
+        decision_id: grant.policyDecisionId,
+        policy_engine_version: 'nanocore-vault-policy:v1',
+        policy_snapshot_id: 'reviewed_vault_grant_issue',
+        result: 'allow',
+        reason_code: 'reviewed_vault_grant_administrator_authorized',
+        subject_summary_json: JSON.stringify({ kind: 'user', id: reviewerId }),
+        approval_id: request.approvalRequestId,
+      });
+      expect(JSON.parse(decisions[0]!.context_summary_json)).toMatchObject({
+        issuingActorId: reviewerId,
+        requesterId: 'user_local',
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(
+        db.sqlite
+          .prepare('SELECT actor_json, permission_decision_id, request_id FROM audit_events WHERE audit_event_id = ?')
+          .get(decisions[0]!.audit_event_id)
+      ).toEqual({
+        actor_json: JSON.stringify({ kind: 'user', id: reviewerId }),
+        permission_decision_id: grant.policyDecisionId,
+        request_id: request.approvalRequestId,
+      });
+    } finally {
+      db.sqlite.close();
+    }
     const audit = f.coreDb.sqlite
       .prepare("SELECT actor_json, request_id FROM audit_events WHERE action = 'vault.grant-issue'")
       .get();

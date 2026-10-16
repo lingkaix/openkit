@@ -5,7 +5,7 @@ import {
   parseWorkspaceSharingError,
 } from '@openkit/core-client';
 import { focusManager, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { type ReactNode, useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -15,7 +15,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { useThemeStore } from '../../app/theme-store';
 import { useWorkspaceStore } from '../workspace-store';
-import { useMyWorkspaceInvitations } from './data';
+import { memberManagementKeys, useMyWorkspaceInvitations } from './data';
 import { AccountBoundary } from './SignInScreen';
 import { useAccountAdmission, useAccountMutation } from './session';
 
@@ -3041,6 +3041,38 @@ describe('account-level My invitations', () => {
     expect(settledRows[1]).toHaveTextContent(/ws2.*pending|pending.*ws2/i);
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(rereadFails ? 3 : 2);
     expectNoRetainedInviteEmail(queryClient, guards);
+  });
+});
+
+describe('selected-Workspace member confirmation custody', () => {
+  it.each([
+    ['Remove member', 'removeWorkspaceMember'],
+    ['Transfer ownership', 'transferWorkspaceOwnership'],
+  ] as const)('closes the %s dialog when the same member is shown in another Workspace', async (action, method) => {
+    const listWorkspaceMembers = vi.fn().mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+      items: WORKSPACE_MEMBERS.items.map((member) => ({ ...member, workspaceId })),
+    }));
+    const { client, methods } = makeSharingClient({
+      methods: { listWorkspaceMembers },
+    });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    const { queryClient } = renderApp('/settings/account', client);
+    const members = await screen.findByRole('region', { name: 'Workspace members' });
+    const row = await within(members).findByRole('row', { name: /user-editor.*member/i });
+    // Both canonical reads are cached so the selected target changes without unmounting a loading table.
+    queryClient.setQueryData(memberManagementKeys.members('ws2'), {
+      items: WORKSPACE_MEMBERS.items.map((member) => ({ ...member, workspaceId: 'ws2' })),
+    });
+    queryClient.setQueryData(memberManagementKeys.invitations('ws2'), { items: [] });
+    const user = userEvent.setup();
+    await user.click(await revealRowAction(user, row, new RegExp(action, 'i')));
+    expect(screen.getByRole('dialog', { name: new RegExp(`confirm ${action}`, 'i') })).toBeInTheDocument();
+    expect(methods[method]).not.toHaveBeenCalled();
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await waitFor(() => expect(listWorkspaceMembers).toHaveBeenCalledWith({ workspaceId: 'ws2' }));
+    expect(screen.queryByRole('dialog', { name: new RegExp(`confirm ${action}`, 'i') })).not.toBeInTheDocument();
+    expect(methods.removeWorkspaceMember).not.toHaveBeenCalled();
+    expect(methods.transferWorkspaceOwnership).not.toHaveBeenCalled();
   });
 });
 
