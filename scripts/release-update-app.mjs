@@ -283,7 +283,14 @@ export async function updateApp(target, p, dir, io) {
         identities.webDigest === identities.appDigest,
       'exact live App/platform/Web identity mismatch'
     );
-    result.identities = identities;
+    // The raw installation identifier is used only for the retained host join.
+    // Release evidence carries image attribution, never that raw identifier.
+    result.identities = Object.fromEntries(
+      ['origin', 'container', 'sourceCommit', 'appDigest', 'webDigest'].map((key) => [
+        key,
+        identities[key],
+      ])
+    );
     for (const [index, read] of p.retainedReads.entries())
       requireFact(
         canonical(await call(read.operation, read.input)) === canonical(before[index]),

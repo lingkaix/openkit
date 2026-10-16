@@ -1,5 +1,5 @@
 /** Fixed operator inspection through the independently retained staging SSH binding. */
-import { spawn } from 'node:child_process';
+import { runBoundedProcess } from './bounded-process.mjs';
 
 const unavailable = 'Operator transport unavailable; inspect before any new effect.';
 const inspectionCommand = ['/usr/lib/openkit/nanohost', 'inspect'];
@@ -25,69 +25,13 @@ function sshArguments(alias, command) {
 }
 
 /** Collect bounded bytes, never truncate into success or retain a remote diagnostic. */
-function inspectProcess(alias, input, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error(unavailable));
-    const child = spawn('ssh', sshArguments(alias, 'sudo -n /usr/lib/openkit/nanohost inspect'), {
-      stdio: ['pipe', 'pipe', 'pipe'],
+async function inspectProcess(alias, input, signal) {
+  const result = await runBoundedProcess('ssh',
+    sshArguments(alias, 'sudo -n /usr/lib/openkit/nanohost inspect'), {
+      input, signal, timeoutMs: 10_000, maxStdoutBytes: 16_384, maxStderrBytes: 256,
     });
-    const stdout = [],
-      stderr = [];
-    let outputBytes = 0,
-      errorBytes = 0,
-      settled = false;
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', fail);
-    };
-    const fail = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      // Disconnecting SSH cannot prove the remote outcome. No dependent effect
-      // or automatic retry is permitted, including when a descendant holds a pipe.
-      child.kill('SIGKILL');
-      child.stdin.destroy();
-      child.stdout.destroy();
-      child.stderr.destroy();
-      child.unref();
-      reject(new Error(unavailable));
-    };
-    const timer = setTimeout(fail, 10_000);
-    signal?.addEventListener('abort', fail, { once: true });
-    child.on('error', fail);
-    child.stdin.on('error', fail);
-    child.stdout.on('error', fail);
-    child.stderr.on('error', fail);
-    child.stdout.on('data', (bytes) => {
-      if (settled) return;
-      outputBytes += bytes.length;
-      if (outputBytes > 16_384) return fail();
-      stdout.push(bytes);
-    });
-    child.stderr.on('data', (bytes) => {
-      if (settled) return;
-      errorBytes += bytes.length;
-      if (errorBytes > 256) return fail();
-      stderr.push(bytes);
-    });
-    child.on('close', (exitCode, exitSignal) => {
-      if (settled) return;
-      if (exitCode !== 0 || exitSignal !== null || errorBytes !== 0) return fail();
-      settled = true;
-      cleanup();
-      resolve({
-        exitCode,
-        signal: exitSignal,
-        timedOut: false,
-        stdout: Buffer.concat(stdout),
-        stderr: Buffer.concat(stderr),
-      });
-    });
-    // Abort may have occurred between the pre-spawn test and listener registration.
-    if (signal?.aborted) return fail();
-    child.stdin.end(input);
-  });
+  if (result.exitCode !== 0 || result.stderr.length !== 0) throw Error(unavailable);
+  return result;
 }
 
 /**

@@ -21,6 +21,16 @@ const deployment = {
   machineId: 'a'.repeat(32),
   container: 'openkit-app',
 };
+
+test('App evidence retains image attribution without the raw installation identifier', async (t) => {
+  const { p, dir, io } = await setup(t);
+  const result = await updateApp(target, p, dir, io);
+  assert.equal(result.identities.appDigest, digest);
+  assert.equal(result.identities.sourceCommit, sha);
+  assert.equal(Object.hasOwn(result.identities, 'machineId'), false);
+  const retained = JSON.parse(await fs.readFile(path.join(dir, 'app-result.json'), 'utf8'));
+  assert.equal(Object.hasOwn(retained.identities, 'machineId'), false);
+});
 /** Synthetic admitted inputs with exact reviewed assessment and public retained-record selector. */
 function params() {
   const manifest = createReleaseManifest({
