@@ -46,6 +46,8 @@ export interface LLMGatewayTransportContext {
   readonly finalRequestAdmission?: (
     request: {
       readonly payload: unknown;
+      /** Effective context capacity of the actual stock model selected for this payload. */
+      readonly contextWindowTokens: number;
       readonly outputReserveTokens: number;
       readonly codexTurnState?: string | undefined;
     },

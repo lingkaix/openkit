@@ -59,6 +59,7 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { readWorkerRawOutput } from './runtime/worker-raw-output.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 interface WorkerInferenceDispatchCall {
@@ -825,6 +826,12 @@ describe('worker inference routes', () => {
     } });
     expect(dispatch).toHaveBeenCalledOnce();
     expect(providerEffect).not.toHaveBeenCalled();
+    const rawDb = openWorkspaceDb(fixture.coreDb!.dataRoot, fixture.environmentPackage.scope.workspaceId);
+    try {
+      expect(readWorkerRawOutput(rawDb, fixture.environmentPackage.scope)).toEqual({ rawOutputBytes: 0, exhausted: false });
+    } finally {
+      rawDb.sqlite.close();
+    }
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
       expect.objectContaining({ status: 'failed', errorCode: 'worker_inference_failed' }),
     ]);
@@ -2712,7 +2719,7 @@ describe('Round 2 worker exhaustion cause', () => {
                         ? 'gateway_provider_rate_limited'
                         : 'gateway_provider_authentication_failed',
                     message: terminal
-                      ? 'Provider context limit exceeded.'
+                      ? 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.'
                       : scenario.kind === 'rate_limited'
                         ? 'Provider rate limit exceeded.'
                         : 'Provider authentication failed.',

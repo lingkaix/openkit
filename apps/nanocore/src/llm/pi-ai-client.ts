@@ -1395,6 +1395,7 @@ export class PiAiGatewayClient {
             admit(
               {
                 payload: finalPayload,
+                contextWindowTokens: model.contextWindow,
                 outputReserveTokens:
                   caps.length > 0 ? Math.max(...caps) : (options.maxTokens ?? model.maxTokens),
                 codexTurnState: options.headers?.['x-codex-turn-state'] ?? undefined,

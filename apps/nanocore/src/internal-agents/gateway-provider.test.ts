@@ -1893,6 +1893,7 @@ describe('internal rolling context Gateway boundary', () => {
     createResponses.mockImplementationOnce(async (_provider, input, context) => {
       await context.transport.finalRequestAdmission({
         payload: { ...input, instructions: 'Final serializer instructions. '.repeat(10_000) },
+        contextWindowTokens: 16_000,
         outputReserveTokens: 2_000,
       });
       return completeResponse;
@@ -1902,7 +1903,7 @@ describe('internal rolling context Gateway boundary', () => {
     });
     expect(createResponses).toHaveBeenCalledOnce();
     createResponses.mockImplementationOnce(async (_provider, input, context) => {
-      await context.transport.finalRequestAdmission({ payload: input, outputReserveTokens: 2_000 });
+      await context.transport.finalRequestAdmission({ payload: input, contextWindowTokens: 16_000, outputReserveTokens: 2_000 });
       return completeResponse;
     });
     await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
