@@ -1322,7 +1322,7 @@
         "tags": [
           "vault"
         ],
-        "summary": "Secret create for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+        "summary": "Create a Workspace Vault reference from request-only material.",
         "security": [
           {
             "bearerAuth": []
@@ -1343,7 +1343,7 @@
         },
         "responses": {
           "200": {
-            "description": "Secret create for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+            "description": "Create a Workspace Vault reference from request-only material.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1371,7 +1371,7 @@
         "tags": [
           "vault"
         ],
-        "summary": "Secret rotate for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+        "summary": "Rotate Workspace secret material while preserving its reference identity.",
         "security": [
           {
             "bearerAuth": []
@@ -1392,7 +1392,7 @@
         },
         "responses": {
           "200": {
-            "description": "Secret rotate for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+            "description": "Rotate Workspace secret material while preserving its reference identity.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1420,7 +1420,7 @@
         "tags": [
           "vault"
         ],
-        "summary": "Secret revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+        "summary": "Revoke Workspace secret material and its dependent grants and injection projections.",
         "security": [
           {
             "bearerAuth": []
@@ -1441,7 +1441,7 @@
         },
         "responses": {
           "200": {
-            "description": "Secret revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+            "description": "Revoke Workspace secret material and its dependent grants and injection projections.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1469,7 +1469,7 @@
         "tags": [
           "vault"
         ],
-        "summary": "Create an ordinary gateway-only workspace grant with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant.",
+        "summary": "Create a workspace-lifetime grant for a supported sink with optional exact target restrictions.",
         "security": [
           {
             "bearerAuth": []
@@ -1490,11 +1490,60 @@
         },
         "responses": {
           "200": {
-            "description": "Create an ordinary gateway-only workspace grant with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant.",
+            "description": "Create a workspace-lifetime grant for a supported sink with optional exact target restrictions.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/vault.grant-create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.grant-narrow": {
+      "post": {
+        "operationId": "vault.grant-narrow",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Revoke a workspace grant and issue a strictly narrower replacement; bindings require an explicit update.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.grant-narrow.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Revoke a workspace grant and issue a strictly narrower replacement; bindings require an explicit update.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.grant-narrow.output"
                 }
               }
             }
@@ -1518,7 +1567,7 @@
         "tags": [
           "vault"
         ],
-        "summary": "Grant revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+        "summary": "Revoke a Workspace grant and its dependent injection projections.",
         "security": [
           {
             "bearerAuth": []
@@ -1539,7 +1588,7 @@
         },
         "responses": {
           "200": {
-            "description": "Grant revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.",
+            "description": "Revoke a Workspace grant and its dependent injection projections.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19541,6 +19590,21 @@
               "runtime-env"
             ]
           },
+          "targetAgentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetAgentSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetCapabilityId": {
+            "type": "string",
+            "enum": [
+              "mcp.list_tools",
+              "mcp.call_tool"
+            ]
+          },
           "workspaceId": {
             "type": "string",
             "minLength": 1
@@ -19701,6 +19765,380 @@
           "status",
           "createdAt",
           "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-narrow.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "constraints": {
+            "type": "object",
+            "properties": {
+              "targetAgentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetAgentSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetCapabilityId": {
+                "type": "string",
+                "enum": [
+                  "mcp.list_tools",
+                  "mcp.call_tool"
+                ]
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "allowedInjectionPaths": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "gateway-only",
+                    "backend-provider",
+                    "runtime-file",
+                    "runtime-env",
+                    "runtime-token",
+                    "external-handle"
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "grantId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "constraints",
+          "workspaceId",
+          "grantId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-narrow.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revokedGrant": {
+            "type": "object",
+            "properties": {
+              "grantId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "vaultReferenceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "userId": {
+                "type": "null"
+              },
+              "subjectSummary": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentSessionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetCapabilityId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "allowedInjectionPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "lifetime": {
+                "type": "string",
+                "enum": [
+                  "session",
+                  "turn",
+                  "capability-call",
+                  "workspace",
+                  "until-revoked"
+                ]
+              },
+              "policyDecisionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "approvalId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked",
+                  "expired"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "grantId",
+              "vaultReferenceId",
+              "ownerScope",
+              "workspaceId",
+              "userId",
+              "subjectSummary",
+              "targetAgentId",
+              "targetAgentSessionId",
+              "targetCapabilityId",
+              "allowedInjectionPaths",
+              "lifetime",
+              "policyDecisionId",
+              "approvalId",
+              "status",
+              "createdAt",
+              "expiresAt"
+            ],
+            "additionalProperties": false
+          },
+          "grant": {
+            "type": "object",
+            "properties": {
+              "grantId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "vaultReferenceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "userId": {
+                "type": "null"
+              },
+              "subjectSummary": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentSessionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetCapabilityId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "allowedInjectionPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "lifetime": {
+                "type": "string",
+                "enum": [
+                  "session",
+                  "turn",
+                  "capability-call",
+                  "workspace",
+                  "until-revoked"
+                ]
+              },
+              "policyDecisionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "approvalId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked",
+                  "expired"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "grantId",
+              "vaultReferenceId",
+              "ownerScope",
+              "workspaceId",
+              "userId",
+              "subjectSummary",
+              "targetAgentId",
+              "targetAgentSessionId",
+              "targetCapabilityId",
+              "allowedInjectionPaths",
+              "lifetime",
+              "policyDecisionId",
+              "approvalId",
+              "status",
+              "createdAt",
+              "expiresAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "revokedGrant",
+          "grant"
         ],
         "additionalProperties": false
       },
@@ -93466,6 +93904,21 @@
               "gateway-only",
               "runtime-env"
             ]
+          },
+          "targetAgentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetAgentSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetCapabilityId": {
+            "type": "string",
+            "enum": [
+              "mcp.list_tools",
+              "mcp.call_tool"
+            ]
           }
         },
         "required": [
@@ -94373,5 +94826,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:f9a077dd242c1fe6d43d443ccce97a162c20bfc657963bca8417645a6c327542"
+  "x-openkit-source-digest": "sha256:99579ebc20ea32fbe961ac5e1b4684d97e47bfe4003280f004b23e1f10368f85"
 }
