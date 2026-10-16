@@ -8,6 +8,7 @@ import {
   ApprovalStatusSchema,
   ArchiveThreadRequestSchema,
   ArtifactSchema,
+  allocateEntityId,
   CancelTurnRequestSchema,
   CreateKnowledgeEntryRequestSchema,
   CreateThreadRequestSchema,
@@ -475,8 +476,8 @@ describe('protocol schemas', () => {
 
   it('preserves exact run Skill input and retained omission while refusing duplicate selectors', () => {
     const input = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: allocateEntityId('ws'),
+      threadId: allocateEntityId('th'),
       requestId: '00000000-0000-4000-8000-000000000129',
       input: 'Use exact Skill',
     };
@@ -499,10 +500,10 @@ describe('protocol schemas', () => {
       }).success
     ).toBe(false);
     const turn = {
-      id: 'turn_run',
+      id: allocateEntityId('tu'),
       workspaceId: input.workspaceId,
       threadId: input.threadId,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: allocateEntityId('usr') },
       items: [],
       status: 'pending',
       error: null,
