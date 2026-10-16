@@ -659,7 +659,7 @@ describe('capability usage ledger', () => {
             startCapabilityCall({
               ...original,
               ...contradiction,
-              callId: `cap_changed_${field}`,
+              callId: testEntityId('cap', `cap_changed_${field}`),
             }),
           `${field} contradiction must fail closed`
         ).toThrow();

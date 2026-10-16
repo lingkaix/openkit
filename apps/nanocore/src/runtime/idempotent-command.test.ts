@@ -6,6 +6,7 @@ import { recordServerAuditEvent } from '../audit-events.js';
 import { type CommandRequestScope, FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { type InflightIdempotentCommand, runIdempotentCommand } from './idempotent-command.js';
 
@@ -21,7 +22,7 @@ describe('workspace-transaction idempotent commands', () => {
         execute: async () => {
           executionCount += 1;
           await Promise.resolve();
-          return { id: `turn_${actorId}` };
+          return { id: testEntityId('tu', `turn_${actorId}`) };
         },
         inflightCommands,
         input: {},
@@ -45,8 +46,8 @@ describe('workspace-transaction idempotent commands', () => {
         run('usr_00000000-0000-7a71-a8b1-dcc65a83481f'),
       ])
     ).resolves.toEqual([
-      { id: 'tu_00000000-0000-71fb-8ad7-77568578bb2d' },
-      { id: 'tu_00000000-0000-7836-ba50-0864ab0b7476' },
+      { id: testEntityId('tu', 'turn_usr_00000000-0000-7e68-8ab1-8dcac1be1b5b') },
+      { id: testEntityId('tu', 'turn_usr_00000000-0000-7a71-a8b1-dcc65a83481f') },
     ]);
     expect(executionCount).toBe(2);
   });

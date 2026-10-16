@@ -13,6 +13,7 @@ import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -361,7 +362,7 @@ describe('Knowledge operation definition cutover', () => {
       const projectors = await projections(f, issued.secret);
       const requestId = randomUUID();
       const draft = proposalInput({
-        id: `ks_${randomUUID()}`,
+        id: testEntityId('ks', randomUUID()),
         contentDigest: `sha256:${'a'.repeat(64)}`,
       });
       const inputs: Record<string, Record<string, unknown>> = {
@@ -626,7 +627,7 @@ describe('Knowledge operation definition cutover', () => {
       expect(publicResult).not.toHaveProperty('retrievalTraceRef');
       expect(publicResult).not.toHaveProperty('retrievalTraceId');
       expect(retrieve).toHaveBeenCalledTimes(1);
-      const traceId = `krt_${randomUUID()}`;
+      const traceId = testEntityId('krt', randomUUID());
       const taskResult = await createTaskKnowledgePreparation(f.dependencies)(input, {
         actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         traceId,
@@ -683,7 +684,7 @@ describe('Knowledge operation definition cutover', () => {
             tokenScope: 'workspace-readonly',
             tokenWorkspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
           },
-          traceId: `krt_${randomUUID()}`,
+          traceId: testEntityId('krt', randomUUID()),
           threadId: 'th_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });

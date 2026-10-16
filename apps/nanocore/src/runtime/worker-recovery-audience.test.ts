@@ -85,7 +85,7 @@ function seedInterruptedWorker(input: {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const agentSessionId = `as_${turn.id}`;
+  const agentSessionId = testEntityId('as', `as_${turn.id}`);
   const completedAt = '2026-09-16T00:00:00.000Z';
   input.store.createAgentSession({
     agentId: 'agent_codex_host',
@@ -332,7 +332,9 @@ describe('interrupted worker list Thread audience', () => {
         false
       );
       expect(
-        getAgentSessionSpy.mock.calls.some(([sessionId]) => sessionId === `as_${ownPrivateTurnId}`)
+        getAgentSessionSpy.mock.calls.some(
+          ([sessionId]) => sessionId === testEntityId('as', `as_${ownPrivateTurnId}`)
+        )
       ).toBe(false);
 
       getTurnSpy.mockClear();
@@ -363,7 +365,7 @@ describe('interrupted worker list Thread audience', () => {
       );
       expect(
         getAgentSessionSpy.mock.calls.some(
-          ([sessionId]) => sessionId === `as_${otherPrivateTurnId}`
+          ([sessionId]) => sessionId === testEntityId('as', `as_${otherPrivateTurnId}`)
         )
       ).toBe(true);
 
@@ -437,7 +439,7 @@ describe('interrupted worker list Thread audience', () => {
       diagnosticsSummary: 'Interrupted receipt attempt',
     });
     const turnBefore = { ...store.getTurnById(turnId) };
-    const sessionBefore = { ...store.getAgentSession(`as_${turnId}`) };
+    const sessionBefore = { ...store.getAgentSession(testEntityId('as', `as_${turnId}`)) };
     const db = openWorkspaceDb(dataRoot, workspace.id);
     const scope = { workspaceId: workspace.id, threadId: thread.id, turnId };
     const requestId = 'req_b9_exact_receipt';
@@ -477,7 +479,7 @@ describe('interrupted worker list Thread audience', () => {
         receipt
       );
       expect(store.getTurnById(turnId)).toEqual(turnBefore);
-      expect(store.getAgentSession(`as_${turnId}`)).toEqual(sessionBefore);
+      expect(store.getAgentSession(testEntityId('as', `as_${turnId}`))).toEqual(sessionBefore);
       expect(
         observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === turnId)
       ).toEqual(beforeAttempt);

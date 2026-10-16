@@ -27,7 +27,7 @@ import {
 } from './fs-layout.js';
 
 const DEPLOYMENT_ID_PATTERN =
-  /^dep_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  /^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
  * Asserts that a path exists and is a directory.
@@ -129,12 +129,6 @@ describe('ensureLayout', () => {
       'server/vendor',
       'server/vendor/models.dev',
       'users',
-      'users/usr_00000000-0000-7000-8000-000000000001',
-      'users/usr_00000000-0000-7000-8000-000000000001/config',
-      'users/usr_00000000-0000-7000-8000-000000000001/data',
-      'users/usr_00000000-0000-7000-8000-000000000001/db',
-      'users/usr_00000000-0000-7000-8000-000000000001/files',
-      'users/usr_00000000-0000-7000-8000-000000000001/logs',
       'workspaces',
     ]);
   });
@@ -552,7 +546,10 @@ describe('ensureLayout', () => {
     ensureLayout(root);
 
     expectDirectory(join(root, 'server', 'db'));
-    expectDirectory(join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'db'));
+    expect(readdirSync(join(root, 'users'))).toEqual([]);
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    ensureUserLayout(root, userId);
+    expectDirectory(join(root, 'users', userId, 'db'));
   });
 
   it('keeps core.sqlite under the server ownership scope', async () => {
