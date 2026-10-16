@@ -4,16 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 

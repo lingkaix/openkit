@@ -11,7 +11,6 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
 import * as knowledgeOwners from './knowledge-operations.js';
@@ -21,13 +20,13 @@ import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { turnFilePayloadPath } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const cleanups: Array<() => void> = [];
