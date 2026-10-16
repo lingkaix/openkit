@@ -462,9 +462,6 @@ export class NotebookEditWorkspace {
         next[path.slice('/notebook/'.length)] = text;
       }
       this.validate(next);
-      ensureLive();
-      this.files = next;
-      this.snapshot = memory;
       const displayStdout =
         stdoutKind(result) === 'bytes' ? decodeBytesToUtf8(stdoutAsBytes(result)) : result.stdout;
       const stdout = clip(displayStdout, NOTEBOOK_EDIT_LIMITS.outputBytes);
@@ -472,6 +469,9 @@ export class NotebookEditWorkspace {
         result.stderr,
         NOTEBOOK_EDIT_LIMITS.outputBytes - Buffer.byteLength(stdout)
       );
+      ensureLive();
+      this.files = next;
+      this.snapshot = memory;
       return {
         exitCode: result.exitCode,
         stdout,

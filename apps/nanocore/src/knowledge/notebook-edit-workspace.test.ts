@@ -65,12 +65,12 @@ describe('NotebookEditWorkspace', () => {
     try {
       vi.setSystemTime(new Date('2000-01-01T00:00:00Z'));
       const editor = workspace();
-      expect((await editor.update({ script: 'stat -c %Y one.md' }, signal)).stdout).toBe(
-        '946684800\n'
+      expect((await editor.update({ script: 'stat one.md' }, signal)).stdout).toContain(
+        'Modify: 2000-01-01T00:00:00.000Z\n'
       );
       vi.setSystemTime(new Date('2000-01-01T00:00:01Z'));
-      expect((await editor.update({ script: 'stat -c %Y one.md' }, signal)).stdout).toBe(
-        '946684800\n'
+      expect((await editor.update({ script: 'stat one.md' }, signal)).stdout).toContain(
+        'Modify: 2000-01-01T00:00:00.000Z\n'
       );
       expect(editor.changes()).toEqual({});
     } finally {
