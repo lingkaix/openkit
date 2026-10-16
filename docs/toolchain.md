@@ -55,6 +55,7 @@ The default-tooling decision is:
 - pnpm is the default package manager, and pnpm workspaces the default workspace model.
 - TypeScript is the default compiler for typed JS/TS projects.
 - Turborepo is the default build orchestrator.
+- Turbo passes the caller's `TMPDIR` to its tasks. Slot-managed checks can therefore keep test fixtures and transform caches in their private temporary directory instead of the shared `/tmp` inode pool.
 - Biome is the default linter and formatter.
 - lefthook is the default git-hook manager.
 - mise is the default tool installer and version anchor, bounded by Toolchain Provisioning Boundary below.
