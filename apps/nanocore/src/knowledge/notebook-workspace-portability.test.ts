@@ -195,11 +195,6 @@ describe('canonical Notebook Workspace portability', () => {
   it('rebuilds a new target Notebook through the existing verified Workspace archive import', () => {
     const f = source();
     const target = deployment();
-    target.store.createWorkspace('Existing target forces remint', {
-      requestId: randomUUID(),
-      producer: { kind: 'user', id: LOCAL_USER_ID },
-      instructionReference: 'test:existing-target',
-    });
     const exported = createVerifiedWorkspaceExport({
       authorityUserId: LOCAL_USER_ID,
       authorityActor: { kind: 'user', id: LOCAL_USER_ID },
@@ -210,6 +205,15 @@ describe('canonical Notebook Workspace portability', () => {
       store: f.store,
       workspaceId: f.workspace.id,
     });
+    const occupied = importVerifiedWorkspace({
+      authorityUserId: LOCAL_USER_ID,
+      coreDb: target.coreDb,
+      dataRoot: target.dataRoot,
+      requestId: randomUUID(),
+      store: target.store,
+      verified: exported.verified,
+    });
+    expect(occupied.workspace.id).toBe(f.workspace.id);
     const imported = importVerifiedWorkspace({
       authorityUserId: LOCAL_USER_ID,
       coreDb: target.coreDb,
@@ -370,7 +374,7 @@ describe('canonical Notebook Workspace portability', () => {
     await writeHotDataRootBackup({
       dataRoot: f.dataRoot,
       backupRoot,
-      backupId: randomUUID(),
+      backupId: allocateEntityId('drb'),
       sourceDeploymentId: readDataRootLayoutMarker(f.dataRoot).deploymentId,
       startedAt: timestamp,
       completedAt: timestamp,

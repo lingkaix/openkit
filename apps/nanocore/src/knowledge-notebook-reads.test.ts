@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -588,7 +589,7 @@ async function registerSource(
 
 /** Adds a real currently active member without granting the private Source Thread audience. */
 function addMember(f: ReturnType<typeof fixture>): string {
-  const id = randomUUID();
+  const id = allocateEntityId('usr');
   const now = new Date().toISOString();
   f.coreDb.sqlite
     .prepare(
