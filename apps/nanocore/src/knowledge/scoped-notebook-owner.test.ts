@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
@@ -131,6 +131,27 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     expect(existsSync(join(f.dataRoot, 'server', 'knowledge'))).toBe(false);
     expect(existsSync(join(f.dataRoot, 'users', bob, 'memory'))).toBe(false);
     expect(() => f.initializeUser()).toThrow(NotebookError);
+  });
+
+  it('refuses a different User Audit owner before fresh notebook effects', () => {
+    const f = fixture();
+    const foreignDb = openUserDb(f.dataRoot, bob);
+    applyScopedMigrations(foreignDb);
+    try {
+      expect(() =>
+        initializeScopedNotebook({
+          coreDb: f.coreDb,
+          actor: f.actor,
+          target: { kind: 'user' },
+          userDb: foreignDb,
+          initialization: f.initialization,
+        })
+      ).toThrow('Notebook invalid request.');
+      expect(existsSync(join(f.dataRoot, 'users', alice, 'memory'))).toBe(false);
+      expect(foreignDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
+    } finally {
+      foreignDb.sqlite.close();
+    }
   });
 
   it('refuses ordinary foreign inspection before notebook reads, including a forged cached admin fact', () => {
@@ -297,6 +318,11 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     expect(pinned.notebookRevision).toBe(revision);
     expect(pinned.read().files['note.md']).toBe(text);
     expect(pinScopedNotebook(input).read().files['note.md']).not.toBe(text);
+    const schemaPath = join(f.dataRoot, 'users', alice, 'memory', 'schema', 'scope-schema.yaml');
+    rmSync(schemaPath);
+    expect(() => pinned.read()).toThrow(NotebookError);
+    expect(existsSync(schemaPath)).toBe(false);
+    writeFileSync(schemaPath, DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
     publish(notebook, { 'note.md': page({ kind: 'user', userId: bob }) });
     expect(() => pinScopedNotebook(input).read()).toThrow(NotebookError);
   });
