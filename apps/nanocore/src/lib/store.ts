@@ -222,6 +222,7 @@ export type CommandRequestName =
   | 'knowledge.update'
   | 'knowledge.delete'
   | 'knowledge.notebook.update'
+  | 'knowledge.notebook.restore'
   | 'knowledge.source.register'
   | 'knowledge.observation.record'
   | 'knowledge.claim.record'
