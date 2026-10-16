@@ -120,12 +120,7 @@ function readResourceCatalog(
 ): ResourceCatalogDocument {
   const path = resourceCatalogDocumentPath(dataRoot, owner);
   if (existsSync(path)) {
-    const raw = JSON.parse(readFileSync(path, 'utf8'));
-    // Only retained Workspace records may omit scope. Reads never rewrite their bytes.
-    if (owner.kind === 'server' && raw.scope !== 'server') {
-      throw new CatalogIntegrityError('Server catalog requires explicit Server scope.');
-    }
-    const catalog = parseResourceCatalogDocument(raw);
+    const catalog = parseResourceCatalogDocument(JSON.parse(readFileSync(path, 'utf8')));
     assertCatalogScope(catalog, owner);
     return catalog;
   }
@@ -176,7 +171,6 @@ function publishResourceCatalog(input: {
   assertCatalogScope(input.catalog, input.owner);
   const next = parseResourceCatalogDocument({
     ...input.catalog,
-    scope: input.owner.kind,
     revision: current.revision + 1,
   });
   mkdirSync(dirname(path), { recursive: true });

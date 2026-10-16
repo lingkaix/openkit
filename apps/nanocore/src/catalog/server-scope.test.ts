@@ -17,8 +17,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Produces the existing retained Workspace shape and its independently fixed raw-binding digest. */
-function retainedWorkspace() {
+/** Produces an explicitly scoped Workspace catalog and its independently fixed raw-binding digest. */
+function workspaceCatalog() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-scope-'));
   roots.push(dataRoot);
   const workspaceId = 'retained-workspace';
@@ -52,7 +52,6 @@ function retainedWorkspace() {
     },
   });
   const retained = JSON.parse(JSON.stringify(catalog));
-  delete retained.scope;
   retained.futureDescription = { retained: true };
   const path = catalogDocumentPath(dataRoot, workspaceId);
   const bytes = `${JSON.stringify(retained, null, 2)}\n`;
@@ -74,8 +73,8 @@ describe('one scoped resource catalog owner', () => {
     expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
   });
 
-  it('preserves retained Workspace bytes on read and adds scope only on authorized CAS', () => {
-    const f = retainedWorkspace();
+  it('roundtrips explicit Workspace scope without rewriting reads or changing resource identity', () => {
+    const f = workspaceCatalog();
     const loaded = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
     expect(readFileSync(f.path, 'utf8')).toBe(f.bytes);
     expect(loaded).toHaveProperty('scope', 'workspace');
@@ -95,7 +94,6 @@ describe('one scoped resource catalog owner', () => {
     const written = JSON.parse(readFileSync(f.path, 'utf8'));
     expect(written).toEqual({
       ...f.retained,
-      scope: 'workspace',
       revision: loaded.revision + 1,
       mcp: {
         ...f.retained.mcp,
@@ -117,11 +115,21 @@ describe('one scoped resource catalog owner', () => {
     ).toBe('sha256:ece03620450bfab5be716543f17a1e8f7846e24d9cd612a245f8bcd6a2cd5df5');
   });
 
+  it('rejects missing Workspace scope without converting the catalog', () => {
+    const f = workspaceCatalog();
+    const document = { ...f.retained };
+    delete document.scope;
+    const bytes = JSON.stringify(document);
+    writeFileSync(f.path, bytes);
+    expect(() => loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toThrow();
+    expect(readFileSync(f.path, 'utf8')).toBe(bytes);
+  });
+
   it.each([
     'server',
     'unknown',
   ])('rejects a misplaced or unknown %s scope without rewriting it', (scope) => {
-    const f = retainedWorkspace();
+    const f = workspaceCatalog();
     const bytes = JSON.stringify({ ...f.retained, scope });
     writeFileSync(f.path, bytes);
     expect(() => loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toThrow();
