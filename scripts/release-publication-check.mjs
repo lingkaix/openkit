@@ -142,9 +142,12 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       pending.add(match[0]);
     if (!/\.(?:mjs|js)$/.test(file)) continue;
     for (const match of bytes.matchAll(
-      /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?|\bnew URL\(\s*)['"](\.[^'"]+)['"]/g
+      /(\bfrom\s*|\bimport\s*(?:\(\s*)?|\bnew URL\(\s*)['"](\.[^'"]+)['"]/g
     )) {
-      const dependency = posix.normalize(posix.join(posix.dirname(file), match[1]));
+      // A trailing-slash URL locates a directory (for example a build's cwd),
+      // not file bytes. Imports and literal file URLs must still resolve to blobs.
+      if (match[1].startsWith('new URL') && match[2].endsWith('/')) continue;
+      const dependency = posix.normalize(posix.join(posix.dirname(file), match[2]));
       pending.add(dependency);
     }
   }

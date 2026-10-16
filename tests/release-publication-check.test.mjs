@@ -131,6 +131,31 @@ test('publication proof includes every moved job and image-construction input', 
   }
 });
 
+test('directory URL locators are not file inputs, while literal file dependencies remain proved', () => {
+  const r = repository();
+  writeFileSync(
+    path.join(r.root, 'scripts/publication-helper.mjs'),
+    "export const root = new URL('../', import.meta.url);\n" +
+      "export const input = new URL('./publication-input.json', import.meta.url);\n"
+  );
+  writeFileSync(path.join(r.root, 'scripts/publication-input.json'), '{}\n');
+  r.git('add', '.');
+  r.git('commit', '-m', 'add directory locator and literal file input');
+  const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.ok(before.files['scripts/publication-input.json']);
+  assert.equal(before.files['./'], undefined);
+  writeFileSync(path.join(r.root, 'scripts/publication-input.json'), '{"changed":true}\n');
+  r.git('add', '.');
+  r.git('commit', '-m', 'change literal file input');
+  assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, before.sha256);
+  r.git('rm', 'scripts/publication-input.json');
+  r.git('commit', '-m', 'remove required literal file input');
+  assert.throws(
+    () => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')),
+    /publication input must be a regular tracked file: scripts\/publication-input.json/
+  );
+});
+
 test('changing the candidate matrix producer invalidates publication proof', () => {
   const r = repository({ moved: true });
   const before = publicationInputsAt(r.root, r.head);

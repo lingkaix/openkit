@@ -24,6 +24,8 @@ The finite governance contract tests project declared document and role seams. T
 
 The Web operation census counts deployment-admin App-update preflight in the server partition and keeps it outside the canonical-user and Workspace surface inventory.
 
+The census also excludes administrator cleanup from the ordinary-user inventory. Current-caller read maps to the Account workflow, which projects authenticated identity and current Workspace ownership and membership. This disposition does not claim a Web retained-record count viewer; the optional explicit count read remains available through the canonical operation and operator CLI.
+
 The administrator CLI catalog and Web operation disposition tests consume the shared Kernel definition keys for the migrated slice. They preserve their whole-catalog coverage and duplicate checks without maintaining a second handwritten slice list. Cross-projection result and stored-record behavior belongs to NanoCore's `src/operation-projections.test.ts`; root catalog checks do not replace that composition proof.
 
 ## Commands
