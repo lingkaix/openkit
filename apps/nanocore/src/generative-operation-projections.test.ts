@@ -4,18 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const appId = '00000000-0000-4000-a000-000000000001';
 const recordId = '00000000-0000-4000-a000-000000000002';
-const presentationId = '00000000-0000-4000-a000-000000000003';
+const presentationId = 'pres_00000000-0000-7b16-a832-90f20c8ff3da';
 const schema = {
   format: 'openkit.light-app',
   schemaVersion: 1,
@@ -41,15 +42,19 @@ const event = {
   },
 };
 const publish = {
-  threadId: 'th_demo',
-  turnId: 'missing-turn',
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
+  turnId: testEntityId('tu', 'missing-turn'),
   title: 'Proof',
   fallbackText: 'Proof',
   messages: [{}, {}],
-  source: { kind: 'item', itemId: 'missing-item', contentDigest: `sha256:${'0'.repeat(64)}` },
+  source: {
+    kind: 'item',
+    itemId: testEntityId('it', 'missing-item'),
+    contentDigest: `sha256:${'0'.repeat(64)}`,
+  },
   actions: [],
 };
-const base = '/api/app/workspaces/ws_demo';
+const base = '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001';
 const cases = [
   ['kernel.apps.list', 'GET', '/light-apps', {}, {}, 200],
   ['kernel.apps.create', 'POST', '/light-apps', schema, {}, 201],
@@ -151,7 +156,11 @@ function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const store = createDemoStore({ dataRoot });
   return {
     coreDb,
@@ -186,7 +195,11 @@ describe('Generative operation cutover', () => {
       const response = await f.app.request(`/api/app/operations/${id}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
-        body: JSON.stringify({ ...body, ...selectors, workspaceId: 'ws_demo' }),
+        body: JSON.stringify({
+          ...body,
+          ...selectors,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        }),
       });
       expect(response.status).toBe(status);
       const result = await response.json();
@@ -220,10 +233,14 @@ it('keeps native revisions, replay and atomic batch outcomes through the typed c
     return row.handler({ client }, row.inputSchema.parse(input));
   };
   try {
-    const input = { ...schema, workspaceId: 'ws_demo', requestId: randomUUID() };
+    const input = {
+      ...schema,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      requestId: randomUUID(),
+    };
     const created = await client.operations['kernel.apps.create'](input as never);
     expect(await cli('kernel.apps.create', input)).toEqual(created);
-    const scope = { workspaceId: 'ws_demo', appId: created.appId };
+    const scope = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', appId: created.appId };
     const record = await client.operations['kernel.records.create']({
       ...scope,
       collection: 'entries',
@@ -303,7 +320,9 @@ it('keeps native revisions, replay and atomic batch outcomes through the typed c
       expectedAppRevision: changed.appRevision,
     });
     expect(retired.lifecycle).toBe('retired');
-    const apps = await client.operations['kernel.apps.list']({ workspaceId: 'ws_demo' });
+    const apps = await client.operations['kernel.apps.list']({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     expect(apps.items).toHaveLength(1);
     expect(apps.items[0]).toMatchObject({ appId: created.appId, lifecycle: 'retired' });
     await expect(
@@ -335,9 +354,9 @@ it('preserves publication, JSON resources, refresh and conditional action receip
     fetch: (input, init) => f.app.fetch(new Request(input, init)),
   });
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'workspace',
-    workspaceIds: ['ws_demo'],
+    workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const mcp = async (operation: string, input: unknown, expectedError?: string) => {
@@ -368,10 +387,10 @@ it('preserves publication, JSON resources, refresh and conditional action receip
   try {
     const created = await client.operations['kernel.apps.create']({
       ...schema,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     } as never);
     const scope = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       appId: created.appId,
       collection: 'entries',
       schemaRevision: 1,
@@ -381,14 +400,19 @@ it('preserves publication, JSON resources, refresh and conditional action receip
       data: { note: 'Original' },
     });
     const collection = created.schema!.collections[0]!;
-    const turn = f.store.createTurn('ws_demo', 'th_demo', 'Edit note', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = f.store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Edit note',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const publication = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       requestId: randomUUID(),
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       title: 'Edit note',
       fallbackText: 'Edit note',
@@ -459,7 +483,10 @@ it('preserves publication, JSON resources, refresh and conditional action receip
     };
     const published = await client.operations['generative-ui.publish'](publication as never);
     expect(await mcp('generative-ui.publish', publication)).toEqual(published);
-    const selected = { workspaceId: 'ws_demo', presentationId: published.id };
+    const selected = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      presentationId: published.id,
+    };
     expect(await mcp('generative-ui.get', selected)).toEqual(published);
     const resource = await client.operations['generative-ui.resource'](selected);
     expect(await mcp('generative-ui.resource', selected)).toEqual(resource);
@@ -542,7 +569,7 @@ it('retains Workspace availability failures and refuses before any app or presen
       const response = await f.app.request(`/api/app/operations/${id}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
-        body: JSON.stringify({ ...input, workspaceId: 'ws_demo' }),
+        body: JSON.stringify({ ...input, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
       });
       expect(response.status).toBe(status);
       if (status === 400)
@@ -552,17 +579,17 @@ it('retains Workspace availability failures and refuses before any app or presen
         });
       else
         expect(await response.json()).toEqual({
-          protocolVersion: '0.5.0',
+          protocolVersion: '0.6.0',
           code: 'internal_error',
           message: 'Internal Server Error',
         });
     }
-    expect(lookup).toHaveBeenCalledWith('ws_demo');
+    expect(lookup).toHaveBeenCalledWith('ws_00000000-0000-7000-8000-000000000001');
     lookup.mockImplementation(available);
     const response = await f.app.request('/api/app/operations/kernel.apps.list', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
     });
     expect(await response.json()).toMatchObject({ totalItems: 0, items: [] });
     expect(
@@ -586,9 +613,9 @@ it('refuses read-only and revoked credentials before any newly migrated Kernel o
     './auth/access-token-store.js'
   );
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'workspace-readonly',
-    workspaceIds: ['ws_demo'],
+    workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const headers = { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' };
@@ -596,7 +623,7 @@ it('refuses read-only and revoked credentials before any newly migrated Kernel o
     server.request('/api/app/operations/kernel.apps.list', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
     });
   try {
     const response = await read();
@@ -609,7 +636,7 @@ it('refuses read-only and revoked credentials before any newly migrated Kernel o
       const denied = await server.request(`/api/app/operations/${id}`, {
         method: 'POST',
         headers: { ...headers, 'x-openkit-request-id': randomUUID() },
-        body: JSON.stringify({ ...input, workspaceId: 'ws_demo' }),
+        body: JSON.stringify({ ...input, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
       });
       expect(denied.status).toBe(403);
       expect(await denied.json()).toMatchObject({ code: 'workspace_access_denied' });

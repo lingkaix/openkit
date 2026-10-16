@@ -1,7 +1,10 @@
 import {
   ApiErrorSchema,
+  InvitationIdSchema,
   RequestIdSchema,
   TimestampSchema,
+  UserIdSchema,
+  WorkspaceExportIdSchema,
   WorkspaceIdSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
@@ -23,7 +26,7 @@ export const WorkspaceAccessCauseSchema = z.enum(['membership', 'administrator']
 /** Actual retained relationship and current access cause; administrator eligibility grants no membership. */
 export const WorkspaceAccessRelationSchema = z
   .object({
-    ownerUserId: z.string().min(1),
+    ownerUserId: UserIdSchema,
     membershipStatus: WorkspaceMembershipStatusSchema.nullable(),
     accessCause: WorkspaceAccessCauseSchema,
   })
@@ -57,7 +60,7 @@ export const WorkspaceRevisionSchema = z.number().int().positive();
 /** Closed projection returned after one canonical user is disabled. */
 export const UserLifecycleSummarySchema = z
   .object({
-    userId: z.string().min(1),
+    userId: UserIdSchema,
     status: z.literal('disabled'),
     disabledAt: TimestampSchema,
   })
@@ -75,7 +78,7 @@ export const AuthorizedWorkspaceSummarySchema = WorkspaceAccessRelationSchema.sa
 export const WorkspaceAccessRecoveryStateSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
-    ownerUserId: z.string().min(1),
+    ownerUserId: UserIdSchema,
     administratorRole: WorkspaceEffectiveRoleSchema.nullable(),
     registryRevision: WorkspaceRevisionSchema,
   })
@@ -84,8 +87,8 @@ export const WorkspaceAccessRecoveryStateSchema = z
 /** Fields shared by every Workspace membership projection variant. */
 const WorkspaceMemberBaseSchema = z.object({
   workspaceId: WorkspaceIdSchema,
-  userId: z.string().min(1),
-  invitationId: z.string().min(1).nullable(),
+  userId: UserIdSchema,
+  invitationId: InvitationIdSchema.nullable(),
   joinedAt: TimestampSchema,
   revision: WorkspaceRevisionSchema,
   createdAt: TimestampSchema,
@@ -122,11 +125,11 @@ export const WorkspaceMemberSchema = z.union([
 
 /** Fields shared by every Workspace invitation projection variant. */
 const WorkspaceInvitationBaseSchema = z.object({
-  invitationId: z.string().min(1),
+  invitationId: InvitationIdSchema,
   workspaceId: WorkspaceIdSchema,
-  inviteeUserId: z.string().min(1),
+  inviteeUserId: UserIdSchema,
   proposedAccessLevel: WorkspaceAccessLevelSchema,
-  inviterUserId: z.string().min(1),
+  inviterUserId: UserIdSchema,
   expiresAt: TimestampSchema,
   revision: WorkspaceRevisionSchema,
   createdAt: TimestampSchema,
@@ -243,7 +246,7 @@ export const LeaveWorkspaceRequestSchema = WorkspaceMembershipRemovalRequestSche
 export const TransferWorkspaceOwnershipRequestSchema = z
   .object({
     requestId: RequestIdSchema,
-    targetUserId: z.string().min(1),
+    targetUserId: UserIdSchema,
     expectedRegistryRevision: WorkspaceRevisionSchema,
   })
   .strict();
@@ -280,7 +283,7 @@ export const WorkspaceDeletionPhaseSchema = z.enum([
 const WorkspaceDeletionStateBaseSchema = z.object({
   workspaceId: WorkspaceIdSchema,
   requestId: RequestIdSchema,
-  recoveryExportId: z.string().min(1).nullable(),
+  recoveryExportId: WorkspaceExportIdSchema.nullable(),
   closureId: z.string().min(1).nullable(),
   retainedStaging: z.boolean(),
 });
@@ -338,7 +341,7 @@ export const DeletedWorkspaceRecoveryStateSchema = z
   .object({
     sourceWorkspaceId: WorkspaceIdSchema,
     deletionRequestId: RequestIdSchema,
-    recoveryExportId: z.string().min(1),
+    recoveryExportId: WorkspaceExportIdSchema,
     closureId: z.string().min(1),
     import: WorkspaceImportResponseSchema,
   })

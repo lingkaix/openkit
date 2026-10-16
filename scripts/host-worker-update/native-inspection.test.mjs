@@ -219,7 +219,7 @@ async function fixture(t, mode) {
   };
   const runtimeTarget = {
     identityId: 'host-fixture',
-    deploymentId: 'deployment-fixture',
+    deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000003',
     connectionGeneration: 8,
     physicalEpoch: '2'.repeat(64),
     ready: true,

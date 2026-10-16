@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import {
   existsSync,
   mkdirSync,
@@ -12,11 +13,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-
 import { describe, expect, it, vi } from 'vitest';
-
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from '../runtime/feedback.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   readEncryptedFileVaultText,
   writeEncryptedFileVaultJsonAtomically,
@@ -164,7 +164,7 @@ describe('direct canonical write boundaries', () => {
   it('rejects a symlinked import staging parent before staging or publication', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-staging-symlink-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = 'ws_import_staging_symlink';
+    const workspaceId = 'ws_00000000-0000-7cc0-bb9d-9038c067cd62';
     const workspacesRoot = join(dataRoot, 'workspaces');
     const outsideRoot = installOutsideParent(
       join(workspacesRoot, '.staging'),
@@ -191,7 +191,7 @@ describe('direct canonical write boundaries', () => {
 
   it('rejects a symlinked source material parent without writing outside the workspace', () => {
     const { store, workspace, workspaceRoot } = createFixture('openkit-source-material-symlink-');
-    const sourceId = 'ks_source_material_symlink';
+    const sourceId = 'ks_00000000-0000-7f09-8877-59431b147e4f';
     const outsideRoot = installOutsideParent(
       join(workspaceRoot, 'sources', 'materials', sourceId),
       'openkit-source-material-outside-'
@@ -214,7 +214,7 @@ describe('direct canonical write boundaries', () => {
   ] as const)('rejects a symlinked staged source %s parent without writing outside', (family) => {
     const { store, workspace } = createFixture(`openkit-staged-source-${family}-`);
     const workspaceRoot = mkdtempSync(join(tmpdir(), `openkit-staged-source-root-${family}-`));
-    const sourceId = `ks_staged_${family}_symlink`;
+    const sourceId = testEntityId('ks', `ks_staged_${family}_symlink`);
     const source = knowledgeSource(workspace.id, sourceId);
     const outsideRoot = installOutsideParent(
       join(workspaceRoot, 'sources', family, sourceId),
@@ -258,7 +258,7 @@ describe('direct canonical write boundaries', () => {
         switch (family) {
           case 'observation':
             store.recordKnowledgeObservation({
-              id: 'ko_direct_write_symlink',
+              id: 'ko_00000000-0000-78d5-afde-a8d938b2aee1',
               workspaceId: workspace.id,
               kind: 'maintenance',
               summary: 'Canonical writes must reject symlinked parents.',
@@ -274,7 +274,7 @@ describe('direct canonical write boundaries', () => {
             break;
           case 'claim':
             store.recordKnowledgeClaim({
-              id: 'kc_direct_write_symlink',
+              id: 'kc_00000000-0000-7ee4-876e-3645dfc70dfc',
               workspaceId: workspace.id,
               statement: 'Canonical writes reject symlinked parents.',
               sourceReferences: [],
@@ -290,7 +290,7 @@ describe('direct canonical write boundaries', () => {
             break;
           case 'conflict':
             store.recordKnowledgeConflict({
-              id: 'kf_direct_write_symlink',
+              id: 'kf_00000000-0000-759a-86ef-092a69e6ef8e',
               workspaceId: workspace.id,
               subjectReferences: ['knowledge:boundary'],
               sourceReferences: [],
@@ -319,10 +319,10 @@ describe('direct canonical write boundaries', () => {
     const thread = store.createThread(workspace.id, 'Event continuity thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Validate event continuity', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -423,7 +423,7 @@ function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
     const thread = store.createThread(workspace.id, 'Feedback');
     const turn = store.createTurn(workspace.id, thread.id, 'Durable feedback', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
     const path = feedbackFilePath(store, store.getTurnById(turn.id));

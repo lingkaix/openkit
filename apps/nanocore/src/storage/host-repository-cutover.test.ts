@@ -18,7 +18,7 @@ describe('host repository release cutover', () => {
         sqlite.exec(ddl);
       }
       sqlite.exec(
-        "INSERT INTO workspace_repository_resources (workspace_id, resource_id, type, display_name, local_path, diagnostics_status, created_at, updated_at) VALUES ('ws_old', 'repo_default', 'git_repository', 'Historical', '/unreachable/host', 'ready', '2026-10-01', '2026-10-01')"
+        "INSERT INTO workspace_repository_resources (workspace_id, resource_id, type, display_name, local_path, diagnostics_status, created_at, updated_at) VALUES ('ws_00000000-0000-79df-9a95-ac1f274f0eb7', 'repo_default', 'git_repository', 'Historical', '/unreachable/host', 'ready', '2026-10-01', '2026-10-01')"
       );
       const tables = (): string[] =>
         (

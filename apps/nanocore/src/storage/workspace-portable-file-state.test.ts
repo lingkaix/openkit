@@ -16,11 +16,12 @@ import {
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
@@ -51,18 +52,18 @@ describe('workspace portable file state', () => {
   it('rejects a publisher-temp-shaped directory in a retrieval trace directory', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-entry-'));
     try {
-      const threadId = 'th_00000000-0000-4000-8000-000000000881';
+      const threadId = 'th_00000000-0000-7447-99d5-aafec0cacdd4';
       const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
       mkdirSync(traceDirectory, { recursive: true });
       const tempPath = join(
         traceDirectory,
-        '.krt_00000000-0000-4000-8000-000000000882.00000000-0000-4000-8000-000000000883.tmp'
+        '.krt_00000000-0000-7d0b-95d7-2834cc1f705c.00000000-0000-4000-8000-000000000883.tmp'
       );
       mkdirSync(tempPath);
 
       expect(() =>
         readWorkspacePortableFileState(workspaceRoot, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threads: [{ threadId }],
           turns: [],
         })
@@ -75,20 +76,20 @@ describe('workspace portable file state', () => {
   it('ignores a regular publisher temporary file in a retrieval trace directory', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-file-'));
     try {
-      const threadId = 'th_00000000-0000-4000-8000-000000000881';
+      const threadId = 'th_00000000-0000-7447-99d5-aafec0cacdd4';
       const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
       mkdirSync(traceDirectory, { recursive: true });
       writeFileSync(
         join(
           traceDirectory,
-          '.krt_00000000-0000-4000-8000-000000000882.00000000-0000-4000-8000-000000000883.tmp'
+          '.krt_00000000-0000-7d0b-95d7-2834cc1f705c.00000000-0000-4000-8000-000000000883.tmp'
         ),
         'incomplete'
       );
 
       expect(
         readWorkspacePortableFileState(workspaceRoot, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threads: [{ threadId }],
           turns: [],
         }).retrievalTraceFiles.size
@@ -104,10 +105,10 @@ describe('workspace portable file state', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const sourceWorkspaceId = 'ws_demo';
+    const sourceWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: sourceWorkspaceId,
     });
     const sourceRoot = join(dataRoot, 'workspaces', sourceWorkspaceId);
@@ -121,11 +122,11 @@ describe('workspace portable file state', () => {
     });
 
     store.recordKnowledgeObservation({
-      id: 'ko_portable_first',
+      id: 'ko_00000000-0000-72ae-82a2-428025c60c1b',
       workspaceId: sourceWorkspaceId,
       kind: 'maintenance',
       summary: 'First portable observation.',
-      sourceReferences: ['claim:kc_portable_source'],
+      sourceReferences: ['claim:kc_00000000-0000-71a7-90bd-9df60db5bd84'],
       scope: 'workspace',
       producer: 'portability-test',
       confidence: 0.9,
@@ -135,11 +136,11 @@ describe('workspace portable file state', () => {
       createdAt: firstTimestamp,
     });
     store.recordKnowledgeObservation({
-      id: 'ko_portable_second',
+      id: 'ko_00000000-0000-79e1-b411-0955d1d4fab5',
       workspaceId: sourceWorkspaceId,
       kind: 'maintenance',
       summary: 'Second portable observation.',
-      sourceReferences: ['claim:kc_portable_source'],
+      sourceReferences: ['claim:kc_00000000-0000-71a7-90bd-9df60db5bd84'],
       scope: 'workspace',
       producer: 'portability-test',
       confidence: 1,
@@ -149,7 +150,7 @@ describe('workspace portable file state', () => {
       createdAt: secondTimestamp,
     });
     store.recordKnowledgeClaim({
-      id: 'kc_portable_first',
+      id: 'kc_00000000-0000-707a-a7d4-e48c361c5546',
       workspaceId: sourceWorkspaceId,
       statement: 'First portable claim.',
       sourceReferences: [`knowledge:${knowledge.id}`],
@@ -163,7 +164,7 @@ describe('workspace portable file state', () => {
       updatedAt: firstTimestamp,
     });
     store.recordKnowledgeClaim({
-      id: 'kc_portable_source',
+      id: 'kc_00000000-0000-71a7-90bd-9df60db5bd84',
       workspaceId: sourceWorkspaceId,
       statement: 'Source-backed portable claim.',
       sourceReferences: [`knowledge:${knowledge.id}`],
@@ -177,9 +178,12 @@ describe('workspace portable file state', () => {
       updatedAt: secondTimestamp,
     });
     store.recordKnowledgeConflict({
-      id: 'kf_portable',
+      id: 'kf_00000000-0000-72bb-b75d-46dfe72603e1',
       workspaceId: sourceWorkspaceId,
-      subjectReferences: [`knowledge:${knowledge.id}`, 'claim:kc_portable_source'],
+      subjectReferences: [
+        `knowledge:${knowledge.id}`,
+        'claim:kc_00000000-0000-71a7-90bd-9df60db5bd84',
+      ],
       sourceReferences: [`knowledge:${knowledge.id}`],
       status: 'needs_review',
       summary: 'Portable conflict needs review.',
@@ -190,7 +194,7 @@ describe('workspace portable file state', () => {
     });
     store.resolveKnowledgeConflict({
       workspaceId: sourceWorkspaceId,
-      conflictId: 'kf_portable',
+      conflictId: 'kf_00000000-0000-72bb-b75d-46dfe72603e1',
       status: 'resolved',
       resolution: 'Portable conflict resolved.',
       resolvedBy: 'portability-test',
@@ -286,7 +290,11 @@ describe('workspace portable file state', () => {
       rationale: 'Preserve the exact reviewed page as portable Knowledge.',
       confidence: 1,
       verifiedExternalReferences: [],
-      producer: { kind: 'agent', id: 'agent_knowledge', responsibleUserId: 'user_local' },
+      producer: {
+        kind: 'agent',
+        id: 'agent_knowledge',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      },
       createdAt: firstTimestamp,
     });
     store.recordKnowledgeProposalReviewDecision({
@@ -295,7 +303,7 @@ describe('workspace portable file state', () => {
       requestId: '00000000-0000-4000-8000-00000000d912',
       decision: 'accepted',
       verifiedExternalReferences: [],
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       decidedAt: secondTimestamp,
     });
 
@@ -377,7 +385,7 @@ describe('workspace portable file state', () => {
         () =>
           readWorkspaceImportSnapshot({
             verified: { ...verified, fileContents },
-            targetWorkspaceId: `ws_${name}_page_import`,
+            targetWorkspaceId: testEntityId('ws', `ws_${name}_page_import`),
           }),
         name
       ).toThrow(/Knowledge Page/i);
@@ -541,14 +549,14 @@ describe('workspace portable file state', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId,
     });
     const thread = store.listThreads(workspaceId)[0]!;
-    const traceId = 'krt_00000000-0000-4000-8000-000000000882';
+    const traceId = 'krt_00000000-0000-7d0b-95d7-2834cc1f705c';
     const reference = {
       scopeId: `retrieval-trace/thread/${workspaceId}/${thread.id}`,
       objectId: traceId,
@@ -558,7 +566,7 @@ describe('workspace portable file state', () => {
       queryContext: {
         serverId: readDataRootLayoutMarker(dataRoot).deploymentId,
         workspaceId,
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         threadId: thread.id,
       },
       sourceScope: `page/workspace/${workspaceId}`,
@@ -606,10 +614,10 @@ describe('workspace portable file state', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId,
     });
     const thread = store.listThreads(workspaceId)[0]!;
@@ -629,11 +637,11 @@ describe('workspace portable file state', () => {
       access: {
         store,
         coreDb,
-        actor: { kind: 'user', id: 'user_local' },
-        requestActor: { kind: 'local', userId: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         outputThreadId: thread.id,
       },
-      traceId: 'krt_00000000-0000-4000-8000-000000000883',
+      traceId: 'krt_00000000-0000-7da4-9723-d3b248482ae2',
       now: () => '2026-07-06T00:00:00.000Z',
     });
     expect(result.retrievalTraceRef).toBeDefined();

@@ -59,7 +59,7 @@ function captureBinding() {
     workspace.id,
     thread.id,
     'Request',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     { captureCoverage: { scope: 'server', value: 'off' } }
   );

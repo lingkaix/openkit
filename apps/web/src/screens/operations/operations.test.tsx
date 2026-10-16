@@ -25,8 +25,14 @@ const HOST_PATH = '/Users/secret/openkit-runtime';
 const RAW_HANDLE = 'sandbox-pid-7777-gateway-xyz';
 const POISON_SECRET = 'sk-secret-should-never-render';
 const SEARCH_QUERY = 'pricing';
-const WORKSPACE = { id: 'ws1', name: 'Market research' } as const;
-const WORKSPACE_B = { id: 'ws2', name: 'Second workspace' } as const;
+const WORKSPACE = {
+  id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  name: 'Market research',
+} as const;
+const WORKSPACE_B = {
+  id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+  name: 'Second workspace',
+} as const;
 
 const WORKER_BASE = {
   kind: 'interrupted_worker_state' as const,
@@ -68,8 +74,8 @@ const INTERRUPTED_WORKER = interruptedWorker({
   ...WORKER_BASE,
   checkpointId: 'ckpt_1',
   workspaceId: WORKSPACE.id,
-  threadId: 'th_worker',
-  turnId: 'tu_worker',
+  threadId: 'th_00000000-0000-7511-9db5-ba3f596149a8',
+  turnId: 'tu_00000000-0000-794c-807d-1f5ab971587b',
   stage: 'running_worker',
   diagnosticsSummary: 'Interrupted during running_worker.',
   choices: [
@@ -82,8 +88,8 @@ const INSPECT_WORKER = interruptedWorker({
   ...WORKER_BASE,
   checkpointId: 'ckpt_inspect',
   workspaceId: WORKSPACE.id,
-  threadId: 'th_inspect',
-  turnId: 'tu_inspect',
+  threadId: 'th_00000000-0000-7981-8f46-bdf4a09392f0',
+  turnId: 'tu_00000000-0000-7db5-a7e5-822779119567',
   stage: 'waiting_for_user',
   diagnosticsSummary: 'Waiting for a human decision.',
   contextDigest: 'sha256:inspect-context-digest',
@@ -98,8 +104,8 @@ const NULL_DIAGNOSTICS_WORKER = interruptedWorkerState({
   ...WORKER_BASE,
   checkpointId: 'ckpt_null_diag',
   workspaceId: WORKSPACE.id,
-  threadId: 'th_null_diag',
-  turnId: 'tu_null_diag',
+  threadId: 'th_00000000-0000-7623-a253-35c4435fd52e',
+  turnId: 'tu_00000000-0000-7ddb-a634-435178284312',
   stage: 'failed',
   diagnosticsSummary: null,
   contextDigest: 'sha256:null-diag-context-digest',
@@ -126,8 +132,8 @@ const WORKSPACE_B_WORKER = interruptedWorker({
   ...WORKER_BASE,
   checkpointId: 'ckpt_ws2',
   workspaceId: WORKSPACE_B.id,
-  threadId: 'th_ws2_worker',
-  turnId: 'tu_ws2_worker',
+  threadId: 'th_00000000-0000-794d-8de9-6f5863469b81',
+  turnId: 'tu_00000000-0000-7b7e-bd25-7a4725d64d34',
   stage: 'running_worker',
   diagnosticsSummary: 'Interrupted in the second workspace.',
   choices: [
@@ -140,8 +146,8 @@ const ELIGIBLE_PEER_WORKER = interruptedWorker({
   ...WORKER_BASE,
   checkpointId: 'ckpt_peer',
   workspaceId: WORKSPACE.id,
-  threadId: 'th_peer',
-  turnId: 'tu_peer',
+  threadId: 'th_00000000-0000-76cb-af10-ab72c4db5175',
+  turnId: 'tu_00000000-0000-738a-bfcf-bba98866d7ac',
   stage: 'running_worker',
   diagnosticsSummary: 'Unrelated interrupted worker remains eligible.',
   choices: [
@@ -161,8 +167,8 @@ const DENIED_ADMISSION = {
     queueEntryId: 'q_denied',
     requestId: 'req_denied',
     workspaceId: WORKSPACE.id,
-    threadId: 'th_denied',
-    turnId: 'tu_denied',
+    threadId: 'th_00000000-0000-7458-95e5-2b42a969e50c',
+    turnId: 'tu_00000000-0000-76d9-9237-f1d899d89394',
     requestedAgentId: 'agent_scout',
     profileRef: 'scout/default',
     modelId: null,
@@ -180,8 +186,8 @@ const QUEUED_ADMISSION = SchedulerAdmissionReadModelSchema.parse({
   ...DENIED_ADMISSION,
   queueEntryId: 'q_queued',
   requestId: 'req_queued',
-  threadId: 'th_queued',
-  turnId: 'tu_queued',
+  threadId: 'th_00000000-0000-79eb-b845-a67f9d51e034',
+  turnId: 'tu_00000000-0000-7c31-a34f-28e860259d61',
   status: 'queued',
   denialReason: null,
   queuePosition: 1,
@@ -199,8 +205,8 @@ const WORKSPACE_B_QUEUED = SchedulerAdmissionReadModelSchema.parse({
   queueEntryId: 'q_ws2',
   requestId: 'req_ws2',
   workspaceId: WORKSPACE_B.id,
-  threadId: 'th_ws2_sched',
-  turnId: 'tu_ws2_sched',
+  threadId: 'th_00000000-0000-7a28-ab4c-a5ce1abd0af3',
+  turnId: 'tu_00000000-0000-7e28-8009-d6004f3149ce',
   requestedAgentId: 'agent_ops',
   queuePosition: 3,
 });
@@ -210,8 +216,8 @@ const WORKSPACE_B_DENIED = SchedulerAdmissionReadModelSchema.parse({
   queueEntryId: 'q_ws2_denied',
   requestId: 'req_ws2_denied',
   workspaceId: WORKSPACE_B.id,
-  threadId: 'th_ws2_denied',
-  turnId: 'tu_ws2_denied',
+  threadId: 'th_00000000-0000-778d-ac17-29db6cffa106',
+  turnId: 'tu_00000000-0000-7941-8880-3fb2155f3604',
   requestedAgentId: 'agent_ops',
 });
 
@@ -227,7 +233,7 @@ const SEARCH_THREAD = {
     items: [
       {
         kind: 'thread',
-        id: 'th_search',
+        id: 'th_00000000-0000-73b4-b684-236897cca406',
         title: 'Competitive pricing report',
         workspaceId: WORKSPACE.id,
       },
@@ -243,7 +249,7 @@ const SEARCH_CROSS_WORKSPACE = {
     items: [
       {
         kind: 'thread',
-        id: 'th_ws2_search',
+        id: 'th_00000000-0000-7fe0-b2ef-80794233eb26',
         title: 'Second-workspace pricing thread',
         workspaceId: WORKSPACE_B.id,
       },
@@ -272,7 +278,7 @@ const SEARCH_ARTIFACT = {
     items: [
       {
         kind: 'artifact',
-        id: 'artifact_search_weekly',
+        id: 'ar_00000000-0000-7976-a2fa-e121e50a2a48',
         title: 'Weekly competitor summary',
         workspaceId: WORKSPACE_B.id,
       },
@@ -282,7 +288,7 @@ const SEARCH_ARTIFACT = {
   localPath: HOST_PATH,
 };
 const SEARCH_ARTIFACT_DISTRACTOR = {
-  id: 'artifact_search_distractor',
+  id: 'ar_00000000-0000-7c37-9e11-9896c3b89449',
   kind: 'file' as const,
   status: 'ready' as const,
   title: 'Ops distractor file',
@@ -312,7 +318,7 @@ const WORKSPACE_B_WORKER_RETRY = RetryInterruptedWorkerCheckpointResponseSchema.
 });
 const WORKER_RETRY_MUTATION = RetryInterruptedWorkerCheckpointResponseSchema.parse({
   outcome: 'released_for_retry',
-  turnId: 'mutation-only-turn',
+  turnId: 'tu_00000000-0000-7ed9-a8f0-4a8199ac8989',
 });
 const SCHEDULER_RETRY_MUTATION = RetrySchedulerAdmissionResponseSchema.parse({ retried: true });
 const SCHEDULER_CANCEL_MUTATION = CancelSchedulerAdmissionResponseSchema.parse({ cancelled: true });
@@ -380,7 +386,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -394,7 +400,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -1685,7 +1691,7 @@ describe('Recovery and search', () => {
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),

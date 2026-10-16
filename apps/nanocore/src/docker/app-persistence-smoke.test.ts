@@ -34,11 +34,11 @@ async function createMountedDataRootFixture(workspaceId: string): Promise<string
     join(dataRoot, 'server', 'runtime', 'sessions'),
     join(dataRoot, 'server', 'migrations'),
     join(dataRoot, 'server', 'vendor', 'models.dev'),
-    join(dataRoot, 'users', 'user_local', 'files'),
-    join(dataRoot, 'users', 'user_local', 'data'),
-    join(dataRoot, 'users', 'user_local', 'db'),
-    join(dataRoot, 'users', 'user_local', 'logs'),
-    join(dataRoot, 'users', 'user_local', 'config'),
+    join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'files'),
+    join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'data'),
+    join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'db'),
+    join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'logs'),
+    join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'config'),
     join(workspaceRoot, 'files'),
     join(workspaceRoot, 'data'),
     join(workspaceRoot, 'db'),
@@ -60,7 +60,7 @@ async function createMountedDataRootFixture(workspaceId: string): Promise<string
   writeFileSync(join(dataRoot, 'config', 'server.jsonc'), '{ "schemaVersion": 1 }\n');
   writeFileSync(
     join(workspaceRoot, 'workspace-record.json'),
-    '{ "id": "ws_1", "kind": "general", "status": "active", "createdAt": "2026-08-31T00:00:00.000Z", "updatedAt": "2026-08-31T00:00:00.000Z" }\n'
+    '{ "id": "ws_00000000-0000-73c3-900f-8d310e4ba201", "kind": "general", "status": "active", "createdAt": "2026-08-31T00:00:00.000Z", "updatedAt": "2026-08-31T00:00:00.000Z" }\n'
   );
   writeFileSync(
     join(workspaceRoot, 'config', 'workspace.jsonc'),
@@ -105,7 +105,7 @@ describe('app persistence smoke script', () => {
   });
 
   it('passes when the mounted data root contains the canonical layout', async () => {
-    const workspaceId = 'ws_1';
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
     const dataRoot = await createMountedDataRootFixture(workspaceId);
 
     const result = runAssertOnlySmoke(dataRoot, workspaceId);
@@ -121,7 +121,7 @@ describe('app persistence smoke script', () => {
   });
 
   it('fails when a required canonical subtree is missing', async () => {
-    const workspaceId = 'ws_1';
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
     const dataRoot = await createMountedDataRootFixture(workspaceId);
     rmSync(join(dataRoot, 'server', 'runtime'), { recursive: true });
 

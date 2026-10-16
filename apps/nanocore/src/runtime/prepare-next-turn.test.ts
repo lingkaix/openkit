@@ -51,8 +51,8 @@ function projectionFixture(includedItemIds: readonly string[]): LlmProjectionRes
 describe('prepareNextTurnContext', () => {
   it('prepares authorized worker request facts for the next task', () => {
     const prepared = prepareNextTurnContext({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       taskState: {
         objective: 'Add a helper for durable user turn queues.',
         acceptanceCriteria: ['Helper tests pass.', 'No raw user text is persisted.'],
@@ -82,8 +82,8 @@ describe('prepareNextTurnContext', () => {
   it('fails when there is no included context', () => {
     expect(() =>
       prepareNextTurnContext({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         taskState: {
           objective: 'Prepare a worker turn.',
           acceptanceCriteria: ['Worker request is created.'],

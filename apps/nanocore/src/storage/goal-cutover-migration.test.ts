@@ -9,7 +9,10 @@ import { applyScopedMigrations } from './migrate.js';
 
 describe('Goal one-way cutover', () => {
   it('removes the seven retired owners and establishes only the accepted Goal shapes', () => {
-    const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-migration-')), 'ws_goal');
+    const db = openWorkspaceDb(
+      mkdtempSync(join(tmpdir(), 'goal-migration-')),
+      'ws_00000000-0000-7509-8702-098e8909b075'
+    );
     try {
       applyScopedMigrations(db);
       const names = (
@@ -42,7 +45,10 @@ describe('Goal one-way cutover', () => {
     }
   });
   it('drops populated legacy families and only their checkpoints while shared owners remain byte-identical', () => {
-    const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-old-families-')), 'ws_goal');
+    const db = openWorkspaceDb(
+      mkdtempSync(join(tmpdir(), 'goal-old-families-')),
+      'ws_00000000-0000-7509-8702-098e8909b075'
+    );
     applyScopedMigrations(db);
     try {
       const old = [
@@ -63,7 +69,7 @@ describe('Goal one-way cutover', () => {
           'INSERT INTO artifact_reviews (workspace_id,review_id,artifact_id,artifact_version,content_digest,created_at) VALUES (?,?,?,?,?,?)'
         )
         .run(
-          'ws_goal',
+          'ws_00000000-0000-7509-8702-098e8909b075',
           `arev_${'a'.repeat(24)}`,
           'artifact_kept',
           1,
@@ -75,9 +81,9 @@ describe('Goal one-way cutover', () => {
       );
       insert.run(
         'ordinary',
-        'ws_goal',
-        'th_task',
-        'tu_task',
+        'ws_00000000-0000-7509-8702-098e8909b075',
+        'th_00000000-0000-7f4d-8b32-425735d1e383',
+        'tu_00000000-0000-7418-a9ee-2a23f197e7d6',
         null,
         null,
         'req_task',
@@ -91,9 +97,9 @@ describe('Goal one-way cutover', () => {
       );
       insert.run(
         'old-goal',
-        'ws_goal',
-        'th_old',
-        'tu_old',
+        'ws_00000000-0000-7509-8702-098e8909b075',
+        'th_00000000-0000-7072-aae0-1071aac8c7ef',
+        'tu_00000000-0000-7f7e-adee-f9140450dea7',
         'old',
         'old-task',
         'req_old',
@@ -134,7 +140,10 @@ describe('Goal one-way cutover', () => {
     }
   });
   it('preserves predecessor pending requests and their index across a rerunnable cutover', () => {
-    const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-old-pending-')), 'ws_goal');
+    const db = openWorkspaceDb(
+      mkdtempSync(join(tmpdir(), 'goal-old-pending-')),
+      'ws_00000000-0000-7509-8702-098e8909b075'
+    );
     applyScopedMigrations(db);
     try {
       // Main's predecessor shape has neither Coordinator requesters nor deciding actor context.
@@ -209,15 +218,15 @@ describe('Goal one-way cutover', () => {
         )
         .run(
           'pr_kept',
-          'ws_goal',
-          'th_task',
-          'tu_task',
-          'it_request',
+          'ws_00000000-0000-7509-8702-098e8909b075',
+          'th_00000000-0000-7f4d-8b32-425735d1e383',
+          'tu_00000000-0000-7418-a9ee-2a23f197e7d6',
+          'it_00000000-0000-7a3c-ae74-d9d096838a5d',
           'user-input',
           'worker',
           'agent_demo',
-          'as_demo',
-          'user_local',
+          'as_00000000-0000-7860-9e37-d1a60b30c856',
+          'usr_00000000-0000-7000-8000-000000000001',
           'pending',
           '[{"id":"choice","header":"Direction","question":"Choose a direction","options":null,"isOther":true,"isSecret":false}]',
           'Retained question',
@@ -236,9 +245,9 @@ describe('Goal one-way cutover', () => {
       );
       checkpoint.run(
         'ordinary',
-        'ws_goal',
-        'th_task',
-        'tu_task',
+        'ws_00000000-0000-7509-8702-098e8909b075',
+        'th_00000000-0000-7f4d-8b32-425735d1e383',
+        'tu_00000000-0000-7418-a9ee-2a23f197e7d6',
         null,
         'req_task',
         'sha256:task',
@@ -251,9 +260,9 @@ describe('Goal one-way cutover', () => {
       );
       checkpoint.run(
         'old-goal',
-        'ws_goal',
-        'th_old',
-        'tu_old',
+        'ws_00000000-0000-7509-8702-098e8909b075',
+        'th_00000000-0000-7072-aae0-1071aac8c7ef',
+        'tu_00000000-0000-7f7e-adee-f9140450dea7',
         'old',
         'req_old',
         'sha256:old',

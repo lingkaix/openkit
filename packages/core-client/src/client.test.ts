@@ -33,7 +33,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /** Creates a current protocol API error fixture. */
 function apiError(code: string, message: string): Record<string, string> {
-  return { protocolVersion: '0.5.0', code, message };
+  return { protocolVersion: '0.6.0', code, message };
 }
 
 /** Creates a tiny SSE response from complete event payloads. */
@@ -117,7 +117,7 @@ function headersToRecord(headers: HeadersInit | undefined): Record<string, strin
 /** Returns one valid workspace record. */
 function workspace() {
   return {
-    id: 'ws_demo',
+    id: 'ws_00000000-0000-7000-8000-000000000001',
     name: 'Demo',
     kind: 'general',
     status: 'active',
@@ -138,7 +138,7 @@ function authorizedWorkspaceSummary() {
     accessCause: 'membership',
     effectiveRole: 'owner',
     membershipRevision: 1,
-    ownerUserId: 'user_1',
+    ownerUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
     registryRevision: 1,
     workspace: workspace(),
   };
@@ -150,14 +150,14 @@ function workspaceMember(status: 'active' | 'removed' = 'active') {
     accessLevel: 'editor',
     createdAt: timestamp,
     effectiveRole: status === 'active' ? ('editor' as const) : null,
-    invitationId: 'invitation_1',
+    invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
     joinedAt: timestamp,
     removedAt: status === 'removed' ? timestamp : null,
     revision: 1,
     status,
     updatedAt: timestamp,
-    userId: 'user_2',
-    workspaceId: 'ws_demo',
+    userId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 
@@ -169,14 +169,14 @@ function workspaceInvitation() {
     declinedAt: null,
     effectiveStatus: 'pending',
     expiresAt: '2026-08-01T00:00:00.000Z',
-    invitationId: 'invitation_1',
-    inviteeUserId: 'user_2',
-    inviterUserId: 'user_1',
+    invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
+    inviteeUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+    inviterUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
     proposedAccessLevel: 'editor',
     revision: 1,
     revokedAt: null,
     updatedAt: timestamp,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 
@@ -184,9 +184,9 @@ function workspaceInvitation() {
 function workspaceAccessRecovery() {
   return {
     administratorRole: null,
-    ownerUserId: 'user_1',
+    ownerUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
     registryRevision: 1,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 
@@ -195,7 +195,7 @@ function disabledUser() {
   return {
     disabledAt: timestamp,
     status: 'disabled',
-    userId: 'user_2',
+    userId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
   };
 }
 
@@ -209,7 +209,7 @@ function workspaceDeletionResponse() {
       requestId,
       retainedStaging: false,
       status: 'active',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
   };
 }
@@ -217,8 +217,8 @@ function workspaceDeletionResponse() {
 /** Returns one valid thread record. */
 function thread() {
   return {
-    id: 'th_demo',
-    workspaceId: 'ws_demo',
+    id: 'th_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     name: 'Demo thread',
     preview: 'Demo thread',
     entryPath: 'conversation',
@@ -232,10 +232,10 @@ function thread() {
 /** Returns one valid turn record. */
 function turn() {
   return {
-    id: 'turn_demo',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    triggerActor: { kind: 'user', id: 'user_1' },
+    id: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
     items: [],
     error: null,
     status: 'running',
@@ -257,10 +257,10 @@ function turnReadProjection() {
 /** Returns one valid artifact record. */
 function artifact() {
   return {
-    id: 'artifact_demo',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    turnId: 'turn_demo',
+    id: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     kind: 'report',
     title: 'Demo artifact',
     status: 'ready',
@@ -271,8 +271,8 @@ function artifact() {
     lastMutationRequestId: requestId,
     origin: {
       kind: 'turn-output',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       requestId,
     },
     createdAt: timestamp,
@@ -283,12 +283,12 @@ function artifact() {
 /** Returns one valid workspace synchronization review item. */
 function workspaceSyncReview() {
   return {
-    artifactId: 'ar_workspace_changes_1',
+    artifactId: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a',
     changeSet: {
       id: 'wcs_1',
       materializationRecordId: 'wmr_1',
       inputSnapshotId: 'wis_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       resourceId: 'default',
       strategy: 'git',
       base: { commit: 'abc123', contentDigest: null },
@@ -296,8 +296,8 @@ function workspaceSyncReview() {
       changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
       patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
       bundle: null,
-      artifactIds: ['ar_workspace_changes_1'],
-      evidenceRefs: [{ kind: 'worker', ref: 'turn_demo' }],
+      artifactIds: ['ar_00000000-0000-7e93-b881-32f3f8c0b14a'],
+      evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' }],
       redaction: { status: 'redacted', notes: [] },
       createdAt: timestamp,
     },
@@ -310,7 +310,7 @@ function workspaceSyncReview() {
     review: {
       id: 'swr_1',
       changeSetId: 'wcs_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       status: 'pending',
       staging: {
         strategy: 'git_worktree',
@@ -319,7 +319,9 @@ function workspaceSyncReview() {
       },
       diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
       riskSummary: '1 changed path staged for human review.',
-      validation: [{ command: 'worker', status: 'passed', ref: 'turn_demo' }],
+      validation: [
+        { command: 'worker', status: 'passed', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
+      ],
       actionCenterRowId: 'workspace-review:swr_1',
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -331,7 +333,7 @@ function workspaceSyncReview() {
 function workspaceApplyResult() {
   return {
     id: 'war_swr_1',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     reviewId: 'swr_1',
     changeSetId: 'wcs_1',
     status: 'applied',
@@ -372,7 +374,7 @@ function runtimeConfigPlan() {
 function nanoHostRuntimeTargetStatus() {
   return {
     identityId: 'integration_nanohost_primary',
-    deploymentId: 'deploy_primary',
+    deploymentId: 'dep_01890f3e-0000-7000-8000-000000000071',
     connectionGeneration: 3,
     physicalEpoch: 'a'.repeat(64),
     predecessorFenced: true,
@@ -487,13 +489,13 @@ function knowledgeEntry() {
 /** Returns one valid item log entry. */
 function userMessageItem() {
   return {
-    id: 'item_demo',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    turnId: 'turn_demo',
+    id: 'it_00000000-0000-7167-b408-becd17a436db',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     type: 'user-message',
     status: 'completed',
-    actor: { kind: 'user', id: 'user_1' },
+    actor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
     causationId: requestId,
     text: 'Hello',
     createdAt: timestamp,
@@ -504,9 +506,9 @@ function userMessageItem() {
 /** Returns one valid automation record. */
 function automation() {
   return {
-    id: 'auto_demo',
+    id: 'auto_00000000-0000-7934-bc11-14512d3a737a',
     name: 'Demo automation',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     cron: '0 9 * * *',
     prompt: 'Summarize status.',
     status: 'paused',
@@ -546,14 +548,19 @@ function workspaceDashboard() {
 /** Returns one valid thread dashboard read model. */
 function threadDashboard() {
   return {
-    viewerUserId: 'user_local',
+    viewerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     participants: [],
     thread: thread(),
     turns: [turn()],
-    taskInputs: [{ itemId: 'item_request', objective: 'Inspect the linked repository.' }],
+    taskInputs: [
+      {
+        itemId: 'it_00000000-0000-7ee9-904f-46bd403270cc',
+        objective: 'Inspect the linked repository.',
+      },
+    ],
     artifacts: [
       {
-        id: 'artifact_demo',
+        id: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         title: 'Demo artifact',
         status: 'ready',
         summary: null,
@@ -572,7 +579,7 @@ function threadDashboard() {
       defaultAgentId: 'agent_demo',
     },
     itemLog: {
-      href: '/api/app/workspaces/ws_demo/threads/th_demo/items',
+      href: '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/items',
     },
   };
 }
@@ -619,14 +626,14 @@ function storageLayoutReport() {
 /** Returns one workspace export response fixture. */
 function workspaceExportResponse() {
   return {
-    exportId: 'wsexp_demo',
-    workspaceId: 'ws_demo',
+    exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     manifest: {
       schemaVersion: 1,
       recordType: 'workspace-export',
-      id: 'wsexp_demo',
+      id: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
       ownerScope: 'workspace',
-      lineage: { workspaceId: 'ws_demo' },
+      lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       createdAt: timestamp,
       updatedAt: timestamp,
       contentDigest: 'sha256:manifest',
@@ -634,10 +641,10 @@ function workspaceExportResponse() {
       sensitivity: 'internal',
       requiredFeatures: [],
       extensions: {},
-      sourceDeploymentId: 'dep_local',
-      workspaceId: 'ws_demo',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       exportCreatedAt: timestamp,
-      exportFormatVersion: 2,
+      exportFormatVersion: 3,
       contentInventory: [
         {
           path: 'records/workspace-record.json',
@@ -655,11 +662,11 @@ function workspaceExportResponse() {
 /** Returns one data-root backup response fixture. */
 function dataRootBackupResponse() {
   return {
-    backupId: 'drb_demo',
+    backupId: 'drb_00000000-0000-795e-9322-0c2b42caa5d0',
     manifest: {
       schemaVersion: 1,
       recordType: 'data-root-backup',
-      id: 'drb_demo',
+      id: 'drb_00000000-0000-795e-9322-0c2b42caa5d0',
       ownerScope: 'server',
       lineage: {},
       createdAt: timestamp,
@@ -669,7 +676,7 @@ function dataRootBackupResponse() {
       sensitivity: 'internal',
       requiredFeatures: [],
       extensions: {},
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       backupStartedAt: timestamp,
       backupCompletedAt: timestamp,
       backupMode: 'hot',
@@ -753,10 +760,10 @@ function appUpdateStatus() {
 /** Returns one redacted OpenKit access-token record. */
 function accessTokenRecord(overrides: Record<string, unknown> = {}) {
   return {
-    tokenId: 'tok_workspace',
-    ownerUserId: 'user_owner',
+    tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
+    ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     scope: 'workspace',
-    workspaceIds: ['ws_demo'],
+    workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     status: 'active',
     issuedAt: timestamp,
     expiresAt: timestamp,
@@ -784,13 +791,13 @@ function capabilityUsageResponse() {
   return {
     capabilityCalls: [
       {
-        id: 'cap_1',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        itemId: 'it_demo',
+        id: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        itemId: 'it_00000000-0000-7d53-9abb-fba003a3df39',
         agentId: 'assistant',
-        agentSessionId: 'session_demo',
+        agentSessionId: 'as_00000000-0000-78be-889a-02eee50dd060',
         packageSnapshotId: 'aep_snapshot_1',
         schemaSnapshotId: null,
         runtimeOriginRef: 'rto_0123456789abcdef01234567',
@@ -812,17 +819,17 @@ function capabilityUsageResponse() {
     ],
     usageRecords: [
       {
-        id: 'usage_1',
-        workspaceId: 'ws_demo',
-        responsibleUserId: 'user_1',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        itemId: 'it_demo',
+        id: 'use_00000000-0000-7bad-8061-11b8ce86e984',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        itemId: 'it_00000000-0000-7d53-9abb-fba003a3df39',
         agentId: 'assistant',
-        agentSessionId: 'session_demo',
+        agentSessionId: 'as_00000000-0000-78be-889a-02eee50dd060',
         sourceIds: ['repo_default'],
         requestId: '00000000-0000-4000-8000-000000000911',
-        capabilityCallId: 'cap_1',
+        capabilityCallId: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
         category: 'llm',
         unit: 'tokens',
         quantity: 12,
@@ -832,27 +839,29 @@ function capabilityUsageResponse() {
         recordedAt: timestamp,
       },
     ],
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 
 /** Returns one workspace evidence bundle response fixture. */
 function workspaceEvidenceBundlesResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     evidenceBundles: [
       {
         id: 'evb_1',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         goalId: 'goal_demo',
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         agentSessionId: null,
         backendType: null,
         sourceKind: 'manual',
         summary: 'Goal evidence is ready for review.',
         rawEvidenceRefs: [],
-        redactedEvidenceRefs: [{ kind: 'artifact', ref: 'artifact_demo' }],
+        redactedEvidenceRefs: [
+          { kind: 'artifact', ref: 'ar_00000000-0000-78f7-9fad-58a15c7011af' },
+        ],
         contentDigests: ['sha256:9a0f3c8d4b7e5a6c9d2f1b0a3e4c5d6f7a8b9c0d1e2f3456789abcdef0123456'],
         retentionClass: 'turn-evidence',
         sensitivityClass: 'product-safe',
@@ -867,16 +876,16 @@ function workspaceEvidenceBundlesResponse() {
 /** Returns one workspace runtime evidence response fixture. */
 function workspaceRuntimeEvidenceResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     runtimeEvidence: [
       {
         id: 'rte_1',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         goalId: 'goal_demo',
         taskId: 'task_demo',
-        agentSessionId: 'session_demo',
+        agentSessionId: 'as_00000000-0000-78be-889a-02eee50dd060',
         backendType: 'openshell',
         backendVersion: null,
         placement: 'local',
@@ -914,14 +923,14 @@ function workspaceRuntimeEvidenceResponse() {
 /** Returns one workspace audit events response fixture. */
 function workspaceAuditEventsResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     auditEvents: [
       {
-        id: 'aud_1',
-        workspaceId: 'ws_demo',
-        protocolVersion: '0.5.0',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        id: 'aud_00000000-0000-72f4-8dcc-8c92fd4028d3',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        protocolVersion: '0.6.0',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         itemId: null,
         capabilityCallId: null,
         permissionDecisionId: null,
@@ -951,9 +960,9 @@ function serverAuditEventsResponse() {
   return {
     auditEvents: [
       {
-        id: 'aud_server_1',
+        id: 'aud_00000000-0000-726b-8ee2-162b4bf37c24',
         workspaceId: null,
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         threadId: null,
         turnId: null,
         itemId: null,
@@ -983,28 +992,28 @@ function serverAuditEventsResponse() {
 /** Returns one workspace permission decisions response fixture. */
 function workspacePermissionDecisionsResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     permissionDecisions: [
       {
-        decisionId: 'pd_1',
+        decisionId: 'pd_00000000-0000-7a55-84b6-910265042f6b',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         policyEngineVersion: 'nanocore-worker-policy:v1',
         policySnapshotId: 'worker_turn_launch_policy',
         subjectSummary: { kind: 'nanocore', id: 'worker-coordinator' },
         action: 'runtime.launch',
-        resourceSummary: { kind: 'worker-turn', turnId: 'turn_demo' },
+        resourceSummary: { kind: 'worker-turn', turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
         contextSummary: {
           requestId: '00000000-0000-4000-8000-00000000d791',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         },
         result: 'allow',
         reasonCode: 'worker_turn_start_allowed',
         enforcementPoint: 'runtime.worker_turn_loop.start',
         requiredApprovalKind: null,
         approvalId: null,
-        auditEventId: 'aud_1',
+        auditEventId: 'aud_00000000-0000-72f4-8dcc-8c92fd4028d3',
         createdAt: timestamp,
       },
     ],
@@ -1016,7 +1025,7 @@ function serverPermissionDecisionsResponse() {
   return {
     permissionDecisions: [
       {
-        decisionId: 'pd_server_1',
+        decisionId: 'pd_00000000-0000-77a3-8707-815ac642840b',
         ownerScope: 'server',
         workspaceId: null,
         policyEngineVersion: 'nanocore-gateway-policy:v1',
@@ -1040,24 +1049,24 @@ function serverPermissionDecisionsResponse() {
 /** Returns one workspace vault use records response fixture. */
 function workspaceVaultUseRecordsResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     vaultUseRecords: [
       {
-        useId: 'use_1',
+        useId: 'vu_00000000-0000-7de7-8524-24839a742ee9',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
-        vaultReferenceId: 'vault_github',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         materialVersion: 1,
         backendKind: 'encrypted-file',
         resolvingPath: 'grant',
-        grantId: 'grant_github',
+        grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
         planId: null,
         receiptId: null,
-        agentSessionId: 'as_1',
+        agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
         capabilityCallId: null,
         outcome: 'succeeded',
         failureCode: null,
-        auditEventId: 'aud_1',
+        auditEventId: 'aud_00000000-0000-72f4-8dcc-8c92fd4028d3',
         usedAt: timestamp,
       },
     ],
@@ -1067,21 +1076,22 @@ function workspaceVaultUseRecordsResponse() {
 /** Returns one workspace vault grant metadata response fixture. */
 function workspaceVaultGrantsResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     items: [
       {
-        grantId: 'grant_github',
-        vaultReferenceId: 'vault_github',
+        issuance: 'target',
+        grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
+        vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         userId: null,
         subjectSummary: null,
         targetAgentId: null,
-        targetAgentSessionId: 'as_1',
+        targetAgentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
         targetCapabilityId: null,
         allowedInjectionPaths: ['backend-provider'],
         lifetime: 'turn',
-        policyDecisionId: 'pd_1',
+        policyDecisionId: 'pd_00000000-0000-7a55-84b6-910265042f6b',
         approvalId: null,
         status: 'active',
         createdAt: timestamp,
@@ -1094,11 +1104,11 @@ function workspaceVaultGrantsResponse() {
 /** Returns one workspace injection plan metadata response fixture. */
 function workspaceInjectionPlansResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     items: [
       {
         planId: 'plan_github',
-        grantId: 'grant_github',
+        grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
         packageSnapshotId: 'aepsnap_1',
         capabilityId: null,
         injectionVisibility: 'backend-provider',
@@ -1118,13 +1128,13 @@ function workspaceInjectionPlansResponse() {
 /** Returns one workspace injection receipt metadata response fixture. */
 function workspaceInjectionReceiptsResponse() {
   return {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     items: [
       {
         receiptId: 'receipt_github',
         planId: 'plan_github',
-        grantId: 'grant_github',
-        agentSessionId: 'as_1',
+        grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
+        agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
         capabilityCallId: null,
         backendSummary: 'OpenShell provider github attached.',
         injectedAt: timestamp,
@@ -1141,10 +1151,10 @@ function serverVaultUseRecordsResponse() {
   return {
     vaultUseRecords: [
       {
-        useId: 'use_server_1',
+        useId: 'vu_00000000-0000-7da1-80dc-838273b4bd8d',
         ownerScope: 'server',
         workspaceId: null,
-        vaultReferenceId: 'vault_openrouter',
+        vaultReferenceId: 'vault_00000000-0000-7c76-ac2c-1aa2ef4a94c5',
         materialVersion: 1,
         backendKind: 'encrypted-file',
         resolvingPath: 'provider',
@@ -1155,7 +1165,7 @@ function serverVaultUseRecordsResponse() {
         capabilityCallId: null,
         outcome: 'failed',
         failureCode: 'backend-locked',
-        auditEventId: 'aud_server_1',
+        auditEventId: 'aud_00000000-0000-726b-8ee2-162b4bf37c24',
         usedAt: timestamp,
       },
     ],
@@ -1166,15 +1176,15 @@ function serverVaultUseRecordsResponse() {
 function workspaceImportDryRunResponse() {
   return {
     mode: 'dry-run',
-    exportId: 'wsexp_demo',
-    sourceWorkspaceId: 'ws_demo',
-    exportedWorkspaceId: 'ws_demo',
+    exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+    sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     manifest: workspaceExportResponse().manifest,
     verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace-record.json'] },
     collision: {
       status: 'collides',
-      workspaceId: 'ws_demo',
-      suggestedWorkspaceId: 'ws_imported_ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
     },
   };
 }
@@ -1184,19 +1194,19 @@ function workspaceImportResponse() {
   return {
     mode: 'imported',
     requestId: 'req_import',
-    exportId: 'wsexp_demo',
-    sourceWorkspaceId: 'ws_demo',
-    exportedWorkspaceId: 'ws_demo',
-    importedWorkspaceId: 'ws_imported_ws_demo',
+    exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+    sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    importedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
     manifest: workspaceExportResponse().manifest,
     verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace-record.json'] },
     collision: {
       status: 'collides',
-      workspaceId: 'ws_demo',
-      suggestedWorkspaceId: 'ws_imported_ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
     },
     workspace: {
-      id: 'ws_imported_ws_demo',
+      id: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
       name: 'Imported workspace',
       kind: 'general',
       status: 'active',
@@ -1214,8 +1224,8 @@ function deletedWorkspaceRecoveryResponse() {
       closureId: 'closure_demo',
       deletionRequestId: '00000000-0000-4000-8000-000000000002',
       import: workspaceImportResponse(),
-      recoveryExportId: 'wsexp_demo',
-      sourceWorkspaceId: 'ws_demo',
+      recoveryExportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
   };
 }
@@ -1224,10 +1234,11 @@ function deletedWorkspaceRecoveryResponse() {
 function interruptedWorkerState() {
   return {
     kind: 'interrupted_worker_state',
-    checkpointId: 'ws_demo:th_demo:turn_worker',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    turnId: 'turn_worker',
+    checkpointId:
+      'ws_00000000-0000-7000-8000-000000000001:th_00000000-0000-7000-8000-000000000001:tu_00000000-0000-721e-b9c7-66142de81c58',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
     goalId: null,
     taskId: null,
     workerSessionId: null,
@@ -1261,14 +1272,14 @@ function interruptedWorkerState() {
 /** Returns one valid turn event envelope. */
 function turnEvent(sequence: number, event = 'turn.started') {
   return {
-    protocolVersion: '0.5.0',
+    protocolVersion: '0.6.0',
     event,
     sequence,
     requestId,
     timestamp,
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    turnId: 'turn_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     data:
       event === 'turn.completed'
         ? {
@@ -1276,28 +1287,32 @@ function turnEvent(sequence: number, event = 'turn.started') {
             stopReason: 'completed',
             turn: { ...turn(), status: 'completed', completedAt: timestamp },
           }
-        : { type: 'turn-started', turnId: 'turn_demo', status: 'running' },
+        : {
+            type: 'turn-started',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+            status: 'running',
+          },
   };
 }
 
 /** Returns one internal-only AgentSession stream event. */
 function agentSessionEvent(sequence: number) {
   return {
-    protocolVersion: '0.5.0',
+    protocolVersion: '0.6.0',
     event: 'agent.session.updated',
     sequence,
     requestId,
     timestamp,
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    turnId: 'turn_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     data: {
       type: 'agent-session-updated',
       agentSession: {
-        id: 'as_demo',
+        id: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         agentId: 'agent_demo',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         status: 'busy',
         message: null,
         createdAt: timestamp,
@@ -1336,10 +1351,16 @@ const pseudoTerminalCases = [
   ],
   [
     'a mismatched envelope Workspace',
-    { ...turnEvent(5, 'turn.completed'), workspaceId: 'ws_other' },
+    { ...turnEvent(5, 'turn.completed'), workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
   ],
-  ['a mismatched envelope Thread', { ...turnEvent(5, 'turn.completed'), threadId: 'th_other' }],
-  ['a mismatched envelope Turn', { ...turnEvent(5, 'turn.completed'), turnId: 'turn_other' }],
+  [
+    'a mismatched envelope Thread',
+    { ...turnEvent(5, 'turn.completed'), threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2' },
+  ],
+  [
+    'a mismatched envelope Turn',
+    { ...turnEvent(5, 'turn.completed'), turnId: 'tu_00000000-0000-7e18-a597-336d92a699e9' },
+  ],
   [
     'a mismatched payload Workspace',
     {
@@ -1350,7 +1371,7 @@ const pseudoTerminalCases = [
           ...turn(),
           status: 'completed',
           completedAt: timestamp,
-          workspaceId: 'ws_other',
+          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
         },
       },
     },
@@ -1361,7 +1382,12 @@ const pseudoTerminalCases = [
       ...turnEvent(5, 'turn.completed'),
       data: {
         ...turnEvent(5, 'turn.completed').data,
-        turn: { ...turn(), status: 'completed', completedAt: timestamp, threadId: 'th_other' },
+        turn: {
+          ...turn(),
+          status: 'completed',
+          completedAt: timestamp,
+          threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2',
+        },
       },
     },
   ],
@@ -1371,7 +1397,12 @@ const pseudoTerminalCases = [
       ...turnEvent(5, 'turn.completed'),
       data: {
         ...turnEvent(5, 'turn.completed').data,
-        turn: { ...turn(), status: 'completed', completedAt: timestamp, id: 'turn_other' },
+        turn: {
+          ...turn(),
+          status: 'completed',
+          completedAt: timestamp,
+          id: 'tu_00000000-0000-7e18-a597-336d92a699e9',
+        },
       },
     },
   ],
@@ -1465,7 +1496,10 @@ describe('createCoreClient', () => {
       },
     });
 
-    const downloaded = await client.app.downloadWorkspaceExportArchive('ws_demo', 'wsexp_demo');
+    const downloaded = await client.app.downloadWorkspaceExportArchive(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4'
+    );
     expect(new Uint8Array(await new Response(downloaded).arrayBuffer())).toEqual(archive);
     await expect(client.app.dryRunWorkspaceArchiveImport(byteStream(archive))).resolves.toEqual(
       workspaceImportDryRunResponse()
@@ -1477,7 +1511,7 @@ describe('createCoreClient', () => {
       {
         body: new Uint8Array(),
         method: 'GET',
-        path: '/api/app/workspaces/ws_demo/exports/wsexp_demo/archive',
+        path: '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/wsexp_00000000-0000-7693-ae39-6c3f6020c3c4/archive',
       },
       {
         body: archive,
@@ -1573,8 +1607,8 @@ describe('createCoreClient', () => {
       'Chat Mode',
       (client: CoreClient) =>
         client.operations['conversation.submit']({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           ...({
             input: 'Hello',
             model: 'caller-model',
@@ -1599,7 +1633,7 @@ describe('createCoreClient', () => {
               accessCause: 'membership',
               effectiveRole: 'owner',
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             },
           ],
@@ -1618,23 +1652,31 @@ describe('createCoreClient', () => {
       items: [{ workspace: workspace() }],
     });
     await client.operations['workspace.create']({ name: 'Demo' });
-    await client.operations['workspace.resources']({ workspaceId: 'ws_demo' });
-    await client.operations['thread.create']({ workspaceId: 'ws_demo', name: 'Demo thread' });
+    await client.operations['workspace.resources']({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    await client.operations['thread.create']({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      name: 'Demo thread',
+    });
     await client.operations['turn.start']({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       input: 'Run',
     });
     await expect(
       client.operations['turn.start']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         answers: { branch: ['main'] },
       } as never)
     ).rejects.toThrow();
     await expect(
-      client.operations['artifact.read']({ workspaceId: 'ws_demo', artifactId: 'artifact_demo' })
+      client.operations['artifact.read']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
+      })
     ).resolves.toEqual(artifact());
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
@@ -1647,7 +1689,10 @@ describe('createCoreClient', () => {
     ]);
     expect(requests[1]?.body).toMatchObject({ name: 'Demo' });
     expect(requests[1]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
-    expect(requests[3]?.body).toMatchObject({ name: 'Demo thread', workspaceId: 'ws_demo' });
+    expect(requests[3]?.body).toMatchObject({
+      name: 'Demo thread',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     expect(requests[3]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
     expect(requests[4]?.body).toMatchObject({ input: 'Run' });
     expect(requests[4]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
@@ -1659,7 +1704,7 @@ describe('createCoreClient', () => {
     const { client, requests } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.5.0',
+          protocolVersion: '0.6.0',
           capabilities: [],
           eventFamilies: [],
         },
@@ -1667,7 +1712,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/workspace.read': {
         body: {
           ...workspace(),
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           membershipStatus: 'active',
           accessCause: 'membership',
         },
@@ -1704,7 +1749,7 @@ describe('createCoreClient', () => {
         body: {
           reconciliationRecord: {
             id: 'wrr_1',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             triggerReason: 'manual',
             affectedRecordIds: ['wmr_1'],
             backendHandleSummary: {},
@@ -1730,7 +1775,7 @@ describe('createCoreClient', () => {
           items: [
             {
               id: 'wis_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               resourceId: 'default',
               resourceKind: 'git_repository',
               strategy: 'git',
@@ -1755,12 +1800,12 @@ describe('createCoreClient', () => {
             {
               id: 'wmr_1',
               inputSnapshotId: 'wis_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               backendKind: 'openshell',
               packageSnapshotId: 'aepsnap_1',
-              workerSessionId: 'session_1',
+              workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
               strategy: 'git',
-              materializedRootRef: 'workspace://ws_demo/default',
+              materializedRootRef: 'workspace://ws_00000000-0000-7000-8000-000000000001/default',
               base: { commit: 'abc123', contentDigest: null },
               policyDigest: 'sha256:policy',
               readinessEvidence: [],
@@ -1774,12 +1819,17 @@ describe('createCoreClient', () => {
           items: [
             {
               id: 'bwh_wmr_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               materializationRecordId: 'wmr_1',
               backendKind: 'openshell',
               packageSnapshotId: 'aepsnap_1',
-              workerSessionId: 'session_1',
-              transportRefs: [{ kind: 'materialized-root', ref: 'workspace://ws_demo/default' }],
+              workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
+              transportRefs: [
+                {
+                  kind: 'materialized-root',
+                  ref: 'workspace://ws_00000000-0000-7000-8000-000000000001/default',
+                },
+              ],
               cleanupStatus: 'pending',
               retention: 'until-reconciliation',
               createdAt: timestamp,
@@ -1793,14 +1843,14 @@ describe('createCoreClient', () => {
           items: [
             {
               id: 'wom_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               materializationRecordId: 'wmr_1',
               inputSnapshotId: 'wis_1',
-              workerSessionId: 'session_1',
+              workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
               backendKind: 'openshell',
               strategy: 'git',
               changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
-              artifactIds: ['ar_patch'],
+              artifactIds: ['ar_00000000-0000-7f26-8292-8ac950dddeba'],
               logRefs: [],
               testOutputRefs: [],
               ignoredOutputs: [],
@@ -1821,7 +1871,7 @@ describe('createCoreClient', () => {
           items: [
             {
               id: 'wap_swr_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               reviewId: 'swr_1',
               changeSetId: 'wcs_1',
               strategy: 'git',
@@ -1842,13 +1892,13 @@ describe('createCoreClient', () => {
           items: [
             {
               id: 'wrr_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               triggerReason: 'restart',
               affectedRecordIds: ['wmr_1', 'bwh_wmr_1'],
               backendHandleSummary: {
                 backendKind: 'openshell',
                 handleId: 'bwh_wmr_1',
-                workerSessionId: 'session_1',
+                workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
                 cleanupStatus: 'pending',
               },
               backendReachability: { status: 'unavailable', checkedAt: timestamp, detail: null },
@@ -1870,7 +1920,7 @@ describe('createCoreClient', () => {
           items: [
             {
               id: 'wqr_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               lifecycleRecordIds: ['wrr_1', 'wom_1'],
               failureKind: 'digest_mismatch',
               storageRef: 'quarantine/workspace-sync/wqr_1',
@@ -1895,10 +1945,10 @@ describe('createCoreClient', () => {
           items: [
             {
               snapshotId: 'aepsnap_1',
-              workspaceId: 'ws_demo',
-              turnId: 'turn_demo',
-              threadId: 'th_demo',
-              agentSessionId: 'as_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
               agentId: 'agent_codex',
               packageId: 'aepkg_1',
               runtimeKind: 'coder',
@@ -1913,10 +1963,10 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/environment.snapshot-read': {
         body: {
           snapshotId: 'aepsnap_1',
-          workspaceId: 'ws_demo',
-          turnId: 'turn_demo',
-          threadId: 'th_demo',
-          agentSessionId: 'as_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
           agentId: 'agent_codex',
           packageId: 'aepkg_1',
           runtimeKind: 'coder',
@@ -1931,22 +1981,33 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.5.0' });
-    await expect(client.operations['workspace.read']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.6.0' });
+    await expect(
+      client.operations['workspace.read']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    ).resolves.toEqual({
       ...workspace(),
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       membershipStatus: 'active',
       accessCause: 'membership',
     });
     await expect(
-      client.operations['workspace.update']({ ...{ status: 'archived' }, workspaceId: 'ws_demo' })
+      client.operations['workspace.update']({
+        ...{ status: 'archived' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspace());
-    await expect(client.operations['knowledge.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+    await expect(
+      client.operations['knowledge.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    ).resolves.toEqual({
       items: [knowledge],
     });
     await expect(
       client.operations['knowledge.create']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: knowledge.kind,
         title: knowledge.title,
         content: knowledge.content,
@@ -1954,61 +2015,76 @@ describe('createCoreClient', () => {
     ).resolves.toEqual(knowledge);
     await expect(
       client.operations['knowledge.update']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         knowledgeEntryId: 'mem_demo',
         ...{ title: 'Updated' },
       })
     ).resolves.toEqual(knowledge);
     await expect(
       client.operations['knowledge.delete']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         knowledgeEntryId: 'mem_demo',
       })
     ).resolves.toBeNull();
-    await expect(client.operations['thread.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+    await expect(
+      client.operations['thread.list']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+    ).resolves.toEqual({
       items: [thread()],
     });
     await expect(
-      client.operations['thread.read']({ workspaceId: 'ws_demo', threadId: 'th_demo' })
+      client.operations['thread.read']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(thread());
     await expect(
       client.operations['thread.update']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         name: 'Renamed',
       })
     ).resolves.toEqual(thread());
     await expect(
-      client.operations['thread.archive']({ workspaceId: 'ws_demo', threadId: 'th_demo' })
+      client.operations['thread.archive']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(thread());
     await expect(
       client.operations['turn.read']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
     ).resolves.toEqual(turnReadProjection());
     await expect(
       client.operations['turn.interrupt']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
     ).resolves.toEqual(turn());
-    await expect(client.operations['artifact.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+    await expect(
+      client.operations['artifact.list']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+    ).resolves.toEqual({
       items: [artifact()],
     });
     await expect(
-      client.operations['sync.review-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.review-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual({
       items: [workspaceSyncReview()],
     });
     await expect(
-      client.operations['sync.review-read']({ workspaceId: 'ws_demo', reviewId: 'swr_1' })
+      client.operations['sync.review-read']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        reviewId: 'swr_1',
+      })
     ).resolves.toEqual(workspaceSyncReview());
     await expect(
       client.operations['sync.review-decide']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: 'swr_1',
         ...{
           decision: 'needs_refinement',
@@ -2020,7 +2096,7 @@ describe('createCoreClient', () => {
     });
     await expect(
       client.operations['sync.recovery-decide']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reconciliationRecordId: 'wrr_1',
         ...{
           decision: 'quarantine',
@@ -2030,69 +2106,91 @@ describe('createCoreClient', () => {
       reconciliationRecord: { id: 'wrr_1', stateAfter: 'quarantined' },
     });
     await expect(
-      client.operations['sync.input-snapshot-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.input-snapshot-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ id: 'wis_1', strategy: 'git' }],
     });
     await expect(
-      client.operations['sync.materialization-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.materialization-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ id: 'wmr_1', inputSnapshotId: 'wis_1' }],
     });
     await expect(
-      client.operations['sync.backend-handle-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.backend-handle-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ id: 'bwh_wmr_1', materializationRecordId: 'wmr_1' }],
     });
     await expect(
-      client.operations['sync.output-manifest-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.output-manifest-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ id: 'wom_1', materializationRecordId: 'wmr_1' }],
     });
     await expect(
-      client.operations['sync.change-set-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.change-set-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual({
       items: [workspaceSyncReview().changeSet],
     });
     await expect(
-      client.operations['sync.staged-review-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.staged-review-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual({
       items: [workspaceSyncReview().review],
     });
     await expect(
-      client.operations['sync.apply-plan-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.apply-plan-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ id: 'wap_swr_1', reviewId: 'swr_1' }],
     });
     await expect(
-      client.operations['sync.reconciliation-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.reconciliation-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ id: 'wrr_1', triggerReason: 'restart', stateAfter: 'requires-human' }],
     });
     await expect(
-      client.operations['sync.quarantine-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.quarantine-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ id: 'wqr_1', failureKind: 'digest_mismatch', resolution: 'pending' }],
     });
     await expect(
-      client.operations['sync.apply-result-list']({ workspaceId: 'ws_demo' })
+      client.operations['sync.apply-result-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual({
       items: [workspaceApplyResult()],
     });
     await expect(
       client.operations['sync.apply-result-read']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         applyResultId: 'war_swr_1',
       })
     ).resolves.toEqual(workspaceApplyResult());
     await expect(
-      client.operations['environment.snapshot-list']({ workspaceId: 'ws_demo' })
+      client.operations['environment.snapshot-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ snapshotId: 'aepsnap_1' }],
     });
     await expect(
       client.operations['environment.snapshot-read']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         snapshotId: 'aepsnap_1',
       })
     ).resolves.toMatchObject({
@@ -2101,8 +2199,8 @@ describe('createCoreClient', () => {
     });
     await expect(
       client.operations['thread.items']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         ...{ since: 4, limit: 10 },
       })
     ).resolves.toEqual({ items: [item], nextCursor: null });
@@ -2143,16 +2241,19 @@ describe('createCoreClient', () => {
     ]);
     expect(requests[2]?.body).toMatchObject({ status: 'archived' });
     expect(requests[2]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
-    expect(requests[6]?.body).toEqual({ workspaceId: 'ws_demo', knowledgeEntryId: 'mem_demo' });
+    expect(requests[6]?.body).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      knowledgeEntryId: 'mem_demo',
+    });
     expect(requests[6]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
   });
 
   it('derives approval response JSON and request identity from the operation definition', async () => {
     const approval = {
       id: 'approval_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       kind: 'permission',
       status: 'granted',
       title: 'Run command',
@@ -2167,9 +2268,9 @@ describe('createCoreClient', () => {
     await client.operations['approval.respond']({
       approvalRequestId: 'approval_demo',
       ...{
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         decision: 'granted',
       },
     });
@@ -2184,32 +2285,32 @@ describe('createCoreClient', () => {
   it('routes derived Artifact operations and the Stage 2 Material app surface', async () => {
     const contentDigest = `sha256:${'a'.repeat(64)}`;
     const material = {
-      workspaceId: 'ws_demo',
-      materialId: 'material_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
       title: 'Demo material',
       kind: 'markdown',
-      currentRevisionId: 'revision_demo',
+      currentRevisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
       sensitivity: 'internal',
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     const revision = {
-      workspaceId: 'ws_demo',
-      materialId: 'material_demo',
-      revisionId: 'revision_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+      revisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
       parentRevisionId: null,
       mediaType: 'text/markdown',
       contentDigest,
-      authorId: 'user_demo',
+      authorId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       createdAt: timestamp,
     };
     const threadMaterial = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       resource: material,
       currentRevision: revision,
       inclusionState: 'included',
-      latestQueuedRevisionId: 'revision_demo',
+      latestQueuedRevisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
       lastWorkerSeenRevisionId: null,
       currentTurnRevisionId: null,
       activeDelivery: null,
@@ -2217,26 +2318,33 @@ describe('createCoreClient', () => {
     const routeCases = [
       [
         'POST /api/app/operations/artifact.import',
-        { artifactId: 'artifact_demo', artifactVersion: 1 },
+        { artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af', artifactVersion: 1 },
         201,
       ],
       [
         'POST /api/app/operations/artifact.introduce',
         {
-          artifactId: 'artifact_demo',
+          artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
           artifactVersion: 1,
-          turnId: 'turn_introduction',
-          itemId: 'item_introduction',
+          turnId: 'tu_00000000-0000-7819-9015-eac73267a43b',
+          itemId: 'it_00000000-0000-72a0-9302-f07cea82e3ac',
         },
         201,
       ],
       ['POST /api/app/operations/material.list', { materials: [material] }, 200],
-      ['POST /api/app/operations/material.create', { materialId: 'material_demo' }, 201],
+      [
+        'POST /api/app/operations/material.create',
+        { materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3' },
+        201,
+      ],
       ['POST /api/app/operations/material.read', { material }, 200],
       ['POST /api/app/operations/material.revision-list', { revisions: [revision] }, 200],
       [
         'POST /api/app/operations/material.revision-save',
-        { materialId: 'material_demo', revisionId: 'revision_demo' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          revisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
+        },
         201,
       ],
       [
@@ -2247,22 +2355,38 @@ describe('createCoreClient', () => {
       ['POST /api/app/operations/material.thread-read', { material: threadMaterial }, 200],
       [
         'POST /api/app/operations/material.bind',
-        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'bound' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          outcome: 'bound',
+        },
         200,
       ],
       [
         'POST /api/app/operations/material.unbind',
-        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'unbound' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          outcome: 'unbound',
+        },
         200,
       ],
       [
         'POST /api/app/operations/material.exclude',
-        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'excluded' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          outcome: 'excluded',
+        },
         200,
       ],
       [
         'POST /api/app/operations/material.restore',
-        { materialId: 'material_demo', threadId: 'th_demo', outcome: 'included' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          outcome: 'included',
+        },
         200,
       ],
     ] as const;
@@ -2272,7 +2396,7 @@ describe('createCoreClient', () => {
 
     const responses = [
       await client.operations['artifact.import']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           title: 'Imported artifact',
           mediaType: 'text/markdown',
@@ -2281,68 +2405,70 @@ describe('createCoreClient', () => {
         },
       }),
       await client.operations['artifact.introduce']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        artifactId: 'artifact_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         ...{
           expectedArtifactVersion: 1,
         },
       }),
-      await client.operations['material.list']({ workspaceId: 'ws_demo' }),
+      await client.operations['material.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      }),
       await client.operations['material.create']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         title: 'Demo material',
         kind: 'markdown',
         sensitivity: 'internal',
       }),
       await client.operations['material.read']({
-        workspaceId: 'ws_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
       }),
       await client.operations['material.revision-list']({
-        workspaceId: 'ws_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
       }),
       await client.operations['material.revision-save']({
-        workspaceId: 'ws_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedRevisionId: null,
         contentDigest,
         content: '# Demo material',
       }),
       await client.operations['material.revision-read']({
-        workspaceId: 'ws_demo',
-        materialId: 'material_demo',
-        revisionId: 'revision_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+        revisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
       }),
       await client.operations['material.thread-read']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
       }),
       await client.operations['material.bind']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'not_bound',
       }),
       await client.operations['material.unbind']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'bound',
       }),
       await client.operations['material.exclude']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'bound',
         expectedInclusionState: 'included',
-        expectedQueuedRevisionId: 'revision_demo',
+        expectedQueuedRevisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
       }),
       await client.operations['material.restore']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'bound',
         expectedInclusionState: 'excluded',
       }),
@@ -2358,55 +2484,73 @@ describe('createCoreClient', () => {
     );
     expect(requests.map(({ body }) => body)).toEqual([
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         title: 'Imported artifact',
         mediaType: 'text/markdown',
         contentDigest,
         content: '# Imported artifact',
       },
       {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        artifactId: 'artifact_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         expectedArtifactVersion: 1,
       },
-      { workspaceId: 'ws_demo' },
-      { workspaceId: 'ws_demo', title: 'Demo material', kind: 'markdown', sensitivity: 'internal' },
-      { workspaceId: 'ws_demo', materialId: 'material_demo' },
-      { workspaceId: 'ws_demo', materialId: 'material_demo' },
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       {
-        workspaceId: 'ws_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        title: 'Demo material',
+        kind: 'markdown',
+        sensitivity: 'internal',
+      },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+      },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+      },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedRevisionId: null,
         contentDigest,
         content: '# Demo material',
       },
-      { workspaceId: 'ws_demo', materialId: 'material_demo', revisionId: 'revision_demo' },
-      { workspaceId: 'ws_demo', threadId: 'th_demo' },
       {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+        revisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
+      },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+      },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'not_bound',
       },
       {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'bound',
       },
       {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'bound',
         expectedInclusionState: 'included',
-        expectedQueuedRevisionId: 'revision_demo',
+        expectedQueuedRevisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
       },
       {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         expectedBindingState: 'bound',
         expectedInclusionState: 'excluded',
       },
@@ -2416,13 +2560,13 @@ describe('createCoreClient', () => {
   it('routes Artifact Review through derived operations', async () => {
     const contentDigest = `sha256:${'a'.repeat(64)}`;
     const review = {
-      workspaceId: 'ws_demo',
-      reviewId: 'review_demo',
-      artifactId: 'artifact_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reviewId: 'arev_00000000-0000-5000-8000-000000000001',
+      artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 1,
       contentDigest,
-      sourceThreadId: 'th_demo',
-      sourceTurnId: 'turn_demo',
+      sourceThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      sourceTurnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       sourceAgentId: 'agent_demo',
       materialProposal: null,
       decision: null,
@@ -2451,16 +2595,16 @@ describe('createCoreClient', () => {
 
     await expect(
       client.operations['artifact.review-list']({
-        workspaceId: 'ws_demo',
-        artifactId: 'artifact_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       })
     ).resolves.toEqual({
       reviews: [review],
     });
     await expect(
       client.operations['artifact.review.decide']({
-        workspaceId: 'ws_demo',
-        artifactId: 'artifact_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         artifactVersion: 1,
         ...{
           decision: 'accepted',
@@ -2473,8 +2617,8 @@ describe('createCoreClient', () => {
     ]);
     expect(requests[1]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
     expect(requests[1]?.body).toEqual({
-      workspaceId: 'ws_demo',
-      artifactId: 'artifact_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 1,
       decision: 'accepted',
     });
@@ -2501,27 +2645,32 @@ describe('createCoreClient', () => {
         response: { items: [summary] },
       },
       {
-        body: { workspaceId: 'ws_demo' },
-        invoke: (client) => client.operations['workspace.member-list']({ workspaceId: 'ws_demo' }),
+        body: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        invoke: (client) =>
+          client.operations['workspace.member-list']({
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          }),
         methodPath: 'POST /api/app/operations/workspace.member-list',
         response: { items: [member] },
       },
       {
-        body: { workspaceId: 'ws_demo' },
+        body: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         invoke: (client) =>
-          client.operations['workspace.invitation-list']({ workspaceId: 'ws_demo' }),
+          client.operations['workspace.invitation-list']({
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          }),
         methodPath: 'POST /api/app/operations/workspace.invitation-list',
         response: { items: [invitation] },
       },
       {
         body: {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           inviteeEmail: 'invitee@example.com',
           proposedAccessLevel: 'editor',
         },
         invoke: (client) =>
           client.operations['workspace.invitation-create']({
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{
               inviteeEmail: 'invitee@example.com',
               proposedAccessLevel: 'editor',
@@ -2539,10 +2688,10 @@ describe('createCoreClient', () => {
         response: { items: [invitation] },
       },
       {
-        body: { invitationId: 'invitation_1', expectedRevision: 1 },
+        body: { invitationId: 'inv_01890f3e-0000-7000-8000-000000000071', expectedRevision: 1 },
         invoke: (client) =>
           client.operations['workspace.my-invitation-accept']({
-            invitationId: 'invitation_1',
+            invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
             ...{
               expectedRevision: 1,
               requestId,
@@ -2552,10 +2701,10 @@ describe('createCoreClient', () => {
         response: { invitation },
       },
       {
-        body: { invitationId: 'invitation_1', expectedRevision: 1 },
+        body: { invitationId: 'inv_01890f3e-0000-7000-8000-000000000071', expectedRevision: 1 },
         invoke: (client) =>
           client.operations['workspace.my-invitation-decline']({
-            invitationId: 'invitation_1',
+            invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
             ...{
               expectedRevision: 1,
               requestId,
@@ -2565,11 +2714,15 @@ describe('createCoreClient', () => {
         response: { invitation },
       },
       {
-        body: { workspaceId: 'ws_demo', invitationId: 'invitation_1', expectedRevision: 1 },
+        body: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
+          expectedRevision: 1,
+        },
         invoke: (client) =>
           client.operations['workspace.invitation-revoke']({
-            workspaceId: 'ws_demo',
-            invitationId: 'invitation_1',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
             ...{
               expectedRevision: 1,
               requestId,
@@ -2580,15 +2733,15 @@ describe('createCoreClient', () => {
       },
       {
         body: {
-          workspaceId: 'ws_demo',
-          targetUserId: 'user_2',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
           accessLevel: 'viewer',
           expectedRevision: 1,
         },
         invoke: (client) =>
           client.operations['workspace.member-access-change']({
-            workspaceId: 'ws_demo',
-            targetUserId: 'user_2',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
             ...{
               accessLevel: 'viewer',
               expectedRevision: 1,
@@ -2599,11 +2752,15 @@ describe('createCoreClient', () => {
         response: { member },
       },
       {
-        body: { workspaceId: 'ws_demo', targetUserId: 'user_2', expectedRevision: 1 },
+        body: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+          expectedRevision: 1,
+        },
         invoke: (client) =>
           client.operations['workspace.member-remove']({
-            workspaceId: 'ws_demo',
-            targetUserId: 'user_2',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
             ...{
               expectedRevision: 1,
               requestId,
@@ -2613,41 +2770,51 @@ describe('createCoreClient', () => {
         response: { member: removedMember },
       },
       {
-        body: { workspaceId: 'ws_demo', expectedRevision: 1 },
+        body: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', expectedRevision: 1 },
         invoke: (client) =>
           client.operations['workspace.leave']({
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{ expectedRevision: 1, requestId },
           }),
         methodPath: 'POST /api/app/operations/workspace.leave',
         response: { member: removedMember },
       },
       {
-        body: { workspaceId: 'ws_demo', expectedRegistryRevision: 1, targetUserId: 'user_2' },
+        body: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          expectedRegistryRevision: 1,
+          targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+        },
         invoke: (client) =>
           client.operations['workspace.ownership-transfer']({
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{
               expectedRegistryRevision: 1,
               requestId,
-              targetUserId: 'user_2',
+              targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
             },
           }),
         methodPath: 'POST /api/app/operations/workspace.ownership-transfer',
         response: { workspace: summary },
       },
       {
-        body: { workspaceId: 'ws_demo' },
+        body: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         invoke: (client) =>
-          client.operations['workspace.access-recovery-read']({ workspaceId: 'ws_demo' }),
+          client.operations['workspace.access-recovery-read']({
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          }),
         methodPath: 'POST /api/app/operations/workspace.access-recovery-read',
         response: { recovery },
       },
       {
-        body: { workspaceId: 'ws_demo', action: 'add-self-as-editor', expectedRegistryRevision: 1 },
+        body: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          action: 'add-self-as-editor',
+          expectedRegistryRevision: 1,
+        },
         invoke: (client) =>
           client.operations['workspace.access-recover']({
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{
               action: 'add-self-as-editor',
               expectedRegistryRevision: 1,
@@ -2658,23 +2825,27 @@ describe('createCoreClient', () => {
         response: { recovery },
       },
       {
-        body: { targetUserId: 'user_2' },
+        body: { targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f' },
         invoke: (client) =>
-          client.operations['user.disable']({ targetUserId: 'user_2', ...{ requestId } }),
+          client.operations['user.disable']({
+            targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+            ...{ requestId },
+          }),
         methodPath: 'POST /api/app/operations/user.disable',
         response: { user },
       },
       {
         body: {
-          workspaceId: 'ws_demo',
-          confirmation: 'permanently-delete-workspace:ws_demo:1',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          confirmation: 'permanently-delete-workspace:ws_00000000-0000-7000-8000-000000000001:1',
           expectedRegistryRevision: 1,
         },
         invoke: (client) =>
           client.operations['workspace.delete']({
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{
-              confirmation: 'permanently-delete-workspace:ws_demo:1',
+              confirmation:
+                'permanently-delete-workspace:ws_00000000-0000-7000-8000-000000000001:1',
               expectedRegistryRevision: 1,
               requestId,
             },
@@ -2684,10 +2855,13 @@ describe('createCoreClient', () => {
         status: 202,
       },
       {
-        body: { workspaceId: 'ws_demo', deletionRequestId: '00000000-0000-4000-8000-000000000002' },
+        body: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          deletionRequestId: '00000000-0000-4000-8000-000000000002',
+        },
         invoke: (client) =>
           client.operations['workspace.deleted-recover']({
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{
               deletionRequestId: '00000000-0000-4000-8000-000000000002',
               requestId,
@@ -2738,7 +2912,7 @@ describe('createCoreClient', () => {
       code: 'revision_conflict',
       details: { current: workspaceMember(), resource: 'membership' },
       message: 'Workspace membership revision changed.',
-      protocolVersion: '0.5.0',
+      protocolVersion: '0.6.0',
       requestId,
     });
     expect(parseWorkspaceSharingError(malformedConflict)).toBeNull();
@@ -2768,13 +2942,13 @@ describe('createCoreClient', () => {
   it('routes NanoCore App API calls through app-owned schemas', async () => {
     const retrievalRequestDigest = `sha256:${'b'.repeat(64)}`;
     const retrievedPageDigest = `sha256:${'c'.repeat(64)}`;
-    const knowledgePageScopeId = 'page/workspace/ws_demo';
+    const knowledgePageScopeId = 'page/workspace/ws_00000000-0000-7000-8000-000000000001';
     const knowledgeQueryContext = {
-      serverId: 'dep_demo',
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user', id: 'user_local' },
+      serverId: 'dep_00000000-0000-7f8a-b255-5b390b0a86da',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     } as const;
-    const proposalSourceReference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'d'.repeat(64)}`;
+    const proposalSourceReference = `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'d'.repeat(64)}`;
     const proposalPageBytes = [
       '---',
       'type: "KnowledgePage"',
@@ -2807,8 +2981,8 @@ describe('createCoreClient', () => {
         body: {
           token: 'okt_owner_secret',
           record: {
-            tokenId: 'tok_owner',
-            ownerUserId: 'user_owner',
+            tokenId: 'tok_00000000-0000-7194-b4f8-8fa26eda7175',
+            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
             scope: 'server-admin',
             workspaceIds: [],
             status: 'active',
@@ -2834,10 +3008,10 @@ describe('createCoreClient', () => {
           backendKind: 'encrypted-file',
           currentVersion: 1,
           ownerScope: 'workspace',
-          referenceId: 'vault_imported',
+          referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
           secretKind: 'api-token',
           status: 'active',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       },
       'POST /api/app/operations/vault.reference-list': {
@@ -2847,13 +3021,13 @@ describe('createCoreClient', () => {
               backendKind: 'encrypted-file',
               currentVersion: 0,
               ownerScope: 'workspace',
-              referenceId: 'vault_imported',
+              referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
               secretKind: 'api-token',
               status: 'unbound',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             },
           ],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       },
       'POST /api/app/operations/vault.grant-list': {
@@ -2872,7 +3046,7 @@ describe('createCoreClient', () => {
         body: {
           id: 'quick_demo',
           status: 'completed',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           modelId: 'default',
           content: 'Answer',
         },
@@ -2882,7 +3056,7 @@ describe('createCoreClient', () => {
           state: 'running',
           turn: turn(),
           evidence: {
-            itemIds: ['it_task_status'],
+            itemIds: ['it_00000000-0000-7fb0-9f78-7d56c297c2eb'],
             artifactIds: [],
           },
         },
@@ -2893,10 +3067,10 @@ describe('createCoreClient', () => {
           explanation: 'The Assistant answered directly.',
           turn: turn(),
           item: {
-            id: 'it_chat_answer',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
+            id: 'it_00000000-0000-7865-a4d8-ae16913048ac',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
             type: 'assistant-message',
             status: 'completed',
             text: 'Answer',
@@ -2904,10 +3078,10 @@ describe('createCoreClient', () => {
             completedAt: timestamp,
           },
           handoff: null,
-          originatingWorkspaceId: 'ws_demo',
-          originatingThreadId: 'th_demo',
-          receivingWorkspaceId: 'ws_demo',
-          receivingThreadId: 'th_demo',
+          originatingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+          receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          receivingThreadId: 'th_00000000-0000-7000-8000-000000000001',
           targetRef: 'assistant',
           logicalModelId: null,
         },
@@ -2916,7 +3090,7 @@ describe('createCoreClient', () => {
         body: {
           operationId: 'km_answer_demo',
           operation: 'answer',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           caller: 'app-api',
           query: 'release cadence',
           outcome: 'answered',
@@ -2936,13 +3110,13 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.source.register': {
         body: {
           source: {
-            id: 'ks_demo',
-            workspaceId: 'ws_demo',
+            id: 'ks_00000000-0000-7ef0-a551-80b39073108f',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             kind: 'document',
             title: 'Release notes',
             uri: 'file://release.md',
             contentDigest: 'sha256:abc123',
-            originatingThreadId: 'th_demo',
+            originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
             originatingTurnId: null,
             originatingFileId: null,
             capturedAt: timestamp,
@@ -2951,12 +3125,12 @@ describe('createCoreClient', () => {
           },
           derivedRepresentations: [
             {
-              id: 'ks_demo:text',
-              workspaceId: 'ws_demo',
-              sourceId: 'ks_demo',
+              id: 'ks_00000000-0000-7ef0-a551-80b39073108f:text',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              sourceId: 'ks_00000000-0000-7ef0-a551-80b39073108f',
               kind: 'text',
-              path: 'sources/derived/ks_demo/text.json',
-              materialPath: 'sources/materials/ks_demo/content.txt',
+              path: 'sources/derived/ks_00000000-0000-7ef0-a551-80b39073108f/text.json',
+              materialPath: 'sources/materials/ks_00000000-0000-7ef0-a551-80b39073108f/content.txt',
               contentDigest: 'sha256:abc123',
               sourceContentDigest: 'sha256:abc123',
               createdAt: timestamp,
@@ -2968,13 +3142,13 @@ describe('createCoreClient', () => {
         body: {
           items: [
             {
-              id: 'ks_demo',
-              workspaceId: 'ws_demo',
+              id: 'ks_00000000-0000-7ef0-a551-80b39073108f',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               kind: 'document',
               title: 'Release notes',
               uri: 'file://release.md',
               contentDigest: 'sha256:abc123',
-              originatingThreadId: 'th_demo',
+              originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
               originatingTurnId: null,
               originatingFileId: null,
               capturedAt: timestamp,
@@ -2987,13 +3161,13 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.source.read': {
         body: {
           source: {
-            id: 'ks_demo',
-            workspaceId: 'ws_demo',
+            id: 'ks_00000000-0000-7ef0-a551-80b39073108f',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             kind: 'document',
             title: 'Release notes',
             uri: 'file://release.md',
             contentDigest: 'sha256:abc123',
-            originatingThreadId: 'th_demo',
+            originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
             originatingTurnId: null,
             originatingFileId: null,
             capturedAt: timestamp,
@@ -3002,12 +3176,12 @@ describe('createCoreClient', () => {
           },
           derivedRepresentations: [
             {
-              id: 'ks_demo:text',
-              workspaceId: 'ws_demo',
-              sourceId: 'ks_demo',
+              id: 'ks_00000000-0000-7ef0-a551-80b39073108f:text',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              sourceId: 'ks_00000000-0000-7ef0-a551-80b39073108f',
               kind: 'text',
-              path: 'sources/derived/ks_demo/text.json',
-              materialPath: 'sources/materials/ks_demo/content.txt',
+              path: 'sources/derived/ks_00000000-0000-7ef0-a551-80b39073108f/text.json',
+              materialPath: 'sources/materials/ks_00000000-0000-7ef0-a551-80b39073108f/content.txt',
               contentDigest: 'sha256:abc123',
               sourceContentDigest: 'sha256:abc123',
               createdAt: timestamp,
@@ -3019,13 +3193,13 @@ describe('createCoreClient', () => {
         body: {
           linkGraph: {
             schemaVersion: 1,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             rebuiltAt: timestamp,
             edges: [{ fromId: 'alpha', target: '/beta.md', toId: 'beta', resolved: true }],
           },
           validation: {
             schemaVersion: 1,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             rebuiltAt: timestamp,
             records: [
               {
@@ -3041,22 +3215,22 @@ describe('createCoreClient', () => {
           },
           sourceReferences: {
             schemaVersion: 1,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             rebuiltAt: timestamp,
             references: [
               {
                 conceptId: 'alpha',
                 path: 'knowledge/pages/alpha.md',
-                reference: 'source:ks_demo',
+                reference: 'source:ks_00000000-0000-7ef0-a551-80b39073108f',
                 kind: 'registered-source',
-                targetId: 'ks_demo',
+                targetId: 'ks_00000000-0000-7ef0-a551-80b39073108f',
                 resolved: true,
               },
             ],
           },
           fullText: {
             schemaVersion: 1,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             rebuiltAt: timestamp,
             tokenizer: 'unicode-simple-v1',
             terms: [
@@ -3077,11 +3251,14 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.observation.record': {
         body: {
           observation: {
-            id: 'ko_demo',
-            workspaceId: 'ws_demo',
+            id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             kind: 'retrieval',
             summary: 'Worker repeatedly needed release cadence context.',
-            sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+            sourceReferences: [
+              'knowledge:kn_demo',
+              'source:ks_00000000-0000-7ef0-a551-80b39073108f',
+            ],
             scope: 'workspace',
             producer: 'knowledge-manager',
             confidence: 0.75,
@@ -3096,11 +3273,14 @@ describe('createCoreClient', () => {
         body: {
           items: [
             {
-              id: 'ko_demo',
-              workspaceId: 'ws_demo',
+              id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               kind: 'retrieval',
               summary: 'Worker repeatedly needed release cadence context.',
-              sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+              sourceReferences: [
+                'knowledge:kn_demo',
+                'source:ks_00000000-0000-7ef0-a551-80b39073108f',
+              ],
               scope: 'workspace',
               producer: 'knowledge-manager',
               confidence: 0.75,
@@ -3115,10 +3295,13 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.claim.record': {
         body: {
           claim: {
-            id: 'kc_demo',
-            workspaceId: 'ws_demo',
+            id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             statement: 'Release cadence is weekly.',
-            sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+            sourceReferences: [
+              'knowledge:release-plan',
+              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+            ],
             scope: 'workspace',
             producer: 'knowledge-manager',
             confidence: 0.8,
@@ -3134,10 +3317,13 @@ describe('createCoreClient', () => {
         body: {
           items: [
             {
-              id: 'kc_demo',
-              workspaceId: 'ws_demo',
+              id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               statement: 'Release cadence is weekly.',
-              sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+              sourceReferences: [
+                'knowledge:release-plan',
+                'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+              ],
               scope: 'workspace',
               producer: 'knowledge-manager',
               confidence: 0.8,
@@ -3153,10 +3339,16 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.conflict.record': {
         body: {
           conflict: {
-            id: 'kf_demo',
-            workspaceId: 'ws_demo',
-            subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-            sourceReferences: ['source:ks_release', 'source:ks_correction'],
+            id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            subjectReferences: [
+              'knowledge:release-plan',
+              'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
+            ],
+            sourceReferences: [
+              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+              'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
+            ],
             status: 'conflicting',
             summary: 'Release cadence has contradictory source evidence.',
             suggestedActions: ['Ask the user which source is authoritative.'],
@@ -3170,10 +3362,16 @@ describe('createCoreClient', () => {
         body: {
           items: [
             {
-              id: 'kf_demo',
-              workspaceId: 'ws_demo',
-              subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-              sourceReferences: ['source:ks_release', 'source:ks_correction'],
+              id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              subjectReferences: [
+                'knowledge:release-plan',
+                'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
+              ],
+              sourceReferences: [
+                'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+                'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
+              ],
               status: 'conflicting',
               summary: 'Release cadence has contradictory source evidence.',
               suggestedActions: ['Ask the user which source is authoritative.'],
@@ -3187,10 +3385,16 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.conflict.resolve': {
         body: {
           conflict: {
-            id: 'kf_demo',
-            workspaceId: 'ws_demo',
-            subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-            sourceReferences: ['source:ks_release', 'source:ks_correction'],
+            id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            subjectReferences: [
+              'knowledge:release-plan',
+              'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
+            ],
+            sourceReferences: [
+              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+              'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
+            ],
             status: 'resolved',
             summary: 'Release cadence has contradictory source evidence.',
             suggestedActions: ['Ask the user which source is authoritative.'],
@@ -3208,7 +3412,7 @@ describe('createCoreClient', () => {
           queryContext: knowledgeQueryContext,
           sourceScope: knowledgePageScopeId,
           notebookRevision: null,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           caller: 'app-api',
           requestDigest: retrievalRequestDigest,
           retrievalParameters: {
@@ -3224,7 +3428,7 @@ describe('createCoreClient', () => {
               revision: retrievedPageDigest,
               contentDigest: retrievedPageDigest,
               score: 4,
-              sourceReferences: ['source:ks_demo'],
+              sourceReferences: ['source:ks_00000000-0000-7ef0-a551-80b39073108f'],
             },
           ],
           excluded: [
@@ -3242,7 +3446,7 @@ describe('createCoreClient', () => {
         body: {
           operationId: 'km_context_demo',
           operation: 'prepare-context-material',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           caller: 'app-api',
           outcome: 'prepared',
           selected: [
@@ -3251,7 +3455,7 @@ describe('createCoreClient', () => {
               revision: retrievedPageDigest,
               contentDigest: retrievedPageDigest,
               score: 4,
-              sourceReferences: ['source:ks_demo'],
+              sourceReferences: ['source:ks_00000000-0000-7ef0-a551-80b39073108f'],
             },
           ],
           excluded: [
@@ -3269,11 +3473,11 @@ describe('createCoreClient', () => {
         body: {
           operationId: 'km_proposal_demo',
           operation: 'draft-proposal',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           caller: 'app-api',
           proposal: {
             id: 'kp_demo',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             operation: 'create',
             knowledgePageId: 'lessons/release-review',
             canonicalPageBytes: proposalPageBytes,
@@ -3284,7 +3488,7 @@ describe('createCoreClient', () => {
             producer: {
               kind: 'agent',
               id: 'knowledge-manager',
-              responsibleUserId: 'user_demo',
+              responsibleUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
             },
             status: 'pending',
             createdAt: timestamp,
@@ -3299,7 +3503,7 @@ describe('createCoreClient', () => {
         body: {
           operationId: 'km_repair_demo',
           operation: 'suggest-repair',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           caller: 'app-api',
           outcome: 'suggested',
           suggestions: [
@@ -3319,7 +3523,7 @@ describe('createCoreClient', () => {
         body: {
           operationId: 'km_health_demo',
           operation: 'health-check',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           caller: 'app-api',
           outcome: 'needs-attention',
           summary: 'Knowledge Manager found 1 repair suggestion.',
@@ -3349,7 +3553,11 @@ describe('createCoreClient', () => {
         },
       },
       'POST /api/app/operations/app.search': {
-        body: { items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }] },
+        body: {
+          items: [
+            { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001', title: 'Demo' },
+          ],
+        },
       },
       'POST /api/app/operations/agent.health-refresh': {
         body: { items: [], sessions: [] },
@@ -3363,7 +3571,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/recovery.checkpoint-retry': {
         body: {
           outcome: 'released_for_retry',
-          turnId: 'turn_worker',
+          turnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
         },
       },
       'POST /api/app/operations/scheduler.retry': {
@@ -3378,9 +3586,9 @@ describe('createCoreClient', () => {
             {
               queueEntryId: 'queue_1',
               requestId: null,
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
-              turnId: 'turn_scheduler',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: 'tu_00000000-0000-77ce-a313-434e52e312f6',
               requestedAgentId: 'agent_codex_host',
               profileRef: 'agent_codex_host',
               modelId: null,
@@ -3446,92 +3654,115 @@ describe('createCoreClient', () => {
       client.operations['bootstrap.consume']({
         displayName: 'Owner',
         email: 'owner@example.com',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
         token: 'okt_bootstrap_secret',
         tokenExpiresAt: timestamp,
       })
     ).resolves.toMatchObject({
       token: 'okt_owner_secret',
-      record: { ownerUserId: 'user_owner', scope: 'server-admin' },
+      record: { ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f', scope: 'server-admin' },
     });
-    await expect(client.operations['backup.verify']({ backupId: 'drb_demo' })).resolves.toEqual(
-      dataRootBackupResponse()
-    );
     await expect(
-      client.operations['workspace.export']({ workspaceId: 'ws_demo' })
+      client.operations['backup.verify']({ backupId: 'drb_00000000-0000-795e-9322-0c2b42caa5d0' })
+    ).resolves.toEqual(dataRootBackupResponse());
+    await expect(
+      client.operations['workspace.export']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceExportResponse());
     await expect(
       client.operations['workspace.import-dry-run']({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: 'wsexp_demo',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
       })
     ).resolves.toEqual(workspaceImportDryRunResponse());
     await expect(
       client.operations['workspace.import']({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: 'wsexp_demo',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
         requestId: 'req_import',
       })
     ).resolves.toEqual(workspaceImportResponse());
     expect(
       requests.find(({ path }) => path === '/api/app/operations/workspace.export')?.body
-    ).toEqual({ workspaceId: 'ws_demo' });
+    ).toEqual({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
     const importRequest = requests.find(
       ({ path }) => path === '/api/app/operations/workspace.import'
     );
     expect(importRequest?.headers['x-openkit-request-id']).toBe('req_import');
-    expect(importRequest?.body).toEqual({ sourceWorkspaceId: 'ws_demo', exportId: 'wsexp_demo' });
+    expect(importRequest?.body).toEqual({
+      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+    });
     await expect(
       client.operations['vault.reference-rebind']({
-        workspaceId: 'ws_demo',
-        referenceId: 'vault_imported',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
         ...{
-          materialBase64: Buffer.from('workspace-secret').toString('base64'),
+          materialBase64: Buffer.from('ws_00000000-0000-7610-8fe3-da032db53ed3').toString('base64'),
         },
       })
     ).resolves.toMatchObject({
-      referenceId: 'vault_imported',
+      referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
       status: 'active',
     });
     await expect(
-      client.operations['vault.reference-list']({ workspaceId: 'ws_demo' })
+      client.operations['vault.reference-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
-      items: [{ referenceId: 'vault_imported', status: 'unbound' }],
-      workspaceId: 'ws_demo',
+      items: [{ referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49', status: 'unbound' }],
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     await expect(
-      client.operations['vault.grant-list']({ workspaceId: 'ws_demo' })
+      client.operations['vault.grant-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceVaultGrantsResponse());
     await expect(
-      client.operations['vault.injection-plan-list']({ workspaceId: 'ws_demo' })
+      client.operations['vault.injection-plan-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceInjectionPlansResponse());
     await expect(
-      client.operations['vault.injection-receipt-list']({ workspaceId: 'ws_demo' })
+      client.operations['vault.injection-receipt-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceInjectionReceiptsResponse());
-    await expect(client.operations['vault.use-list']({ workspaceId: 'ws_demo' })).resolves.toEqual(
-      workspaceVaultUseRecordsResponse()
-    );
+    await expect(
+      client.operations['vault.use-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    ).resolves.toEqual(workspaceVaultUseRecordsResponse());
     await expect(client.operations['vault.server-use-list']({})).resolves.toEqual(
       serverVaultUseRecordsResponse()
     );
-    await expect(client.operations['usage.read']({ workspaceId: 'ws_demo' })).resolves.toEqual(
-      capabilityUsageResponse()
-    );
     await expect(
-      client.operations['evidence.bundle-list']({ workspaceId: 'ws_demo' })
+      client.operations['usage.read']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+    ).resolves.toEqual(capabilityUsageResponse());
+    await expect(
+      client.operations['evidence.bundle-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceEvidenceBundlesResponse());
     await expect(
-      client.operations['evidence.runtime-list']({ workspaceId: 'ws_demo' })
+      client.operations['evidence.runtime-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceRuntimeEvidenceResponse());
     await expect(
-      client.operations['audit.workspace-list']({ workspaceId: 'ws_demo' })
+      client.operations['audit.workspace-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceAuditEventsResponse());
     await expect(client.operations['audit.server-list']({})).resolves.toEqual(
       serverAuditEventsResponse()
     );
     await expect(
-      client.operations['permission.workspace-list']({ workspaceId: 'ws_demo' })
+      client.operations['permission.workspace-list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspacePermissionDecisionsResponse());
     await expect(client.operations['permission.server-list']({})).resolves.toEqual(
       serverPermissionDecisionsResponse()
@@ -3542,8 +3773,8 @@ describe('createCoreClient', () => {
     });
     await expect(
       client.operations['task.start']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         ...{ input: 'Implement the focused fix.' },
       })
     ).resolves.toMatchObject({
@@ -3551,8 +3782,8 @@ describe('createCoreClient', () => {
     });
     await expect(
       client.operations['conversation.submit']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         ...{
           input: 'What is OpenKit?',
           targetRef: 'assistant',
@@ -3564,7 +3795,7 @@ describe('createCoreClient', () => {
       item: { type: 'assistant-message', text: 'Answer' },
     });
     const knowledgeAnswer = await client.operations['knowledge.answer']({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ...{ query: 'release cadence' },
     });
     expect(knowledgeAnswer).toMatchObject({
@@ -3575,100 +3806,139 @@ describe('createCoreClient', () => {
     expect(knowledgeAnswer).not.toHaveProperty('retrievalTraceId');
     await expect(
       client.operations['knowledge.source.register']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           requestId: 'req_source',
           kind: 'document',
           title: 'Release notes',
           uri: 'file://release.md',
           content: 'Release cadence is weekly.',
-          originatingThreadId: 'th_demo',
+          originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
         },
       })
     ).resolves.toMatchObject({
-      source: { id: 'ks_demo', title: 'Release notes' },
-      derivedRepresentations: [{ sourceId: 'ks_demo', kind: 'text' }],
+      source: { id: 'ks_00000000-0000-7ef0-a551-80b39073108f', title: 'Release notes' },
+      derivedRepresentations: [
+        { sourceId: 'ks_00000000-0000-7ef0-a551-80b39073108f', kind: 'text' },
+      ],
     });
     await expect(
-      client.operations['knowledge.source.list']({ workspaceId: 'ws_demo' })
+      client.operations['knowledge.source.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
-      items: [{ id: 'ks_demo', title: 'Release notes' }],
+      items: [{ id: 'ks_00000000-0000-7ef0-a551-80b39073108f', title: 'Release notes' }],
     });
     await expect(
-      client.operations['knowledge.source.read']({ workspaceId: 'ws_demo', sourceId: 'ks_demo' })
+      client.operations['knowledge.source.read']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        sourceId: 'ks_00000000-0000-7ef0-a551-80b39073108f',
+      })
     ).resolves.toMatchObject({
-      source: { id: 'ks_demo', title: 'Release notes' },
-      derivedRepresentations: [{ sourceId: 'ks_demo', kind: 'text' }],
+      source: { id: 'ks_00000000-0000-7ef0-a551-80b39073108f', title: 'Release notes' },
+      derivedRepresentations: [
+        { sourceId: 'ks_00000000-0000-7ef0-a551-80b39073108f', kind: 'text' },
+      ],
     });
     await expect(
-      client.operations['knowledge.indexes']({ workspaceId: 'ws_demo' })
+      client.operations['knowledge.indexes']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       linkGraph: { edges: [{ fromId: 'alpha', resolved: true }] },
       validation: { records: [{ conceptId: 'alpha', indexed: true }] },
-      sourceReferences: { references: [{ reference: 'source:ks_demo', resolved: true }] },
+      sourceReferences: {
+        references: [
+          { reference: 'source:ks_00000000-0000-7ef0-a551-80b39073108f', resolved: true },
+        ],
+      },
     });
     await expect(
       client.operations['knowledge.observation.record']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           requestId: 'req_observation',
           kind: 'retrieval',
           summary: 'Worker repeatedly needed release cadence context.',
-          sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+          sourceReferences: ['knowledge:kn_demo', 'source:ks_00000000-0000-7ef0-a551-80b39073108f'],
           producer: 'knowledge-manager',
           confidence: 0.75,
         },
       })
     ).resolves.toMatchObject({
-      observation: { id: 'ko_demo', kind: 'retrieval', status: 'retained' },
+      observation: {
+        id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
+        kind: 'retrieval',
+        status: 'retained',
+      },
     });
     await expect(
-      client.operations['knowledge.observation.list']({ workspaceId: 'ws_demo' })
+      client.operations['knowledge.observation.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
-      items: [{ id: 'ko_demo', kind: 'retrieval' }],
+      items: [{ id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41', kind: 'retrieval' }],
     });
     await expect(
       client.operations['knowledge.claim.record']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           requestId: 'req_claim',
           statement: 'Release cadence is weekly.',
-          sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+          sourceReferences: [
+            'knowledge:release-plan',
+            'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+          ],
           producer: 'knowledge-manager',
           confidence: 0.8,
         },
       })
     ).resolves.toMatchObject({
-      claim: { id: 'kc_demo', statement: 'Release cadence is weekly.' },
+      claim: {
+        id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
+        statement: 'Release cadence is weekly.',
+      },
     });
     await expect(
-      client.operations['knowledge.claim.list']({ workspaceId: 'ws_demo' })
+      client.operations['knowledge.claim.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
-      items: [{ id: 'kc_demo', statement: 'Release cadence is weekly.' }],
+      items: [
+        { id: 'kc_00000000-0000-7120-8707-e527057f1dd9', statement: 'Release cadence is weekly.' },
+      ],
     });
     await expect(
       client.operations['knowledge.conflict.record']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           requestId: 'req_conflict',
-          subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-          sourceReferences: ['source:ks_release', 'source:ks_correction'],
+          subjectReferences: [
+            'knowledge:release-plan',
+            'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
+          ],
+          sourceReferences: [
+            'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+            'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
+          ],
           summary: 'Release cadence has contradictory source evidence.',
           producer: 'knowledge-manager',
         },
       })
     ).resolves.toMatchObject({
-      conflict: { id: 'kf_demo', status: 'conflicting' },
+      conflict: { id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef', status: 'conflicting' },
     });
     await expect(
-      client.operations['knowledge.conflict.list']({ workspaceId: 'ws_demo' })
+      client.operations['knowledge.conflict.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
-      items: [{ id: 'kf_demo', status: 'conflicting' }],
+      items: [{ id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef', status: 'conflicting' }],
     });
     await expect(
       client.operations['knowledge.conflict.resolve']({
-        workspaceId: 'ws_demo',
-        conflictId: 'kf_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        conflictId: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
         ...{
           requestId: 'req_resolve_conflict',
           resolution: 'Friday release reviews are authoritative.',
@@ -3676,18 +3946,18 @@ describe('createCoreClient', () => {
         },
       })
     ).resolves.toMatchObject({
-      conflict: { id: 'kf_demo', status: 'resolved' },
+      conflict: { id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef', status: 'resolved' },
     });
     await expect(
       client.operations['knowledge.retrieval']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{ query: 'release cadence', limit: 1 },
       })
     ).resolves.toEqual({
       queryContext: knowledgeQueryContext,
       sourceScope: knowledgePageScopeId,
       notebookRevision: null,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'app-api',
       requestDigest: retrievalRequestDigest,
       retrievalParameters: {
@@ -3703,7 +3973,7 @@ describe('createCoreClient', () => {
           revision: retrievedPageDigest,
           contentDigest: retrievedPageDigest,
           score: 4,
-          sourceReferences: ['source:ks_demo'],
+          sourceReferences: ['source:ks_00000000-0000-7ef0-a551-80b39073108f'],
         },
       ],
       excluded: [
@@ -3718,7 +3988,7 @@ describe('createCoreClient', () => {
     });
     await expect(
       client.operations['knowledge.context.prepare']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           query: 'release cadence',
           limit: 1,
@@ -3727,7 +3997,7 @@ describe('createCoreClient', () => {
     ).resolves.toEqual({
       operationId: 'km_context_demo',
       operation: 'prepare-context-material',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'app-api',
       outcome: 'prepared',
       selected: [
@@ -3736,7 +4006,7 @@ describe('createCoreClient', () => {
           revision: retrievedPageDigest,
           contentDigest: retrievedPageDigest,
           score: 4,
-          sourceReferences: ['source:ks_demo'],
+          sourceReferences: ['source:ks_00000000-0000-7ef0-a551-80b39073108f'],
         },
       ],
       excluded: [
@@ -3754,15 +4024,15 @@ describe('createCoreClient', () => {
     expect(client.app).not.toHaveProperty('readKnowledgeContextPackageMaterialization');
     const requestedMethodPaths = requests.map(({ method, path }) => `${method} ${path}`);
     for (const removedMethodPath of [
-      'GET /api/app/workspaces/ws_demo/knowledge/manager/context/ctxpkg_km_context_demo',
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/context/ctxpkg_km_context_demo/materialization',
-      'GET /api/app/workspaces/ws_demo/knowledge/manager/context/ctxpkg_km_context_demo/materialization',
+      'GET /api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/context/ctxpkg_km_context_demo',
+      'POST /api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/context/ctxpkg_km_context_demo/materialization',
+      'GET /api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/manager/context/ctxpkg_km_context_demo/materialization',
     ]) {
       expect(requestedMethodPaths).not.toContain(removedMethodPath);
     }
     await expect(
       client.operations['knowledge.proposal.draft']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           requestId: '00000000-0000-4000-8000-000000000621',
           knowledgePageId: 'lessons/release-review',
@@ -3783,13 +4053,19 @@ describe('createCoreClient', () => {
       },
     });
     await expect(
-      client.operations['knowledge.repair.suggest']({ workspaceId: 'ws_demo', ...{} })
+      client.operations['knowledge.repair.suggest']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        ...{},
+      })
     ).resolves.toMatchObject({
       operation: 'suggest-repair',
       suggestions: [{ kind: 'duplicate-title' }],
     });
     await expect(
-      client.operations['knowledge.health.check']({ workspaceId: 'ws_demo', ...{} })
+      client.operations['knowledge.health.check']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        ...{},
+      })
     ).resolves.toMatchObject({
       operation: 'health-check',
       outcome: 'needs-attention',
@@ -3806,16 +4082,22 @@ describe('createCoreClient', () => {
       expect(requests.find((request) => request.path === path)?.body).not.toHaveProperty('caller');
     }
     await expect(client.operations['app.search']({ query: 'protocol design' })).resolves.toEqual({
-      items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }],
+      items: [{ kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001', title: 'Demo' }],
     });
     await expect(
-      client.operations['agent.health-refresh']({ workspaceId: 'ws_demo' })
+      client.operations['agent.health-refresh']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.not.toHaveProperty('sessions');
     await expect(client.operations['agent.list']({})).resolves.toEqual({ items: [agent()] });
     await expect(client.operations['agent.read']({ agentId: 'agent_demo' })).resolves.toEqual(
       agent()
     );
-    await expect(client.operations['attention.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+    await expect(
+      client.operations['attention.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    ).resolves.toEqual({
       items: [],
     });
     await expect(client.operations['recovery.worker-list']({})).resolves.toEqual({
@@ -3828,38 +4110,47 @@ describe('createCoreClient', () => {
     expect(client.app).not.toHaveProperty('promoteRecoveryPendingUserTurnToInterrupt');
     await expect(
       client.operations['recovery.checkpoint-retry']({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_worker',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
         requestId: 'req_worker_retry',
       })
     ).resolves.toEqual({
       outcome: 'released_for_retry',
-      turnId: 'turn_worker',
+      turnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
     });
     expect(
       requests.find((request) => request.path === '/api/app/operations/recovery.checkpoint-retry')
         ?.body
-    ).toEqual({ workspaceId: 'ws_demo', threadId: 'th_demo', turnId: 'turn_worker' });
+    ).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
+    });
     expect(
       requests.find((request) => request.path === '/api/app/operations/recovery.checkpoint-retry')
         ?.headers['x-openkit-request-id']
     ).toBe('req_worker_retry');
     await expect(
-      client.operations['scheduler.retry']({ workspaceId: 'ws_demo', queueEntryId: 'queue_denied' })
+      client.operations['scheduler.retry']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        queueEntryId: 'queue_denied',
+      })
     ).resolves.toEqual({
       retried: true,
     });
     await expect(
       client.operations['scheduler.cancel']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         queueEntryId: 'queue_queued',
       })
     ).resolves.toEqual({
       cancelled: true,
     });
     await expect(
-      client.operations['scheduler.list']({ workspaceId: 'ws_demo' })
+      client.operations['scheduler.list']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toMatchObject({
       items: [{ queueEntryId: 'queue_1', queuePosition: 1 }],
     });
@@ -3924,26 +4215,36 @@ describe('createCoreClient', () => {
     expect(requests[6]?.body).toEqual({
       displayName: 'Owner',
       email: 'owner@example.com',
-      ownerUserId: 'user_owner',
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       password: 'password123456',
       token: 'okt_bootstrap_secret',
       tokenExpiresAt: timestamp,
     });
     expect(requests[11]?.body).toEqual({
-      workspaceId: 'ws_demo',
-      referenceId: 'vault_imported',
-      materialBase64: Buffer.from('workspace-secret').toString('base64'),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
+      materialBase64: Buffer.from('ws_00000000-0000-7610-8fe3-da032db53ed3').toString('base64'),
     });
-    expect(requests.at(-6)?.body).toEqual({ workspaceId: 'ws_demo' });
+    expect(requests.at(-6)?.body).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     expect(requests.at(-5)?.body).toEqual({});
     expect(requests.at(-4)?.body).toEqual({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_worker',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-721e-b9c7-66142de81c58',
     });
-    expect(requests.at(-3)?.body).toEqual({ workspaceId: 'ws_demo', queueEntryId: 'queue_denied' });
-    expect(requests.at(-2)?.body).toEqual({ workspaceId: 'ws_demo', queueEntryId: 'queue_queued' });
-    expect(requests.at(-1)?.body).toEqual({ workspaceId: 'ws_demo' });
+    expect(requests.at(-3)?.body).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      queueEntryId: 'queue_denied',
+    });
+    expect(requests.at(-2)?.body).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      queueEntryId: 'queue_queued',
+    });
+    expect(requests.at(-1)?.body).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
   });
 
   it('routes OpenKit access-token administration through canonical operation schemas', async () => {
@@ -3961,61 +4262,79 @@ describe('createCoreClient', () => {
           token: 'okt_rotated_secret',
           record: accessTokenRecord({ status: 'rotated', rotatedGraceExpiresAt: timestamp }),
           rotatedRecord: accessTokenRecord({
-            predecessorTokenId: 'tok_workspace',
-            tokenId: 'tok_rotated',
+            predecessorTokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
+            tokenId: 'tok_00000000-0000-70a5-901d-30e32504f846',
           }),
         },
       },
       'POST /api/app/operations/token.my-admin-list': {
         body: {
-          defaultTokenId: 'tok_admin',
+          defaultTokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
           items: [
-            accessTokenRecord({ tokenId: 'tok_admin', scope: 'server-admin', workspaceIds: [] }),
+            accessTokenRecord({
+              tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+              scope: 'server-admin',
+              workspaceIds: [],
+            }),
           ],
         },
       },
       'POST /api/app/operations/token.my-admin-default': {
         body: {
-          defaultTokenId: 'tok_admin',
+          defaultTokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
           items: [
-            accessTokenRecord({ tokenId: 'tok_admin', scope: 'server-admin', workspaceIds: [] }),
+            accessTokenRecord({
+              tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+              scope: 'server-admin',
+              workspaceIds: [],
+            }),
           ],
         },
       },
     });
 
     await expect(client.operations['token.list']({})).resolves.toMatchObject({
-      items: [{ tokenId: 'tok_workspace', workspaceIds: ['ws_demo'] }],
+      items: [
+        {
+          tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
+          workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+        },
+      ],
     });
     await expect(
       client.operations['token.create']({
         expiresAt: timestamp,
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       })
     ).resolves.toMatchObject({
       token: 'okt_workspace_secret',
-      record: { tokenId: 'tok_workspace' },
+      record: { tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8' },
     });
     await expect(
-      client.operations['token.revoke']({ tokenId: 'tok_workspace' })
+      client.operations['token.revoke']({ tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8' })
     ).resolves.toMatchObject({
       record: { status: 'revoked' },
     });
     await expect(
-      client.operations['token.rotate']({ tokenId: 'tok_workspace', ...{ graceSeconds: 60 } })
+      client.operations['token.rotate']({
+        tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
+        ...{ graceSeconds: 60 },
+      })
     ).resolves.toMatchObject({
       token: 'okt_rotated_secret',
-      rotatedRecord: { predecessorTokenId: 'tok_workspace' },
+      rotatedRecord: { predecessorTokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8' },
     });
     await expect(client.operations['token.my-admin-list']({})).resolves.toMatchObject({
-      defaultTokenId: 'tok_admin',
-      items: [{ tokenId: 'tok_admin', scope: 'server-admin' }],
+      defaultTokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+      items: [{ tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629', scope: 'server-admin' }],
     });
     await expect(
-      client.operations['token.my-admin-default']({ tokenId: 'tok_admin' })
+      client.operations['token.my-admin-default']({
+        tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+      })
     ).resolves.toMatchObject({
-      defaultTokenId: 'tok_admin',
+      defaultTokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
     });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
@@ -4029,9 +4348,12 @@ describe('createCoreClient', () => {
     expect(requests[1]?.body).toEqual({
       expiresAt: timestamp,
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
-    expect(requests[3]?.body).toEqual({ tokenId: 'tok_workspace', graceSeconds: 60 });
+    expect(requests[3]?.body).toEqual({
+      tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
+      graceSeconds: 60,
+    });
   });
 
   it('routes vault admin operations through app-owned schemas', async () => {
@@ -4045,9 +4367,9 @@ describe('createCoreClient', () => {
         body: {
           backendKind: 'encrypted-file',
           expiresAt: null,
-          grantId: 'grant_codex_auth_json',
+          grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
           grantScope: 'agent-session',
-          referenceId: 'vault_codex_auth_json',
+          referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
           secretKind: 'codex-auth-json',
           targetPath: '/sandbox/.codex/auth.json',
         },
@@ -4072,8 +4394,8 @@ describe('createCoreClient', () => {
     await expect(
       client.operations['vault.bootstrap-codex-auth']({ ...{ authJsonBase64 } })
     ).resolves.toMatchObject({
-      grantId: 'grant_codex_auth_json',
-      referenceId: 'vault_codex_auth_json',
+      grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
+      referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
     });
     await expect(
       client.operations['vault.provider-api-key-set']({
@@ -4115,11 +4437,11 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.proposal.decide': {
         body: {
           review: {
-            reviewId: 'kr_demo',
+            reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
             proposalId: 'kp_demo',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             decision: 'accepted',
-            actor: { kind: 'user', id: 'user_demo' },
+            actor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
             proposalDigest,
             decidedAt: timestamp,
             requestId: '00000000-0000-4000-8000-000000000622',
@@ -4137,7 +4459,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.proposal.reverse': {
         body: {
           proposalId: 'kp_demo',
-          reviewId: 'kr_demo',
+          reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
           application: {
             knowledgePageId: 'lessons/release-review',
             contentDigest: proposalPageDigest,
@@ -4153,7 +4475,7 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/operations/turn.feedback': {
         body: {
-          turnId: 'turn_demo',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           agentId: 'agent_demo',
           rating: 'good',
           note: null,
@@ -4163,11 +4485,13 @@ describe('createCoreClient', () => {
     });
 
     await expect(
-      client.operations['workspace.dashboard']({ workspaceId: 'ws_demo' })
+      client.operations['workspace.dashboard']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).resolves.toEqual(workspaceDashboard());
     const dashboard = await client.operations['thread.dashboard']({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
     });
     expect(dashboard).not.toHaveProperty('activeSession');
     expect(dashboard.workStatus).toEqual(threadDashboard().workStatus);
@@ -4175,7 +4499,7 @@ describe('createCoreClient', () => {
     expect('runThreadGoalTestSuperviseStep' in client.app).toBe(false);
     await expect(
       client.operations['knowledge.proposal.decide']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         proposalId: 'kp_demo',
         ...{
           requestId: '00000000-0000-4000-8000-000000000622',
@@ -4184,11 +4508,11 @@ describe('createCoreClient', () => {
       })
     ).resolves.toEqual({
       review: {
-        reviewId: 'kr_demo',
+        reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
         proposalId: 'kp_demo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         decision: 'accepted',
-        actor: { kind: 'user', id: 'user_demo' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
         proposalDigest,
         decidedAt: timestamp,
         requestId: '00000000-0000-4000-8000-000000000622',
@@ -4204,18 +4528,18 @@ describe('createCoreClient', () => {
     });
     await expect(
       client.operations['knowledge.proposal.reverse']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         proposalId: 'kp_demo',
         ...{
           requestId: '00000000-0000-4000-8000-000000000623',
-          reviewId: 'kr_demo',
+          reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
           knowledgePageId: 'lessons/release-review',
           expectedContentDigest: proposalPageDigest,
         },
       })
     ).resolves.toEqual({
       proposalId: 'kp_demo',
-      reviewId: 'kr_demo',
+      reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
       application: {
         knowledgePageId: 'lessons/release-review',
         contentDigest: proposalPageDigest,
@@ -4229,14 +4553,14 @@ describe('createCoreClient', () => {
     await expect(
       client.operations['automation.create']({
         name: 'Demo automation',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         cron: '0 9 * * *',
         prompt: 'Summarize status.',
       })
     ).resolves.toEqual(automation());
     await expect(
       client.operations['automation.update']({
-        automationId: 'auto_demo',
+        automationId: 'auto_00000000-0000-7934-bc11-14512d3a737a',
         status: 'enabled',
       })
     ).resolves.toEqual({
@@ -4244,21 +4568,28 @@ describe('createCoreClient', () => {
       status: 'enabled',
     });
     await expect(
-      client.operations['turn.feedback']({ ...{ rating: 'good', note: null }, turnId: 'turn_demo' })
-    ).resolves.toMatchObject({ turnId: 'turn_demo', rating: 'good' });
+      client.operations['turn.feedback']({
+        ...{ rating: 'good', note: null },
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      })
+    ).resolves.toMatchObject({ turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64', rating: 'good' });
     expect(
       requests.find((request) =>
         request.path.endsWith('/api/app/operations/knowledge.proposal.decide')
       )?.body
-    ).toEqual({ workspaceId: 'ws_demo', proposalId: 'kp_demo', decision: 'accepted' });
+    ).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      proposalId: 'kp_demo',
+      decision: 'accepted',
+    });
     expect(
       requests.find((request) =>
         request.path.endsWith('/api/app/operations/knowledge.proposal.reverse')
       )?.body
     ).toEqual({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       proposalId: 'kp_demo',
-      reviewId: 'kr_demo',
+      reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
       knowledgePageId: 'lessons/release-review',
       expectedContentDigest: proposalPageDigest,
     });
@@ -4601,7 +4932,7 @@ describe('createCoreClient', () => {
       });
 
       await expect(
-        client.operations['usage.read']({ workspaceId: 'ws_demo' })
+        client.operations['usage.read']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
       ).rejects.toBeInstanceOf(ProtocolValidationError);
     }
   });
@@ -4677,9 +5008,9 @@ describe('createCoreClient', () => {
     const { client } = createFakeClient({
       'POST /api/auth/sign-up/email': {
         body: {
-          token: 'session_token',
+          token: 'as_00000000-0000-78f3-bdfb-13f04d6a5a83',
           user: {
-            id: 'user_demo',
+            id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
             email: 'user@example.com',
             name: 'Demo User',
             emailVerified: false,
@@ -4699,7 +5030,7 @@ describe('createCoreClient', () => {
         name: 'Demo User',
         password: 'password',
       })
-    ).resolves.toMatchObject({ user: { id: 'user_demo' } });
+    ).resolves.toMatchObject({ user: { id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' } });
     await expect(
       client.auth.email.signIn({ email: 'user@example.com', password: 'password' })
     ).rejects.toBeInstanceOf(ProtocolValidationError);
@@ -4711,9 +5042,9 @@ describe('createCoreClient', () => {
     const { client, requests } = createFakeClient({
       'GET /api/auth/get-session': {
         body: {
-          session: { id: 'session_demo' },
+          session: { id: 'as_00000000-0000-78be-889a-02eee50dd060' },
           user: {
-            id: 'user_demo',
+            id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
             email: 'user@example.com',
             name: 'Demo User',
             emailVerified: true,
@@ -4725,7 +5056,7 @@ describe('createCoreClient', () => {
     });
 
     await expect(client.auth.email.getSession()).resolves.toMatchObject({
-      user: { id: 'user_demo' },
+      user: { id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
     });
     expect(requests).toEqual([
       expect.objectContaining({ method: 'GET', path: '/api/auth/get-session' }),
@@ -4741,8 +5072,8 @@ describe('createCoreClient', () => {
     const { client } = createFakeClient({
       'POST /api/auth/sign-up/email': {
         body: {
-          user: { id: 'user_demo', email: 'user@example.com' },
-          session: { id: 'session_demo' },
+          user: { id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0', email: 'user@example.com' },
+          session: { id: 'as_00000000-0000-78be-889a-02eee50dd060' },
         },
       },
     });
@@ -4826,7 +5157,9 @@ describe('createCoreClient', () => {
     ).resolves.toBeNull();
     expect('runtimeConfig' in client).toBe(false);
     await expect(
-      client.operations['automation.delete']({ automationId: 'auto_demo' })
+      client.operations['automation.delete']({
+        automationId: 'auto_00000000-0000-7934-bc11-14512d3a737a',
+      })
     ).resolves.toBeNull();
   });
 
@@ -4835,7 +5168,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/automation.delete': {
         body: {
           ...apiError('automation_not_found', 'Automation not found.'),
-          details: { automationId: 'auto_demo' },
+          details: { automationId: 'auto_00000000-0000-7934-bc11-14512d3a737a' },
           path: ['automationId'],
           requestId,
         },
@@ -4844,10 +5177,12 @@ describe('createCoreClient', () => {
     });
 
     await expect(
-      client.operations['automation.delete']({ automationId: 'auto_demo' })
+      client.operations['automation.delete']({
+        automationId: 'auto_00000000-0000-7934-bc11-14512d3a737a',
+      })
     ).rejects.toMatchObject({
       code: 'automation_not_found',
-      details: { automationId: 'auto_demo' },
+      details: { automationId: 'auto_00000000-0000-7934-bc11-14512d3a737a' },
       message: 'Automation not found.',
       path: ['automationId'],
       requestId,
@@ -4859,7 +5194,7 @@ describe('createCoreClient', () => {
     const { client } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.5.0',
+          protocolVersion: '0.6.0',
           capabilities: ['core.questions'],
           eventFamilies: ['turn.started', 'turn.completed'],
         },
@@ -4894,7 +5229,7 @@ describe('createCoreClient', () => {
         }
 
         return jsonResponse({
-          protocolVersion: '0.5.0',
+          protocolVersion: '0.6.0',
           capabilities: [],
           eventFamilies: [],
         });
@@ -4904,9 +5239,9 @@ describe('createCoreClient', () => {
     await client.core.meta();
     const iterator = client.core
       .subscribeTurnEvents({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
       [Symbol.asyncIterator]();
 
@@ -4914,7 +5249,7 @@ describe('createCoreClient', () => {
     expect(fetchCalls).toEqual(['https://nanocore.test/api/meta']);
     const source = FakeEventSource.instances[0]!;
     expect(source.url).toBe(
-      'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0'
+      'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=0'
     );
 
     source.emit('message', turnEvent(1, 'turn.completed'));
@@ -4976,16 +5311,16 @@ describe('createCoreClient', () => {
               ...terminal.data,
               turn: {
                 ...turn(),
-                agentSessionId: 'as_demo',
+                agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
                 status: 'completed',
                 completedAt: timestamp,
               },
             },
           },
         ]),
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
 
     const result = await iterator.next();
@@ -5004,9 +5339,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: '',
       eventSource: FakeEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
 
@@ -5017,7 +5352,7 @@ describe('createCoreClient', () => {
         ...terminal.data,
         turn: {
           ...turn(),
-          agentSessionId: 'as_demo',
+          agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
           status: 'completed',
           completedAt: timestamp,
         },
@@ -5057,9 +5392,9 @@ describe('createCoreClient', () => {
     const client = createCoreClient({ baseUrl: 'https://nanocore.test', fetch: fetcher });
     const iterator = client.core
       .subscribeTurnEvents({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
       [Symbol.asyncIterator]();
 
@@ -5080,9 +5415,9 @@ describe('createCoreClient', () => {
       baseUrl: 'https://nanocore.test',
       fetch: fetcher,
       since: 4,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     let delivered = false;
     let failure: unknown;
@@ -5105,7 +5440,7 @@ describe('createCoreClient', () => {
       failureIsProtocolValidationError: true,
       next: { value: undefined, done: true },
       requests: [
-        'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=4',
+        'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=4',
       ],
     });
   });
@@ -5126,9 +5461,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: 'https://nanocore.test',
       fetch: fetcher,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
 
     await aborted;
@@ -5147,7 +5482,7 @@ describe('createCoreClient', () => {
     const terminalEvent = turnEvent(2, 'turn.completed');
     const fetcher: typeof fetch = async (input, init) => {
       expect(String(input)).toBe(
-        'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0'
+        'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=0'
       );
       expect(headersToRecord(init?.headers)).toEqual({ accept: 'text/event-stream' });
       return sseResponse([
@@ -5166,9 +5501,9 @@ describe('createCoreClient', () => {
     const client = createCoreClient({ baseUrl: 'https://nanocore.test/', fetch: fetcher });
     const iterator = client.core
       .subscribeTurnEvents({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
       [Symbol.asyncIterator]();
 
@@ -5199,9 +5534,9 @@ describe('createCoreClient', () => {
       baseUrl: 'https://nanocore.test',
       fetch: fetcher,
       since: 4,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
 
     await expect(iterator.next()).resolves.toMatchObject({
@@ -5226,14 +5561,14 @@ describe('createCoreClient', () => {
         });
 
         return jsonResponse({
-          protocolVersion: '0.5.0',
+          protocolVersion: '0.6.0',
           capabilities: [],
           eventFamilies: [],
         });
       },
       headers: {
         authorization: 'Bearer deployment-token',
-        cookie: 'better-auth.session_token=session-value',
+        cookie: 'better-auth.as_00000000-0000-78f3-bdfb-13f04d6a5a83=session-value',
       },
     });
 
@@ -5241,7 +5576,7 @@ describe('createCoreClient', () => {
 
     expect(jsonRequests[0]?.headers).toMatchObject({
       authorization: 'Bearer deployment-token',
-      cookie: 'better-auth.session_token=session-value',
+      cookie: 'better-auth.as_00000000-0000-78f3-bdfb-13f04d6a5a83=session-value',
     });
 
     const sseClient = createCoreClient({
@@ -5250,22 +5585,22 @@ describe('createCoreClient', () => {
         expect(headersToRecord(init?.headers)).toMatchObject({
           accept: 'text/event-stream',
           authorization: 'Bearer deployment-token',
-          cookie: 'better-auth.session_token=session-value',
+          cookie: 'better-auth.as_00000000-0000-78f3-bdfb-13f04d6a5a83=session-value',
         });
 
         return sseResponse([turnEvent(1, 'turn.completed')]);
       },
       headers: {
         authorization: 'Bearer deployment-token',
-        cookie: 'better-auth.session_token=session-value',
+        cookie: 'better-auth.as_00000000-0000-78f3-bdfb-13f04d6a5a83=session-value',
       },
     });
 
     const iterator = sseClient.core
       .subscribeTurnEvents({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
       [Symbol.asyncIterator]();
 
@@ -5294,9 +5629,9 @@ describe('createCoreClient', () => {
     await expect(
       emptyClient.core
         .subscribeTurnEvents({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         })
         [Symbol.asyncIterator]()
         .next()
@@ -5304,9 +5639,9 @@ describe('createCoreClient', () => {
     await expect(
       failingClient.core
         .subscribeTurnEvents({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         })
         [Symbol.asyncIterator]()
         .next()
@@ -5314,9 +5649,9 @@ describe('createCoreClient', () => {
     await expect(
       rejectedClient.core
         .subscribeTurnEvents({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         })
         [Symbol.asyncIterator]()
         .next()
@@ -5340,15 +5675,15 @@ describe('createCoreClient', () => {
     const stream = subscribeTurnEvents({
       baseUrl: '',
       eventSource: FakeEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const iterator = stream[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
 
     expect(source.url).toBe(
-      '/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0'
+      '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=0'
     );
 
     source.emit('message', turnEvent(1));
@@ -5371,9 +5706,9 @@ describe('createCoreClient', () => {
       baseUrl: '',
       eventSource: FakeEventSource,
       since: 4,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
 
@@ -5401,7 +5736,7 @@ describe('createCoreClient', () => {
       failureIsProtocolValidationError: true,
       instanceCount: 1,
       next: { value: undefined, done: true },
-      url: '/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=4',
+      url: '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=4',
     });
   });
 
@@ -5410,9 +5745,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: '',
       eventSource: FakeEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
     const invalidEvent = turnEvent(2, 'turn.completed');
@@ -5449,9 +5784,9 @@ describe('createCoreClient', () => {
       baseUrl: 'https://nanocore.test',
       eventSource: FakeEventSource,
       since: 4,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const iterator = stream[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
@@ -5459,7 +5794,7 @@ describe('createCoreClient', () => {
     source.emit('error', null);
     const reopenedSource = FakeEventSource.instances[1]!;
     expect(reopenedSource.url).toBe(
-      'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=5'
+      'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=5'
     );
     reopenedSource.emit('message', turnEvent(6, 'turn.completed'));
 
@@ -5493,9 +5828,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: 'https://nanocore.test',
       eventSource: FailingReplacementEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
 
@@ -5522,9 +5857,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: 'https://nanocore.test',
       eventSource: FakeEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const supersededSource = FakeEventSource.instances[0]!;
 
@@ -5548,7 +5883,7 @@ describe('createCoreClient', () => {
         value: expect.objectContaining({ event: 'turn.completed', sequence: 1 }),
       },
       instanceCount: 3,
-      url: 'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0',
+      url: 'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=0',
     });
   });
 
@@ -5575,9 +5910,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: 'https://nanocore.test',
       eventSource: SynchronousCloseEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const supersededSource = FakeEventSource.instances[0]!;
 
@@ -5588,11 +5923,11 @@ describe('createCoreClient', () => {
     expect(stateBeforeReturn).toEqual([
       {
         closed: true,
-        url: 'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0',
+        url: 'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=0',
       },
       {
         closed: false,
-        url: 'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0',
+        url: 'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=0',
       },
     ]);
   });
@@ -5608,9 +5943,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: '',
       eventSource: FakeEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
     source.emit('message', {
@@ -5635,9 +5970,9 @@ describe('createCoreClient', () => {
     const iterator = subscribeTurnEvents({
       baseUrl: '',
       eventSource: FakeEventSource,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
 
@@ -5659,26 +5994,26 @@ describe('workspace secret client', () => {
       backendKind: 'encrypted-file',
       currentVersion: 1,
       ownerScope: 'workspace',
-      referenceId: 'vault_test',
+      referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
       secretKind: 'github-token',
       status: 'active',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const grant = workspaceVaultGrantsResponse().items[0]!;
     const { client, requests } = createFakeClient({
-      ['POST /api/app/operations/vault.secret-create']: { body: reference },
-      ['POST /api/app/operations/vault.secret-rotate']: {
+      'POST /api/app/operations/vault.secret-create': { body: reference },
+      'POST /api/app/operations/vault.secret-rotate': {
         body: { ...reference, currentVersion: 2 },
       },
-      ['POST /api/app/operations/vault.secret-revoke']: {
+      'POST /api/app/operations/vault.secret-revoke': {
         body: { ...reference, status: 'revoked' },
       },
-      ['POST /api/app/operations/vault.grant-create']: { body: grant },
-      ['POST /api/app/operations/vault.grant-revoke']: { body: { ...grant, status: 'revoked' } },
+      'POST /api/app/operations/vault.grant-create': { body: grant },
+      'POST /api/app/operations/vault.grant-revoke': { body: { ...grant, status: 'revoked' } },
     });
     await expect(
       client.operations['vault.secret-create']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           secretKind: 'github-token',
           material: 'test-canary',
@@ -5687,25 +6022,25 @@ describe('workspace secret client', () => {
     ).resolves.toEqual(reference);
     await expect(
       client.operations['vault.secret-rotate']({
-        workspaceId: 'ws_demo',
-        referenceId: 'vault_test',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
         ...{ material: 'next-canary' },
       })
     ).resolves.toMatchObject({ currentVersion: 2 });
     await client.operations['vault.grant-create']({
-      workspaceId: 'ws_demo',
-      ...{ referenceId: 'vault_test' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ...{ referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c' },
     });
     await client.operations['vault.grant-revoke']({
-      workspaceId: 'ws_demo',
-      grantId: 'grant_github',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
     });
     await client.operations['vault.secret-revoke']({
-      workspaceId: 'ws_demo',
-      referenceId: 'vault_test',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
     });
     expect(requests[0]?.body).toEqual({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       secretKind: 'github-token',
       material: 'test-canary',
     });
@@ -5740,8 +6075,8 @@ describe('Gateway audit route lineage consumer', () => {
     const { client } = createFakeClient({
       'POST /api/app/operations/usage.read': { body: payload },
     });
-    await expect(client.operations['usage.read']({ workspaceId: 'ws_demo' })).resolves.toEqual(
-      payload
-    );
+    await expect(
+      client.operations['usage.read']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+    ).resolves.toEqual(payload);
   });
 });
