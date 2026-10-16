@@ -1112,7 +1112,7 @@ console.log(JSON.stringify({ push: workflow.on.push, aggregate, shard, plan: sha
         result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
         workflow = json.loads(result.stdout)
         condition = "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"l0-l2\",\"release-gate\",\"full\"]'), inputs.gate))"
-        self.assertEqual(workflow["push"]["tags"], ["v*.*.*"])
+        self.assertEqual(workflow["push"]["tags"], ["v*.*.*-*"])
         self.assertEqual(workflow["shard"]["if"], condition)
         self.assertEqual(workflow["aggregate"]["if"], f"always() && ({condition})")
         self.assertEqual(workflow["aggregate"]["needs"], ["l0-l2-plan", "l0-l2-shards"])

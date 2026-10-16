@@ -128,6 +128,12 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       .split('\n'))
       if (/^scripts\/retrieval-[^/]+\.(?:py|sh)$/.test(file)) pending.add(file);
   }
+  // Stable promotion has its own tag-only workflow and must be in the same immutable input proof.
+  const promotionWorkflow = '.github/workflows/release-promotion.yml';
+  if (git(['ls-tree', sourceCommit, '--', promotionWorkflow]).trim()) {
+    jobs['stable-promotion-workflow'] = read(promotionWorkflow).blob;
+    pending.add(promotionWorkflow);
+  }
   requireFact(pending.size > 0, 'publication jobs have no admitted script inputs');
   // Current publication scripts use relative static imports and literal URL file reads.
   // Follow that actual dependency closure; a missing or untracked dependency refuses proof.
