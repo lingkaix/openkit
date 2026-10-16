@@ -938,7 +938,7 @@ function replayTaskModeCommand(
       currentTurn.id !== escalationTurnId ||
       currentTurn.status !== 'completed' ||
       !currentTurn.completedAt ||
-      currentTurn.agentSessionId !== null ||
+      (currentTurn.agentSessionId !== null && currentTurn.agentSessionId !== undefined) ||
       currentTurn.triggerActor.kind !== 'user' ||
       currentTurn.triggerActor.id !== actorId ||
       handoffs.length !== 1 ||

@@ -11,6 +11,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -299,7 +300,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         .prepare('SELECT rowid, * FROM scheduler_execution_attempts WHERE attempt_id = ?')
         .get(f.attempt.attemptId) as Record<string, unknown>;
       row.rowid = Number(row.rowid) - 1;
-      row.attempt_id = 'earlier-busy-attempt';
+      row.attempt_id = testEntityId('attempt', 'earlier-busy-attempt');
       row.terminal_cause = 'backend-busy';
       row.agent_session_id = null;
       row.input_ref = null;

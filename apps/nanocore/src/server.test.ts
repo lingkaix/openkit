@@ -8378,6 +8378,8 @@ describe('nanocore server', () => {
 
   it.each([
     'retained',
+    'retained-null-session',
+    'bound-session',
     'deleted-goal',
     'missing-goal',
     'wrong-goal',
@@ -8417,6 +8419,11 @@ describe('nanocore server', () => {
       { kind: 'user', id: LOCAL_USER_ID },
       null,
       {
+        ...(mutation === 'retained-null-session'
+          ? { agentSessionId: null }
+          : mutation === 'bound-session'
+            ? { agentSessionId: testEntityId('as', 'contradictory-task-goal-session') }
+            : {}),
         turnId: deriveEntityId('tu', {
           command: 'task.start.goal',
           actorId: LOCAL_USER_ID,
@@ -8478,12 +8485,16 @@ describe('nanocore server', () => {
           }
         )
       );
-      if (mutation === 'retained' || mutation === 'deleted-goal') {
+      if (
+        mutation === 'retained' ||
+        mutation === 'retained-null-session' ||
+        mutation === 'deleted-goal'
+      ) {
         expect(response.status, await response.clone().text()).toBe(202);
         expect(StartTaskModeResponseSchema.parse(await response.json())).toMatchObject({
           state: 'escalated-to-goal',
           turn: { id: turn.id },
-          escalation: mutation === 'retained' ? { targetMode: 'goal', goalId } : null,
+          escalation: mutation === 'deleted-goal' ? null : { targetMode: 'goal', goalId },
         });
       } else {
         expect(response.status, await response.clone().text()).toBe(409);
