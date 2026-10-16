@@ -17,7 +17,7 @@ The coordinator confirmed the account's 20-job concurrent limit and changed the 
 
 ## Intent Revision 3 — 2026-10-16
 
-The engineer approved express landing for ordinary changes while the shared hosted pool is saturated. The coordinator requires every main push to run complete verification, including L4 Web e2e. Keep the existing one-pending-head concurrency group and never cancel an in-progress main run. Release candidates and changes to workflows or release scripts still require exact-head full CI before landing. The release admission job set and registry dependency now require L4 as well; a missing, skipped, failed or duplicate L4 observation cannot admit a release.
+The engineer approved express landing for ordinary changes while the shared hosted pool is saturated. The coordinator requires every main push to run complete verification, including L4 Web e2e. Keep the existing one-pending-head concurrency group and never cancel an in-progress main run. Release candidates and changes to workflows or release scripts still require exact-head full CI before landing. The release admission job set and registry dependency now require L4 as well. The observer labels a complete main run `full`; admission consumes that actual label without relabeling it. A composed observation-to-admission regression catches the original mismatch; a missing, skipped, failed or duplicate L4 observation cannot admit a release.
 
 ## Owners And Boundaries
 

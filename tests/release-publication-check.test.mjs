@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
-import { observePublication } from '../scripts/release-observe.mjs';
+import { observePublication, validateRun } from '../scripts/release-observe.mjs';
 import { parseVersionTag } from '../scripts/release-preflight.mjs';
 import {
   checkPublication as actualCheck,
@@ -345,6 +345,31 @@ for (const name of evidence().candidate.jobs.map((job) => job.name)) {
       assert.throws(() => checkPublication(input, { now }));
     });
 }
+test('complete observed main-push evidence passes admission without relabeling its gate', () => {
+  const input = evidence();
+  input.candidate = validateRun(
+    {
+      repository: { full_name: input.repository },
+      head_sha: input.sha,
+      head_branch: 'main',
+      status: 'completed',
+      conclusion: 'success',
+      id: input.candidate.runId,
+      run_attempt: input.candidate.attempt,
+      event: 'push',
+      path: '.github/workflows/ci.yml',
+    },
+    input.candidate.jobs.map((job) => ({
+      ...job,
+      status: 'completed',
+      run_attempt: input.candidate.attempt,
+    })),
+    { repository: input.repository, sha: input.sha }
+  );
+  assert.equal(input.candidate.gate, 'full');
+  assert.equal(checkPublication(input, { now }).status, 'eligible');
+});
+
 test('first covered prerelease passes a complete mechanical publication check', () => {
   assert.equal(checkPublication(evidence(), { now }).tag, 'v0.1.0-rc.6');
 });
