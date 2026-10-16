@@ -141,8 +141,12 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
   const sendAttention = vi
     .fn<DiscordAttentionTransport['sendAttention']>()
     .mockResolvedValue({ status: 'sent', externalMessageId: '523456789012345678' });
+  let workspaceAvailable = true;
   function compose(configured = true) {
-    const repositoryWorkspaceDb = (workspaceId: string) => openWorkspaceDb(dataRoot, workspaceId);
+    const repositoryWorkspaceDb = (workspaceId: string) => {
+      if (!workspaceAvailable) throw new Error('Simulated unavailable Workspace storage');
+      return openWorkspaceDb(dataRoot, workspaceId);
+    };
     const inflightCommands = new WeakMap();
     const invoke = createOperationInvocation({
       coreDb,
@@ -232,6 +236,9 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     get services() {
       return services;
     },
+    setWorkspaceAvailable(available: boolean) {
+      workspaceAvailable = available;
+    },
     async pair() {
       const { challenge } = services.discord!.beginPairing(actor);
       expect(text(await send('pair', { challenge }))).toContain('paired');
@@ -285,6 +292,36 @@ afterEach(() => {
 });
 
 describe('Discord to native Pending Request seam', () => {
+  it('skips unavailable Workspace recovery and later queues the exact retained request', () => {
+    const f = fixture();
+    const pending = f.record();
+    f.setWorkspaceAvailable(false);
+    expect(() => f.services.recoverAttention()).not.toThrow();
+    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+    expect(f.sendAttention).not.toHaveBeenCalled();
+    expect(f.record()).toEqual(pending);
+
+    f.setWorkspaceAvailable(true);
+    f.services.recoverAttention();
+    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([
+      expect.objectContaining({
+        source: {
+          workspaceId: f.target.workspace,
+          threadId: f.target.thread,
+          requestId: f.target.request,
+          kind: 'approval-request',
+        },
+        recipientUserId: actor.userId,
+        status: 'queued',
+        channel: null,
+        attempt: null,
+      }),
+    ]);
+    expect(f.sendAttention).not.toHaveBeenCalled();
+    expect(f.nativeCalls).toEqual([]);
+    expect(f.record()).toEqual(pending);
+  });
+
   it('retains native binding status and revocation after Discord configuration is removed', async () => {
     const f = fixture();
     await f.pair();

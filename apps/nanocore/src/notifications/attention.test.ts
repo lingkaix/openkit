@@ -313,14 +313,11 @@ describe('attention delivery owner', () => {
     expect(transport).toHaveBeenCalledTimes(1);
   });
 
-  it('reopens persisted unfinished claims as unknown without retry or a Core request mutation', async () => {
+  it('reopens persisted unfinished claims as unknown without retry', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'attention-restart-'));
     directories.push(directory);
     const path = join(directory, 'core.sqlite');
     const { sqlite, notifications, delivery } = fixture(path);
-    sqlite.exec(
-      "CREATE TABLE test_core_request (state TEXT); INSERT INTO test_core_request VALUES ('pending')"
-    );
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
@@ -356,9 +353,6 @@ describe('attention delivery owner', () => {
       )
     ).rejects.toThrow('attention_not_sendable');
     expect(transport).toHaveBeenCalledTimes(1);
-    expect(reopened.prepare('SELECT state FROM test_core_request').all()).toEqual([
-      { state: 'pending' },
-    ]);
   });
 
   it('uses the injected App route and refuses an external link before contact', async () => {
