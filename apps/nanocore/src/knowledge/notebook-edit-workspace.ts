@@ -1,5 +1,14 @@
 import { posix } from 'node:path';
-import { Bash, type CommandName, type FileContent, type IFileSystem, InMemoryFs } from 'just-bash';
+import {
+  Bash,
+  type CommandName,
+  decodeBytesToUtf8,
+  type FileContent,
+  type IFileSystem,
+  InMemoryFs,
+  stdoutAsBytes,
+  stdoutKind,
+} from 'just-bash';
 import { validateNotebookFiles } from './notebook.js';
 
 /** Fixed notebook-owner bounds, for the maintenance Tool's metadata and diagnostics. */
@@ -386,7 +395,6 @@ export class NotebookEditWorkspace {
         executionLimits: {
           maxSourceBytes: NOTEBOOK_EDIT_LIMITS.scriptBytes,
           maxFileSystemBytes: NOTEBOOK_EDIT_LIMITS.admittedBytes,
-          maxOutputSize: NOTEBOOK_EDIT_LIMITS.outputBytes,
           maxExecutionTimeMs: Math.max(1, deadline - Date.now()),
           maxExtensionCleanupTimeMs: 0,
         },
@@ -399,10 +407,7 @@ export class NotebookEditWorkspace {
       });
       if (violation) throw violation;
       ensureLive();
-      // just-bash reports output exhaustion as exit 126 with a bounded resource diagnostic.
-      const outputLimit =
-        result.exitCode === 126 && /output size|output.*exceeded/.test(result.stderr);
-      if (result.exitCode === 126 && !outputLimit)
+      if (result.exitCode === 126)
         throw new NotebookEditWorkspaceError(
           'limit_reached',
           'Notebook editing reached a hardened execution limit.'
@@ -435,7 +440,9 @@ export class NotebookEditWorkspace {
       ensureLive();
       this.files = next;
       this.directories = directories;
-      const stdout = clip(result.stdout, NOTEBOOK_EDIT_LIMITS.outputBytes);
+      const displayStdout =
+        stdoutKind(result) === 'bytes' ? decodeBytesToUtf8(stdoutAsBytes(result)) : result.stdout;
+      const stdout = clip(displayStdout, NOTEBOOK_EDIT_LIMITS.outputBytes);
       const stderr = clip(
         result.stderr,
         NOTEBOOK_EDIT_LIMITS.outputBytes - Buffer.byteLength(stdout)
@@ -444,7 +451,7 @@ export class NotebookEditWorkspace {
         exitCode: result.exitCode,
         stdout,
         stderr,
-        truncated: outputLimit || stdout !== result.stdout || stderr !== result.stderr,
+        truncated: stdout !== displayStdout || stderr !== result.stderr,
       };
     } catch (error) {
       ensureLive();
