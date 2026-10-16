@@ -48,7 +48,7 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
   applyScopedMigrations(workspaceDb);
   const gate = {
     approvalId: `ap_${actionSlug}`,
-    approvalItemId: `it_${actionSlug}`,
+    approvalItemId: testEntityId('it', `it_${actionSlug}`),
   };
   const timestamp = '2026-09-30T00:00:00.000Z';
   store.createApproval({
@@ -80,7 +80,7 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
   if (action === 'tool.use') {
     recordProductPermissionDecision({
       workspaceDb,
-      decisionId: `pd_${actionSlug}_required`,
+      decisionId: testEntityId('pd', `pd_${actionSlug}_required`),
       ownerScope: 'workspace',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       policyEngineVersion: 'test-runtime-approval:v1',

@@ -10,6 +10,7 @@ import {
   StartTaskModeResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
+import { deriveEntityId } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getArtifactReview } from '../artifact-reviews.js';
@@ -1065,8 +1066,10 @@ describe('SimulatedTurnExecutor', () => {
       }
       expect(store.getTurnById(workerTurn.id).status).toBe('completed');
       expect(
-        store.getArtifact('ws_00000000-0000-7000-8000-000000000001', `ar_${deliveringTurn.id}`)
-          .content?.body
+        store.getArtifact(
+          'ws_00000000-0000-7000-8000-000000000001',
+          deriveEntityId('ar', deliveringTurn.id)
+        ).content?.body
       ).toBe('Simulator answer: Detailed');
       expect(store.getTurnById(deliveringTurn.id)).toMatchObject({
         status: 'completed',
@@ -1392,7 +1395,7 @@ describe('SimulatedTurnExecutor', () => {
       const turn = (await turnResponse.json()) as { id: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
-      const commandItemId = `it_command_${turn.id}`;
+      const commandItemId = deriveEntityId('it', ['command', turn.id]);
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
         const data = event.data as { item?: { id: string }; itemId?: string };
         return (data.itemId ?? data.item?.id) === commandItemId;

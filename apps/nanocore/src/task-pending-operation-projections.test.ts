@@ -120,7 +120,7 @@ function fixture(
     raiseRecordedPendingRequest(store, db.sqlite, {
       ...common,
       requestId,
-      requestItemId: `it_${requestId}`,
+      requestItemId: testEntityId('it', `it_${requestId}`),
       kind: 'user-input',
       requesterKind: 'person',
       questions,

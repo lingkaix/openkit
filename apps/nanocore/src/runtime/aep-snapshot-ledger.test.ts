@@ -26,6 +26,7 @@ import { OperationError } from '../operation-error.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   importAgentEnvironmentPackageSnapshots,
@@ -181,7 +182,7 @@ describe('AEP snapshot ledger', () => {
       });
       for (let index = 0; index < 64; index += 1) {
         const other = structuredClone(named);
-        other.scope.agentSessionId = `as_other_${index}`;
+        other.scope.agentSessionId = testEntityId('as', `as_other_${index}`);
         other.snapshotId = `other_snapshot_${index}`;
         recordAgentEnvironmentPackageSnapshot(db, {
           environmentPackage: other,
