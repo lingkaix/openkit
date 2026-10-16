@@ -193,7 +193,7 @@ describe('native Workspace Notebook history and restore', () => {
       revision: s.initial,
       parentRevision: null,
       availability: 'available',
-      changedPaths: ['index.md'],
+      changedPaths: ['index.md', 'mem_project.md'],
     });
     expect(rootHistory.body.nextRevision).toBeNull();
     const diff = await call(f, 'knowledge.notebook.diff', {
