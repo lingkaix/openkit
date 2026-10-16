@@ -365,7 +365,10 @@ describe('resource catalog operations', () => {
                 requestId: '00000000-0000-4000-8000-000000000001',
                 tree: [
                   {
-                    contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+                    contentBase64: Buffer.from(
+                      '---\nname: repo-guidelines\ndescription: Exercise ordinary Skill import.\n---\n# Hello\n',
+                      'utf8'
+                    ).toString('base64'),
                     kind: 'file',
                     path: 'SKILL.md',
                   },

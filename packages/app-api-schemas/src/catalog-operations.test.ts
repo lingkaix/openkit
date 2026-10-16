@@ -9,13 +9,13 @@ import {
 import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 
 describe('Agent, Worker and resource catalog definitions', () => {
-  it('composes exactly seventeen strict JSON operations with truthful MCP and mutation facts', () => {
+  it('composes strict JSON operations with truthful MCP and mutation facts', () => {
     const definitions = {
       ...AGENT_OPERATION_DEFINITIONS,
       ...WORKER_OPERATION_DEFINITIONS,
       ...CATALOG_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(17);
+    expect(Object.keys(definitions)).toHaveLength(24);
     const digest = `sha256:${'a'.repeat(64)}`;
     const tree = [{ kind: 'file', path: 'SKILL.md', contentBase64: 'cHJvb2Y=' }];
     const validModelInputs = {
@@ -25,6 +25,12 @@ describe('Agent, Worker and resource catalog definitions', () => {
       'worker.list': {},
       'catalog.read': {},
       'catalog.skill-list': {},
+      'catalog.skill-version-list': { skillId: 'proof' },
+      'catalog.skill-version-read': { skillId: 'proof', digest },
+      'catalog.skill-content-read': { skillId: 'proof', digest, path: 'SKILL.md' },
+      'catalog.skill-diff': { skillId: 'proof', baseDigest: digest, candidateDigest: digest },
+      'catalog.skill-remove': { skillId: 'proof', expectedRevision: 1 },
+      'catalog.skill-purge': { skillId: 'proof', digest, expectedRevision: 1 },
       'catalog.skill-import': { displayName: 'Proof', expectedRevision: 1, tree },
       'catalog.skill-candidate-submit': {
         skillId: 'proof',
@@ -36,10 +42,22 @@ describe('Agent, Worker and resource catalog definitions', () => {
       'catalog.skill-candidate-decide': {
         candidateId: 'candidate_proof',
         decision: 'promoted',
+        expectedCurrentDigest: digest,
         expectedRevision: 1,
       },
-      'catalog.skill-select': { skillId: 'proof', digest, expectedRevision: 1 },
-      'catalog.skill-pin': { skillId: 'proof', digest: null, expectedRevision: 1 },
+      'catalog.skill-candidate-withdraw': { candidateId: 'candidate_proof', expectedRevision: 1 },
+      'catalog.skill-select': {
+        skillId: 'proof',
+        digest,
+        expectedCurrentDigest: digest,
+        expectedRevision: 1,
+      },
+      'catalog.skill-pin': {
+        skillId: 'proof',
+        digest: null,
+        expectedPinDigest: null,
+        expectedRevision: 1,
+      },
       'catalog.mcp-list': {},
       'catalog.mcp-create': {
         displayName: 'Proof MCP',
@@ -87,6 +105,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
       workspaceId: 'ws_demo',
       skillId: 'proof',
       digest: null,
+      expectedPinDigest: null,
       expectedRevision: 1,
       requestId: '00000000-0000-4000-8000-000000000001',
     };
@@ -94,18 +113,34 @@ describe('Agent, Worker and resource catalog definitions', () => {
       CATALOG_OPERATION_DEFINITIONS['catalog.skill-pin'].inputSchema.safeParse(input).success
     ).toBe(true);
     expect(
-      CATALOG_OPERATION_DEFINITIONS['catalog.skill-select'].inputSchema.safeParse(input).success
+      CATALOG_OPERATION_DEFINITIONS['catalog.skill-select'].inputSchema.safeParse({
+        workspaceId: input.workspaceId,
+        skillId: input.skillId,
+        digest: null,
+        expectedCurrentDigest: null,
+        expectedRevision: input.expectedRevision,
+        requestId: input.requestId,
+      }).success
     ).toBe(false);
     const model = operationModelInput(
       CATALOG_OPERATION_DEFINITIONS['catalog.skill-select'].inputSchema,
       ['workspaceId', 'requestId']
     );
-    expect(model.safeParse({ skillId: 'proof', digest: null, expectedRevision: 1 }).success).toBe(
-      false
-    );
     expect(
-      model.safeParse({ skillId: 'proof', digest: `sha256:${'a'.repeat(64)}`, expectedRevision: 1 })
-        .success
+      model.safeParse({
+        skillId: 'proof',
+        digest: null,
+        expectedCurrentDigest: null,
+        expectedRevision: 1,
+      }).success
+    ).toBe(false);
+    expect(
+      model.safeParse({
+        skillId: 'proof',
+        digest: `sha256:${'a'.repeat(64)}`,
+        expectedCurrentDigest: null,
+        expectedRevision: 1,
+      }).success
     ).toBe(true);
   });
 });

@@ -142,7 +142,9 @@ async function fixture(selected = true, description?: string) {
           {
             kind: 'file',
             path: 'SKILL.md',
-            contentBase64: Buffer.from('# Original retained guidance.\n').toString('base64'),
+            contentBase64: Buffer.from(
+              '---\nname: selected-skill\ndescription: Original retained guidance\n---\n# Original retained guidance.\n'
+            ).toString('base64'),
           },
         ],
       })
@@ -252,7 +254,9 @@ function changeDefault(f: Fixture) {
       {
         kind: 'file',
         path: 'SKILL.md',
-        contentBase64: Buffer.from('# Replacement default.\n').toString('base64'),
+        contentBase64: Buffer.from(
+          '---\nname: selected-skill\ndescription: Replacement guidance\n---\n# Replacement default.\n'
+        ).toString('base64'),
       },
     ],
   });

@@ -110,6 +110,11 @@ function modelTool(resources: Assembly) {
   );
 }
 
+/** Valid Agent Skills bytes; full frontmatter remains part of every read/digest oracle. */
+function skillText(body: string, name = 'alpha'): string {
+  return `---\nname: ${name}\ndescription: Selected guidance\n---\n${body}`;
+}
+
 /** Imports exact retained bytes through the catalog owner. */
 function importSkill(
   f: Fixture,
@@ -128,7 +133,11 @@ function importSkill(
     createdAt: '2026-10-15T00:00:00.000Z',
     producer: { kind: 'user', id: 'user_local' },
     tree: [
-      { kind: 'file', path: 'SKILL.md', contentBase64: Buffer.from(text).toString('base64') },
+      {
+        kind: 'file',
+        path: 'SKILL.md',
+        contentBase64: Buffer.from(skillText(text, id)).toString('base64'),
+      },
       ...extra,
     ],
   });
@@ -417,6 +426,90 @@ describe('Assistant selected Skill assembly', () => {
 });
 
 describe('Assistant progressive Skill reads', () => {
+  it('refuses purged metadata even when old exact payload bytes remain on disk', async () => {
+    const f = fixture();
+    const imported = importSkill(f);
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    updateCatalog(f, (catalog) => {
+      catalog.skills.versions[0]!.contentState = 'purged';
+    });
+    const root = skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest);
+    expect(fs.readFileSync(join(root, 'SKILL.md'), 'utf8')).toBe(
+      skillText('# Selected guidance\n')
+    );
+    const spies = observeReads();
+    const result = await read(assembled);
+    refusal(result, f);
+    expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(
+      'resource_unavailable'
+    );
+    expectNoSnapshotRead(spies, root);
+    await admissionRefusal(assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] }), f);
+  });
+
+  it.each([
+    'membership',
+    'user',
+    'audience',
+    'completed',
+    'removed',
+    'purged',
+    'inventory',
+  ] as const)('discards verified bytes when %s changes during the actual file read', async (condition) => {
+    const f = fixture();
+    const imported = importSkill(f);
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const file = join(
+      skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest),
+      'SKILL.md'
+    );
+    const original = fs.readFileSync;
+    let changed = false;
+    vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
+      const bytes = original(path, options);
+      if (String(path) === file && !changed) {
+        changed = true;
+        if (condition === 'membership')
+          f.coreDb.sqlite
+            .prepare(
+              "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+            )
+            .run(f.workspaceId, f.actor.userId);
+        if (condition === 'user')
+          f.coreDb.sqlite
+            .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
+            .run(f.actor.userId);
+        if (condition === 'audience')
+          Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
+            visibility: 'private',
+            privateOwnerUserId: 'another-user',
+          });
+        if (condition === 'completed')
+          f.store.updateTurn(f.turnId, {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+            durationMs: 1,
+          });
+        if (condition === 'removed' || condition === 'purged' || condition === 'inventory')
+          updateCatalog(f, (catalog) => {
+            if (condition === 'removed') catalog.skills.entries[0]!.availability = 'removed';
+            else if (condition === 'purged') catalog.skills.versions[0]!.contentState = 'purged';
+            else catalog.skills.versions[0]!.inventory[0]!.sha256 = `sha256:${'f'.repeat(64)}`;
+          });
+      }
+      return bytes;
+    });
+    syncBuiltinESMExports();
+    const result = await read(assembled);
+    refusal(result, f);
+    expect(changed).toBe(true);
+    expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(
+      ['membership', 'user', 'audience', 'completed'].includes(condition)
+        ? 'resource_access_denied'
+        : 'resource_unavailable'
+    );
+  });
+
   it('returns one strict logical success and throws owner failures instead of a model envelope', async () => {
     const f = fixture();
     const imported = importSkill(f, 'alpha', '# Logical guidance\n');
@@ -434,8 +527,8 @@ describe('Assistant progressive Skill reads', () => {
       skillId: 'alpha',
       versionId: imported.version.digest,
       path: 'SKILL.md',
-      fileDigest: `sha256:${createHash('sha256').update('# Logical guidance\n').digest('hex')}`,
-      text: '# Logical guidance\n',
+      fileDigest: `sha256:${createHash('sha256').update(skillText('# Logical guidance\n')).digest('hex')}`,
+      text: skillText('# Logical guidance\n'),
     });
     expect(output).not.toHaveProperty('content');
     await expect(
@@ -548,6 +641,93 @@ describe('Assistant progressive Skill reads', () => {
     );
   });
 
+  it('uses the verified complete tree while delivering empty files and refusing directory expansion', async () => {
+    const f = fixture();
+    const imported = importSkill(f, 'alpha', '# Exact tree\n', [
+      { kind: 'directory', path: 'assets' },
+      { kind: 'directory', path: 'assets/empty' },
+      { kind: 'file', path: 'empty.txt', contentBase64: '' },
+    ]);
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
+    expect(success(await read(assembled, 'empty.txt'))).toEqual({
+      skillId: 'alpha',
+      versionId: imported.version.digest,
+      path: 'empty.txt',
+      fileDigest: `sha256:${createHash('sha256').update('').digest('hex')}`,
+      text: '',
+    });
+    refusal(await read(assembled, 'assets/empty'), f);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
+    expect(
+      fs.readdirSync(
+        join(
+          skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest),
+          'assets/empty'
+        )
+      )
+    ).toEqual([]);
+  });
+
+  it.each([
+    'missing-root',
+    'changed-file',
+    'missing-file',
+  ] as const)('returns the catalog owner failure for %s without reading a replacement version', async (fault) => {
+    const f = fixture();
+    const original = importSkill(f, 'alpha', '# Exact old selection\n');
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    importSkill(f, 'alpha', '# Replacement must stay unread\n');
+    const root = skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', original.version.digest);
+    if (fault === 'missing-root') fs.rmSync(root, { recursive: true });
+    else if (fault === 'changed-file')
+      fs.writeFileSync(join(root, 'SKILL.md'), 'source-content-canary');
+    else fs.unlinkSync(join(root, 'SKILL.md'));
+    const result = await read(assembled);
+    refusal(result, f);
+    expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(
+      fault === 'missing-root' ? 'resource_unavailable' : 'skill_content_integrity_failed'
+    );
+    expect(assembled.index[0]!.versionId).toBe(original.version.digest);
+  });
+
+  it('does not replace original admission when default and pin advance during the actual read', async () => {
+    const f = fixture();
+    const first = importSkill(f, 'alpha', '# Retained first\n');
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const originalAdmission = structuredClone(assembled.admission);
+    const file = join(
+      skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', first.version.digest),
+      'SKILL.md'
+    );
+    const original = fs.readFileSync;
+    let changed = false;
+    vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
+      const bytes = original(path, options);
+      if (String(path) === file && !changed) {
+        changed = true;
+        const next = importSkill(f, 'alpha', '# New selection\n');
+        setWorkspaceSkillPin({
+          ...f,
+          entryId: 'alpha',
+          digest: next.version.digest,
+          expectedRevision: next.catalog.revision,
+        });
+      }
+      return bytes;
+    });
+    syncBuiltinESMExports();
+    expect(success(await read(assembled))).toMatchObject({
+      versionId: first.version.digest,
+      text: skillText('# Retained first\n'),
+    });
+    expect(changed).toBe(true);
+    expect(assembled.admission).toEqual(originalAdmission);
+    const next = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    expect(next.index[0]!.versionId).not.toBe(first.version.digest);
+    expect(next.admission.catalogRevision).toBeGreaterThan(originalAdmission.catalogRevision!);
+  });
+
   it('returns exact default and separately requested supporting bytes with digest provenance and no script execution', async () => {
     const f = fixture();
     const marker = join(f.dataRoot, 'script-ran');
@@ -575,12 +755,13 @@ describe('Assistant progressive Skill reads', () => {
       ['references/guide.md', guide],
       ['run.cjs', script],
     ] as const) {
+      const expected = path === undefined ? skillText(text) : text;
       expect(success(await read(assembled, path))).toEqual({
         skillId: 'alpha',
         versionId: imported.version.digest,
         path: path ?? 'SKILL.md',
-        fileDigest: `sha256:${createHash('sha256').update(text).digest('hex')}`,
-        text,
+        fileDigest: `sha256:${createHash('sha256').update(expected).digest('hex')}`,
+        text: expected,
       });
     }
     expect(fs.existsSync(marker)).toBe(false);
@@ -600,7 +781,7 @@ describe('Assistant progressive Skill reads', () => {
 
     expect(success(await read(assembled))).toMatchObject({
       versionId: first.version.digest,
-      text: '# First version\n',
+      text: skillText('# First version\n'),
     });
     const rebuilt = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     expect(rebuilt.index[0]?.versionId).toBe(next.version.digest);
@@ -825,7 +1006,7 @@ describe('Assistant progressive Skill reads', () => {
     importSkill(f, 'alpha', body);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
 
-    expect(success(await read(assembled))).toMatchObject({ text: body });
+    expect(success(await read(assembled))).toMatchObject({ text: skillText(body) });
   });
 });
 
@@ -927,7 +1108,7 @@ describe('Assistant Skill sanitization through the shared loop', () => {
         skillId: 'alpha',
         versionId: imported.version.digest,
         path: 'SKILL.md',
-        fileDigest: `sha256:${createHash('sha256').update(source).digest('hex')}`,
+        fileDigest: `sha256:${createHash('sha256').update(skillText(source)).digest('hex')}`,
         text: expect.any(String),
       });
       expect(parsed.text).toContain('Example:');
@@ -941,7 +1122,7 @@ describe('Assistant Skill sanitization through the shared loop', () => {
         ),
         'utf8'
       )
-    ).toBe(source);
+    ).toBe(path ? source : skillText(source));
   });
 });
 
@@ -1016,7 +1197,7 @@ describe('Assistant Skill Tool in the shared loop', () => {
         1
       );
       expect(JSON.parse(messages.at(-1).content[0].text)).toMatchObject({
-        text: '# Body available on demand\n',
+        text: skillText('# Body available on demand\n'),
       });
     } else
       expectNoSnapshotRead(

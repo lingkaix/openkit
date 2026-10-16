@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+Catalog operation definitions expose immutable Skill version metadata, exact content reads, inventory comparison, removal and reference-gated purge. Version and candidate projections retain producer, source and decision lineage. Default selection and candidate decisions name the expected current digest; pin updates name the expected prior pin. Own-candidate withdrawal uses `workspace.write`, while configuration decisions retain `workspace.configure`. See the [Skill owner](../../docs/specs/20260711-skill_catalog_versioning_pinning.md).
+
 `NanoHostRuntimeTargetStatusResponseSchema` requires `physicalEpoch` as the exact stored 64-character lowercase hexadecimal witness or `null` when no current witness is proved. The configured server-admin `nanohost.runtime-target` read is a stored authenticated observation, not a live host probe; omitted witnesses are invalid. The existing RuntimeTarget owner clears its witness with readiness on connection or authority loss and restart.
 
 `src/caller.ts` and `src/caller-operations.ts` define the non-secret `caller.read` identity and optional owned-Workspace count observation. Workspace list/read projections share the actual owner, membership status and current access cause. Missing membership role/revision remain null when administration grants access; these response projections do not change durable Workspace records or authorization. The [caller owner](../../docs/specs/20260910-agent_operator_skill.md#current-caller-and-retained-work-read) defines the bounded first response.

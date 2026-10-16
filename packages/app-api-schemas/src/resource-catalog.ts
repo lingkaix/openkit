@@ -5,6 +5,23 @@ import { z } from 'zod';
 const CATALOG_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 
+/** Authenticated actor retained in Skill version and decision lineage. */
+export const SkillCatalogProducerSchema = z
+  .object({ id: z.string().min(1), kind: z.enum(['user', 'agent', 'system']) })
+  .strict();
+
+/** Exact source facts of the first admission of immutable Skill bytes. */
+export const SkillCatalogProvenanceSchema = z
+  .object({
+    baseDigest: z.string().regex(SHA256).nullable(),
+    pluginMemberKey: z.string().min(1).nullable(),
+    pluginVersionDigest: z.string().regex(SHA256).nullable(),
+    sourceCommit: z.string().min(1).nullable(),
+    sourceSubpath: z.string().min(1).nullable(),
+    uploadedSourceId: z.string().min(1).nullable(),
+  })
+  .strict();
+
 /** One submitted catalog tree file or directory. */
 export const CatalogTreeFileSchema = z
   .object({
@@ -32,6 +49,7 @@ export const WorkspaceCatalogSkillSummarySchema = SkillCatalogEntrySchema.extend
   versions: z.array(
     z
       .object({
+        contentState: z.enum(['retained', 'purged']),
         createdAt: z.string().min(1),
         digest: z.string().regex(SHA256),
       })
@@ -42,6 +60,7 @@ export const WorkspaceCatalogSkillSummarySchema = SkillCatalogEntrySchema.extend
 /** Redacted Skill version metadata. */
 export const SkillCatalogVersionSchema = z
   .object({
+    contentState: z.enum(['retained', 'purged']),
     createdAt: z.string().min(1),
     digest: z.string().regex(SHA256),
     digestFormat: z.literal('openkit-tree-v1'),
@@ -57,6 +76,8 @@ export const SkillCatalogVersionSchema = z
         })
         .strict()
     ),
+    producer: SkillCatalogProducerSchema,
+    provenance: SkillCatalogProvenanceSchema,
     publisherVersion: z.string().nullable(),
   })
   .strict();
@@ -67,9 +88,19 @@ export const SkillCatalogCandidateSchema = z
     baseDigest: z.string().regex(SHA256).nullable(),
     candidateDigest: z.string().regex(SHA256),
     createdAt: z.string().min(1),
+    decision: z
+      .object({
+        actor: SkillCatalogProducerSchema,
+        auditRef: z.string().min(1),
+        decidedAt: z.string().min(1),
+      })
+      .strict()
+      .nullable(),
     disposition: z.enum(['proposed', 'withdrawn', 'rejected', 'promoted']),
     entryId: z.string().regex(CATALOG_ID),
     id: z.string().min(1),
+    producer: SkillCatalogProducerSchema,
+    submitter: SkillCatalogProducerSchema.nullable(),
     summary: z.string().min(1),
   })
   .strict();
@@ -126,6 +157,40 @@ export const WorkspaceCatalogSummarySchema = z
 
 /** List Skills response. */
 export const ListSkillCatalogResponseSchema = z.object({ items: z.array(SkillCatalogEntrySchema) });
+/** Exact version history with immutable provenance. */
+export const ListSkillVersionsResponseSchema = z
+  .object({ items: z.array(SkillCatalogVersionSchema) })
+  .strict();
+/** One retained version, including historical removed versions. */
+export const ReadSkillVersionResponseSchema = z
+  .object({ version: SkillCatalogVersionSchema })
+  .strict();
+/** One exact digest-verified file; byte encoding does not infer text. */
+export const ReadSkillContentResponseSchema = z
+  .object({
+    contentBase64: z.string(),
+    digest: z.string().regex(SHA256),
+    entryId: z.string().regex(CATALOG_ID),
+    path: z.string().min(1),
+  })
+  .strict();
+/** Exact inventory differences for two verified retained versions. */
+export const DiffSkillVersionsResponseSchema = z
+  .object({
+    baseDigest: z.string().regex(SHA256),
+    candidateDigest: z.string().regex(SHA256),
+    changes: z.array(
+      z
+        .object({
+          after: SkillCatalogVersionSchema.shape.inventory.element.nullable(),
+          before: SkillCatalogVersionSchema.shape.inventory.element.nullable(),
+          path: z.string().min(1),
+        })
+        .strict()
+    ),
+    entryId: z.string().regex(CATALOG_ID),
+  })
+  .strict();
 /** List MCP response. */
 export const ListMcpCatalogResponseSchema = z.object({ items: z.array(McpCatalogEntrySchema) });
 /** List plugin response. */
@@ -179,6 +244,7 @@ export const SkillCandidateResponseSchema = z
 export const DecideSkillCandidateRequestSchema = z
   .object({
     decision: z.enum(['promoted', 'rejected', 'withdrawn']),
+    expectedCurrentDigest: z.string().regex(SHA256).nullable(),
     expectedRevision: z.number().int().nonnegative(),
     requestId: RequestIdSchema,
   })
@@ -188,6 +254,25 @@ export const DecideSkillCandidateRequestSchema = z
 export const SelectSkillVersionRequestSchema = z
   .object({
     digest: z.string().regex(SHA256).nullable(),
+    expectedCurrentDigest: z.string().regex(SHA256).nullable(),
+    expectedRevision: z.number().int().nonnegative(),
+    requestId: RequestIdSchema,
+  })
+  .strict();
+
+/** Compare-and-set mutation of an exact Workspace Skill pin. */
+export const SetSkillPinRequestSchema = z
+  .object({
+    digest: z.string().regex(SHA256).nullable(),
+    expectedPinDigest: z.string().regex(SHA256).nullable(),
+    expectedRevision: z.number().int().nonnegative(),
+    requestId: RequestIdSchema,
+  })
+  .strict();
+
+/** Revision-protected Skill removal or explicit payload purge. */
+export const RemoveSkillRequestSchema = z
+  .object({
     expectedRevision: z.number().int().nonnegative(),
     requestId: RequestIdSchema,
   })

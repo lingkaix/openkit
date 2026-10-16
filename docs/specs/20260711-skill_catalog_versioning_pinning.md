@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-09-08
+updated: 2026-10-16
 ---
 # Skill Catalog Versioning And Pinning
 
@@ -59,6 +59,18 @@ A `SkillEntry` has an owner scope, stable catalog id, display metadata, availabi
 A `SkillVersion` records entry identity, exact digest and format, file inventory, optional publisher version, producer, creation time, and immutable provenance: source commit/subpath when available, uploaded-source identity otherwise, originating plugin membership when applicable, and the exact base version for local improvements. A Skill revision never rewrites its original PluginVersion membership.
 
 Identical bytes in the same entry reuse content identity; a separate import observation may retain additional provenance without rewriting the version. Same-label different content has different digests and is visibly distinguishable. Tags, branches, `latest`, timestamps, and remote tree hashes are not executable identities.
+
+### Ecosystem source admission
+
+The engineer ruling of 2026-10-16 requires import conventions aligned with [vercel-labs/skills](https://github.com/vercel-labs/skills). An ordinary ecosystem Skill repository must import without an OpenKit manifest or payload rewrite. Supported locators include GitHub `owner/repo` shorthand, GitHub and GitLab repository URLs, plain Git URLs, repository tree URLs selecting one Skill, a local path, and a direct `SKILL.md` or archive URL. Acquisition resolves the selected repository ref to an exact commit before discovery and snapshot admission. A tree URL preserves its selected subpath; repository or named-Skill discovery cannot silently substitute another Skill when selection is missing or ambiguous. Source strings and descriptive metadata never grant host, network, credential or execution authority. A local path is acquired only in the explicitly authorized caller's local filesystem boundary; a remote caller cannot make Core read an arbitrary host path.
+
+Source parsing, discovery and YAML frontmatter handling may port the needed MIT-licensed upstream logic, with its pinned source revision and full license retained in third-party notices. Do not execute `npx skills`, invoke its telemetry or import private CLI internals at runtime. Its package has no supported library entry. Skill discovery recognizes a selected root `SKILL.md`, ordinary `skills/` containers, their `.curated`, `.experimental` and `.system` containers, and ecosystem Agent Skill directories such as `.agents/skills`, `.codex/skills` and `.claude/skills`. Use bounded discovery, skip repository administration and dependency/build directories, and preserve distinct locations when names are ambiguous. Internal Skills (`metadata.internal: true`) stay hidden from ordinary discovery; an explicit authorized selection may include them. Discovery is descriptive and cannot execute package code or follow symlinks.
+
+Accept YAML frontmatter with nonempty string `name` and `description`, including the upstream supported UTF-8 BOM and CRLF forms. Retain the original `SKILL.md` bytes. Ecosystem display names, optional metadata and unknown descriptive fields remain authored content; they need no OpenKit-specific fields and do not select catalog identity or confer permission. In particular, `allowed-tools` and nested metadata cannot grant OpenKit Tools. Do not reject an otherwise valid ecosystem Skill only because its display name differs from its directory or its optional descriptive metadata is not a string map. Invalid YAML, a non-mapping header or missing required strings refuses admission.
+
+Direct downloads are bounded to10MiB, archive expansion to25MiB and archive regular files to1000. The complete selected Skill must also satisfy this owner's16MiB,1024-entry and32-level bounds. Bound streamed downloads before buffering, extraction before writing beyond its bounds, and discovery before unbounded traversal. Archives support ZIP, TAR, TAR.GZ and TGZ; reject traversal, duplicate paths, links and special files before effects. A response without a filename extension is identified from its actual bounded bytes. Failure exposes no partial catalog version and leaves selection unchanged.
+
+Version provenance retains the source locator without embedded credentials, exact resolved commit when the source is Git, selected subpath and OpenKit content digest. Direct downloads and local trees have no fabricated Git commit. The retained version is the launch authority; a lock-style source observation supports an explicit update check without rewriting original provenance. An update check compares a newly resolved source against the retained commit/content identity and reports changed, unchanged or unavailable. It does not import, activate, promote or change a pin. Explicit import still uses ordinary current authority, exact catalog revision, Audit and receipt requirements. Remote outage never changes current selection or prevents retained-version loading. `skills.sh` search is optional future work and remains off by default.
 
 ### Payload and deterministic digest
 
@@ -128,6 +140,8 @@ The migrated resource and Agent catalog families use the canonical definition-de
 
 Workspace Skill versions, candidates, pins, and current selection live in `workspaces/<id>/catalog/catalog.json` with immutable snapshot trees under `catalog/skill-snapshots/`. App API, Core Client, CLI, and the Web Catalog screen expose ordinary-user import, candidate, pin, and selection operations. AEP supply resolves catalog pins or current digests onto the AgentSession-private `worker-supply` root; the Codex thin adapter projects those imported trees into `$CODEX_HOME/skills`. Native plugin loading and a retained real-worker combined Skill/MCP story are not yet advertised.
 
+Native admission retains the original package digest, member key and source subpath, or a candidate's exact base. Same-entry identical bytes return retained version facts. Candidate content and request publish in one catalog revision. Version inspection, exact file reads and inventory comparison use verified retained snapshots. Selection and pin updates reject changed bytes and compare explicit public prior digests. Removal clears the default and retains historical bytes. Native decisions require exact actor and Audit lineage; operation admission must provide that evidence before mutation. Purge combines catalog references with complete evidence from existing external retention owners and refuses unavailable authority. The existing version record separates retained or purged payload availability from immutable identity and provenance. Portability retains purged metadata without claiming missing retained bytes are purged. Authorized identical-byte admission restores payload availability and keeps original version facts. Command receipt integration, Artifact-origin submission and real Worker acceptance remain separate completion requirements.
+
 The target uses the existing server and Workspace storage owners with a canonical catalog document per owner scope, immutable installed payload directories, and derived indexes. `docs/specs/20260703-storage_layout_record_ownership.md` owns their physical layout; implementation must project these accepted contracts into the existing schemas and storage modules.
 
 ## Alternatives Considered
@@ -162,6 +176,8 @@ Skill instructions/scripts remain subordinate to authored setup, current permiss
 ## Memory And Knowledge Learning Inputs
 
 `20260909-personal_memory_and_knowledge_learning.md` may route procedural learning to this existing SkillCandidate owner. Personal preferences and factual Knowledge remain in their notebook; a Skill is instructions plus optional supporting files/code, not another notebook scope. Source-private content cannot leak through candidate descriptions, packaged files or evaluation evidence. Automatic candidate generation/evaluation changes no current digest; authorized promotion, pins, exact work evidence and rollback retain this specification's semantics. A/B comparison remains distinct from an implemented experiment scheduler or autonomous promotion policy.
+
+The engineer ruling of 2026-10-16 requires BWM and Meta-Skill first-loop implementation now, including synthetic and fake-backed regressions. Missing B01 business inputs do not block that implementation. BWM and Meta-Skill remain ordinary Skill packages: an authorized Task or Goal produces an attributable candidate Artifact, an explicit authorized submission creates the existing SkillCandidate, and current human decisions and pins select exact retained versions for later work. Add no BWM Core entity, evaluator, automatic promotion, background runner or alternate authority. Synthetic checks establish implementation behavior only. No BWM acceptance occurs now; the engineer supplies further ideas on2026-10-17 and acceptance follows that work. Real-use acceptance must never be inferred from synthetic material, fake execution or a candidate's existence.
 
 ## Deferred / Future Work
 
