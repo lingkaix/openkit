@@ -59,7 +59,9 @@ export function ConversationGoalGroups({
     const view = views[goals.findIndex((goal) => goal.thread.id === row.thread.id)];
     const open = expanded.has(row.thread.id);
     const failed = unavailable || view?.isError || threads.isError;
-    const ready = !failed && view?.isSuccess && threads.isSuccess && view.data.goal;
+    const data =
+      !failed && view?.isSuccess && threads.isSuccess && view.data.goal ? view.data : null;
+    const currentThreads = threads.data ?? [];
     const label = row.thread.name ?? row.thread.preview;
     return (
       <div key={row.thread.id} className="flex flex-col gap-0.5">
@@ -98,15 +100,15 @@ export function ConversationGoalGroups({
                 Try again
               </Button>
             </div>
-          ) : ready ? (
+          ) : data ? (
             <>
-              {view.data.cards.map((card) => {
-                const tasks = view.data.tasks.filter((task) => task.cardId === card.cardId);
+              {data.cards.map((card) => {
+                const tasks = data.tasks.filter((task) => task.cardId === card.cardId);
                 return (
                   <div key={card.cardId} className="flex flex-col gap-0.5">
                     <p className="pl-7 pt-1 text-xs text-fg-muted">{card.description}</p>
                     {tasks.map((task) => {
-                      const thread = threads.data.find(
+                      const thread = currentThreads.find(
                         (candidate) => candidate.id === task.threadId
                       );
                       if (task.missing || !thread) {
@@ -158,7 +160,7 @@ export function ConversationGoalGroups({
                   </div>
                 );
               })}
-              {!view.data.cards.length ? (
+              {!data.cards.length ? (
                 <p className="pl-7 text-xs text-fg-muted">No Goal cards yet</p>
               ) : null}
             </>
