@@ -308,9 +308,21 @@ export function createArtifactOperationImplementations(
               }
               const review = getArtifactReview(workspaceDb, artifactId, artifactVersion);
               const artifact = requireCurrentReviewedArtifact(store, review);
+              const contentProof = artifactReviewContentProof(artifact, workspaceDb);
+              if (
+                contentProof.artifactContent === null ||
+                Buffer.byteLength(contentProof.artifactContent, 'utf8') > 2048 ||
+                contentProof.artifactContent.split('\n').length > 50
+              ) {
+                throw new OperationError(
+                  'artifact_input_unavailable',
+                  'Exact reviewed Artifact input delivery is unavailable.',
+                  503
+                );
+              }
               const decisionInput = {
                 actorId,
-                ...artifactReviewContentProof(artifact, workspaceDb),
+                ...contentProof,
                 artifactId,
                 artifactVersion,
                 decidedAt: new Date().toISOString(),

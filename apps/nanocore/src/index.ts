@@ -341,6 +341,7 @@ const bootResult = await runBootPhases({
           scheduleCommittedFinalStatusCloseout
         );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
+          fileAdmission,
           coreDb: recoveryCoreDb,
           // Defer snapshot reads until admission, after the shared manager is initialized below.
           readRuntimeConfig: () => runtimeConfigManager.current(),

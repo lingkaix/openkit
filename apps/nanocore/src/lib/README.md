@@ -34,3 +34,5 @@ The canonical Turn record preserves optional `reasoningEffort` at creation and r
 The simulator Material fixtures invoke the canonical definition-derived JSON operations and retain their queue, projection and worker-delivery assertions.
 
 The simulator publishes its two deterministic Material candidates through the shared exact-byte Artifact validator and existing Artifact/Review owners, with the process-private no-injection evidence constructor. It emits no Artifact declaration payload and cannot provide that proof to Worker MCP capture. Ordinary Worker submission requires the original Worker evidence set.
+
+The deterministic self-check executor uses the same configured file admission owner as App uploads and NanoHost transfer staging. Material candidate staging, canonical publication and compensation must not create a second reserve or bypass that owner; a missing owner refuses file publication. Complete staging cleanup releases its reservation, while unproved cleanup retains it.

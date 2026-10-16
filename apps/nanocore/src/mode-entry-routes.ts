@@ -3005,7 +3005,16 @@ export function createConversationService({
               ? `${identity}:\n${text}`
               : `${identity}: ${content.mediaType}, ${content.byteLength} bytes.`;
           }
-          return `${identity}:\n${new TextDecoder().decode(Buffer.from(content.body, 'utf8').subarray(0, 2048), { stream: true }).split('\n').slice(0, 50).join('\n')}`;
+          const preview = new TextDecoder()
+            .decode(Buffer.from(content.body.slice(0, 2048), 'utf8').subarray(0, 2048), {
+              stream: true,
+            })
+            .split('\n')
+            .slice(0, 50)
+            .join('\n');
+          const originalBytes = Buffer.byteLength(content.body, 'utf8');
+          const previewBytes = Buffer.byteLength(preview, 'utf8');
+          return `${identity} (${previewBytes < originalBytes ? 'bounded preview' : 'complete text'}, ${previewBytes} of ${originalBytes} bytes):\n${preview}`;
         }),
       ]
         .filter(Boolean)

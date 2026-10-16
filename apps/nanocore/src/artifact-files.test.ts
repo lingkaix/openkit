@@ -1,14 +1,19 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { Readable } from 'node:stream';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createArtifactOperationImplementations } from './artifact-operations.js';
+import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { stageArtifactPayload } from './storage/artifacts/file-payload.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
-import { openCoreDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
-import { applyMigrations } from './storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -84,6 +89,160 @@ function download(state: ReturnType<typeof fixture>, artifactId: string, artifac
 }
 
 describe('exact Artifact file import and download', () => {
+  it.each([
+    'binary-file',
+    'text-file',
+    'retained-bytes',
+    'retained-lines',
+  ] as const)('refuses %s before effects when a reviewed original has no exact Worker delivery', async (kind) => {
+    const decision = kind === 'binary-file' ? 'needs_refinement' : 'redo';
+    const state = fixture();
+    const { coreDb, dataRoot, workspace } = state;
+    // This domain fixture owns its roster directly; App catalog projection is tested separately.
+    const store = new FsStore({ dataRoot });
+    const agentId = 'review-file-agent';
+    store.upsertAgent(workspace.id, {
+      id: agentId,
+      name: 'Review file agent',
+      kind: 'coder',
+      status: 'enabled',
+      modelId: null,
+      skillIds: [],
+      profiles: [],
+      defaultProfileId: null,
+      capabilities: [],
+      sandboxSummary: null,
+      health: { status: 'ready', message: null, checkedAt: new Date().toISOString() },
+    });
+    const thread = store.createThread(workspace.id, 'File Review');
+    const turn = store.createTurn(workspace.id, thread.id, 'Produce original', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(turn.id, { agentId });
+    const bytes =
+      kind === 'retained-lines'
+        ? Buffer.from(`${'line\n'.repeat(50)}end`)
+        : kind === 'binary-file'
+          ? Buffer.from([0, 255, 128])
+          : Buffer.alloc(2049, 120);
+    const admission = new FileStorageAdmission(dataRoot, () => 0n);
+    const reservation = admission.reserve({
+      stagingBytes: BigInt(bytes.length),
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 65_536n,
+    });
+    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const staged = kind.startsWith('retained')
+      ? undefined
+      : await stageArtifactPayload({
+          workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
+          source: Readable.from([bytes]),
+          expectedByteLength: bytes.length,
+          expectedDigest: digest,
+          reservation,
+        });
+    const artifactId = 'review-file-output';
+    const recordedAt = new Date().toISOString();
+    try {
+      store.createArtifact(
+        {
+          id: artifactId,
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: turn.id,
+          kind: 'file',
+          title: 'Reviewed exact original',
+          status: 'ready',
+          summary: null,
+          version: 1,
+          content: kind.startsWith('retained')
+            ? { format: 'text', body: bytes.toString('utf8') }
+            : {
+                format: 'file',
+                mediaType: decision === 'redo' ? 'text/plain' : 'application/octet-stream',
+                byteLength: bytes.length,
+              },
+          contentDigest: digest,
+          lastMutationRequestId: 'produce-review-file',
+          origin: {
+            kind: 'turn-output',
+            requestId: 'produce-review-file',
+            threadId: thread.id,
+            turnId: turn.id,
+          },
+          createdAt: recordedAt,
+          updatedAt: recordedAt,
+        },
+        staged
+      );
+    } finally {
+      await staged?.remove();
+      reservation.release();
+    }
+    store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt });
+    const db = openWorkspaceDb(dataRoot, workspace.id);
+    applyScopedMigrations(db);
+    try {
+      createArtifactReview(db, {
+        artifactId,
+        artifactVersion: 1,
+        contentDigest: digest,
+        sourceThreadId: thread.id,
+        sourceTurnId: turn.id,
+        sourceAgentId: agentId,
+        materialProposal: null,
+        createdAt: recordedAt,
+      });
+      const startModeWorkerTurn = vi.fn(async () => {
+        throw new Error('A Worker must not start without its reviewed original.');
+      });
+      const handlers = createArtifactOperationImplementations({
+        store,
+        coreDb,
+        inflightCommands: new WeakMap(),
+        repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, workspace.id),
+        startModeWorkerTurn,
+      });
+      const beforeReceipts = store.listCommandRequests();
+      const requestId = randomUUID();
+      await expect(
+        handlers['artifact.review.decide'](
+          {
+            workspaceId: workspace.id,
+            artifactId,
+            artifactVersion: 1,
+            decision,
+            feedback: 'Use the original file.',
+            requestId,
+          },
+          {
+            kind: 'public',
+            actor: { kind: 'local', userId: LOCAL_USER_ID },
+            actorRef: { kind: 'user', id: LOCAL_USER_ID },
+            scope: { kind: 'workspace', workspaceId: workspace.id },
+            delivery: 'human',
+          }
+        )
+      ).rejects.toMatchObject({ code: 'artifact_input_unavailable', status: 503 });
+      expect(startModeWorkerTurn).not.toHaveBeenCalled();
+      expect(getArtifactReview(db, artifactId, 1).decision).toBeNull();
+      expect(
+        store.listThreadTurns(workspace.id, thread.id).map((candidate) => candidate.id)
+      ).toEqual([turn.id]);
+      expect(store.listCommandRequests()).toEqual(beforeReceipts);
+      expect(
+        db.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_turn_checkpoints').get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
+      ).toEqual({ count: 0 });
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it('preserves exact binary originals through two authorized Workspace export and import cycles', async () => {
     const state = fixture();
     const original = corpus.originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
