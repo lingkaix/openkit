@@ -17,10 +17,10 @@ import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { verifyDataRootBackupManifest } from './data-root-backup.js';
+import { inventoryRegularFiles, verifyDataRootBackupManifest } from './data-root-backup.js';
 import { type CoreDb, openWorkspaceDbAtRoot } from './db.js';
 import { resolveDataRootPath } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -510,6 +510,28 @@ describe('workspace storage migration preflight', () => {
 });
 
 describe('workspace storage migration', () => {
+  it('refuses entropy failure before backup or staging publication and preserves the predecessor', () => {
+    const fixture = createMigrationFixture();
+    fixture.coreDb.sqlite.close();
+    const backupParent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-entropy-'));
+    const backupRoot = join(backupParent, 'backup');
+    const predecessor = inventoryRegularFiles(fixture.dataRoot);
+    const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
+      throw new Error('Backup identity entropy unavailable.');
+    });
+    try {
+      expect(() =>
+        migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow('Backup identity entropy unavailable.');
+      expect(existsSync(backupRoot)).toBe(false);
+      expect(inventoryRegularFiles(fixture.dataRoot)).toEqual(predecessor);
+    } finally {
+      entropy.mockRestore();
+      rmSync(fixture.dataRoot, { recursive: true, force: true });
+      rmSync(backupParent, { recursive: true, force: true });
+    }
+  });
+
   it('refuses to overwrite an existing external backup destination', () => {
     const fixture = createMigrationFixture();
     const backupRoot = join(
@@ -679,13 +701,20 @@ describe('workspace storage migration', () => {
     writeFileSync(join(secondSourceRoot, 'files', 'second.txt'), 'second\n');
     fixture.coreDb.sqlite.close();
 
-    migrateWorkspaceStorage({
+    const result = migrateWorkspaceStorage({
       backupRoot,
       dataRoot: fixture.dataRoot,
       now: () => timestamp,
     });
 
     const verifiedBackup = verifyDataRootBackupManifest({ backupRoot });
+    expect(result.backupId).toMatch(
+      /^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(verifiedBackup.manifest.id).toBe(result.backupId);
+    expect(verifiedBackup.manifest.sourceDeploymentId).toBe(predecessorDeploymentId);
+    expect(verifiedBackup.manifest.backupStartedAt).toBe(timestamp);
+    expect(verifiedBackup.manifest.backupCompletedAt).toBe(timestamp);
     expect(verifiedBackup.checkedFiles).toEqual(
       expect.arrayContaining([
         'users/usr_00000000-0000-7011-88df-c2b1e8466b6f/workspaces/ws_00000000-0000-7f1c-9858-74a73d4be08c/db/workspace.sqlite',
@@ -729,6 +758,7 @@ describe('workspace storage migration', () => {
       outcome: 'succeeded',
       sourceLayoutVersion: 1,
       targetLayoutVersion: 2,
+      backup: { id: result.backupId },
     });
     expect(reportText).toContain(verifiedBackup.manifest.id);
     expect(reportText).toContain(

@@ -21,6 +21,7 @@ import {
 } from '../auth/access-token-store.js';
 import { createLightApp } from '../generative-kernel/commands.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   bindThreadMaterial,
@@ -32,6 +33,7 @@ import {
   assertExternalColdBackupDestination,
   copyColdDataRoot,
   DATA_ROOT_BACKUP_MANIFEST_FILE,
+  inventoryRegularFiles,
   restoreDataRootBackup,
   verifyDataRootBackupManifest,
   writeColdDataRootBackupManifest,
@@ -43,6 +45,56 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
 const timestamp = '2026-07-06T00:00:00.000Z';
 
 describe('data-root backup manifest', () => {
+  describe.each(['cold', 'hot'] as const)('%s writer identifier admission', (mode) => {
+    it.each([
+      { field: 'backupId', value: 'backup_invalid', name: 'malformed backup' },
+      {
+        field: 'backupId',
+        value: testEntityId('ws', 'backup_wrong_kind'),
+        name: 'wrong-kind backup',
+      },
+      { field: 'sourceDeploymentId', value: 'deployment_invalid', name: 'malformed deployment' },
+      {
+        field: 'sourceDeploymentId',
+        value: testEntityId('drb', 'deployment_wrong_kind'),
+        name: 'wrong-kind deployment',
+      },
+    ] as const)('refuses $name before replacing any backup bytes', async ({ field, value }) => {
+      const parent = mkdtempSync(join(tmpdir(), 'openkit-backup-id-admission-'));
+      const dataRoot = join(parent, 'source');
+      const backupRoot = join(parent, 'backup');
+      mkdirSync(dataRoot);
+      mkdirSync(backupRoot);
+      writeFileSync(join(dataRoot, 'source.txt'), 'unchanged source bytes\n');
+      writeFileSync(join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE), 'unchanged prior manifest\n');
+      writeFileSync(join(backupRoot, 'prior.txt'), 'unchanged backup bytes\n');
+      const sourceBefore = inventoryRegularFiles(dataRoot);
+      const backupBefore = inventoryRegularFiles(backupRoot);
+      const input = {
+        backupId: testEntityId('drb', 'admitted_backup'),
+        sourceDeploymentId: testEntityId('dep', 'admitted_deployment'),
+        backupRoot,
+        dataRoot,
+        startedAt: timestamp,
+        completedAt: timestamp,
+        [field]: value,
+      };
+      try {
+        const refusal = expect.objectContaining({
+          name: 'ZodError',
+          issues: expect.arrayContaining([expect.objectContaining({ code: 'invalid_format' })]),
+        });
+        if (mode === 'hot')
+          await expect(writeHotDataRootBackup(input)).rejects.toThrowError(refusal);
+        else expect(() => writeColdDataRootBackupManifest(input)).toThrowError(refusal);
+        expect(inventoryRegularFiles(dataRoot)).toEqual(sourceBefore);
+        expect(inventoryRegularFiles(backupRoot)).toEqual(backupBefore);
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('copies a cold backup without a maintenance-owned live lock', () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-data-root-cold-copy-'));
     const dataRoot = join(parent, 'data');
@@ -92,7 +144,7 @@ describe('data-root backup manifest', () => {
       await writeHotDataRootBackup({
         dataRoot,
         backupRoot,
-        backupId: 'drbak_vault_mode',
+        backupId: testEntityId('drb', 'drbak_vault_mode'),
         sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
         startedAt: timestamp,
         completedAt: timestamp,
@@ -134,7 +186,7 @@ describe('data-root backup manifest', () => {
 
     const verified = writeColdDataRootBackupManifest({
       backupRoot: root,
-      backupId: 'drbak_demo',
+      backupId: testEntityId('drb', 'drbak_demo'),
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
@@ -154,7 +206,7 @@ describe('data-root backup manifest', () => {
     writeFileSync(join(root, 'server', 'layout.json'), '{"layoutVersion":1}\n');
     writeColdDataRootBackupManifest({
       backupRoot: root,
-      backupId: 'drbak_demo',
+      backupId: testEntityId('drb', 'drbak_demo'),
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
@@ -170,7 +222,7 @@ describe('data-root backup manifest', () => {
     writeFileSync(join(extraRoot, 'server', 'layout.json'), '{"layoutVersion":1}\n');
     writeColdDataRootBackupManifest({
       backupRoot: extraRoot,
-      backupId: 'drbak_demo',
+      backupId: testEntityId('drb', 'drbak_demo'),
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
@@ -188,7 +240,7 @@ describe('data-root backup manifest', () => {
     writeFileSync(join(root, 'server', 'layout.json'), '{"layoutVersion":1}\n');
     writeColdDataRootBackupManifest({
       backupRoot: root,
-      backupId: 'drbak_demo',
+      backupId: testEntityId('drb', 'drbak_demo'),
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
@@ -336,8 +388,8 @@ describe('data-root backup manifest', () => {
     const verified = await writeHotDataRootBackup({
       dataRoot,
       backupRoot,
-      backupId: 'drbak_hot',
-      sourceDeploymentId: 'deployment_backup_test',
+      backupId: testEntityId('drb', 'drbak_hot'),
+      sourceDeploymentId: testEntityId('dep', 'deployment_backup_test'),
       startedAt: timestamp,
       completedAt: '2026-07-06T00:00:01.000Z',
     });
@@ -423,7 +475,7 @@ describe('data-root backup manifest', () => {
     writeFileSync(join(dataRoot, 'stale.txt'), 'stale\n');
     writeColdDataRootBackupManifest({
       backupRoot,
-      backupId: 'drbak_restore',
+      backupId: testEntityId('drb', 'drbak_restore'),
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
@@ -431,7 +483,7 @@ describe('data-root backup manifest', () => {
 
     const restored = restoreDataRootBackup({ backupRoot, dataRoot });
 
-    expect(restored.manifest.id).toBe('drbak_restore');
+    expect(restored.manifest.id).toBe(testEntityId('drb', 'drbak_restore'));
     expect(existsSync(join(dataRoot, 'stale.txt'))).toBe(false);
     expect(readFileSync(join(dataRoot, 'server', 'layout.json'), 'utf8')).toBe(
       '{"layoutVersion":1}\n'
@@ -447,7 +499,7 @@ describe('data-root backup manifest', () => {
     writeFileSync(join(dataRoot, 'kept.txt'), 'kept\n');
     writeColdDataRootBackupManifest({
       backupRoot,
-      backupId: 'drbak_restore',
+      backupId: testEntityId('drb', 'drbak_restore'),
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
@@ -467,7 +519,7 @@ describe('data-root backup manifest', () => {
     writeFileSync(join(backupRoot, 'server', 'layout.json'), '{"layoutVersion":1}\n');
     writeColdDataRootBackupManifest({
       backupRoot,
-      backupId: 'drbak_restore',
+      backupId: testEntityId('drb', 'drbak_restore'),
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
@@ -533,8 +585,8 @@ describe('data-root backup manifest', () => {
     const verified = await writeHotDataRootBackup({
       dataRoot,
       backupRoot,
-      backupId: 'drbak_light_app',
-      sourceDeploymentId: 'deployment_backup_test',
+      backupId: testEntityId('drb', 'drbak_light_app'),
+      sourceDeploymentId: testEntityId('dep', 'deployment_backup_test'),
       startedAt: timestamp,
       completedAt: '2026-09-09T00:00:01.000Z',
     });
