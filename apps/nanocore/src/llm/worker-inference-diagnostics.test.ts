@@ -104,6 +104,7 @@ function fixture(configured = true) {
     coreDb,
     workerControlGateway: gateway,
     llmGatewayDispatcher: {
+      createChatCompletion: dispatch,
       createResponses: dispatch,
       createResponsesStream: dispatch,
       createChatCompletionStream: dispatch,
