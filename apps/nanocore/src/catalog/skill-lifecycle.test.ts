@@ -77,6 +77,53 @@ function tree(text: string) {
 
 describe('Skill catalog lifecycle', () => {
   it.each([
+    [
+      'descriptive nested metadata',
+      '---\nname: alpha\ndescription: Keep ecosystem metadata.\nmetadata:\n  internal: true\n  revision: 2\n  tags: [one, two]\n---\n# Exact body\n',
+    ],
+    [
+      'ecosystem display name',
+      '---\nname: "Release Notes Helper"\ndescription: Keep the authored display name.\n---\n# Exact body\n',
+    ],
+    [
+      'BOM and CRLF',
+      '\ufeff---\r\nname: alpha\r\ndescription: Keep exact bytes.\r\n---\r\n# Exact body\r\n',
+    ],
+  ])('imports unchanged %s without treating metadata as authority', (_label, content) => {
+    const f = fixture();
+    try {
+      const submitted = [
+        {
+          kind: 'file' as const,
+          path: 'SKILL.md',
+          contentBase64: Buffer.from(content).toString('base64'),
+        },
+      ];
+      const admitted = importWorkspaceSkill({
+        ...f,
+        activate: false,
+        displayName: 'Ecosystem Skill',
+        id: f.imported.version.entryId,
+        expectedRevision: f.imported.catalog.revision,
+        tree: submitted,
+      });
+      expect(admitted.version.digest).toBe(validateCatalogTree(submitted).digest);
+      expect(
+        readWorkspaceSkillContent({
+          ...f,
+          entryId: admitted.version.entryId,
+          digest: admitted.version.digest,
+          path: 'SKILL.md',
+        }).contentBase64
+      ).toBe(submitted[0]!.contentBase64);
+      expect(admitted.catalog.skills.entries[0]?.currentDigest).toBe(f.imported.version.digest);
+      expect(admitted.catalog.skills.candidates).toEqual([]);
+    } finally {
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     '???',
     'Zg',
     'Zg===',
