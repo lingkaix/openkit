@@ -322,57 +322,55 @@ function writeEvidenceResult(config, result) {
 }
 
 /**
- * Reads gateway readiness from public diagnostics.
+ * Reads the selected logical model and its current route from public diagnostics.
+ *
+ * Diagnostics establishes current supply; the later usage check proves which profile ran.
  *
  * @param {unknown} json Parsed diagnostics response.
  * @param {Record<string, string | undefined>} config Runner config.
  * @returns {{ providerId?: string, model?: string, reason?: string } | null} Failure summary.
  */
 function gatewayPreflightFailure(json, config) {
-  const gateway = json?.defaultProviders?.gateway;
-  if (!gateway || typeof gateway !== 'object') {
-    return { providerId: config.providerId, model: config.model, reason: 'default-missing' };
+  const models = json?.gateway?.models;
+  const model = Array.isArray(models) ? models.find((entry) => entry?.id === config.model) : null;
+  if (!model) {
+    return { providerId: config.providerId, model: config.model, reason: 'logical-model-missing' };
   }
-
-  if (gateway.configured !== true) {
+  if (!Array.isArray(model.capabilities) || !model.capabilities.includes('chat-completions')) {
     return {
-      providerId: typeof gateway.providerId === 'string' ? gateway.providerId : config.providerId,
-      model: typeof gateway.model === 'string' ? gateway.model : config.model,
-      reason: typeof gateway.reason === 'string' ? gateway.reason : 'not-configured',
+      providerId: config.providerId,
+      model: config.model,
+      reason: 'chat-completions-unsupported',
     };
   }
 
-  if (gateway.providerId !== config.providerId) {
-    return { providerId: gateway.providerId, model: gateway.model, reason: 'provider-mismatch' };
+  const routes = Array.isArray(model.routes) ? model.routes : [];
+  const selectableRoutes = model.autoFailover === false ? routes.slice(0, 1) : routes;
+  const route = selectableRoutes.find((entry) => entry?.available === true);
+  if (!route) {
+    return {
+      providerId: config.providerId,
+      model: config.model,
+      reason: selectableRoutes[0]?.unavailableReason ?? 'route-unavailable',
+    };
   }
-  if (gateway.model !== config.model) {
-    return { providerId: gateway.providerId, model: gateway.model, reason: 'model-mismatch' };
+  if (route.providerProfileId !== config.providerId) {
+    return {
+      providerId: route.providerProfileId,
+      model: config.model,
+      reason: 'provider-mismatch',
+    };
   }
 
   const registry = json?.providers?.registry;
   const provider = Array.isArray(registry)
     ? registry.find((entry) => entry?.id === config.providerId)
     : null;
-
-  if (!provider || typeof provider !== 'object') {
+  if (!provider) {
     return { providerId: config.providerId, model: config.model, reason: 'registry-row-missing' };
   }
-  if (typeof provider.kind !== 'string' || provider.kind === 'custom') {
-    return {
-      providerId: config.providerId,
-      model: config.model,
-      reason: 'provider-kind-ineligible',
-    };
-  }
-  if (!Array.isArray(provider.models) || !provider.models.includes(config.model)) {
+  if (!Array.isArray(provider.models) || !provider.models.includes(route.providerModel)) {
     return { providerId: config.providerId, model: config.model, reason: 'model-unlisted' };
-  }
-  if (!['native', 'bridged'].includes(provider.gatewayCapabilities?.chatCompletions)) {
-    return {
-      providerId: config.providerId,
-      model: config.model,
-      reason: 'chat-completions-unsupported',
-    };
   }
 
   return null;
