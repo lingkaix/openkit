@@ -169,6 +169,18 @@ A failed persistence write can leave a Product Turn recorded as running and its 
 
 For active internal Chat, explicit `turn.interrupt` stops the admitted model wait and persists `interrupted` with `provider_call_aborted`. A transport disconnect or locally aborted wait does not stop server work. Replaying the Chat submission or accepted interrupt reads the retained lineage without another provider invocation; a new attempt needs a new request id. If interruption cannot persist its required records, NanoCore returns `recovery_required`; do not claim cancellation from a rejected Stop, a timeout, or a later provider failure.
 
+## Run Recurring Automations
+
+Open Automations in the selected Workspace, or discover the canonical `automation` operations through remote MCP or the administrator CLI. Create a paused definition with one existing Thread, a name, worker input and one cadence. A fixed interval is at least five whole seconds. Monthly UTC uses a day from 1 to 28 and an explicit HH:MM:SS time. Other timezones, days 29 to 31 and last-day rules are unavailable. The creator remains the responsible user. Optional Agent, profile and logical-model selections follow ordinary Worker setup; the first resolved complete selection is retained for that occurrence and is not silently replaced during retry.
+
+Review the paused input, then resume with an explicit UTC scheduled instant. Monthly resume must match the saved day and time with zero milliseconds. Pause before editing the target, cadence or input. Resume starts a new cadence; paused time is not missed work. Delete stops future triggering and retains read-only definition and occurrence history. It does not cancel an already accepted queue entry or complete its Turn. Monthly admission sends ordinary Worker work into the existing Thread; recurring Goal creation remains an open follow-up.
+
+Read occurrence history before deciding what happened. `admission-accepted` means that one exact queue entry committed. It does not mean the Worker started or completed. A trigger has at most three committed admission outcomes and a ten-minute deadline from its original nominal instant. Expired ranges record exact missed bounds and count without pretending those tasks ran. Later execution failure, denial, approval wait or an unknown result never causes the trigger to submit accepted work again.
+
+A missing or contradictory fixed Turn is `recovery_required`, with its cause in `publicationIssue`. Inspect it; do not recreate a Turn, change its identity or retry file publication. Use the existing `scheduler.cancel` operation on the exact queued entry when authorized to release that held waiting slot. An explicit retry of an older denied recurring entry refuses while another occurrence in that series is queued. Wait for its normal admission or cancel that exact waiting entry when authorized before retrying; retry does not add an occurrence attempt. The original occurrence remains accepted history. Queue cancellation releases the series waiting slot and does not repair the interrupted occurrence. A damaged pending Turn can still hold its original Thread under normal single-flight. Pause and edit the schedule to another existing Thread when that change is authorized, then resume with an explicit scheduled instant. An initial file error fails that operation and keeps its files; the Workspace remains writable. Retry or restart to use canonical history. Occurrence history retains any missing or contradictory publication cause. Follow an actual recorded Turn link only when history supplies one.
+
+Workspace export reads canonical Turn and Item data even when the derivative cache differs. It retains schedule, occurrence and expired-range history only when accepted occurrences have their exact canonical Turns. Missing or contradictory publication requires inspection and prevents portable export, including after queue cancellation. Deployment backup and restricted deletion evidence retain the damaged source history. Imported recurrence history stays inert and cannot resume source schedules or restore queue authority. Create a new target schedule under current authority when future work is wanted.
+
 ## Correct a bounded Worker Git-read rule
 
 Use the failed Turn's exact Workspace, Thread and Turn identities. Ask the private administration entry to inspect the registered Agent's current network rules and exact source revision, then propose only the affected explicit REST grant's Git-read correction. Candidate creation validates the retained terminal explanation and the exact AgentSession/AEP/repository lineage. If multiple Git inputs make the failure ambiguous, stop and obtain better evidence; do not select a repository by guess. A refusal does not prove that Sandbox policy caused the failure.
@@ -244,6 +256,12 @@ Use the existing deployment and its authorized connection. Do not reinstall Open
 Select a Workspace or create clearly identifiable scenario state within the user's authorization. Use the normal Task or Goal workflow for actual Agent workloads. Follow durable status with bounded reads and a deadline; do not treat accepted submission as completion. If a human decision is pending, expose it through the normal product flow.
 
 Keep the user's objective open-ended. Discover the operations needed to accomplish it; do not use a hidden expected answer or prescribed call sequence. If acting as an acceptance Actor, do not inspect implementation files, judge instructions or private database state.
+
+## Use Native Generative Data And Views
+
+Use an admitted Assistant or selected Worker to create and update a Kernel app through the available native Kernel tools. A published native view in the same Thread can read and edit that same data. Expand Source history to inspect its admitted answer or Tool result.
+
+A reopened presentation shows historical values. Use its Refresh action to read current data. Save applies the form's explicit record update through Core. An error or stale-write conflict keeps the unsaved input visible; inspect the error and refresh before the next explicit save. Refresh does not save the draft. Unsaved input is local to the open browser view and does not survive a reload. Richer operators, destructive writes, HTML delegates and saved views retain their separate admission gates.
 
 ## Locate Results
 

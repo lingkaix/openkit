@@ -12,9 +12,10 @@ import {
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Real authorized former bindings and their exact protected records. */
 describe('migrated execution route retirement', () => {
@@ -36,37 +37,31 @@ describe('migrated execution route retirement', () => {
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: DEMO_WORKSPACE_ID,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
     });
-    const automationStore = new AutomationStore();
-    const automation = automationStore.createAutomation(
-      'usr_00000000-0000-7000-8000-000000000001',
-      {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        name: 'Retained',
-        cron: '*',
-        prompt: 'Work',
-      }
-    );
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Retirement');
-    const turn = store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Original',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
+    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
+    const automation = automationStore.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      name: 'Retained',
+      intervalSeconds: 60,
+      threadId: DEMO_THREAD_ID,
+      prompt: 'Work',
+    });
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Retirement');
+    const turn = store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Original', {
+      kind: 'user',
+      id: FIXTURE_LOCAL_USER_ID,
+    });
     store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_retirement',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       turnId: turn.id,
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
       turnInput: 'Work',
       requestedAgentId: 'agent_codex_host',
     });
@@ -77,51 +72,48 @@ describe('migrated execution route retirement', () => {
       });
     const beforeQueue = requireSchedulerAdmissionEntry(coreDb, 'queue_retirement');
     const beforeTurn = { ...store.getTurnById(turn.id) };
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(workspaceDb);
-    const recoveryScope = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: thread.id,
-      turnId: turn.id,
-    };
-    const app = createApp({ coreDb, dataRoot, store, automationStore });
+    const recoveryScope = { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id, turnId: turn.id };
+    const app = createApp({ coreDb, dataRoot, store, automationStore, workspaceMutationAdmission });
     const binding = {
       'automation.list': ['GET', '/api/app/automations', undefined],
       'automation.create': [
         'POST',
         '/api/app/automations',
         {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          workspaceId: DEMO_WORKSPACE_ID,
           name: 'Unexpected',
-          cron: '*',
+          intervalSeconds: 60,
+          threadId: DEMO_THREAD_ID,
           prompt: 'Work',
         },
       ],
       'automation.update': [
         'PATCH',
         `/api/app/automations/${automation.id}`,
-        { status: 'enabled' },
+        { expectedRevision: 1, name: 'Updated' },
       ],
       'automation.delete': ['DELETE', `/api/app/automations/${automation.id}`, undefined],
       'scheduler.list': [
         'GET',
-        '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/scheduler/admissions',
+        `/api/app/workspaces/${DEMO_WORKSPACE_ID}/scheduler/admissions`,
         undefined,
       ],
       'scheduler.retry': [
         'POST',
-        '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/scheduler/admissions/queue_retirement/retry',
+        `/api/app/workspaces/${DEMO_WORKSPACE_ID}/scheduler/admissions/queue_retirement/retry`,
         undefined,
       ],
       'scheduler.cancel': [
         'POST',
-        '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/scheduler/admissions/queue_retirement/cancel',
+        `/api/app/workspaces/${DEMO_WORKSPACE_ID}/scheduler/admissions/queue_retirement/cancel`,
         undefined,
       ],
       'recovery.worker-list': ['GET', '/api/app/recovery/interrupted-workers', undefined],
       'recovery.checkpoint-retry': [
         'POST',
-        `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/${thread.id}/recovery/interrupted-worker/${turn.id}/retry`,
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/interrupted-worker/${turn.id}/retry`,
         { requestId: 'req_retirement' },
       ],
     }[operation];
@@ -132,9 +124,7 @@ describe('migrated execution route retirement', () => {
         ...(binding[2] ? { body: JSON.stringify(binding[2]) } : {}),
       });
       expect(response.status, await response.text()).toBe(404);
-      expect(automationStore.listAutomations('usr_00000000-0000-7000-8000-000000000001')).toEqual([
-        automation,
-      ]);
+      expect(automationStore.listAuthorizedAutomations([DEMO_WORKSPACE_ID])).toEqual([automation]);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_retirement')).toEqual(beforeQueue);
       expect(store.getTurnById(turn.id)).toEqual(beforeTurn);
       expect(
@@ -148,22 +138,17 @@ describe('migrated execution route retirement', () => {
       const input = {
         'automation.list': {},
         'automation.create': {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          workspaceId: DEMO_WORKSPACE_ID,
           name: 'Unexpected',
-          cron: '*',
+          intervalSeconds: 60,
+          threadId: DEMO_THREAD_ID,
           prompt: 'Work',
         },
-        'automation.update': { automationId: automation.id, status: 'enabled' },
+        'automation.update': { automationId: automation.id, expectedRevision: 1, name: 'Updated' },
         'automation.delete': { automationId: automation.id },
-        'scheduler.list': { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        'scheduler.retry': {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          queueEntryId: 'queue_retirement',
-        },
-        'scheduler.cancel': {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          queueEntryId: 'queue_retirement',
-        },
+        'scheduler.list': { workspaceId: DEMO_WORKSPACE_ID },
+        'scheduler.retry': { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_retirement' },
+        'scheduler.cancel': { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_retirement' },
         'recovery.worker-list': {},
         'recovery.checkpoint-retry': { ...recoveryScope, requestId: 'req_retirement' },
       }[operation];
@@ -200,19 +185,22 @@ describe('migrated execution route retirement', () => {
         ).toBeNull();
       } else if (operation === 'automation.delete') {
         expect(await canonical.text()).toBe('');
-        expect(automationStore.listAutomations('usr_00000000-0000-7000-8000-000000000001')).toEqual(
-          []
-        );
+        expect(automationStore.listAuthorizedAutomations([DEMO_WORKSPACE_ID])).toEqual([
+          automationStore.getAutomation(automation.id),
+        ]);
+        expect(automationStore.getAutomation(automation.id)).toMatchObject({
+          status: 'deleted',
+          actor: automation.actor,
+          revision: 2,
+        });
       } else if (operation === 'automation.update') {
-        expect(
-          automationStore.getAutomation('usr_00000000-0000-7000-8000-000000000001', automation.id)
-        ).toMatchObject({
-          status: 'enabled',
+        expect(automationStore.getAutomation(automation.id)).toMatchObject({
+          status: 'paused',
+          name: 'Updated',
+          revision: 2,
         });
       } else if (operation === 'automation.create') {
-        expect(
-          automationStore.listAutomations('usr_00000000-0000-7000-8000-000000000001')
-        ).toHaveLength(2);
+        expect(automationStore.listAuthorizedAutomations([DEMO_WORKSPACE_ID])).toHaveLength(2);
       }
     } finally {
       workspaceDb.sqlite.close();

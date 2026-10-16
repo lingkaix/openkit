@@ -2,13 +2,17 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WorkspaceMcpCredentialBindingSchema } from '@openkit/config-schema/mcp-credentials';
-
 import {
   SubscriptionProviderIdSchema as ConfigSubscriptionProviderIdSchema,
   ProviderSubscriptionAccountSlotIdSchema,
 } from '@openkit/config-schema/provider-subscription';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import {
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+} from '../../../apps/nanocore/src/test-support/demo-store.js';
+import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 
 import * as appApiSchemas from './index.js';
 import {
@@ -4954,10 +4958,21 @@ describe('app api schemas', () => {
     ).toBe(false);
     expect(
       AutomationRecordSchema.parse({
-        id: 'auto_00000000-0000-753e-a23a-1b96fc74424c',
+        id: testEntityId('auto', 'dashboard-automation'),
         name: 'Daily summary',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        cron: '0 9 * * *',
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: DEMO_THREAD_ID,
+        intervalSeconds: 60,
+        responsibleUserId: testEntityId('usr', 'user_creator'),
+        actor: {
+          kind: 'automation',
+          id: testEntityId('auto', 'dashboard-automation'),
+          responsibleUserId: testEntityId('usr', 'user_creator'),
+        },
+        revision: 1,
+        nextScheduledAt: null,
+        greatestAccountedScheduledAt: null,
+        deletedAt: null,
         prompt: 'Summarize yesterday.',
         status: 'paused',
         createdAt: timestamp,

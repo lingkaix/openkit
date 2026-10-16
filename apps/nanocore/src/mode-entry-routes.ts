@@ -3440,6 +3440,8 @@ export function createConversationService({
             turnId: turn.id,
           });
           const fixedTools = createAssistantTools({
+            actorUserId: actor.userId,
+            commandRequestId: chatInput.requestId,
             workspaceId,
             threadId,
             turnId: turn.id,
@@ -4224,6 +4226,8 @@ export function createConversationService({
           turnId: turn.id,
         });
         const fixedTools = createAssistantTools({
+          actorUserId: actorId,
+          commandRequestId: assistantPendingHandoffIds(outcomeScope).requestId,
           workspaceId: turn.workspaceId,
           threadId: turn.threadId,
           turnId: turn.id,

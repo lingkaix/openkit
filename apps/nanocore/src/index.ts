@@ -46,6 +46,7 @@ import {
 } from './config/runtime-config.js';
 import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
+import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
@@ -73,6 +74,11 @@ import {
   installPendingRequestAdmission,
   recoverPendingRequestsAtBoot,
 } from './runtime/pending-request-flow.js';
+import { prepareRecurringOccurrence } from './runtime/recurring-schedule-preparation.js';
+import {
+  type RecurringScheduleService,
+  startRecurringScheduleService,
+} from './runtime/recurring-schedule-service.js';
 import {
   type SchedulerAttemptMaintenanceInput,
   type SchedulerAttemptMaintenanceService,
@@ -131,6 +137,7 @@ let dataRootLock: DataRootLock | null = null;
 let openshellRefreshStatusPolling: OpenShellRefreshStatusPollingService | null = null;
 let schedulerDispatchRetry: SchedulerDispatchRetryService | null = null;
 let schedulerAttemptMaintenance: SchedulerAttemptMaintenanceService | null = null;
+let recurringSchedules: RecurringScheduleService | null = null;
 let releaseIdentity: ReturnType<typeof readReleaseIdentity> | undefined;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
@@ -535,6 +542,7 @@ const activeWorkerLifecycleRuntime = requireBootValue(
 const workerPlacement = 'local' as const;
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
+const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
 const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
 reconcileWorkerMcpItems(coreDb.dataRoot, store);
 
@@ -557,6 +565,7 @@ const auth =
     : undefined;
 
 const app = createApp({
+  automationStore,
   ...(auth ? { auth } : {}),
   bootReadiness,
   coreDb,
@@ -681,6 +690,20 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
     );
   },
 });
+recurringSchedules = startRecurringScheduleService({
+  schedules: automationStore,
+  store,
+  prepare: (occurrence) =>
+    prepareRecurringOccurrence({
+      occurrence,
+      snapshot: runtimeConfigManager.current(),
+      store,
+      backendId: turnExecutor.executionBackend?.id ?? null,
+      providerCredentialConfigured,
+      subscriptionAccounts: providerSubscriptionAccountManager,
+    }),
+  onError: () => console.warn('Recurring schedule maintenance requires inspection.'),
+});
 schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
   runRecoveryMaintenance: requireBootValue(
     runRecoveryMaintenance,
@@ -740,10 +763,12 @@ function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcc
 function shutdown(signal: NodeJS.Signals): void {
   console.log(`Received ${signal}; shutting down NanoCore.`);
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
+  recurringSchedules?.stop();
   schedulerDispatchRetry?.stop();
   schedulerAttemptMaintenance?.stop();
   openshellRefreshStatusPolling?.stop();
   const stepsCompleted = [
+    'scheduler.recurring-schedules.stop',
     'scheduler.dispatch-retry.stop',
     'scheduler.attempt-maintenance.stop',
     'openshell.refresh-status-polling.stop',

@@ -83,6 +83,16 @@ describe('schema evolution record envelope', () => {
     ).toEqual([feature]);
   });
 
+  it('registers inert recurring history and requires explicit reader support', () => {
+    const feature = 'workspace.recurring-triggers.v1';
+    expect(() => assertRegisteredRequiredFeatures([feature])).not.toThrow();
+    const envelope = { ...envelopeFixture(), requiredFeatures: [feature] };
+    expect(() => parseRecordEnvelope(envelope)).toThrow(`Unsupported required feature: ${feature}`);
+    expect(
+      parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
+    ).toEqual([feature]);
+  });
+
   it('keeps the required-feature registry aligned with the accepted spec table', () => {
     const spec = readFileSync(
       new URL('../../../docs/specs/20260703-schema_evolution_record_envelope.md', import.meta.url),

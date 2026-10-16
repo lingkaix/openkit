@@ -113,13 +113,31 @@ export async function startIsolatedWebStack(
     delete coreEnv.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
   }
 
-  /** Spawns NanoCore with the immutable port, data-root, and mode owned by this stack. */
-  const spawnCore = (): ChildProcessWithoutNullStreams =>
-    spawn(process.execPath, [nanoCoreEntry], {
+  let coreFailureCode: string | undefined;
+  /** Spawns NanoCore and recognizes safe boot phase names without publishing child output or paths. */
+  const spawnCore = (): ChildProcessWithoutNullStreams => {
+    coreFailureCode = undefined;
+    const child = spawn(process.execPath, [nanoCoreEntry], {
       cwd: nanoCoreRoot,
       env: coreEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const phases = new Set([
+      'config',
+      'data-root-layout',
+      'instance-lock',
+      'migrations',
+      'policy-kernel',
+      'vault',
+      'local-identity',
+      'scheduler-restart-recovery',
+    ]);
+    child.stderr.on('data', (bytes: Buffer) => {
+      const phase = bytes.toString('utf8').match(/critical phase "([a-z-]+)"/)?.[1];
+      if (phase && phases.has(phase)) coreFailureCode = `boot.critical.${phase}`;
+    });
+    return child;
+  };
   let core = spawnCore();
   let web: ChildProcessWithoutNullStreams | null = null;
   const useWebProcessGroup = process.platform !== 'win32';
@@ -128,7 +146,7 @@ export async function startIsolatedWebStack(
   const restartCore = async (): Promise<void> => {
     await stopProcess(core);
     core = spawnCore();
-    await waitForHttp(`${coreUrl}/api/health`, core);
+    await waitForHttp(`${coreUrl}/api/health`, core, () => coreFailureCode);
     if (mode === 'local' && (options.useSimulator ?? true)) {
       await seedSyntheticLocalSchedulerTarget(dataRoot);
     }
@@ -144,7 +162,7 @@ export async function startIsolatedWebStack(
   };
 
   try {
-    await waitForHttp(`${coreUrl}/api/health`, core);
+    await waitForHttp(`${coreUrl}/api/health`, core, () => coreFailureCode);
     if (mode === 'local' && (options.useSimulator ?? true)) {
       await seedSyntheticLocalSchedulerTarget(dataRoot);
     }
@@ -207,13 +225,20 @@ async function assertNanoCoreBuilt(): Promise<void> {
  *
  * @param url URL to poll.
  * @param process Child process to monitor.
+ * @param failureCode Optional recognized safe startup reason; raw child output must stay private.
  */
-async function waitForHttp(url: string, process: ChildProcessWithoutNullStreams): Promise<void> {
+async function waitForHttp(
+  url: string,
+  process: ChildProcessWithoutNullStreams,
+  failureCode?: () => string | undefined
+): Promise<void> {
   const deadline = Date.now() + 30_000;
 
   while (Date.now() < deadline) {
     if (process.exitCode !== null) {
-      throw new Error(`Process exited before ${url} became ready: ${process.exitCode}`);
+      throw new Error(
+        `Process exited before ${url} became ready: ${process.exitCode}; ${failureCode?.() ?? 'boot.reason-unavailable'}`
+      );
     }
 
     try {

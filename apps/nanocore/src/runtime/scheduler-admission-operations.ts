@@ -22,6 +22,8 @@ import {
   SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 /** Joins scheduler views and mutations without changing queue or audit ownership. */
 export function createSchedulerAdmissionOperationImplementations(
@@ -175,27 +177,35 @@ export function createSchedulerAdmissionOperationImplementations(
           administratorEligible(context)
         );
 
+        const source = findAcceptedRecurringOccurrenceForQueue(coreDb, queueEntryId);
+        const publicationIssue = source
+          ? recurringTurnPublicationIssue(
+              store,
+              requireSchedulerAdmissionEntry(coreDb, queueEntryId)
+            )
+          : null;
         const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
           queueEntryId,
           workspaceId,
         });
-        terminalizeGovernedWorkerTurn({
-          store,
-          turnId: cancelled.turnId,
-          agentSessionId: null,
-          requestId: cancelled.requestId,
-          completedAt: new Date().toISOString(),
-          outcome: 'cancelled',
-          errorCode: 'turn_cancelled',
-          message: 'Queued Turn was cancelled before preparation.',
-        });
+        if (!publicationIssue)
+          terminalizeGovernedWorkerTurn({
+            store,
+            turnId: cancelled.turnId,
+            agentSessionId: null,
+            requestId: cancelled.requestId,
+            completedAt: new Date().toISOString(),
+            outcome: 'cancelled',
+            errorCode: 'turn_cancelled',
+            message: 'Queued Turn was cancelled before preparation.',
+          });
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
         try {
           recordWorkspaceAuditEvent({
             workspaceDb,
             workspaceId,
             threadId: cancelled.threadId,
-            turnId: cancelled.turnId,
+            turnId: publicationIssue ? null : cancelled.turnId,
             requestId: cancelled.requestId,
             action: 'scheduler.admission.cancel',
             resource: `scheduler-admission:${cancelled.queueEntryId}`,

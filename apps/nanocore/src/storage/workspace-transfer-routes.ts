@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { createZstdCompress } from 'node:zlib';
@@ -10,7 +17,13 @@ import {
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import { type ActorRef, allocateEntityId, deriveEntityId, isEntityId } from '@openkit/protocol';
+import {
+  type ActorRef,
+  allocateEntityId,
+  deriveEntityId,
+  type Item,
+  isEntityId,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
 import {
@@ -21,7 +34,7 @@ import { asApiError } from '../api-errors.js';
 import { listExportableArtifactReviews } from '../artifact-reviews.js';
 import {
   importWorkspaceAuditEvents,
-  listWorkspaceAuditEvents,
+  listPortableWorkspaceAuditEvents,
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
@@ -68,6 +81,7 @@ import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
 } from '../runtime/mcp-tool-schema-snapshots.js';
+import { recurringCanonicalTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
 import {
   importWorkspaceRuntimeEvidence,
   listWorkspaceRuntimeEvidence,
@@ -96,6 +110,7 @@ import {
   importWorkspaceSyncRecords,
   listExportableWorkspaceSyncRecords,
 } from '../runtime/workspace-sync-records.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   importWorkspaceVaultGrants,
   listExportableWorkspaceVaultGrants,
@@ -135,6 +150,8 @@ import {
 } from './generative-portability.js';
 import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
+import { exportRecurringPortableHistory } from './recurring-portable-history.js';
+import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
 import {
   artifactReviews,
   threadMaterialBindings,
@@ -162,6 +179,8 @@ import {
   type CaptureCoverageBinding,
   readCanonicalFile,
   readCanonicalTextFile,
+  readPublishedTurnFileRecords,
+  readWorkspaceTurnEvents,
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
@@ -570,7 +589,7 @@ function collectWorkspaceExportRows(
       const workspaceMaterialRows = listExportableWorkspaceMaterialRows(workspaceDb);
       return {
         artifactReviews: listExportableArtifactReviews(workspaceDb),
-        auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
+        auditEvents: listPortableWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
         agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
           workspaceId
@@ -1054,9 +1073,44 @@ export function createVerifiedWorkspaceExport({
         workspaceId,
       })
     : false;
-  const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  assertCanonicalDirectory(dataRoot);
+  assertCanonicalDirectory(join(dataRoot, 'workspaces'));
   assertCanonicalDirectory(workspaceRoot);
+  const canonicalItemRevisions: Item[] = [];
+  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
+  const turns = threads.flatMap((thread) => {
+    assertSafeWorkspacePathSegment(thread.id, 'Thread id');
+    const threadsRoot = join(workspaceRoot, 'threads');
+    const threadRoot = join(threadsRoot, thread.id);
+    const turnsRoot = join(threadRoot, 'turns');
+    assertCanonicalDirectory(threadsRoot);
+    assertCanonicalDirectory(threadRoot);
+    if (!lstatSync(turnsRoot, { throwIfNoEntry: false })) return [];
+    assertCanonicalDirectory(turnsRoot);
+    // A failed publication can leave the derivative cache ahead of, or without, a canonical Turn.
+    return readdirSync(turnsRoot, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .flatMap((directory) => {
+        if (directory.isSymbolicLink())
+          throw new Error('Canonical Turn directory must not contain a symbolic link.');
+        if (!directory.isDirectory()) return [];
+        const published = readPublishedTurnFileRecords(
+          dataRoot,
+          workspaceId,
+          thread.id,
+          directory.name
+        );
+        if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
+        canonicalItemRevisions.push(...published.itemRevisions);
+        if (published.captureCoverage)
+          turnCaptureCoverage.set(published.turn.id, published.captureCoverage);
+        return [published.turn];
+      })
+      .sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
+  });
+  const canonicalTurns = new Map(turns.map((turn) => [turn.id, turn]));
   const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
   const dataSourceCatalog = existsSync(dataSourceCatalogPath)
     ? parseWorkspaceDataSourceCatalog(
@@ -1077,7 +1131,6 @@ export function createVerifiedWorkspaceExport({
         workspaceVaultGrants.map((grant) => grant.grantId)
       )
     : [];
-  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   assertSafeWorkspacePathSegment(exportId, 'Export id');
   const exportsRoot = join(dataRoot, 'server', 'exports');
   const workspacesRoot = join(exportsRoot, 'workspaces');
@@ -1091,10 +1144,7 @@ export function createVerifiedWorkspaceExport({
   }
   const exportRoot = join(workspaceExportsRoot, exportId);
   const turnObservations = new Map<string, string>();
-  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   for (const turn of turns) {
-    const coverage = store.getTurnCaptureCoverage(turn.id);
-    if (coverage) turnCaptureCoverage.set(turn.id, coverage);
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
     const rawTurn = JSON.parse(readCanonicalTextFile(join(root, 'turn.json')));
     const declared =
@@ -1162,11 +1212,37 @@ export function createVerifiedWorkspaceExport({
     }
     runtimeProvenanceIndexes.set(bundle.id, text);
   }
-  const portableFileState = readWorkspacePortableFileState(workspaceRoot, {
+  const retainedPortableState = readWorkspacePortableFileState(workspaceRoot, {
     workspaceId,
     threads: threads.map(({ id }) => ({ threadId: id })),
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
+  const portableFileState = retainedPortableState;
+  // A missing current file cannot establish that a reserved Turn was never published.
+  if (coreDb) {
+    const accepted = coreDb.sqlite
+      .prepare(
+        "SELECT queue_entry_id FROM recurring_occurrences WHERE workspace_id = ? AND state = 'admission-accepted'"
+      )
+      .all(workspaceId) as { queue_entry_id: string | null }[];
+    for (const row of accepted) {
+      const entry = row.queue_entry_id
+        ? requireSchedulerAdmissionEntry(coreDb, row.queue_entry_id)
+        : null;
+      if (
+        !entry ||
+        !findAcceptedRecurringOccurrenceForQueue(coreDb, entry.queueEntryId) ||
+        recurringCanonicalTurnPublicationIssue(entry, canonicalTurns.get(entry.turnId) ?? null)
+      )
+        throw new Error('Recurring publication requires inspection before portable export.');
+    }
+  }
+  const recurringHistory = exportRecurringPortableHistory(
+    coreDb,
+    workspaceId,
+    retainedPortableState.recurringHistory ?? null,
+    turns
+  );
   if (
     portableFileState.retrievalTraceFiles.size > 0 &&
     !deletionRecoveryAuthorized &&
@@ -1233,7 +1309,20 @@ export function createVerifiedWorkspaceExport({
       });
       for (const [, trace] of workerContextTraces) {
         verifyPortableWorkerContextPackageTrace({
-          authorities,
+          authorities: {
+            ...authorities,
+            // Historical validation must consume the same canonical records that export serializes.
+            readTurn: (requestedWorkspaceId, threadId, turnId) => {
+              const turn = canonicalTurns.get(turnId);
+              return requestedWorkspaceId === workspaceId && turn?.threadId === threadId
+                ? { ...turn, agentSessionId: turn.agentSessionId ?? null }
+                : null;
+            },
+            readThreadItems: (requestedWorkspaceId, threadId) =>
+              requestedWorkspaceId === workspaceId
+                ? turns.filter((turn) => turn.threadId === threadId).flatMap((turn) => turn.items)
+                : [],
+          },
           trace,
           workspaceRoot,
         });
@@ -1255,15 +1344,16 @@ export function createVerifiedWorkspaceExport({
     knowledge: store.listKnowledge(workspaceId),
     knowledgeSources: store.listKnowledgeSources(workspaceId),
     knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
-    itemRevisions: store.listWorkspaceItemRevisions(workspaceId),
+    itemRevisions: canonicalItemRevisions,
     artifacts: store.listArtifacts(workspaceId),
     artifactReviews: workspaceRowFamilies.artifactReviews,
     threadMaterialBindings: workspaceRowFamilies.workspaceMaterialRows.bindings,
     workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
     workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
     agentSessions: store.listWorkspaceAgentSessions(workspaceId),
-    turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
+    turnEvents: turns.map((turn) => [turn.id, readWorkspaceTurnEvents(workspaceRoot, turn)]),
     portableFileState,
+    recurringHistory,
     ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
     agentResourceCatalog: projectWorkspaceCatalogExport(dataRoot, workspaceId),
     auditEvents: [...workspaceRowFamilies.auditEvents, ...lightApps.auditEvents],

@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: 2026-09-02
 updated: "2026-10-15"
@@ -207,6 +207,8 @@ If ordinary inference returns a confirmed context-overflow error before any outp
 
 This specification authors the context-management failure conditions and stable codes under the Gateway's existing public error envelope and transport owner. Invalid, mismatched, malformed, or forbidden context-management control or input uses HTTP `400`, type `invalid_request_error`, code `invalid_context_management`, and fixed message `Invalid context management request.` A required compaction that cannot complete before ordinary output uses HTTP `503`, type `provider_error`, code `context_compaction_unavailable`, and fixed message `Context compaction is unavailable.` Caller cancellation and a failure after streaming begins retain the Gateway's existing cancellation and terminal-SSE transport rules; raw Provider or summary content never enters the public error.
 
+The trusted Codex adapter carries its already validated native request kind as optional ephemeral `requestKind` (`turn`, `prewarm`, or `compaction`) in the existing inference hint. The Gateway consumes it before Provider dispatch. Only a confirmed `compaction` request that fails before output receives the required-compaction envelope above. Absence of this phase evidence, an ordinary request, cancellation, and failure after output retain their existing categories. A subagent label or prompt content alone does not prove the compaction phase. This [approved phase seam](../decisions/20261016-native_compaction_phase_hint.md) adds neither durable state nor a compactor.
+
 If the compaction Provider outcome is unknown after output may have begun, the Gateway admits no item and performs no automatic repeat. The owning internal execution fails and a later request reconstructs from Core-owned source history; a Worker follows its AgentSession and adapter interruption contract. An uncertain compaction never authorizes replay of an earlier Tool call or external effect.
 
 ### Missing, Invalid, Stale, And Restarted State
@@ -303,7 +305,7 @@ The OpenKit prompt, tail policy, or implementation may be optimized behind the s
 
 The pending implementation requires `packages/config-schema/src/gateway.ts` to admit one authored logical-model `contextManagement` entry and `apps/nanocore/src/llm/logical-models.ts` to validate its threshold against each route's effective context limit and known output reserve, and project the resolved policy without changing model identity. Missing policy must reject the configuration snapshot; shipped configuration must supply the required field. Existing deployments must update their configuration before that snapshot becomes eligible, under the existing last-known-good configuration owner.
 
-The Gateway exposes `POST /v1/responses`, but the pinned pi-ai Responses abstraction does not admit `context_management` or parse a compaction output item. The current Codex worker hint recognizes `request_kind: "compaction"` and a `compact` subagent classification only as ephemeral native provenance; those hints do not implement this contract.
+The Gateway exposes `POST /v1/responses`, but the pinned pi-ai Responses abstraction does not admit `context_management` or parse a compaction output item. The Codex worker hint carries the validated native request kind for the pre-output failure mapping above; a `compact` subagent classification alone is not phase evidence. This classification does not implement central compaction policy.
 
 Internal-role rolling context and migration to the shared loop remain implementation work under the accepted internal-role contract above. Existing direct Quick Chat calls and transient administration transcripts are implementation facts, not accepted substitutes. The unimplemented Gateway compactor is no longer a dependency for those migrations.
 

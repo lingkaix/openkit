@@ -328,7 +328,7 @@ export function denySchedulerAdmissionEntry(
  * @param coreDb Open Core database handle.
  * @param input Retry input.
  * @returns Requeued admission entry.
- * @throws Error when the entry does not exist or is not denied.
+ * @throws Error when the entry is not denied or its global or recurring waiting slot is full.
  */
 export function retryDeniedSchedulerAdmissionEntry(
   coreDb: CoreDb,
@@ -343,6 +343,23 @@ export function retryDeniedSchedulerAdmissionEntry(
           `Scheduler admission entry ${input.queueEntryId} is not denied.`
         );
       }
+
+      // Explicit requeue competes for the same existing per-series waiting slot as source admission.
+      const seriesWaiting = coreDb.sqlite
+        .prepare(`SELECT 1 FROM recurring_occurrences source
+          JOIN recurring_occurrences waiting ON waiting.schedule_id = source.schedule_id
+            AND waiting.workspace_id = source.workspace_id AND waiting.id <> source.id
+          JOIN scheduler_admission_entries queued ON queued.queue_entry_id = waiting.queue_entry_id
+            AND queued.workspace_id = source.workspace_id
+          WHERE source.queue_entry_id = ? AND source.workspace_id = ?
+            AND source.state = 'admission-accepted' AND waiting.state = 'admission-accepted'
+            AND queued.status = 'queued' LIMIT 1`)
+        .get(entry.queueEntryId, entry.workspaceId);
+      if (seriesWaiting)
+        throw new SchedulerAdmissionTransitionError(
+          'The recurring schedule already has a queued occurrence.',
+          'queue-full'
+        );
 
       const queued = coreDb.sqlite
         .prepare(
