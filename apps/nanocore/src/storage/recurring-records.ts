@@ -1,19 +1,22 @@
 import {
   AutomationAttemptCodeSchema,
   AutomationDefinitionSnapshotSchema,
-  AutomationOccurrenceSchema,
   AutomationExpiredRangeSchema,
+  AutomationOccurrenceSchema,
   MaterializedWorkspaceRootSchema,
 } from '@openkit/app-api-schemas';
 import { ReasoningEffortSchema } from '@openkit/protocol';
+import { z } from 'zod';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
+  type CreateSchedulerAdmissionEntryInput,
   requireSchedulerAdmissionEntry,
   schedulerAdmissionInputHash,
-  type CreateSchedulerAdmissionEntryInput,
 } from '../scheduler-records.js';
 import type { CoreDb } from './db.js';
-import { z } from 'zod';
+
+/** Fixed admission deadline measured from the original nominal instant. */
+export const RECURRING_DEADLINE_MS = 600_000;
 
 /** Exact complete scheduler payload frozen by the first successful selection resolution. */
 export const RecurringAdmissionPayloadSchema = z.object({
@@ -72,7 +75,7 @@ export function readRecurringOccurrence(json: string): RecurringOccurrence {
     record.id !== `occ_${recurringRequestId(record.scheduleId, record.scheduledAt)}` ||
     record.requestId !== recurringRequestId(record.scheduleId, record.scheduledAt) ||
     record.snapshot.actor.id !== record.scheduleId ||
-    Date.parse(record.deadline) !== Date.parse(record.scheduledAt) + 600_000 ||
+    Date.parse(record.deadline) !== Date.parse(record.scheduledAt) + RECURRING_DEADLINE_MS ||
     record.attempts.some((attempt, index) => attempt.number !== index + 1)
   )
     throw new Error('RecurringOccurrence violates its durable identity or attempt contract.');
@@ -85,8 +88,10 @@ export function recurringSchedulerAdmissionInput(
   payload: RecurringAdmissionPayload,
   timestamp: string
 ): CreateSchedulerAdmissionEntryInput {
+  const { reasoningEffort, requiredFeatures: _requiredFeatures, ...resolved } = payload;
   return {
-    ...payload,
+    ...resolved,
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     queueEntryId: `queue_recurring_${occurrence.requestId}`,
     requestId: occurrence.requestId,
     workspaceId: occurrence.workspaceId,

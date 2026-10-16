@@ -5,15 +5,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
-import { openCoreDb, type CoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { RecurringPreparation } from '../storage/recurring-records.js';
 import { initializeRecurringScheduleStorage } from '../storage/recurring-schema.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
-  startRecurringScheduleService,
   type RecurringScheduleService,
+  startRecurringScheduleService,
 } from './recurring-schedule-service.js';
 
 const owned: { root: string; db: CoreDb; services: RecurringScheduleService[] }[] = [];

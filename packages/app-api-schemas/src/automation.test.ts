@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
 import { CreateAutomationRequestSchema, UpdateAutomationRequestSchema } from './automation.js';
+import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
 
 const definition = {
   workspaceId: 'ws_test',

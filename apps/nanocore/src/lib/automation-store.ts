@@ -8,27 +8,26 @@ import {
   UpdateAutomationRequestSchema,
 } from '@openkit/app-api-schemas';
 import { recordServerAuditEvent } from '../audit-events.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
-  schedulerAdmissionInputHash,
   SchedulerAdmissionTransitionError,
+  schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
-  recurringRequestId,
-  readRecurringOccurrence,
-  recurringSchedulerAdmissionInput,
+  RECURRING_DEADLINE_MS as DEADLINE_MS,
   type ExpiredOccurrenceRange,
   ExpiredOccurrenceRangeSchema,
   RecurringAdmissionPayloadSchema,
   type RecurringOccurrence,
-  RecurringOccurrenceSchema,
   type RecurringPreparation,
+  readRecurringOccurrence,
+  recurringRequestId,
+  recurringSchedulerAdmissionInput,
 } from '../storage/recurring-records.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
-const DEADLINE_MS = 600_000;
 const SCAN_LIMIT = 128;
 
 /** Native record absence, distinguished from unexpected storage failures. */
