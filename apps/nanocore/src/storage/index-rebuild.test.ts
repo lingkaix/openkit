@@ -587,7 +587,7 @@ describe('workspace derived index rebuild', () => {
         retrievalTraceRef: retrieval.retrievalTraceRef!,
         workspaceId: 'ws_demo',
       })
-    ).toThrow('Knowledge retrieval trace no longer matches authoritative pages.');
+    ).toThrow('Knowledge page is unavailable.');
   });
 
   it('does not expose unpublished physical page identity from accepted metadata', async () => {
