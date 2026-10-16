@@ -1,5 +1,6 @@
 import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -114,6 +115,9 @@ describe('workspace materializer records', () => {
       workspaceCwd: null,
       workspaceRoots: [],
     });
+    const contextRoot = workerSessionInputPaths(
+      environmentPackage.scope.agentSessionId
+    ).contextRoot;
     const contextInput: AgentEnvironmentPackage['workspace']['inputs'][number] = {
       access: 'read-only',
       id: `context_${turn.id}`,
@@ -127,7 +131,7 @@ describe('workspace materializer records', () => {
         kind: 'generated',
         pathRef: `threads/${turn.threadId}/turns/${turn.id}/context-package`,
       },
-      target: '/openkit/sessions/session_context_1/context',
+      target: contextRoot,
     };
     const nearMissInput: AgentEnvironmentPackage['workspace']['inputs'][number] = {
       ...contextInput,
@@ -209,7 +213,7 @@ describe('workspace materializer records', () => {
       createdAt: '2026-07-18T01:01:00.000Z',
       id: `wmr_${environmentPackage.snapshotId}_context_${turn.id}`,
       inputSnapshotId: `wis_${environmentPackage.snapshotId}_context_${turn.id}`,
-      materializedRootRef: '/openkit/sessions/session_context_1/context',
+      materializedRootRef: contextRoot,
       packageSnapshotId: environmentPackage.snapshotId,
       strategy: 'filesystem',
       workerSessionId: 'backend_session_context_1',

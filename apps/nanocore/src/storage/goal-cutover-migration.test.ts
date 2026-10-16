@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb } from './db.js';
@@ -70,8 +71,12 @@ describe('Goal one-way cutover', () => {
         )
         .run(
           'ws_00000000-0000-7509-8702-098e8909b075',
-          `arev_${'a'.repeat(24)}`,
-          'artifact_kept',
+          deriveEntityId('arev', [
+            'ws_00000000-0000-7509-8702-098e8909b075',
+            'ar_0190f4c8-0000-7000-8000-000000000001',
+            1,
+          ]),
+          'ar_0190f4c8-0000-7000-8000-000000000001',
           1,
           `sha256:${'b'.repeat(64)}`,
           '2026-10-03T00:00:00.000Z'

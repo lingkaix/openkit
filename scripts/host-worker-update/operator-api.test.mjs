@@ -143,7 +143,7 @@ test('cold preparation outlives reads but remains bounded without replay', async
     },
   });
   const pending = io.call('worker-environment.prepare', {
-    administrationThreadId: 'synthetic-administration-thread',
+    administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
     requestId: '11111111-1111-4111-8111-111111111111',
     configuration: {
       expectedRevision: 'sha256:' + 'a'.repeat(64),
