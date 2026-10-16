@@ -419,7 +419,6 @@ export function useCurrentWorkspaceId(preferredWorkspaceId?: string | null): str
   // restored after identity cleanup. Do not re-run when `selected` changes, or
   // a switcher change from a Thread page would snap back to the old route
   // before navigation unmounts that Thread.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: identity change must re-sync the unchanged route after selection cleanup
   useEffect(() => {
     if (preferred && useWorkspaceStore.getState().currentWorkspaceId !== preferred) {
       setSelected(preferred);

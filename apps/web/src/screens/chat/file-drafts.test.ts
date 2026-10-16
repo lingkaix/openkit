@@ -1,5 +1,5 @@
-import { allocateEntityId } from '@openkit/protocol';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { sha256ArtifactFile } from '../artifacts/file-digest';
 import type { ConversationDraft } from './data';

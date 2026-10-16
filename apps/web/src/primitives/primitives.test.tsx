@@ -734,7 +734,9 @@ describe('primitive tier — behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        artifactRefs: [{ artifactId: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', artifactVersion: 2 }],
+        artifactRefs: [
+          { artifactId: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', artifactVersion: 2 },
+        ],
         files: [file],
       })
     );

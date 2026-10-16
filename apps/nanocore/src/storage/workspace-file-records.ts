@@ -77,11 +77,7 @@ import type {
 } from '../lib/store.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
-import {
-  coreDbPath,
-  ensureLayoutDirectories,
-  ensureWorkspaceLayoutRoot,
-} from './fs-layout.js';
+import { coreDbPath, ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;

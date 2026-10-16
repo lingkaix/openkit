@@ -264,7 +264,6 @@ export function Composer({
     setLogicalModelId(initial.defaultLogicalModelId ?? '');
   }, [targetCatalog, targetRef]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: textarea scroll height changes after value renders.
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
