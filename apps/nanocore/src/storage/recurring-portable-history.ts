@@ -1,78 +1,243 @@
+import {
+  AutomationDefinitionSnapshotSchema,
+  AutomationExpiredRangeSchema,
+  AutomationOccurrenceSchema,
+  AutomationRecordSchema,
+} from '@openkit/app-api-schemas';
 import { z } from 'zod';
 import type { CoreDb } from './db.js';
 import {
   ExpiredOccurrenceRangeSchema,
+  RECURRING_DEADLINE_MS,
   readRecurringOccurrence,
   readRecurringSchedule,
+  recurringRequestId,
 } from './recurring-records.js';
 
-const HistoricalSourceSchema = z
-  .object({
-    workspaceId: z.string().min(1),
-    schedules: z.array(z.record(z.string(), z.unknown())),
-    occurrences: z.array(z.record(z.string(), z.unknown())),
-    expiredRanges: z.array(z.record(z.string(), z.unknown())),
-    requiredFeatures: z.array(z.never()).optional(),
-  })
-  .passthrough();
-const HistoricalBundleSchema = z
-  .object({
-    historyVersion: z.literal(1),
-    sources: z.array(HistoricalSourceSchema),
-    requiredFeatures: z.array(z.never()).optional(),
-  })
-  .passthrough();
-
-/** Validates descriptive source bytes; these identities never enter live schedule or queue tables. */
-export function validateRecurringPortableHistory(text: string): void {
-  const bundle = HistoricalBundleSchema.parse(JSON.parse(text));
-  for (const source of bundle.sources) {
-    const schedules = new Map(
-      source.schedules.map((raw) => {
-        const schedule = readRecurringSchedule(JSON.stringify(raw));
-        if (
-          schedule.workspaceId !== source.workspaceId ||
-          schedule.actor.id !== schedule.id ||
-          schedule.actor.responsibleUserId !== schedule.responsibleUserId
-        )
-          throw new Error('Recurring history has contradictory source ownership.');
-        return [schedule.id, schedule] as const;
-      })
-    );
-    if (schedules.size !== source.schedules.length)
-      throw new Error('Recurring history repeats a definition identity.');
-    for (const raw of source.occurrences) {
-      const occurrence = readRecurringOccurrence(JSON.stringify(raw));
-      const schedule = schedules.get(occurrence.scheduleId);
-      if (
-        !schedule ||
-        occurrence.workspaceId !== source.workspaceId ||
-        occurrence.snapshot.actor.responsibleUserId !== schedule.responsibleUserId
-      )
-        throw new Error('Recurring history has contradictory occurrence ownership.');
-    }
-    for (const raw of source.expiredRanges) {
-      const range = ExpiredOccurrenceRangeSchema.parse(raw);
-      const schedule = schedules.get(range.scheduleId);
-      if (
-        !schedule ||
-        range.workspaceId !== source.workspaceId ||
-        range.snapshot.actor.id !== schedule.id ||
-        range.snapshot.actor.responsibleUserId !== schedule.responsibleUserId
-      )
-        throw new Error('Recurring history has contradictory expired-range ownership.');
-    }
-  }
+/** Required marker for the three inert recurring portable record families. */
+export const RECURRING_PORTABLE_FEATURE = 'workspace.recurring-triggers.v1';
+/** Core history tables that must not be lost to generic Server-state exclusions. */
+export const RECURRING_PORTABLE_CORE_TABLES = [
+  'recurring_schedules',
+  'recurring_occurrences',
+  'recurring_expired_ranges',
+] as const;
+/** Exact paths for Core history; scheduler authority is never included. */
+export const RECURRING_PORTABLE_PATHS = {
+  schedules: 'records/recurring-schedules.jsonl',
+  occurrences: 'records/recurring-occurrences.jsonl',
+  expiredRanges: 'records/recurring-expired-ranges.jsonl',
+} as const;
+const requiredFeatures = z.array(z.never()).optional();
+const originActor = AutomationRecordSchema.shape.actor;
+const portableSnapshot = AutomationDefinitionSnapshotSchema.omit({ actor: true }).extend({
+  originActor,
+  requiredFeatures,
+});
+const portableSchedule = AutomationRecordSchema.omit({ actor: true }).extend({
+  originScheduleId: z.string().min(1),
+  originActor,
+  requiredFeatures,
+});
+const portableOccurrence = AutomationOccurrenceSchema.omit({
+  requestId: true,
+  queueEntryId: true,
+  snapshot: true,
+  schedulerStatus: true,
+  publicationIssue: true,
+}).extend({
+  snapshot: portableSnapshot,
+  originRequestId: z.string().uuid(),
+  originQueueEntryId: z.string().min(1).nullable(),
+  originTurnId: z.string().min(1).nullable(),
+  turnExists: z.boolean(),
+  requiredFeatures,
+});
+const portableRange = AutomationExpiredRangeSchema.extend({
+  snapshot: portableSnapshot,
+  requiredFeatures,
+});
+const historySchema = z.object({
+  schedules: z.array(portableSchedule),
+  occurrences: z.array(portableOccurrence),
+  expiredRanges: z.array(portableRange),
+  requiredFeatures,
+});
+/** Inert history only; no value of this type is a live Core automation or scheduler input. */
+export type RecurringPortableHistory = z.infer<typeof historySchema>;
+/** Exact exported canonical graph used to verify Thread and retained Turn references. */
+export interface RecurringPortableReferences {
+  workspaceId: string;
+  threadIds: ReadonlySet<string>;
+  turns: ReadonlyMap<string, string>;
 }
 
-/** Captures all current Workspace recurrence history beside unchanged prior imported source bytes. */
+/** Reads the whitelist projection and rejects contradictory identities, coverage, attempts and references. */
+export function readRecurringPortableHistory(
+  value: unknown,
+  references?: RecurringPortableReferences
+): RecurringPortableHistory {
+  const graph = historySchema.parse(value);
+  const schedules = new Map<string, RecurringPortableHistory['schedules'][number]>();
+  const ids = new Set<string>();
+  const tuples = new Set<string>();
+  const coverage = new Map<string, { first: number; last: number; step: number }[]>();
+  const claimId = (id: string) => {
+    if (ids.has(id)) throw new Error('Recurring portable history repeats an identity.');
+    ids.add(id);
+  };
+  const requireThread = (workspaceId: string, threadId: string) => {
+    if (
+      references &&
+      (workspaceId !== references.workspaceId || !references.threadIds.has(threadId))
+    )
+      throw new Error(
+        'Recurring portable history has an unresolved Workspace or Thread reference.'
+      );
+  };
+  for (const schedule of graph.schedules) {
+    claimId(schedule.id);
+    if (
+      schedule.originActor.id !== schedule.originScheduleId ||
+      schedule.originActor.responsibleUserId !== schedule.responsibleUserId ||
+      (schedule.status === 'deleted') !== (schedule.deletedAt !== null) ||
+      (schedule.status === 'active') !== (schedule.nextScheduledAt !== null) ||
+      (schedule.nextScheduledAt !== null &&
+        schedule.greatestAccountedScheduledAt !== null &&
+        Date.parse(schedule.nextScheduledAt) <= Date.parse(schedule.greatestAccountedScheduledAt))
+    )
+      throw new Error('Recurring portable definition contradicts its retained lifecycle.');
+    requireThread(schedule.workspaceId, schedule.threadId);
+    schedules.set(schedule.id, schedule);
+  }
+  const requireSchedule = (
+    row: {
+      scheduleId: string;
+      workspaceId: string;
+      definitionRevision: number;
+      snapshot: z.infer<typeof portableSnapshot>;
+    },
+    last: number
+  ) => {
+    const schedule = schedules.get(row.scheduleId);
+    if (
+      !schedule ||
+      row.workspaceId !== schedule.workspaceId ||
+      row.definitionRevision > schedule.revision ||
+      row.snapshot.originActor.id !== schedule.originScheduleId ||
+      row.snapshot.originActor.responsibleUserId !== schedule.responsibleUserId ||
+      schedule.greatestAccountedScheduledAt === null ||
+      last > Date.parse(schedule.greatestAccountedScheduledAt)
+    )
+      throw new Error(
+        'Recurring portable history has contradictory definition ownership or cursor.'
+      );
+    requireThread(row.workspaceId, row.snapshot.threadId);
+    return schedule;
+  };
+  for (const occurrence of graph.occurrences) {
+    claimId(occurrence.id);
+    const at = Date.parse(occurrence.scheduledAt);
+    const schedule = requireSchedule(occurrence, at);
+    const tuple = JSON.stringify([occurrence.scheduleId, at]);
+    if (tuples.has(tuple)) throw new Error('Recurring portable history repeats a nominal instant.');
+    tuples.add(tuple);
+    const accepted = occurrence.state === 'admission-accepted';
+    const acceptedAttempts = occurrence.attempts.filter((attempt) => attempt.code === 'accepted');
+    if (
+      occurrence.originRequestId !==
+        recurringRequestId(schedule.originScheduleId, occurrence.scheduledAt) ||
+      Date.parse(occurrence.deadline) !== at + RECURRING_DEADLINE_MS ||
+      occurrence.attempts.some(
+        (attempt, index) =>
+          attempt.number !== index + 1 ||
+          Date.parse(attempt.at) < at ||
+          Date.parse(attempt.at) >= Date.parse(occurrence.deadline) ||
+          (index > 0 && Date.parse(attempt.at) < Date.parse(occurrence.attempts[index - 1]!.at))
+      ) ||
+      (occurrence.state === 'pending') !== (occurrence.terminalAt === null) ||
+      (accepted
+        ? acceptedAttempts.length !== 1 ||
+          occurrence.attempts.at(-1)?.code !== 'accepted' ||
+          !occurrence.originQueueEntryId ||
+          !occurrence.originTurnId ||
+          !occurrence.resolvedSelection
+        : acceptedAttempts.length !== 0 ||
+          occurrence.originQueueEntryId !== null ||
+          occurrence.originTurnId !== null) ||
+      (occurrence.state === 'admission-failed' && occurrence.attempts.length !== 3) ||
+      (occurrence.state === 'pending' && occurrence.attempts.length === 3) ||
+      (occurrence.terminalAt !== null &&
+        Date.parse(occurrence.terminalAt) <
+          Math.max(
+            Date.parse(occurrence.createdAt),
+            ...occurrence.attempts.map((attempt) => Date.parse(attempt.at))
+          )) ||
+      occurrence.turnExists !== (occurrence.turnId !== null) ||
+      (occurrence.turnExists && (!accepted || !occurrence.originTurnId))
+    )
+      throw new Error('Recurring portable occurrence contradicts its bounded admission history.');
+    if (
+      references &&
+      occurrence.turnId !== null &&
+      references.turns.get(occurrence.turnId) !== occurrence.snapshot.threadId
+    )
+      throw new Error('Recurring portable history has an unresolved retained Turn reference.');
+  }
+  for (const range of graph.expiredRanges) {
+    claimId(range.id);
+    const first = Date.parse(range.firstScheduledAt);
+    const last = Date.parse(range.lastScheduledAt);
+    requireSchedule(range, last);
+    const step = range.intervalSeconds * 1000;
+    if (
+      last < first ||
+      !Number.isSafeInteger(step) ||
+      !Number.isSafeInteger(range.count) ||
+      last - first !== (range.count - 1) * step ||
+      Date.parse(range.terminalAt) < last + RECURRING_DEADLINE_MS
+    )
+      throw new Error('Recurring portable range has contradictory exact coverage.');
+    const ranges = coverage.get(range.scheduleId) ?? [];
+    // A schedule accounts time in ascending order, including across paused definition edits.
+    if (ranges.some((prior) => first <= prior.last && last >= prior.first))
+      throw new Error('Recurring portable ranges overlap.');
+    ranges.push({ first, last, step });
+    coverage.set(range.scheduleId, ranges);
+  }
+  for (const occurrence of graph.occurrences) {
+    const at = Date.parse(occurrence.scheduledAt);
+    if (
+      coverage
+        .get(occurrence.scheduleId)
+        ?.some(
+          (range) => at >= range.first && at <= range.last && (at - range.first) % range.step === 0
+        )
+    )
+      throw new Error('Recurring portable range overlaps an individual nominal instant.');
+  }
+  return graph;
+}
+
+/** Validates the existing inert import file without granting any target execution authority. */
+export function validateRecurringPortableHistory(text: string): void {
+  readRecurringPortableHistory(JSON.parse(text));
+}
+
+/** Captures Core history and prior inert imports through the same deployment-safe whitelist. */
 export function exportRecurringPortableHistory(
   coreDb: CoreDb | undefined,
   workspaceId: string,
-  inherited: string | null
-): string | null {
-  if (inherited !== null) validateRecurringPortableHistory(inherited);
-  if (!coreDb) return inherited;
+  inherited: string | null,
+  retainedTurns: readonly { id: string; threadId: string }[]
+): RecurringPortableHistory {
+  const graph =
+    inherited === null
+      ? ({ schedules: [], occurrences: [], expiredRanges: [] } as RecurringPortableHistory)
+      : readRecurringPortableHistory(JSON.parse(inherited));
+  if (graph.schedules.some((schedule) => schedule.workspaceId !== workspaceId))
+    throw new Error('Imported recurring history contradicts its owning Workspace.');
+  if (!coreDb) return graph;
   const readRows = (
     table: 'recurring_schedules' | 'recurring_occurrences' | 'recurring_expired_ranges'
   ) =>
@@ -80,27 +245,135 @@ export function exportRecurringPortableHistory(
       coreDb.sqlite
         .prepare(`SELECT record_json FROM ${table} WHERE workspace_id = ? ORDER BY id`)
         .all(workspaceId) as { record_json: string }[]
-    ).map((row) => JSON.parse(row.record_json));
-  const schedules = readRows('recurring_schedules');
-  const occurrences = readRows('recurring_occurrences');
-  const expiredRanges = readRows('recurring_expired_ranges');
-  if (!schedules.length && !occurrences.length && !expiredRanges.length) return inherited;
-  const existing =
-    inherited === null
-      ? { historyVersion: 1, sources: [] }
-      : HistoricalBundleSchema.parse(JSON.parse(inherited));
-  const text = `${JSON.stringify({
-    ...existing,
-    sources: [
-      ...existing.sources,
-      {
-        workspaceId,
-        schedules,
-        occurrences,
-        expiredRanges,
-      },
-    ],
-  })}\n`;
-  validateRecurringPortableHistory(text);
-  return text;
+    ).map((row) => row.record_json);
+  const turns = new Map(retainedTurns.map((turn) => [turn.id, turn.threadId]));
+  const sourceSchedules = readRows('recurring_schedules').map(readRecurringSchedule);
+  const schedules = sourceSchedules.map(({ actor, ...schedule }) => ({
+    ...schedule,
+    originScheduleId: schedule.id,
+    originActor: actor,
+  }));
+  const occurrences = readRows('recurring_occurrences')
+    .map(readRecurringOccurrence)
+    .map((row) => {
+      const { actor, ...snapshot } = row.snapshot;
+      if (row.turnId && turns.has(row.turnId) && turns.get(row.turnId) !== row.snapshot.threadId)
+        throw new Error('Recurring source Turn contradicts its exported Thread.');
+      return portableOccurrence.parse({
+        ...row,
+        snapshot: { ...snapshot, originActor: actor },
+        originRequestId: row.requestId,
+        originQueueEntryId: row.queueEntryId,
+        originTurnId: row.turnId,
+        turnExists: row.turnId !== null && turns.has(row.turnId),
+        turnId: row.turnId && turns.has(row.turnId) ? row.turnId : null,
+        resolvedSelection: row.resolvedPayload
+          ? {
+              agentId: row.resolvedPayload.requestedAgentId,
+              profileId: row.resolvedPayload.profileRef,
+              modelId: row.resolvedPayload.modelId,
+            }
+          : null,
+      });
+    });
+  const expiredRanges = readRows('recurring_expired_ranges').map((text) => {
+    const {
+      snapshot: { actor, ...snapshot },
+      ...range
+    } = ExpiredOccurrenceRangeSchema.parse(JSON.parse(text));
+    return { ...range, snapshot: { ...snapshot, originActor: actor } };
+  });
+  if (schedules.some((schedule) => schedule.workspaceId !== workspaceId))
+    throw new Error('Core recurring history contradicts its selected Workspace.');
+  return readRecurringPortableHistory({
+    schedules: [...graph.schedules, ...schedules],
+    occurrences: [...graph.occurrences, ...occurrences],
+    expiredRanges: [...graph.expiredRanges, ...expiredRanges],
+  });
+}
+
+/** Reads all three verified JSONL families; partial families and torn lines fail closed. */
+export function readRecurringPortableFiles(
+  files: ReadonlyMap<string, string>,
+  references: RecurringPortableReferences
+): RecurringPortableHistory {
+  const values = Object.entries(RECURRING_PORTABLE_PATHS).map(([family, path]) => {
+    const text = files.get(path);
+    if (text === undefined) throw new Error(`Missing recurring portable file: ${path}`);
+    if (text !== '' && !text.endsWith('\n'))
+      throw new Error(`Uncommitted recurring portable file: ${path}`);
+    return [
+      family,
+      text === ''
+        ? []
+        : text
+            .slice(0, -1)
+            .split('\n')
+            .map((line) => JSON.parse(line)),
+    ];
+  });
+  return readRecurringPortableHistory(Object.fromEntries(values), references);
+}
+
+/** Approved import allocations and existing canonical import maps, never source-selected authority. */
+export interface RecurringPortableImportMaps {
+  workspaceId: string;
+  scheduleIds: ReadonlyMap<string, string>;
+  occurrenceIds: ReadonlyMap<string, string>;
+  rangeIds: ReadonlyMap<string, string>;
+  threadIds: ReadonlyMap<string, string>;
+  turnIds: ReadonlyMap<string, string>;
+}
+
+/** Rewrites an already validated history graph; this function allocates no identity or live Core row. */
+export function remapRecurringPortableHistory(
+  source: RecurringPortableHistory,
+  maps: RecurringPortableImportMaps
+): RecurringPortableHistory {
+  const graph = readRecurringPortableHistory(source);
+  const requireId = (ids: ReadonlyMap<string, string>, id: string, kind: string) => {
+    const target = ids.get(id);
+    if (!target) throw new Error(`Recurring import has no ${kind} import mapping.`);
+    return target;
+  };
+  const rewriteSnapshot = (snapshot: z.infer<typeof portableSnapshot>) => ({
+    ...snapshot,
+    threadId: requireId(maps.threadIds, snapshot.threadId, 'Thread'),
+  });
+  const schedules = graph.schedules.map((schedule) => ({
+    ...schedule,
+    id: requireId(maps.scheduleIds, schedule.id, 'schedule'),
+    workspaceId: maps.workspaceId,
+    threadId: requireId(maps.threadIds, schedule.threadId, 'Thread'),
+  }));
+  const occurrences = graph.occurrences.map((occurrence) => ({
+    ...occurrence,
+    id: requireId(maps.occurrenceIds, occurrence.id, 'occurrence'),
+    scheduleId: requireId(maps.scheduleIds, occurrence.scheduleId, 'schedule'),
+    workspaceId: maps.workspaceId,
+    snapshot: rewriteSnapshot(occurrence.snapshot),
+    turnId: occurrence.turnId === null ? null : requireId(maps.turnIds, occurrence.turnId, 'Turn'),
+  }));
+  const expiredRanges = graph.expiredRanges.map((range) => ({
+    ...range,
+    id: requireId(maps.rangeIds, range.id, 'expired range'),
+    scheduleId: requireId(maps.scheduleIds, range.scheduleId, 'schedule'),
+    workspaceId: maps.workspaceId,
+    snapshot: rewriteSnapshot(range.snapshot),
+  }));
+  return readRecurringPortableHistory(
+    { schedules, occurrences, expiredRanges },
+    {
+      workspaceId: maps.workspaceId,
+      threadIds: new Set(maps.threadIds.values()),
+      turns: new Map(
+        graph.occurrences
+          .filter((row) => row.turnId !== null)
+          .map((row) => [
+            requireId(maps.turnIds, row.turnId!, 'Turn'),
+            requireId(maps.threadIds, row.snapshot.threadId, 'Thread'),
+          ])
+      ),
+    }
+  );
 }

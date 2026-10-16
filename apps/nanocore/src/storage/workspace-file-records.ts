@@ -1301,7 +1301,7 @@ function loadWorkspace(
       const turnPath = join(turnsRoot, turnId, 'turn.json');
 
       if (!existsSync(turnPath)) {
-        return null;
+        throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
       }
 
       const rawTurn = readJson(turnPath) as Record<string, unknown>;
@@ -1332,7 +1332,7 @@ function loadWorkspace(
 
       const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
       if (!existsSync(itemsPath)) {
-        return null;
+        throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
       }
 
       const loadedItems = loadItemRevisions(itemsPath, workspaceId, threadId, turnId);

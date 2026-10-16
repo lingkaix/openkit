@@ -558,7 +558,9 @@ describe('scheduler dispatch loop', () => {
       expect(initialCreate).toHaveBeenCalledTimes(1);
       await service.runOnce();
       expect(initialCreate).toHaveBeenCalledTimes(1);
-      const accepted = schedules.listHistory(schedule.id).items[0]!.record;
+      const accepted = schedules
+        .listHistory(schedule.id)
+        .items.find((entry) => entry.kind === 'occurrence')!.record;
       expect(accepted).toMatchObject({ state: 'admission-accepted', attempts: [{ number: 1 }] });
       const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
       const expectedIssue =

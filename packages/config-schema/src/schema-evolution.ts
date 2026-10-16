@@ -71,6 +71,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     status: 'active',
     description: 'Audit retention is controlled by a legal-hold policy.',
   },
+  'workspace.recurring-triggers.v1': {
+    id: 'workspace.recurring-triggers.v1',
+    status: 'active',
+    description:
+      'Workspace export includes inert recurring definitions and exact occurrence and expired-range history.',
+  },
   'workspace.generative-kernel.v1': {
     id: 'workspace.generative-kernel.v1',
     status: 'active',
