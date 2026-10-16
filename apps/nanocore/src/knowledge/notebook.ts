@@ -215,6 +215,7 @@ export class KnowledgeNotebook {
   initialize(input: {
     readonly files?: Readonly<Record<string, string>>;
     readonly metadata: NotebookCommitMetadata;
+    readonly beforePublish?: (candidateRevision: string) => void;
   }): string {
     const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
     const files = { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...input.files };
@@ -231,6 +232,8 @@ export class KnowledgeNotebook {
       ])
     );
     const revision = this.createCommit(entries, metadata.data, null);
+    // Native fresh-scope admission retains its Audit evidence after the exact commit exists and before its ref does.
+    input.beforePublish?.(revision);
     this.git(['update-ref', PUBLISHED_REF, revision, '0'.repeat(revision.length)]);
     this.syncRefs();
     syncDirectory(dirname(this.repositoryPath));

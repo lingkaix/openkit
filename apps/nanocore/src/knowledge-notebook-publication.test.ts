@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -184,6 +184,22 @@ afterEach(() => {
 });
 
 describe('native Workspace notebook publication with real Git and SQLite', () => {
+  it('publishes the initial notebook inside fresh Workspace creation before any notebook read', () => {
+    const f = fixture();
+    expect(existsSync(f.repositoryPath)).toBe(true);
+    const revision = git(f, ['rev-parse', 'refs/heads/published']).trim();
+    expect(git(f, ['rev-list', '--parents', '-1', revision]).trim()).toBe(revision);
+    expect(git(f, ['show', `${revision}:pages/index.md`])).toContain('# Notebook');
+    const metadata = JSON.parse(git(f, ['show', '-s', '--format=%B', revision]));
+    expect(metadata).toMatchObject({
+      producer: { kind: 'user', id: 'user_local' },
+      authority: { kind: 'direct' },
+      sourceReferences: [],
+    });
+    reopen(f);
+    expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(revision);
+  });
+
   it('publishes two pages once and replays the exact old receipt after a later edit and reopen', async () => {
     const f = fixture();
     const initial = await listing(f);
