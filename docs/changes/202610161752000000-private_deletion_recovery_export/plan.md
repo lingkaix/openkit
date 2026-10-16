@@ -2,7 +2,7 @@
 type: change-plan
 status: implemented
 date: "2026-10-16"
-branch: lane/ga-d53
+branch: lane/ga-p22-combined
 ---
 # Private deletion recovery export
 
@@ -27,3 +27,9 @@ Focused73649 completed exit0 in d53-focused.log: all59cases across the complete 
 The first final-generation command20834 stopped before producing a CLI because the new worktree had not built Core Client. Native prerequisites and the deciding59test results remain separate. The next generation command builds that existing prerequisite and repeats the actual generators; no generated side or stale artifact is accepted from this setup failure.
 
 Final generation95143 completed exit0 after the exact Core Client prerequisite build: actual CLI/OpenAPI generation and validation, docs530/lifecycle/index and whitespace passed. Both generated artifacts are byte-identical to prepared Preview463323b7 (CLI751528bytes and OpenAPI3367858bytes), so neither is an own changed path. The complete D53 diff is eight files. Implementation and focused proof are complete; exact independent review and actual-main Express gate remain, with P14 priority preserved.
+
+## Combined main integration and gate scope
+
+The coordinator's 2026-10-16 20:15Z direction combines the overlapping Server MCP, Web controls, bounded discovery, private deletion recovery, Equal membership and Vault Request features into one landing. Their accepted owners and behavior remain unchanged. P14 is on main at553ea24bab2c; the combined source normally joins the subsequent Goal main67153ca4. Source joins are automatic; the generated CLI conflict requires canonical regeneration. Earlier individual source approvals and focused results keep their exact named scopes.
+
+The five outdated whole-NanoCore gates were explicitly stopped under that direction and returned143; none is a passing gate or a product failure. Their logs remain in the backlog. The new gate runs complete suites of the changed owner modules, complete changed-package suites, deterministic Native e2e, the complete owning Host suite and mandatory Web e2e. Main-push CI supplies whole-app coverage. Canonical combined preparation passed: eight prerequisite builds, actual OpenAPI generation and validation, CLI bundle, documentation model533, lifecycle and index. Exact integrated-head review, scoped gate and containing-main CI remain pending; no live vendor, deployment or release acceptance is claimed.

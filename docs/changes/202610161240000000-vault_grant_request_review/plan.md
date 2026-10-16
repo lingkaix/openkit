@@ -2,7 +2,7 @@
 type: change-plan
 status: implemented
 date: "2026-10-16"
-branch: lane/ga-request-p14
+branch: lane/ga-p22-combined
 ---
 # Supported Vault Grant Request And Review
 
@@ -133,3 +133,9 @@ The owned Host fixture's focused Biome check found two expanded single-item `bin
 The first dependency preparation failed Native compilation on duplicate deletion-recovery declarations inherited from the concrete Equal WIP. Its producer supplied the committed correction; Request made no independent Equal source edit. The corrected pipeline passed Native/dependency/CoreClient builds, actual CLI/OpenAPI generation and validation, both typechecks, four App API cases and all 26 Native Request cases. Its Web run passed 39/40: the canary fixture omitted the existing `core.meta()` connection probe, which disabled submission before validation when retry completed. The fixture now supplies the existing reachable probe pattern and asserts submission is enabled before clicking. The complete corrected Web run passed 40/40 without changing production behavior, retry policy, refusal or custody assertions. Raw failures remain in `request-equal-generation.log` and `request-equal-focused.log`; final consumer output is `request-equal-final-consumers.log`.
 
 Final consumer verification also passed all 89 Skill/Web inventory cases, focused Biome including the Host fixture, both updates-disabled Host producer/dispatcher pins (two selected, 200 unselected), documentation model (532 documents), lifecycle/index, test governance and whitespace. All 24 parsed effect records and both complete 17-Tool, 9688-byte package bodies remain identical to the saved Request parent. The actual producer required no package regeneration; no new Rust consumer run is claimed for an unchanged fixture body. The existing R2 app-scoped Rust proof remains named above. The final test-only Equal merge changes neither generated output nor Request executable source. Request remains 40 paths against that final code parent; full exact gate, browser checks, independent acceptance and actual main-parent integration remain open.
+
+## Combined main integration and gate scope
+
+The coordinator's 2026-10-16 20:15Z direction combines the overlapping Server MCP, Web controls, bounded discovery, private deletion recovery, Equal membership and Vault Request features into one landing. Their accepted owners and behavior remain unchanged. P14 is on main at553ea24bab2c; the combined source normally joins the subsequent Goal main67153ca4. Source joins are automatic; the generated CLI conflict requires canonical regeneration. Earlier individual source approvals and focused results keep their exact named scopes.
+
+The five outdated whole-NanoCore gates were explicitly stopped under that direction and returned143; none is a passing gate or a product failure. Their logs remain in the backlog. The new gate runs complete suites of the changed owner modules, complete changed-package suites, deterministic Native e2e, the complete owning Host suite and mandatory Web e2e. Main-push CI supplies whole-app coverage. Canonical combined preparation passed: eight prerequisite builds, actual OpenAPI generation and validation, CLI bundle, documentation model533, lifecycle and index. Exact integrated-head review, scoped gate and containing-main CI remain pending; no live vendor, deployment or release acceptance is claimed.

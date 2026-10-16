@@ -2,7 +2,7 @@
 type: change-plan
 status: implemented
 date: "2026-10-16"
-branch: lane/ga-mcp-web
+branch: lane/ga-p22-combined
 ---
 # Shared MCP Web administration
 
@@ -27,3 +27,9 @@ Final native-backed configuration evidence: `p22-web-mcp-final.log` passed eleve
 The Web dependency31bb4473 was merged into the shared-MCP native feature for one supported whole landing. The follow-up typed-operation dispatcher validates schema and common pasted credential shapes before mutation-cache admission; fourteen UI cases, exact public operation contract, Web typecheck and lint passed in p22-server-web-input-safe.log. A previously untracked-file lint gap exposed an array-index key after merge; use the canonical unique slot key instead. No warning or check was bypassed. Final integrated review/CI remain open.
 
 The completed shared-MCP feature now uses the engineer-approved express path, with independent exact-head approval, whole affected-module local gates and mandatory Web e2e before landing, followed by main-push CI. Earlier full-CI instructions above record prior preparation only. Credential-bearing and malformed HTTP endpoints fail the shared browser-safe criterion before TanStack mutation admission; canonical storage and effective transport use that same owner. Final local gate and landing remain separate evidence.
+
+## Combined main integration and gate scope
+
+The coordinator's 2026-10-16 20:15Z direction combines the overlapping Server MCP, Web controls, bounded discovery, private deletion recovery, Equal membership and Vault Request features into one landing. Their accepted owners and behavior remain unchanged. P14 is on main at553ea24bab2c; the combined source normally joins the subsequent Goal main67153ca4. Source joins are automatic; the generated CLI conflict requires canonical regeneration. Earlier individual source approvals and focused results keep their exact named scopes.
+
+The five outdated whole-NanoCore gates were explicitly stopped under that direction and returned143; none is a passing gate or a product failure. Their logs remain in the backlog. The new gate runs complete suites of the changed owner modules, complete changed-package suites, deterministic Native e2e, the complete owning Host suite and mandatory Web e2e. Main-push CI supplies whole-app coverage. Canonical combined preparation passed: eight prerequisite builds, actual OpenAPI generation and validation, CLI bundle, documentation model533, lifecycle and index. Exact integrated-head review, scoped gate and containing-main CI remain pending; no live vendor, deployment or release acceptance is claimed.

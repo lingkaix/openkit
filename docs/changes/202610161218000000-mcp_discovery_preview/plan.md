@@ -2,7 +2,7 @@
 type: change-plan
 status: implemented
 date: "2026-10-16"
-branch: lane/ga-preview-next
+branch: lane/ga-p22-combined
 ---
 # Explicit bounded MCP discovery
 
@@ -74,3 +74,9 @@ This is pre-P14 focused evidence, not a full gate, browser run or independent ac
 The separate lane/ga-preview-p14 branch normally joins committed Server/P14 preparation4ceaa9e0ad3687843754ff13d987faafdf82d405 into Preview211438d3b931652cc92255f0920613bce6177dd6. This includes actual P14 snapshot e2493a138cdef6d204afbd1c9d6ef471647661cc and does not authorize landing before its final main join. Both additive guide conflicts preserve their complete owner paragraphs. Generated CLI/OpenAPI conflicts are resolved by actual generation. The inherited Server allocator, required scope, human-session boundary and P14 grant issuance remain intact. New Preview fixtures use the existing canonical local-user/entity helpers and valid grant IDs; the credential/custody and exact human-delivery assertions remain unchanged. Preview invocation, injection plan and receipt IDs retain their existing opaque owners because the accepted codec registers no entity kinds for them. No tag or parallel generator is introduced.
 
 Focused pipeline73796 completed exit0 in preview-p14-focused.log: all eight prerequisite builds, Native/Web typechecks, four App API cases, all68Native Preview/receipt/Gateway cases, all30Web Preview/Shared MCP cases, actual CLI/OpenAPI generation/validation,89root Skill/Web inventory cases, documentation model529, lifecycle/index/governance and whitespace. The feature remains31paths relative to its prepared Server parent. These are focused synthetic local results, not a full affected-module/browser gate, actual final-main approval or live vendor proof. Final actual-main integration, independent delta review, exact Express gate with Web e2e and containing-main CI remain.
+
+## Combined main integration and gate scope
+
+The coordinator's 2026-10-16 20:15Z direction combines the overlapping Server MCP, Web controls, bounded discovery, private deletion recovery, Equal membership and Vault Request features into one landing. Their accepted owners and behavior remain unchanged. P14 is on main at553ea24bab2c; the combined source normally joins the subsequent Goal main67153ca4. Source joins are automatic; the generated CLI conflict requires canonical regeneration. Earlier individual source approvals and focused results keep their exact named scopes.
+
+The five outdated whole-NanoCore gates were explicitly stopped under that direction and returned143; none is a passing gate or a product failure. Their logs remain in the backlog. The new gate runs complete suites of the changed owner modules, complete changed-package suites, deterministic Native e2e, the complete owning Host suite and mandatory Web e2e. Main-push CI supplies whole-app coverage. Canonical combined preparation passed: eight prerequisite builds, actual OpenAPI generation and validation, CLI bundle, documentation model533, lifecycle and index. Exact integrated-head review, scoped gate and containing-main CI remain pending; no live vendor, deployment or release acceptance is claimed.

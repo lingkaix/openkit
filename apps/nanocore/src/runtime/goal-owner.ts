@@ -295,6 +295,26 @@ function coordinatorTurn(context: GoalOwnerContext, store: FsStore, goal: GoalRe
     );
   return turn;
 }
+/** Validates the exact live Coordinator binding before a read can supply shared Goal input. */
+export function requireCoordinatorGoal(
+  store: FsStore,
+  db: WorkspaceDb,
+  binding: { actor: Actor; goalId: string; workspaceId: string; threadId: string; turnId: string }
+): GoalRecord {
+  const goal = requireOpen(readRecord(db, 'goals', 'goal_id', binding.goalId, GoalRecordSchema));
+  if (
+    goal.workspaceId !== binding.workspaceId ||
+    goal.threadId !== binding.threadId ||
+    store.getThread(goal.workspaceId, goal.threadId).visibility !== 'workspace'
+  )
+    throw new GoalCommandError(
+      'coordinator_authority_denied',
+      'Coordinator source is unavailable.',
+      403
+    );
+  coordinatorTurn({ actor: binding.actor, coordinatorTurnId: binding.turnId }, store, goal);
+  return goal;
+}
 /** Captures one exact command on the ordinary Pending Request owner. */
 function raiseIntent(
   store: FsStore,
@@ -644,6 +664,17 @@ export async function executeGoalOperation<K extends GoalOperationId>(
           const request = readPendingRequest(db.sqlite, input.pendingRequestId);
           if (!request || !goal)
             throw new GoalCommandError('not_found', 'Exact Goal request not found.', 404);
+          if (
+            request.governedIntent?.operation !== id ||
+            request.governedIntent.goalId !== goal.goalId ||
+            request.workspaceId !== goal.workspaceId ||
+            request.threadId !== goal.threadId ||
+            request.responsibleUserId !== goal.responsibleUserId
+          )
+            throw new GoalCommandError(
+              'approval_conflict',
+              'The request does not capture this exact Goal operation.'
+            );
           if (request.state === 'pending')
             throw new GoalCommandError(
               'coordinator_self_approval_denied',

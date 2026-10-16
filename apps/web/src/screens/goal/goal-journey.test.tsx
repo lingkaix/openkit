@@ -146,6 +146,55 @@ it('shows current cards, exact proposed commitment, and linked Task completion w
   );
   expect(screen.getByText('Open')).toBeVisible();
 });
+it('distinguishes a granted request from consumption and shows the actual deciding actor', async () => {
+  const data = view();
+  data.requests[0] = {
+    ...data.requests[0]!,
+    state: 'resolved',
+    resolution: 'granted',
+    decidingActorId: 'administrator',
+  };
+  mount(data);
+  expect(
+    await screen.findByText('Granted; waiting for the Goal owner to apply this exact decision.')
+  ).toBeVisible();
+  expect(screen.getByText('Decision by administrator')).toBeVisible();
+  expect(
+    screen.getByText('Responsible person: usr_00000000-0000-7000-8000-000000000001')
+  ).toBeVisible();
+  expect(screen.getByText('Open')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Approve Plan' })).not.toBeInTheDocument();
+});
+it('shows the accepted candidate and unresolved work with its actual decider', async () => {
+  const data = view();
+  data.goal!.disposition = {
+    kind: 'accepted',
+    actorId: 'administrator',
+    pendingRequestId: 'completion1',
+    at,
+    candidate: {
+      intentRevision: 0,
+      intent: data.goal!.intent,
+      planVersionId: 'p1',
+      evidence: [],
+      unresolvedWork: ['Publication remains'],
+      summary: 'Reviewed release evidence',
+    },
+  };
+  mount(data);
+  expect(await screen.findByRole('heading', { name: 'Accepted completion' })).toBeVisible();
+  expect(screen.getByText('Accepted by administrator')).toBeVisible();
+  expect(screen.getByText('Reviewed release evidence')).toBeVisible();
+  expect(screen.getByText('Publication remains')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Cancel Goal' })).not.toBeInTheDocument();
+});
+it('shows a reservation without an admitted Turn as unadmitted work', async () => {
+  const data = view();
+  data.tasks[0] = { ...data.tasks[0]!, admittedAt: null, turns: [] };
+  mount(data);
+  expect(await screen.findByText('Reserved; no Task Turn admitted.')).toBeVisible();
+  expect(screen.getByText('Open')).toBeVisible();
+});
 it('edits a card with its read revision and decides the exact pending proposal', async () => {
   const operations = mount();
   const user = userEvent.setup();
