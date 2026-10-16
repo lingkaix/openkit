@@ -23,9 +23,11 @@ export function registerDiscordInteractionRoutes(input: {
           { error: { code: 'channel_unavailable', message: 'Discord is unavailable.' } },
           503
         );
+      // Let the body-limit owner handle streamed overflow before domain-error translation.
+      const body = new Uint8Array(await c.req.arrayBuffer());
       try {
         const verified = verifyDiscordInteraction({
-          body: new Uint8Array(await c.req.arrayBuffer()),
+          body,
           signature: c.req.header('x-signature-ed25519') ?? '',
           timestamp: c.req.header('x-signature-timestamp') ?? '',
           applicationId: input.config.applicationId,
