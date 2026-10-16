@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { parseDocument } from 'yaml';
 
-// Source and YAML conventions are adapted from vercel-labs/skills at13e4063a1cf913f5606d57d42ab83a86f5001e04.
+// Source and YAML conventions are adapted from vercel-labs/skills at 13e4063a1cf913f5606d57d42ab83a86f5001e04.
 // The full MIT notice is in apps/nanocore/THIRD-PARTY-NOTICES.md. No upstream CLI or telemetry is imported.
 
 /** Parsed acquisition intent; it contains no catalog, execution or filesystem authority. */
@@ -51,7 +51,7 @@ function hasControlCharacters(value: string): boolean {
 }
 
 /** Rejects unsafe selected paths instead of normalizing them into a different package. */
-function sourceSubpath(path: string): string {
+export function validateSkillSourceSubpath(path: string): string {
   if (
     path.length === 0 ||
     path.includes('\\') ||
@@ -76,7 +76,7 @@ function decodedSegment(segment: string): string {
     throw new SkillSourceInputError();
   }
   if (decoded.includes('/')) throw new SkillSourceInputError();
-  return sourceSubpath(decoded);
+  return validateSkillSourceSubpath(decoded);
 }
 
 /** Git is invoked with fixed argument positions; refs still cannot be option-like or control-bearing. */
@@ -130,12 +130,12 @@ export function parseSkillImportSource(value: string): SkillImportSource {
       url: `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git`,
       source: `github:${owner}/${repo}`,
       ref,
-      subpath: match[4] ? sourceSubpath(match[4]) : null,
+      subpath: match[4] ? validateSkillSourceSubpath(match[4]) : null,
       skillName,
     };
   }
   if (/^[^/@:]+@[^/:]+:.+$/u.test(input)) {
-    sourceSubpath(input.slice(input.indexOf(':') + 1));
+    validateSkillSourceSubpath(input.slice(input.indexOf(':') + 1));
     return { kind: 'git', url: input, source: input, ref, subpath: null, skillName };
   }
 

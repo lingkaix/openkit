@@ -2,7 +2,7 @@
 
 ## vercel-labs/skills
 
-Skill source parsing, discovery and frontmatter handling are adapted from [vercel-labs/skills](https://github.com/vercel-labs/skills/tree/13e4063a1cf913f5606d57d42ab83a86f5001e04), npm package skills1.7.2, commit13e4063a1cf913f5606d57d42ab83a86f5001e04. OpenKit does not invoke the upstream CLI, telemetry or agent installer.
+Skill source parsing, discovery and frontmatter handling are adapted from [vercel-labs/skills](https://github.com/vercel-labs/skills/tree/13e4063a1cf913f5606d57d42ab83a86f5001e04), npm package skills 1.7.2, commit 13e4063a1cf913f5606d57d42ab83a86f5001e04. OpenKit does not invoke the upstream CLI, telemetry or agent installer.
 
 MIT License
 
