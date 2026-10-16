@@ -1,3 +1,4 @@
+import { isEntityId } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import type {
   VaultReferenceBackendKind,
@@ -449,6 +450,8 @@ function requireVaultReference(coreDb: CoreDb, referenceId: string): VaultRefere
  * @throws Error when scope identity fields are inconsistent.
  */
 function assertVaultReferenceScope(input: CreateVaultReferenceInput): void {
+  if (!isEntityId('vault', input.referenceId))
+    throw new Error('Vault reference identity must use the canonical vault kind.');
   if (input.ownerScope === 'server' && (input.workspaceId || input.userId)) {
     throw new Error('Server-scoped vault references cannot include workspaceId or userId.');
   }
@@ -499,6 +502,8 @@ function vaultReferenceSelectSql(): string {
  * @returns Vault reference record.
  */
 function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceRecord {
+  if (!isEntityId('vault', row.reference_id))
+    throw new Error('Invalid canonical Vault reference identity.');
   return {
     backendKind: row.backend_kind,
     backendLocator: row.backend_locator,

@@ -7,7 +7,6 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -16,12 +15,13 @@ import {
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
 
 const cleanups: (() => void)[] = [];
-const workspaceFileId = 'workspaces/ws_demo/workspace.jsonc';
+const workspaceFileId = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
 const unrelatedBinding = { agentId: 'agent_kept', profileId: 'default', skills: [] };
 
 afterEach(() => {
@@ -40,8 +40,12 @@ function fixture() {
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  const thread = store.createThread('ws_demo', 'Pin admission');
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Pin admission');
   const write = (relativePath: string, content: string) => {
     const path = join(dataRoot, relativePath);
     mkdirSync(dirname(path), { recursive: true });
@@ -84,28 +88,28 @@ function fixture() {
     },
   };
   const workspacePath = write(
-    'workspaces/ws_demo/config/workspace.jsonc',
+    'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc',
     JSON.stringify(initialConfig)
   );
   const manager = createRuntimeConfigManager({ dataRoot });
   const app = createApp({ dataRoot, coreDb, store, mode: 'server', runtimeConfigManager: manager });
   const admin = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     expiresAt: '2099-01-01T00:00:00.000Z',
     workspaceIds: [],
   });
   const member = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'workspace',
     expiresAt: '2099-01-01T00:00:00.000Z',
-    workspaceIds: ['ws_demo'],
+    workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
   });
   const noWorkspace = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'workspace',
     expiresAt: '2099-01-01T00:00:00.000Z',
-    workspaceIds: ['ws_unrelated'],
+    workspaceIds: ['ws_00000000-0000-7000-8000-000000000002'],
   });
   const fetch = vi
     .spyOn(globalThis, 'fetch')
@@ -129,7 +133,11 @@ function fixture() {
     return response.json() as Promise<{ file: { revision: string }; content: string }>;
   };
   const targets = async () => {
-    const response = await call('conversation.targets', { workspaceId: 'ws_demo' }, member.secret);
+    const response = await call(
+      'conversation.targets',
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      member.secret
+    );
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       targets: { targetRef: string; profileId: string | null; availability: string }[];
@@ -140,8 +148,13 @@ function fixture() {
     expect(fetch).not.toHaveBeenCalled();
     expect(createTurn).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
+    expect(store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual([]);
     expect(
       coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
     ).toEqual({ count: 0 });
@@ -248,7 +261,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
       {
         method: 'POST',
         headers: { authorization: `Bearer ${f.member.secret}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws_demo' }),
+        body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
       }
     );
     expect(restartedTargets.status).toBe(200);
@@ -296,7 +309,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
     const staleTarget = await f.call(
       'conversation.submit',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: f.thread.id,
         requestId: '0190f4c8-0000-7000-8000-000000000135',
         input: 'Inspect the selected work.',
@@ -365,7 +378,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
     expect(readFileSync(f.workspacePath, 'utf8')).toBe(original.content);
     const unauthorized = await f.call(
       'conversation.targets',
-      { workspaceId: 'ws_demo' },
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       f.noWorkspace.secret
     );
     expect(unauthorized.status).toBe(403);
@@ -375,7 +388,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
     const unauthorizedSubmit = await f.call(
       'conversation.submit',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: f.thread.id,
         requestId: '0190f4c8-0000-7000-8000-000000000136',
         input: 'Inspect the selected work.',
@@ -394,7 +407,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
     const submit = await f.call(
       'conversation.submit',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: f.thread.id,
         requestId: '0190f4c8-0000-7000-8000-000000000134',
         input: 'Inspect the selected work.',

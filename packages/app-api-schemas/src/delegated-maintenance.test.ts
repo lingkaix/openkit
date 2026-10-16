@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   ApplyDelegatedAdministrationConfigurationRequestSchema,
@@ -10,7 +11,7 @@ describe('finite Worker Git-read proposal', () => {
     const request = {
       requestId: randomUUID(),
       candidate: {
-        artifactId: randomUUID(),
+        artifactId: allocateEntityId('ar'),
         artifactVersion: 1,
         contentDigest: `sha256:${'1'.repeat(64)}`,
       },
@@ -37,7 +38,11 @@ describe('finite Worker Git-read proposal', () => {
       targetFamily: 'agent',
       targetId: randomUUID(),
       expectedRevision: `sha256:${'1'.repeat(64)}`,
-      failure: { workspaceId: randomUUID(), threadId: randomUUID(), turnId: randomUUID() },
+      failure: {
+        workspaceId: allocateEntityId('ws'),
+        threadId: allocateEntityId('th'),
+        turnId: allocateEntityId('tu'),
+      },
       changes: {
         networkGrantId: 'git-read',
         rules: [
@@ -49,6 +54,9 @@ describe('finite Worker Git-read proposal', () => {
     expect(ProposeAdministrationConfigurationRequestSchema.safeParse(request).success).toBe(true);
     for (const change of [
       { failure: undefined },
+      { failure: { ...request.failure, workspaceId: allocateEntityId('th') } },
+      { failure: { ...request.failure, threadId: randomUUID() } },
+      { failure: { ...request.failure, turnId: allocateEntityId('it') } },
       { path: '/caller-selected-file' },
       { changes: { ...request.changes, host: 'other.example.com' } },
       { changes: { ...request.changes, binaries: ['/bin/other'] } },

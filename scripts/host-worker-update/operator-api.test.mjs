@@ -34,7 +34,7 @@ test('request uses the exact endpoint, existing credential and no redirect or re
       return Response.json({
         ready: false,
         identityId: 'synthetic-nanohost',
-        deploymentId: 'synthetic-deployment',
+        deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000009',
         connectionGeneration: 1,
         observedAt: '2026-10-16T11:30:00.000Z',
         freshEmpty: false,

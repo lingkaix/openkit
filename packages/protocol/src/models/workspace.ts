@@ -1,6 +1,5 @@
 import { z } from 'zod';
-
-import { WorkspaceIdSchema } from '../common/ids.js';
+import { DeploymentIdSchema, WorkspaceIdSchema } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { AgentSchema } from './agent.js';
 import { KnowledgeEntrySchema, ModelRefSchema, SkillRefSchema } from './knowledge.js';
@@ -31,7 +30,7 @@ export const WorkspaceCountsSchema = z.object({
  * Lineage recorded when a workspace was imported from an export manifest.
  */
 export const WorkspaceImportedFromSchema = z.object({
-  sourceDeploymentId: z.string().min(1),
+  sourceDeploymentId: DeploymentIdSchema,
   sourceWorkspaceId: WorkspaceIdSchema,
   exportCreatedAt: TimestampSchema,
   manifestDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),

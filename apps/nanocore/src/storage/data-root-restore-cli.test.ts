@@ -50,7 +50,7 @@ describe('data-root restore operator cli', () => {
     writeColdDataRootBackupManifest({
       backupRoot,
       backupId: 'drbak_cli',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -87,7 +87,7 @@ describe('data-root restore operator cli', () => {
     writeColdDataRootBackupManifest({
       backupRoot,
       backupId: 'drbak_cli_child',
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });

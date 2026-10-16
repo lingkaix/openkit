@@ -71,10 +71,11 @@ console.log('Pinned runtime identities and patched Pi SDK/search closure OK');
 
 // Packaging dry run: real static adapters open, inspect and close without a provider Turn.
 // The in-memory Integration boundary admits only synthetic session loopback credentials.
-for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
-  const agentSessionId = `image-smoke-${runtime}`;
+for (const [index, runtime] of ['codex', 'pi', 'opencode', 'deepseek'].entries()) {
+  const suffix = String(index + 1).padStart(12, '0');
+  const agentSessionId = `as_00000000-0000-7000-8000-${suffix}`;
   const root = `/openkit/sessions/${agentSessionId}`;
-  const threadId = `thread-${runtime}`;
+  const threadId = `th_00000000-0000-7000-8000-${suffix}`;
   const runtimeRoot = `/openkit/threads/${threadId}/${runtime}`;
   const captureRoot = `${runtimeRoot}/capture/${packageFixture.scope.turnId}`;
   const workSlot = `/workspace/worktrees/${agentSessionId}-${randomBytes(16).toString('hex')}`;
@@ -121,7 +122,7 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
       capabilityLoopbackCredential: randomBytes(32).toString('base64url'),
       inferenceLoopbackCredential: randomBytes(32).toString('base64url'),
       effectiveSetupGeneration: 1, resume: null,
-      threadId, workspaceId: 'image-smoke',
+      threadId, workspaceId: packageFixture.scope.workspaceId,
     });
     assert.equal(opened.disposition, 'succeeded', `${runtime} shim dry run open: ${JSON.stringify(opened)}`);
     const inspected = await send('session.inspect', selector);

@@ -119,7 +119,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
 }) => {
   const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
   const client = createCoreClient({ baseUrl: stack.coreUrl });
-  const workspaceId = 'ws_demo';
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const content = '# Release revision one\n\nExact worker input.\n';
   const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
 

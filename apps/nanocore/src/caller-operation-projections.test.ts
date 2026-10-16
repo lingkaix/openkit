@@ -10,7 +10,6 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
@@ -18,6 +17,8 @@ import { OperationError } from './operation-error.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -68,7 +69,11 @@ async function fixture() {
   const owned = store.createWorkspace('Owned content must not enter caller output.');
   const foreign = store.createWorkspace('Other owner private content.');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: owned.id, ownerUserId: userId });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: foreign.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: foreign.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const post = (
     id: string,
     input: unknown = {},
@@ -109,15 +114,27 @@ async function fixture() {
 /** Seeds distinct shared, caller-private and other-private canonical records; Artifact references are real Items. */
 function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   const threads = [
-    f.store.createThread(f.owned.id, 'Shared secret text', 'th_shared'),
-    f.store.createThread(f.owned.id, 'Caller private text', 'th_own', 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: f.userId,
-    }),
-    f.store.createThread(f.owned.id, 'Other private text', 'th_other', 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'user_local',
-    }),
+    f.store.createThread(f.owned.id, 'Shared secret text', testEntityId('th', 'th_shared')),
+    f.store.createThread(
+      f.owned.id,
+      'Caller private text',
+      testEntityId('th', 'th_own'),
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: f.userId,
+      }
+    ),
+    f.store.createThread(
+      f.owned.id,
+      'Other private text',
+      testEntityId('th', 'th_other'),
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    ),
   ];
   const turns = threads.map((thread, index) => {
     const turn = f.store.createTurn(f.owned.id, thread.id, 'Retained input', {
@@ -125,7 +142,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
       id: f.userId,
     });
     f.store.createItem({
-      id: `it_caller_${index}`,
+      id: testEntityId('it', `it_caller_${index}`),
       workspaceId: f.owned.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -141,7 +158,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   for (const [index, turn] of [turns[0]!, turns[2]!].entries()) {
     const body = `Artifact private-content-${index}`;
     f.store.createArtifact({
-      id: `ar_turn_${index}`,
+      id: testEntityId('ar', `ar_turn_${index}`),
       workspaceId: f.owned.id,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -166,7 +183,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   const body = 'Imported private-content';
   const digest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
   f.store.createArtifact({
-    id: 'ar_imported',
+    id: testEntityId('ar', 'ar_imported'),
     workspaceId: f.owned.id,
     threadId: null,
     turnId: null,
@@ -238,7 +255,14 @@ describe('caller operation projections', () => {
     const provision = vi.spyOn(f.store, 'ensureQuickChatWorkspace');
     const create = vi.spyOn(f.store, 'createWorkspace');
     for (const [headers, target, expected] of [
-      [{}, localApp, { userId: 'user_local', credential: { kind: 'local', scope: null } }],
+      [
+        {},
+        localApp,
+        {
+          userId: 'usr_00000000-0000-7000-8000-000000000001',
+          credential: { kind: 'local', scope: null },
+        },
+      ],
       [
         { cookie: f.cookie },
         f.app,
@@ -285,7 +309,9 @@ describe('caller operation projections', () => {
     });
     expect(Number.isFinite(Date.parse(session.workspace.observedAt))).toBe(true);
     expect(JSON.stringify(session)).not.toMatch(/private-content|Other private|caller@example/);
-    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain('th_other');
+    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain(
+      testEntityId('th', 'th_other')
+    );
     const admin = f.token();
     const client = clientFor(f, { authorization: `Bearer ${admin.secret}` });
     const read = Reflect.get(client.operations, 'caller.read');
@@ -336,7 +362,7 @@ describe('caller operation projections', () => {
       expect(JSON.stringify(result)).not.toContain(admin.secret);
     }
     const reloaded = new FsStore({ dataRoot: f.dataRoot });
-    reloaded.createThread(f.owned.id, 'New canonical record', 'th_restart');
+    reloaded.createThread(f.owned.id, 'New canonical record', testEntityId('th', 'th_restart'));
     const restarted = f.makeApp(new FsStore({ dataRoot: f.dataRoot }));
     const afterRestart = await f.post(
       'caller.read',
@@ -500,7 +526,7 @@ describe('caller operation projections', () => {
       expect(read.status).toBe(200);
       expect(await read.json()).toMatchObject({
         id: f.foreign.id,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         membershipStatus,
         accessCause: 'administrator',
       });
@@ -510,7 +536,7 @@ describe('caller operation projections', () => {
         (item: { workspace: { id: string } }) => item.workspace.id === f.foreign.id
       );
       expect(entry).toMatchObject({
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         membershipStatus,
         accessCause: 'administrator',
         effectiveRole: membershipStatus === 'active' ? 'editor' : null,
@@ -522,7 +548,7 @@ describe('caller operation projections', () => {
     expect(foreign.status).toBe(200);
     expect(await foreign.json()).toMatchObject({
       id: f.foreign.id,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       membershipStatus: null,
       accessCause: 'administrator',
     });

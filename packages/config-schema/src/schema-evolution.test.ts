@@ -18,10 +18,10 @@ function envelopeFixture(): unknown {
   return {
     schemaVersion: 1,
     recordType: 'workspace',
-    id: 'ws_demo',
+    id: 'ws_00000000-0000-7000-8000-000000000001',
     ownerScope: 'workspace',
     lineage: {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       requestId: 'req_demo',
     },
     createdAt: '2026-07-04T00:00:00.000Z',
@@ -42,7 +42,7 @@ describe('schema evolution record envelope', () => {
     const parsed = parseRecordEnvelope(envelopeFixture());
 
     expect(parsed.futureOptionalField).toBe('preserve me');
-    expect(parsed.lineage.workspaceId).toBe('ws_demo');
+    expect(parsed.lineage.workspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
   });
 
   it('fails closed for unsupported required features', () => {
@@ -109,7 +109,7 @@ describe('schema evolution record envelope', () => {
     });
 
     expect(rewritten).toMatchObject({
-      id: 'ws_demo',
+      id: 'ws_00000000-0000-7000-8000-000000000001',
       updatedAt: '2026-07-04T01:00:00.000Z',
       futureOptionalField: 'preserve me',
       extensions: {

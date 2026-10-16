@@ -53,19 +53,27 @@ describe('AppDb', () => {
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: randomUUID(),
     };
     const created = await createLightApp(context, SCHEMA);
-    const db = openExistingAppDb(dataRoot, 'ws_demo', created.appId);
+    const db = openExistingAppDb(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001',
+      created.appId
+    );
     try {
       expect(db.scope).toBe('app');
       expect(db.appId).toBe(created.appId);
-      expect(lightAppDbPath(dataRoot, 'ws_demo', created.appId)).toContain(created.appId);
+      expect(
+        lightAppDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', created.appId)
+      ).toContain(created.appId);
     } finally {
       db.sqlite.close();
     }
-    expect(() => openExistingAppDb(dataRoot, 'ws_demo', randomUUID())).toThrow(KernelCommandError);
+    expect(() =>
+      openExistingAppDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', randomUUID())
+    ).toThrow(KernelCommandError);
   });
 });

@@ -9,12 +9,12 @@ import {
   RotateNanoHostTransportTokenResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import type { FamilyImplementations } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from '../runtime/nanohost-runtime-target.js';
-import { generateUuidV7 } from '../runtime/session-id.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   abortNanoHostTransportRotation,
@@ -226,7 +226,7 @@ export function createNanoHostOperationImplementations({
 
       try {
         const actorUserId = actor.id;
-        const tokenId = generateUuidV7();
+        const tokenId = allocateEntityId('nhtok');
         const secret = createOpenKitAccessTokenSecret();
         const sink = configuredSink(config, input.targetSlot);
         const slotResult = deliverNanoHostTransportTokenToNamedSlot({

@@ -35,8 +35,11 @@ import {
   ApprovalDecisionItemSchema,
   ArtifactOriginSchema,
   ArtifactSchema,
+  deriveEntityId,
+  entityIdPattern,
   GitFailureExplanationReaderSchema,
   ItemSchema,
+  isEntityId,
   KnowledgeEntrySchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
@@ -44,6 +47,8 @@ import {
   UserActorRefSchema,
   UserInputResponseItemSchema,
   UserMessageItemSchema,
+  WorkerStorageTargetIdSchema,
+  WorkspaceIdSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import {
@@ -68,12 +73,7 @@ import type {
   KnowledgeProposalReviewRecord,
   KnowledgeSourceRecord,
 } from '../lib/store.js';
-import {
-  coreDbPath,
-  ensureLayoutDirectories,
-  ensureWorkspaceLayoutRoot,
-  LOCAL_USER_ID,
-} from './fs-layout.js';
+import { coreDbPath, ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
@@ -173,7 +173,7 @@ export const KnowledgeProposalRecordSchema = KnowledgeManagerDraftedProposalSche
   })
   .strip();
 export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.extend({
-  reviewId: z.string().regex(/^kr_[a-f0-9]{64}$/),
+  reviewId: z.string().regex(entityIdPattern('kr')),
   actor: ActorRefReaderSchema,
 })
   .strip()
@@ -191,7 +191,7 @@ export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema
 export const KnowledgeProposalReviewFileSchema = z
   .object({
     proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     decisions: z.array(KnowledgeProposalReviewRecordSchema).min(1),
   })
   .strip()
@@ -201,16 +201,11 @@ export const KnowledgeProposalReviewFileSchema = z
     let terminal = false;
 
     for (const [index, review] of file.decisions.entries()) {
-      const expectedReviewId = `kr_${createHash('sha256')
-        .update(
-          JSON.stringify({
-            workspaceId: file.workspaceId,
-            proposalId: file.proposalId,
-            requestId: review.requestId,
-          }),
-          'utf8'
-        )
-        .digest('hex')}`;
+      const expectedReviewId = deriveEntityId('kr', {
+        ownerScope: { kind: 'workspace', workspaceId: file.workspaceId },
+        proposalId: file.proposalId,
+        requestId: review.requestId,
+      });
       if (
         review.proposalId !== file.proposalId ||
         review.workspaceId !== file.workspaceId ||
@@ -238,7 +233,7 @@ export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
 /** Private historical attachment provenance; current admission remains with WorkerStorageBinding. */
 export const AgentSessionRetainedStorageSchema = z
   .object({
-    storageRef: z.string().regex(/^wst_[0-9a-f]{32}$/),
+    storageRef: WorkerStorageTargetIdSchema,
     workSlotRef: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
   })
   .strip();
@@ -297,11 +292,7 @@ export const TURN_STREAM_EVENT_WINDOW_SIZE = 100;
  * @returns Stable non-secret Item id.
  */
 export function artifactReferenceItemId(artifactId: string, turnId: string): string {
-  const digest = createHash('sha256')
-    .update(JSON.stringify([artifactId, turnId]), 'utf8')
-    .digest('hex')
-    .slice(0, 24);
-  return `it_artifact_${digest}`;
+  return deriveEntityId('it', [artifactId, turnId]);
 }
 
 /**
@@ -2120,7 +2111,7 @@ function classifyThreadVisibilityCutover(
 ): Pick<Thread, 'visibility' | 'privateOwnerUserId'> {
   if (kind === 'quick-chat') {
     const workspaceId = basename(workspaceRoot);
-    const candidates = new Set([LOCAL_USER_ID, ...listDirectoryNames(join(dataRoot, 'users'))]);
+    const candidates = new Set(listDirectoryNames(join(dataRoot, 'users')));
     if (existsSync(coreDbPath(dataRoot))) {
       const database = new Database(coreDbPath(dataRoot), { readonly: true, fileMustExist: true });
       try {
@@ -2131,11 +2122,7 @@ function classifyThreadVisibilityCutover(
       }
     }
     for (const userId of candidates) {
-      const namespace =
-        userId === LOCAL_USER_ID
-          ? ''
-          : `u_${createHash('sha256').update(userId).digest('hex').slice(0, 12)}_`;
-      if (workspaceId === `ws_${namespace}quick_chat`)
+      if (isEntityId('usr', userId) && workspaceId === deriveEntityId('ws', ['quick_chat', userId]))
         return { visibility: 'private', privateOwnerUserId: userId };
     }
     throw new Error('Thread visibility cutover requires the canonical Quick Chat owner.');
@@ -2195,13 +2182,14 @@ function parseCanonicalThreadRecord(
   }
   if ('visibility' in raw || 'privateOwnerUserId' in raw)
     throw new Error('Thread visibility requires its required feature.');
-  const predecessor = ThreadSchema.parse({
-    ...raw,
-    entryPath: enveloped ? raw.entryPath : 'conversation',
-    visibility: 'private',
-    privateOwnerUserId: 'cutover-validation-only',
-  });
-  const { visibility: _visibility, privateOwnerUserId: _owner, ...oldPayload } = predecessor;
+  // Validate predecessor fields and digest without audience authority; apply all Thread refinements after classification.
+  const oldPayload = z
+    .object(ThreadSchema.shape)
+    .omit({ visibility: true, privateOwnerUserId: true })
+    .parse({
+      ...raw,
+      entryPath: enveloped ? raw.entryPath : 'conversation',
+    });
   if (
     envelope &&
     envelope.contentDigest !==

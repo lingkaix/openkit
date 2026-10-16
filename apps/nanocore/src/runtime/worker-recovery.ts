@@ -1,7 +1,6 @@
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-
-import { AgentSessionSchema, type StopReason } from '@openkit/protocol';
+import { AgentSessionSchema, deriveEntityId, type StopReason } from '@openkit/protocol';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
@@ -244,10 +243,12 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     checkpoint.workspaceId,
     attempt.inputRef
   ).snapshot;
-  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  const initiatingItem = turn.items.find(
+    (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
+  );
   const originalInput = store
     .listWorkspaceItemRevisions(checkpoint.workspaceId)
-    .find((item) => item.id === `it_user_${turn.id}`);
+    .find((item) => item.id === deriveEntityId('it', ['task-user', turn.id]));
   const preparation = JSON.parse(attempt.preparationInputJson);
   if (
     admission.status !== 'admitted' ||
@@ -444,7 +445,7 @@ function withoutConversationStatusDisplayFields(turn: ReturnType<FsStore['getTur
   return {
     ...turn,
     items: turn.items.map((item) =>
-      item.id === `it_worker_result_${turn.id}` && item.type === 'status'
+      item.id === deriveEntityId('it', ['worker-result', turn.id]) && item.type === 'status'
         ? Object.fromEntries(
             Object.entries(item).filter(
               ([field]) => !DISPLAY_PROJECTION_REFRESH_FIELDS.some((allowed) => allowed === field)

@@ -92,14 +92,14 @@ function harnessFor(
   const open = (
     agentSessionId: string,
     resume: { digest: string; locator: string } | null = null,
-    threadId = 'thread-one'
+    threadId = 'th_00000000-0000-730e-88b8-d76794f39a2f'
   ) => {
     const config = join(sandboxRoot, 'sessions', agentSessionId, 'config');
     mkdirSync(config, { recursive: true });
     writeFileSync(
       join(config, 'package.json'),
       JSON.stringify({
-        scope: { agentSessionId, threadId, workspaceId: 'workspace-one' },
+        scope: { agentSessionId, threadId, workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc' },
         workspace: { root: sandboxRoot, inputs: [] },
         extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
       })
@@ -113,7 +113,7 @@ function harnessFor(
       inferenceLoopbackCredential: credential(`inference-${agentSessionId}`),
       resume,
       threadId,
-      workspaceId: 'workspace-one',
+      workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
     });
   };
   return { finalStatuses, nativeRoot, open, sandboxRoot, selector, send };
@@ -175,9 +175,16 @@ describe('Pi Harness integration', () => {
       });
       try {
         const harness = harnessFor(root);
-        expect((await harness.open('session-a')).disposition).toBe('succeeded');
+        expect((await harness.open('as_00000000-0000-7f03-8682-76a52604a84a')).disposition).toBe(
+          'succeeded'
+        );
         const run = async (turnId: string, sequence: number) => {
-          const config = join(harness.sandboxRoot, 'sessions', 'session-a', 'config');
+          const config = join(
+            harness.sandboxRoot,
+            'sessions',
+            'as_00000000-0000-7f03-8682-76a52604a84a',
+            'config'
+          );
           mkdirSync(config, { recursive: true });
           writeFileSync(
             join(config, 'package.json'),
@@ -227,33 +234,38 @@ describe('Pi Harness integration', () => {
                 command: { argv: ['openkit-worker-shim'], workingDirectory: harness.sandboxRoot },
               },
               scope: {
-                agentSessionId: 'session-a',
-                threadId: 'thread-one',
+                agentSessionId: 'as_00000000-0000-7f03-8682-76a52604a84a',
+                threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
                 turnId,
-                workspaceId: 'workspace-one',
+                workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
               },
               snapshotId: `package-${turnId}`,
               supply: { mcpServers: [] },
             })
           );
           return harness.send('turn.start', {
-            ...harness.selector('session-a'),
+            ...harness.selector('as_00000000-0000-7f03-8682-76a52604a84a'),
             aepRef: join(config, 'package.json'),
             capabilityToken: credential(`capability-token-${turnId}`),
             contextPackageId: `ctxpkg_${turnId}`,
-            contextRef: join(harness.sandboxRoot, 'sessions', 'session-a', 'context'),
+            contextRef: join(
+              harness.sandboxRoot,
+              'sessions',
+              'as_00000000-0000-7f03-8682-76a52604a84a',
+              'context'
+            ),
             deadline: '2099-01-01T00:00:00.000Z',
             inferenceToken: credential(`inference-token-${turnId}`),
             leaseId: `lease-${turnId}`,
             packageSnapshotId: `package-${turnId}`,
-            threadId: 'thread-one',
+            threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
             turnId,
             turnSequence: sequence,
             workerControlToken: credential(`control-token-${turnId}`),
-            workspaceId: 'workspace-one',
+            workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
           });
         };
-        const first = await run('turn-1', 0);
+        const first = await run('tu_00000000-0000-7e49-8268-e35715b55d0c', 0);
         expect(first, JSON.stringify(first)).toMatchObject({ disposition: 'succeeded' });
         await vi.waitFor(() => expect(harness.finalStatuses).toHaveLength(1), {
           interval: 20,
@@ -262,7 +274,10 @@ describe('Pi Harness integration', () => {
         expect(harness.finalStatuses[0]).toMatchObject({ body: { status: 'completed' } });
         await vi.waitFor(
           async () => {
-            const observed = await harness.send('session.inspect', harness.selector('session-a'));
+            const observed = await harness.send(
+              'session.inspect',
+              harness.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+            );
             expect(
               observed,
               `${JSON.stringify(observed)} requests=${requests.length}`
@@ -270,7 +285,7 @@ describe('Pi Harness integration', () => {
           },
           { interval: 20, timeout: 10_000 }
         );
-        const second = await run('turn-2', 1);
+        const second = await run('tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 1);
         expect(second, JSON.stringify(second)).toMatchObject({ disposition: 'succeeded' });
         await vi.waitFor(() => expect(harness.finalStatuses).toHaveLength(2), {
           interval: 20,
@@ -283,12 +298,20 @@ describe('Pi Harness integration', () => {
         });
         await vi.waitFor(
           async () => {
-            const observed = await harness.send('session.inspect', harness.selector('session-a'));
+            const observed = await harness.send(
+              'session.inspect',
+              harness.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+            );
             expect(observed.body.state).toBe('open');
           },
           { interval: 20, timeout: 10_000 }
         );
-        expect(await harness.send('session.close', harness.selector('session-a'))).toMatchObject({
+        expect(
+          await harness.send(
+            'session.close',
+            harness.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+          )
+        ).toMatchObject({
           disposition: 'succeeded',
         });
       } finally {
@@ -308,14 +331,22 @@ describe('Pi Harness integration', () => {
       roots.push(root);
       mkdirSync(join(root, 'home'), { recursive: true });
       const harness = harnessFor(root);
-      const opened = await harness.open('session-a');
+      const opened = await harness.open('as_00000000-0000-7f03-8682-76a52604a84a');
       expect(opened).toMatchObject({
         body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'open' },
         disposition: 'succeeded',
       });
-      const stateRoot = join(harness.nativeRoot, 'thread-one', 'pi', 'native');
+      const stateRoot = join(
+        harness.nativeRoot,
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
+        'pi',
+        'native'
+      );
       expect(existsSync(join(stateRoot, 'sessions'))).toBe(false);
-      const inspected = await harness.send('session.inspect', harness.selector('session-a'));
+      const inspected = await harness.send(
+        'session.inspect',
+        harness.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+      );
       expect(inspected).toMatchObject({
         body: { childState: 'running', nativeHandleState: 'pending', state: 'open' },
         disposition: 'succeeded',
@@ -326,29 +357,51 @@ describe('Pi Harness integration', () => {
         body: { state: 'draining' },
         disposition: 'succeeded',
       });
-      expect(await harness.open('session-b', null, 'thread-two')).toMatchObject({
+      expect(
+        await harness.open(
+          'as_00000000-0000-7ccb-a600-607d092dffc8',
+          null,
+          'th_00000000-0000-779e-b7fd-63d275d430ba'
+        )
+      ).toMatchObject({
         body: { reasonCode: 'busy' },
         disposition: 'refused',
       });
       expect(
         await harness.send('turn.start', {
-          ...harness.selector('session-a'),
-          aepRef: join(harness.sandboxRoot, 'sessions', 'session-a', 'config', 'package.json'),
+          ...harness.selector('as_00000000-0000-7f03-8682-76a52604a84a'),
+          aepRef: join(
+            harness.sandboxRoot,
+            'sessions',
+            'as_00000000-0000-7f03-8682-76a52604a84a',
+            'config',
+            'package.json'
+          ),
           capabilityToken: credential('capability-token'),
           contextPackageId: 'ctxpkg_turn-1',
-          contextRef: join(harness.sandboxRoot, 'sessions', 'session-a', 'context'),
+          contextRef: join(
+            harness.sandboxRoot,
+            'sessions',
+            'as_00000000-0000-7f03-8682-76a52604a84a',
+            'context'
+          ),
           deadline: '2099-01-01T00:00:00.000Z',
           inferenceToken: credential('inference-token'),
           leaseId: 'lease-turn-1',
           packageSnapshotId: 'package-turn-1',
-          threadId: 'thread-one',
-          turnId: 'turn-1',
+          threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+          turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
           turnSequence: 0,
           workerControlToken: credential('control-token'),
-          workspaceId: 'workspace-one',
+          workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
         })
       ).toMatchObject({ body: { reasonCode: 'busy' }, disposition: 'refused' });
-      expect(await harness.send('session.close', harness.selector('session-a'))).toMatchObject({
+      expect(
+        await harness.send(
+          'session.close',
+          harness.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+        )
+      ).toMatchObject({
         body: { childState: 'absent', state: 'closed' },
         disposition: 'succeeded',
       });
@@ -371,7 +424,12 @@ describe('Pi Harness integration', () => {
         '--eval',
         `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1')`,
       ]);
-      const stateRoot = join(bad.nativeRoot, 'thread-one', 'pi', 'native');
+      const stateRoot = join(
+        bad.nativeRoot,
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
+        'pi',
+        'native'
+      );
       const sessionPath = join(stateRoot, 'sessions', 'binding-proof', 'session.jsonl');
       const work = join(root, 'work');
       await mkdir(dirname(sessionPath), { recursive: true });
@@ -383,17 +441,17 @@ describe('Pi Harness integration', () => {
         `${JSON.stringify({ cwd: work, id: 'sess-other', type: 'session' })}\n`
       );
       const handle = JSON.stringify({ cwd: work, path: sessionPath, sessionId: headerId });
-      const predecessor = 'session-pred';
+      const predecessor = 'as_00000000-0000-78d8-b6a0-4df523295b90';
       const referencePath = join(
         bad.nativeRoot,
-        'thread-one',
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
         'pi',
         'agent-session-references',
         predecessor
       );
       await mkdir(dirname(referencePath), { recursive: true });
       writeFileSync(referencePath, handle);
-      const refused = await bad.open('session-new', {
+      const refused = await bad.open('as_00000000-0000-7f75-8638-e5ca0f7f5a57', {
         digest: sha256(handle),
         locator: predecessor,
       });
@@ -404,7 +462,13 @@ describe('Pi Harness integration', () => {
       expect(existsSync(marker)).toBe(false);
       expect(
         existsSync(
-          join(bad.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-new')
+          join(
+            bad.nativeRoot,
+            'th_00000000-0000-730e-88b8-d76794f39a2f',
+            'pi',
+            'agent-session-references',
+            'as_00000000-0000-7f75-8638-e5ca0f7f5a57'
+          )
         )
       ).toBe(false);
       expect(readFileSync(referencePath, 'utf8')).toBe(handle);
@@ -414,7 +478,7 @@ describe('Pi Harness integration', () => {
         `${JSON.stringify({ cwd: work, id: headerId, type: 'session' })}\n`
       );
       const good = harnessFor(root);
-      const opened = await good.open('session-ok', {
+      const opened = await good.open('as_00000000-0000-7f7f-8324-3a4064fb19d5', {
         digest: sha256(handle),
         locator: predecessor,
       });
@@ -422,11 +486,15 @@ describe('Pi Harness integration', () => {
         body: { nativeHandleDigest: sha256(handle), nativeHandleState: 'ready', state: 'open' },
         disposition: 'succeeded',
       });
-      expect(await good.send('session.inspect', good.selector('session-ok'))).toMatchObject({
+      expect(
+        await good.send('session.inspect', good.selector('as_00000000-0000-7f7f-8324-3a4064fb19d5'))
+      ).toMatchObject({
         body: { nativeHandleDigest: sha256(handle), nativeHandleState: 'ready' },
         disposition: 'succeeded',
       });
-      expect(await good.send('session.close', good.selector('session-ok'))).toMatchObject({
+      expect(
+        await good.send('session.close', good.selector('as_00000000-0000-7f7f-8324-3a4064fb19d5'))
+      ).toMatchObject({
         body: { childState: 'absent', state: 'closed' },
         disposition: 'succeeded',
       });

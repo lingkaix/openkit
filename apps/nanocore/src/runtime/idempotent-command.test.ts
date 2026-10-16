@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { recordServerAuditEvent } from '../audit-events.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { type CommandRequestScope, FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { type InflightIdempotentCommand, runIdempotentCommand } from './idempotent-command.js';
 
 describe('workspace-transaction idempotent commands', () => {
@@ -21,7 +22,7 @@ describe('workspace-transaction idempotent commands', () => {
         execute: async () => {
           executionCount += 1;
           await Promise.resolve();
-          return { id: `turn_${actorId}` };
+          return { id: testEntityId('tu', `turn_${actorId}`) };
         },
         inflightCommands,
         input: {},
@@ -31,13 +32,22 @@ describe('workspace-transaction idempotent commands', () => {
         requestId: 'shared-request-id',
         responseId: (result) => result.id,
         responseKind: 'turn',
-        scope: { actorId, threadId: 'th_demo', workspaceId: 'ws_demo' },
+        scope: {
+          actorId,
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
         store,
       });
 
-    await expect(Promise.all([run('user_1'), run('user_2')])).resolves.toEqual([
-      { id: 'turn_user_1' },
-      { id: 'turn_user_2' },
+    await expect(
+      Promise.all([
+        run('usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'),
+        run('usr_00000000-0000-7a71-a8b1-dcc65a83481f'),
+      ])
+    ).resolves.toEqual([
+      { id: testEntityId('tu', 'turn_usr_00000000-0000-7e68-8ab1-8dcac1be1b5b') },
+      { id: testEntityId('tu', 'turn_usr_00000000-0000-7a71-a8b1-dcc65a83481f') },
     ]);
     expect(executionCount).toBe(2);
   });
@@ -47,7 +57,10 @@ describe('workspace-transaction idempotent commands', () => {
     const coreDb = openCoreDb(dataRoot);
     const store = new FsStore({ dataRoot });
     const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
-    const scope: CommandRequestScope = { coreId: 'server', targetUserId: 'user_local' };
+    const scope: CommandRequestScope = {
+      coreId: 'server',
+      targetUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    };
 
     try {
       applyMigrations(coreDb);
@@ -63,43 +76,43 @@ describe('workspace-transaction idempotent commands', () => {
         scope,
         store,
       };
-      const input = { userId: 'user_local' };
+      const input = { userId: 'usr_00000000-0000-7000-8000-000000000001' };
 
       const result = await runIdempotentCommand({
         ...common,
         execute: () => {
           coreDb.sqlite
             .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-            .run('2026-07-19T00:00:00.000Z', 'user_local');
+            .run('2026-07-19T00:00:00.000Z', 'usr_00000000-0000-7000-8000-000000000001');
           recordServerAuditEvent({
             action: 'user.disable',
-            actor: { id: 'user_admin', kind: 'user' },
-            auditEventId: 'aud_user_disable_1',
+            actor: { id: 'usr_00000000-0000-768a-8658-44c33d82c1f5', kind: 'user' },
+            auditEventId: 'aud_00000000-0000-7140-ad1a-008a1f2592a8',
             coreDb,
             now: new Date('2026-07-19T00:00:00.000Z'),
             outcome: 'succeeded',
-            resource: 'user:user_local',
+            resource: 'user:usr_00000000-0000-7000-8000-000000000001',
             resourceRevision: 1,
-            subject: { id: 'user_local', kind: 'user' },
+            subject: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
             summary: 'User disabled.',
           });
-          return { id: 'user_local' };
+          return { id: 'usr_00000000-0000-7000-8000-000000000001' };
         },
         input,
         requestId: 'disable-user-1',
       });
 
-      expect(result).toEqual({ id: 'user_local' });
+      expect(result).toEqual({ id: 'usr_00000000-0000-7000-8000-000000000001' });
       expect(
         coreDb.sqlite
           .prepare('SELECT status, disabled_at FROM users WHERE id = ?')
-          .get('user_local')
+          .get('usr_00000000-0000-7000-8000-000000000001')
       ).toEqual({ disabled_at: '2026-07-19T00:00:00.000Z', status: 'disabled' });
       expect(coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()).toEqual({
         count: 1,
       });
       expect(coreDb.sqlite.prepare('SELECT response_id FROM idempotency_requests').get()).toEqual({
-        response_id: 'user_local',
+        response_id: 'usr_00000000-0000-7000-8000-000000000001',
       });
       await expect(
         runIdempotentCommand({
@@ -110,12 +123,12 @@ describe('workspace-transaction idempotent commands', () => {
           input,
           requestId: 'disable-user-1',
         })
-      ).resolves.toEqual({ id: 'user_local' });
+      ).resolves.toEqual({ id: 'usr_00000000-0000-7000-8000-000000000001' });
       await expect(
         runIdempotentCommand({
           ...common,
-          execute: () => ({ id: 'user_local' }),
-          input: { changed: true, userId: 'user_local' },
+          execute: () => ({ id: 'usr_00000000-0000-7000-8000-000000000001' }),
+          input: { changed: true, userId: 'usr_00000000-0000-7000-8000-000000000001' },
           requestId: 'disable-user-1',
         })
       ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
@@ -126,23 +139,25 @@ describe('workspace-transaction idempotent commands', () => {
           execute: () => {
             coreDb.sqlite
               .prepare("UPDATE users SET status = 'active', disabled_at = NULL WHERE id = ?")
-              .run('user_local');
+              .run('usr_00000000-0000-7000-8000-000000000001');
             recordServerAuditEvent({
               action: 'user.disable.rollback',
-              auditEventId: 'aud_user_disable_rollback',
+              auditEventId: 'aud_00000000-0000-7254-a975-bd0b63c0ab0b',
               coreDb,
               outcome: 'failed',
               summary: 'Rolled back test event.',
             });
-            return { id: 'user_local' };
+            return { id: 'usr_00000000-0000-7000-8000-000000000001' };
           },
-          input: { rollback: true, userId: 'user_local' },
+          input: { rollback: true, userId: 'usr_00000000-0000-7000-8000-000000000001' },
           requestId: 'disable-user-rollback',
           responseId: () => null as unknown as string,
         })
       ).rejects.toThrow();
       expect(
-        coreDb.sqlite.prepare('SELECT status FROM users WHERE id = ?').get('user_local')
+        coreDb.sqlite
+          .prepare('SELECT status FROM users WHERE id = ?')
+          .get('usr_00000000-0000-7000-8000-000000000001')
       ).toEqual({ status: 'disabled' });
       expect(coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()).toEqual({
         count: 1,
@@ -156,8 +171,8 @@ describe('workspace-transaction idempotent commands', () => {
             command: 'user.disable',
             inputHash: 'sha256:test',
             requestId: 'ambiguous-owner',
-            response: { id: 'user_local', kind: 'user' },
-            scope: { coreId: 'server', workspaceId: 'ws_demo' },
+            response: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
+            scope: { coreId: 'server', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           },
           coreDb
         )
@@ -169,7 +184,7 @@ describe('workspace-transaction idempotent commands', () => {
 
   it('commits synchronous owners with receipts and rolls back incomplete commands', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-idempotent-command-'));
-    const workspaceId = 'ws_test';
+    const workspaceId = 'ws_00000000-0000-796a-8af7-97608a790532';
     const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
 

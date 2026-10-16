@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
@@ -9,13 +10,15 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -39,15 +42,15 @@ function fixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    tokenId: `tok_${randomUUID()}`,
-    ownerUserId: 'user_local',
+    tokenId: allocateEntityId('tok'),
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const actor: Actor = {
     kind: 'token',
-    userId: 'user_local',
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     tokenId: token.tokenId,
     tokenScope: 'server-admin',
     tokenWorkspaceIds: [],
@@ -57,8 +60,9 @@ function fixture() {
   const thread = store.createThread(
     workspaceId,
     'Catalog update',
-    `thread_${randomUUID()}`,
-    'administration'
+    allocateEntityId('th'),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: actor.userId }
   );
   const turn = store.createTurn(
     workspaceId,
@@ -264,7 +268,11 @@ describe('administration catalog configuration', () => {
       { extensions: {} },
       { baseUrl: 'https://bad.invalid' },
       { models: [] },
-      { modelMetadata: { 'gpt-5': { secretRef: 'vault://not-editable' } } },
+      {
+        modelMetadata: {
+          'gpt-5': { secretRef: 'vault://vault_00000000-0000-7cca-ad90-c1173d3bc17d' },
+        },
+      },
       { modelMetadata: { missing: { tool_call: true } } },
     ]) {
       expect(() => f.service.propose({ ...f.request, changes }, f.home)).toThrow();
@@ -324,7 +332,11 @@ describe('administration catalog configuration', () => {
     const result = await f.service.apply(request);
     const outcome = f.store
       .listArtifacts(f.workspaceId)
-      .find((artifact) => artifact.id.startsWith('artifact_configuration_result_'))!;
+      .find(
+        (artifact) =>
+          artifact.id ===
+          deriveEntityId('ar', ['configuration_result', { userId: f.actor.userId, request }])
+      )!;
     const root = join(f.dataRoot, 'workspaces', f.workspaceId, 'artifacts', outcome.id);
     const body = {
       ...result,
@@ -358,7 +370,10 @@ describe('administration catalog configuration', () => {
     expect(await f.service.apply(request)).toEqual(result);
     expect(f.reload).toHaveBeenCalledTimes(1);
     await expect(
-      f.service.apply({ ...request, candidate: { ...request.candidate, artifactId: 'missing' } })
+      f.service.apply({
+        ...request,
+        candidate: { ...request.candidate, artifactId: testEntityId('ar', 'missing') },
+      })
     ).rejects.toThrow();
   });
 
@@ -383,10 +398,11 @@ describe('administration catalog configuration', () => {
     });
     await expect(scoped.apply(f.confirm(proposal))).rejects.toThrow('administrator authority');
     const foreign = f.store.createThread(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'Project thread',
-      'thread_foreign',
-      'administration'
+      allocateEntityId('th'),
+      'administration',
+      { visibility: 'private', privateOwnerUserId: f.actor.userId }
     );
     expect(() => session.propose(f.request, { ...f.home, threadId: foreign.id })).toThrow();
     expect((await session.apply(f.confirm(proposal))).persisted).toBe(true);

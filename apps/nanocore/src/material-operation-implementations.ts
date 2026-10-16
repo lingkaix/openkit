@@ -2,11 +2,7 @@ import { createHash } from 'node:crypto';
 import type { MATERIAL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { projectThreadMaterialContext } from './context/worker-context-projection.js';
 import { type CommandRequestRecord, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
-import {
-  type AdmittedOperationContext,
-  type FamilyImplementations,
-  publicOperationActor,
-} from './operation-contract.js';
+import type { AdmittedOperationContext, FamilyImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import {
   IdempotencyKeyConflictError,
@@ -159,7 +155,7 @@ export function createMaterialOperationImplementations({
             createWorkspaceMaterial(workspaceDb, {
               ...input,
               acceptedAt: new Date().toISOString(),
-              actorId: publicOperationActor(context).userId,
+              actor: context.actorRef,
             }),
           replay: (record) => replayMaterialCreate(workspaceDb, record),
           responseId: (result) => result.materialId,
@@ -204,7 +200,7 @@ export function createMaterialOperationImplementations({
             return saveWorkspaceMaterialRevision(workspaceDb, {
               ...input,
               acceptedAt: new Date().toISOString(),
-              actorId: publicOperationActor(context).userId,
+              actor: context.actorRef,
               materialId,
             });
           },

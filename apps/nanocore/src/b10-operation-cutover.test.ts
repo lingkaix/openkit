@@ -9,19 +9,19 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { quickChatWorkspaceIdForUser } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import * as workerOwner from './worker-environments/worker-environment-operations.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const digest = `sha256:${'b'.repeat(64)}`;
-const storageRef = `wst_${'a'.repeat(32)}`;
+const storageRef = 'wst_00000000-0000-7b39-9ec2-cb19893c9f63';
 const requestId = '11111111-1111-4111-8111-111111111111';
 const candidate = { artifactId: 'artifact_missing', artifactVersion: 1, contentDigest: digest };
 const activation = {
@@ -32,10 +32,10 @@ const activation = {
   target: { kind: 'agent', agentId: 'codex' },
 };
 const inputs = [
-  ['GET', '/api/app/workspaces/ws_demo/worker-environments', {}],
+  ['GET', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/worker-environments', {}],
   [
     'POST',
-    '/api/app/workspaces/ws_demo/worker-environments/select',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/worker-environments/select',
     {
       storageRef,
       expectedRevision: 1,
@@ -44,10 +44,14 @@ const inputs = [
       threadId: 'thread_missing',
     },
   ],
-  ['GET', `/api/app/workspaces/ws_demo/worker-environments/${storageRef}/status`, {}],
+  [
+    'GET',
+    `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/worker-environments/${storageRef}/status`,
+    {},
+  ],
   [
     'POST',
-    `/api/app/workspaces/ws_demo/worker-environments/${storageRef}/purge`,
+    `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/worker-environments/${storageRef}/purge`,
     {
       storageRef,
       requestId,
@@ -114,7 +118,7 @@ describe('B10 retired routes', () => {
     for (const workspace of store.listWorkspaces())
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
     const app = createApp({ coreDb, dataRoot, store });
@@ -143,11 +147,11 @@ function admittedFixture() {
   for (const workspace of store.listWorkspaces())
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
     tokenId: 'token_b10_admission',
@@ -215,7 +219,7 @@ function admittedFixture() {
 describe('B10 admission and family errors', () => {
   it('gates all eight mutations through HTTP and MCP before receipts, private Threads or host effects change', async () => {
     const f = admittedFixture();
-    const quickChatId = quickChatWorkspaceIdForUser('user_local');
+    const quickChatId = quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001');
     const beforeThreads = f.store.listThreads(quickChatId);
     const beforeAudit = listServerAuditEvents(f.coreDb).filter((event) =>
       event.action.startsWith('app.update.')
@@ -223,7 +227,10 @@ describe('B10 admission and family errors', () => {
     f.closeAdmission();
     try {
       for (const [operation, input] of [
-        ['worker-environment.purge', { ...inputs[3][2], workspaceId: 'ws_demo' }],
+        [
+          'worker-environment.purge',
+          { ...inputs[3][2], workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        ],
         [
           'worker-environment.prepare',
           {
@@ -259,12 +266,12 @@ describe('B10 admission and family errors', () => {
         expect(f.store.listThreads(quickChatId)).toEqual(beforeThreads);
         expect(
           f.store.getCommandRequest('worker_environment.purge', requestId, {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).toBeNull();
         expect(
           f.store.getCommandRequest('conversation.submit', requestId, {
-            actorId: 'user_local',
+            actorId: 'usr_00000000-0000-7000-8000-000000000001',
             workspaceId: quickChatId,
             threadId: 'thread_missing',
           })
@@ -314,27 +321,37 @@ describe('B10 admission and family errors', () => {
     );
     const f = admittedFixture();
     try {
-      const response = await f.http('worker-environment.list', { workspaceId: 'ws_demo' });
+      const response = await f.http('worker-environment.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toMatchObject({
         code: 'revision_conflict',
         message: failure.message,
       });
-      expect(await f.mcp('worker-environment.list', { workspaceId: 'ws_demo' })).toMatchObject({
+      expect(
+        await f.mcp('worker-environment.list', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      ).toMatchObject({
         isError: true,
         status: 409,
         code: 'revision_conflict',
         message: failure.message,
       });
       failure = new Error('CANARY_B10_NATIVE: Unexpected owner fault at /private/native/worker.');
-      const unknown = await f.http('worker-environment.list', { workspaceId: 'ws_demo' });
+      const unknown = await f.http('worker-environment.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       expect(unknown.status).toBe(500);
       const body = await unknown.text();
       expect(body).toBe('Internal Server Error');
       expect(body).not.toContain('CANARY_B10_NATIVE');
       expect(body).not.toContain(failure.message);
       expect(body).not.toContain('/private/native/worker');
-      const mcp = await f.mcp('worker-environment.list', { workspaceId: 'ws_demo' });
+      const mcp = await f.mcp('worker-environment.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       expect(mcp).toEqual({
         isError: true,
         code: 'operation_failed',

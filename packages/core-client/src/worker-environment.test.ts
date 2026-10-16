@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createCoreClient } from './client.js';
 
-const STORAGE_REF = `wst_${'a'.repeat(32)}`;
+const STORAGE_REF = 'wst_00000000-0000-7b39-9ec2-cb19893c9f63';
 const DIGEST = `sha256:${'b'.repeat(64)}`;
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const TIMESTAMP = '2026-09-10T00:00:00.000Z';
@@ -29,19 +29,19 @@ const environment = {
   state: 'idle',
   storageRef: STORAGE_REF,
   updatedAt: TIMESTAMP,
-  workspaceId: 'ws_demo',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
 };
 
 describe('Worker environment App API client', () => {
   it('uses global Agent preparation, recovery, and activation routes', async () => {
     const requests: Array<{ body: Record<string, unknown>; path: string }> = [];
     const authoredCandidate = {
-      artifactId: 'artifact_authored',
+      artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
       artifactVersion: 1,
       contentDigest: DIGEST,
     };
     const resolvedCandidate = {
-      artifactId: 'artifact_resolved',
+      artifactId: 'ar_00000000-0000-7fd1-9bc1-cf5509dbe80c',
       artifactVersion: 1,
       contentDigest: DIGEST,
     };
@@ -51,8 +51,8 @@ describe('Worker environment App API client', () => {
     };
     const replaceNow = {
       prompt: 'Continue the implementation with the prepared image.',
-      threadId: 'thread_target',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7f61-b900-3f424d23686a',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const target = { agentId: 'codex', kind: 'agent' as const };
     const affectedStorage = [{ expectedRevision: 4, storageRef: STORAGE_REF }];
@@ -118,7 +118,7 @@ describe('Worker environment App API client', () => {
     });
 
     await client.operations['worker-environment.prepare']({
-      administrationThreadId: 'thread_admin',
+      administrationThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
       configuration,
       declaration: { kind: 'reference', pullPolicy: 'never', ref: DIGEST },
       replaceNow,
@@ -126,7 +126,7 @@ describe('Worker environment App API client', () => {
       target,
     });
     await client.operations['worker-environment.recover']({
-      administrationThreadId: 'thread_admin_recovery',
+      administrationThreadId: 'th_00000000-0000-7517-9a5a-1c5686fe112c',
       recoverFrom: authoredCandidate,
       requestId: '22222222-2222-4222-8222-222222222222',
     });
@@ -160,7 +160,7 @@ describe('Worker environment App API client', () => {
     ]);
     expect(requests[0]?.body).toMatchObject({ target, replaceNow });
     expect(requests[1]?.body).toEqual({
-      administrationThreadId: 'thread_admin_recovery',
+      administrationThreadId: 'th_00000000-0000-7517-9a5a-1c5686fe112c',
       recoverFrom: authoredCandidate,
     });
   });
@@ -204,15 +204,15 @@ describe('Worker environment App API client', () => {
     });
 
     await client.operations['worker-environment.list']({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ...{ limit: 12 },
     });
     await client.operations['worker-environment.status']({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       storageRef: STORAGE_REF,
     });
     await client.operations['worker-environment.purge']({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ...{
         confirmation: workerEnvironmentPurgeConfirmation({
           expectedRevision: 4,
@@ -226,18 +226,18 @@ describe('Worker environment App API client', () => {
 
     expect(requests).toEqual([
       {
-        body: { workspaceId: 'ws_demo', limit: 12 },
+        body: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', limit: 12 },
         method: 'POST',
         path: '/api/app/operations/worker-environment.list',
       },
       {
-        body: { workspaceId: 'ws_demo', storageRef: STORAGE_REF },
+        body: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', storageRef: STORAGE_REF },
         method: 'POST',
         path: '/api/app/operations/worker-environment.status',
       },
       {
         body: {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           confirmation: `purge-worker-environment:${STORAGE_REF}:4`,
           expectedRevision: 4,
           storageRef: STORAGE_REF,
@@ -257,11 +257,11 @@ describe('Worker environment App API client', () => {
         return Response.json({});
       },
     });
-    const otherRef = `wst_${'c'.repeat(32)}`;
+    const otherRef = 'wst_00000000-0000-7e5b-8ce2-9fffde100f4a';
 
     await expect(
       client.operations['worker-environment.purge']({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           confirmation: workerEnvironmentPurgeConfirmation({
             expectedRevision: 4,
