@@ -66,6 +66,7 @@ describe('worker inference runtime hints', () => {
       nativeThreadId: fixture.turnMetadata.thread_id,
       nativeTurnId: fixture.turnMetadata.turn_id,
       runtimeFamily: 'codex',
+      requestKind: 'turn',
     });
   });
 
@@ -86,6 +87,7 @@ describe('worker inference runtime hints', () => {
       nativeTurnId: fixture.turnMetadata.turn_id,
       parentNativeThreadId: fixture.turnMetadata.parent_thread_id,
       runtimeFamily: 'codex',
+      requestKind: 'turn',
       subagentKind: 'thread_spawn',
     });
   });
@@ -143,8 +145,8 @@ describe('worker inference runtime hints', () => {
 
       expect(
         readCodexInferenceRuntimeHint(fixture.headers, { client_metadata: fixture.clientMetadata })
-          ?.nativeThreadId
-      ).toBe(fixture.turnMetadata.thread_id);
+          ?.requestKind
+      ).toBe(requestKind);
     }
   });
 

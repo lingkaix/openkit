@@ -12,6 +12,8 @@ print_required_version() {
 print_required_version "node" node --version
 print_required_version "pnpm" pnpm --version
 print_required_version "caddy" caddy version
+# Data-root process ownership needs the packaged advisory-lock utility.
+command -v flock >/dev/null
 test -x /usr/local/bin/openkit-operator
 test -x /usr/local/bin/openkit-restore
 openkit-restore --help

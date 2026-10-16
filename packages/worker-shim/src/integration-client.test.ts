@@ -104,6 +104,7 @@ describe('Sandbox Integration', () => {
     };
     const expectedHint = {
       runtimeFamily: 'codex',
+      requestKind: 'turn',
       nativeSessionId: 'native-session',
       nativeThreadId: 'native-thread',
       nativeCacheLineageId: 'private-cache',

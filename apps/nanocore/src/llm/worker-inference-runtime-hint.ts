@@ -14,6 +14,8 @@ export type WorkerInferenceSubagentKind =
 export interface WorkerInferenceRuntimeHint {
   /** Pinned runtime adapter family. */
   readonly runtimeFamily: 'codex';
+  /** Validated native request phase, consumed before Provider dispatch. */
+  readonly requestKind?: 'turn' | 'prewarm' | 'compaction';
   /** Runtime-native session identity. */
   readonly nativeSessionId: string;
   /** Runtime-native thread identity. */
@@ -35,6 +37,7 @@ const boundedHintString = z
   .max(16 * 1024);
 const runtimeHintSchema = z.object({
   runtimeFamily: z.literal('codex'),
+  requestKind: z.enum(['turn', 'prewarm', 'compaction']).optional(),
   nativeSessionId: boundedHintString,
   nativeThreadId: boundedHintString,
   nativeTurnId: boundedHintString.optional(),
@@ -65,6 +68,7 @@ export function readWorkerInferenceRuntimeHint(
   const hint = parsed.data;
   return {
     runtimeFamily: hint.runtimeFamily,
+    ...(hint.requestKind !== undefined ? { requestKind: hint.requestKind } : {}),
     nativeSessionId: hint.nativeSessionId,
     nativeThreadId: hint.nativeThreadId,
     ...(hint.nativeTurnId !== undefined ? { nativeTurnId: hint.nativeTurnId } : {}),
