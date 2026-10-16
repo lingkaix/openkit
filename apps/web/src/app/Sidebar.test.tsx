@@ -29,10 +29,24 @@ function renderAssistantNavigation(createThread: CoreClient['operations']['threa
   const client = {
     core: {},
     operations: {
-      'workspace.list': async () => ({ items: [
-        { id: projectId, name: 'Project alpha', kind: 'general' },
-        { id: 'ws_019a0000-0000-7000-8000-000000000102', name: 'Personal notes', kind: 'quick-chat' },
-      ].map((workspace) => ({ workspace, membershipStatus: 'active', accessCause: 'membership', effectiveRole: 'owner', ownerUserId: 'usr_019a0000-0000-7000-8000-000000000104', membershipRevision: 1, registryRevision: 1 })) }),
+      'workspace.list': async () => ({
+        items: [
+          { id: projectId, name: 'Project alpha', kind: 'general' },
+          {
+            id: 'ws_019a0000-0000-7000-8000-000000000102',
+            name: 'Personal notes',
+            kind: 'quick-chat',
+          },
+        ].map((workspace) => ({
+          workspace,
+          membershipStatus: 'active',
+          accessCause: 'membership',
+          effectiveRole: 'owner',
+          ownerUserId: 'usr_019a0000-0000-7000-8000-000000000104',
+          membershipRevision: 1,
+          registryRevision: 1,
+        })),
+      }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'thread.create': createThread,
       'thread.update': vi.fn(),
@@ -40,8 +54,19 @@ function renderAssistantNavigation(createThread: CoreClient['operations']['threa
       'turn.start': vi.fn(),
     },
   } as unknown as CoreClient;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={queryClient}><CoreClientProvider client={client}><MemoryRouter><Sidebar /><Location /></MemoryRouter></CoreClientProvider></QueryClientProvider>);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <CoreClientProvider client={client}>
+        <MemoryRouter>
+          <Sidebar />
+          <Location />
+        </MemoryRouter>
+      </CoreClientProvider>
+    </QueryClientProvider>
+  );
   return { client, queryClient };
 }
 
@@ -114,9 +139,13 @@ describe('conversation navigation sidebar', () => {
       updatedAt: '2026-10-16T00:00:00.000Z',
     } as const;
     let rejectOpening!: (reason: Error) => void;
-    const pending = new Promise<typeof thread>((_, reject) => { rejectOpening = reject; });
-    const create = vi.fn<CoreClient['operations']['thread.create']>()
-      .mockReturnValueOnce(pending).mockResolvedValue(thread);
+    const pending = new Promise<typeof thread>((_, reject) => {
+      rejectOpening = reject;
+    });
+    const create = vi
+      .fn<CoreClient['operations']['thread.create']>()
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue(thread);
     const { client, queryClient } = renderAssistantNavigation(create);
     const assistant = await screen.findByRole('button', { name: 'Assistant' });
     expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
@@ -130,12 +159,18 @@ describe('conversation navigation sidebar', () => {
     expect(error).not.toHaveTextContent('private-opening-error');
     expect(assistant).toBeDisabled();
     await user.click(within(error).getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(screen.getByLabelText('Location')).toHaveTextContent(
-      `/chat/${thread.workspaceId}/${thread.id}`
-    ));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Location')).toHaveTextContent(
+        `/chat/${thread.workspaceId}/${thread.id}`
+      )
+    );
     expect(create).toHaveBeenCalledTimes(2);
     const first = create.mock.calls[0]![0];
-    expect(first).toEqual({ workspaceId: thread.workspaceId, name: 'Assistant', requestId: expect.any(String) });
+    expect(first).toEqual({
+      workspaceId: thread.workspaceId,
+      name: 'Assistant',
+      requestId: expect.any(String),
+    });
     expect(first.requestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(create.mock.calls[1]![0]).toEqual(first);
     expect(thread).toMatchObject({ status: 'archived', name: 'Retained Assistant name' });
@@ -149,8 +184,14 @@ describe('conversation navigation sidebar', () => {
 
   it('drops a departed Workspace opening result and omits Members for the personal Workspace', async () => {
     const user = userEvent.setup();
-    let finishOpening!: (thread: Awaited<ReturnType<CoreClient['operations']['thread.create']>>) => void;
-    const pending = new Promise<Awaited<ReturnType<CoreClient['operations']['thread.create']>>>((resolve) => { finishOpening = resolve; });
+    let finishOpening!: (
+      thread: Awaited<ReturnType<CoreClient['operations']['thread.create']>>
+    ) => void;
+    const pending = new Promise<Awaited<ReturnType<CoreClient['operations']['thread.create']>>>(
+      (resolve) => {
+        finishOpening = resolve;
+      }
+    );
     const create = vi.fn<CoreClient['operations']['thread.create']>().mockReturnValueOnce(pending);
     const { queryClient } = renderAssistantNavigation(create);
     await user.click(await screen.findByRole('button', { name: 'Assistant' }));
@@ -160,11 +201,26 @@ describe('conversation navigation sidebar', () => {
     expect(screen.queryByRole('button', { name: 'Members' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Assistant' })).toBeEnabled();
     await act(async () => {
-      finishOpening({ id: 'th_019a0000-0000-7000-8000-000000000103', workspaceId: 'ws_019a0000-0000-7000-8000-000000000101', name: 'Assistant', preview: 'History', status: 'active', visibility: 'private', privateOwnerUserId: 'usr_019a0000-0000-7000-8000-000000000104', entryPath: 'conversation', createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z' });
+      finishOpening({
+        id: 'th_019a0000-0000-7000-8000-000000000103',
+        workspaceId: 'ws_019a0000-0000-7000-8000-000000000101',
+        name: 'Assistant',
+        preview: 'History',
+        status: 'active',
+        visibility: 'private',
+        privateOwnerUserId: 'usr_019a0000-0000-7000-8000-000000000104',
+        entryPath: 'conversation',
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      });
       await pending;
     });
-    await waitFor(() => expect(queryClient.getMutationCache().getAll()[0]?.state.status).toBe('success'));
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws_019a0000-0000-7000-8000-000000000102');
+    await waitFor(() =>
+      expect(queryClient.getMutationCache().getAll()[0]?.state.status).toBe('success')
+    );
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(
+      'ws_019a0000-0000-7000-8000-000000000102'
+    );
     expect(screen.getByLabelText('Location').textContent).toBe('/');
     queryClient.clear();
   });
