@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -11,6 +11,16 @@ const DIGEST = `sha256:${'b'.repeat(64)}`;
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const TIMESTAMP = '2026-09-10T00:00:00.000Z';
 
+
+const DIAGNOSTICS = {
+  readiness: {
+    serviceAvailability: 'available',
+    productWork: 'blocked',
+    update: { state: 'configured', qualification: 'prepare-required' },
+    maintenanceSafety: { state: 'busy' },
+    executionHost: { state: 'ready', observationAgeMs: 500 },
+  },
+};
 const PREPARED = {
   helperSha256: 'c'.repeat(64),
   preparedHelperSha256: 'c'.repeat(64),
@@ -98,6 +108,7 @@ function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> =
     app: { ...app },
     operations: {
       'token.list': vi.fn().mockResolvedValue({ items: [] }),
+      'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS),
       ...app,
       'app-update.prepare': vi.fn().mockResolvedValue(PREPARED),
       'app-update.start': vi.fn().mockResolvedValue(STARTED),
@@ -107,15 +118,17 @@ function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> =
   } as unknown as CoreClient;
 }
 
-function renderScreen(client: CoreClient) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+function renderScreen(
+  client: CoreClient,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 5_000 } } })
+) {
+  return { queryClient, ...render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
         <AppUpdateScreen />
       </CoreClientProvider>
     </QueryClientProvider>
-  );
+  ) };
 }
 
 async function fillPublishedSource(user: ReturnType<typeof userEvent.setup>) {
@@ -127,6 +140,148 @@ async function fillPublishedSource(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('App update administration', () => {
+  it('requires current admission when remounted over a fresh success', async () => {
+    const client = makeClient();
+    const first = renderScreen(client);
+    await screen.findByRole('button', { name: 'Prepare' });
+    first.unmount();
+    const pending = deferred<{ items: [] }>();
+    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+    renderScreen(client, first.queryClient);
+    expect(client.operations['token.list']).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+    await act(async () => pending.resolve({ items: [] }));
+    expect(await screen.findByRole('button', { name: 'Prepare' })).toBeInTheDocument();
+  });
+
+  it('does not admit a remount from an abandoned pending transport', async () => {
+    const client = makeClient();
+    const abandoned = deferred<{ items: [] }>();
+    const current = deferred<{ items: [] }>();
+    vi.mocked(client.operations['token.list'])
+      .mockImplementationOnce(() => abandoned.promise)
+      .mockImplementationOnce(() => current.promise);
+    const first = renderScreen(client);
+    first.unmount();
+    renderScreen(client, first.queryClient);
+    expect(client.operations['token.list']).toHaveBeenCalledTimes(2);
+    await act(async () => abandoned.resolve({ items: [] }));
+    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+    await act(async () => current.resolve({ items: [] }));
+    expect(await screen.findByRole('button', { name: 'Prepare' })).toBeInTheDocument();
+  });
+
+  it.each([401, 403])('hides a prepared receipt after admission %s through unresolved retry', async (status) => {
+    const user = userEvent.setup();
+    const client = makeClient();
+    const { queryClient } = renderScreen(client);
+    await fillPublishedSource(user);
+    await user.click(screen.getByRole('button', { name: 'Prepare' }));
+    await screen.findByText(REQUEST_ID);
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(status, 'private detail'));
+    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] }));
+    await screen.findByText('Access denied');
+    expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
+    const pending = deferred<{ items: [] }>();
+    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
+    await act(async () => pending.resolve({ items: [] }));
+    await screen.findByRole('button', { name: 'Prepare' });
+    expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
+    expect(client.operations['app-update.start']).not.toHaveBeenCalled();
+  });
+
+  it('hides prepared controls while a new admission read is pending', async () => {
+    const user = userEvent.setup();
+    const client = makeClient();
+    const { queryClient } = renderScreen(client);
+    await fillPublishedSource(user);
+    await user.click(screen.getByRole('button', { name: 'Prepare' }));
+    await screen.findByText(REQUEST_ID);
+    await user.click(screen.getByRole('switch'));
+    const pending = deferred<{ items: [] }>();
+    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+    let refetch!: Promise<void>;
+    act(() => { refetch = queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] }); });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+    await act(async () => { pending.resolve({ items: [] }); await refetch; });
+    await screen.findByRole('button', { name: 'Start update' });
+    expect(client.operations['app-update.start']).not.toHaveBeenCalled();
+  });
+
+  it('blocks effects after an ordinary failed admission refetch', async () => {
+    const client = makeClient();
+    const { queryClient } = renderScreen(client);
+    await screen.findByRole('button', { name: 'Prepare' });
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(500, 'private detail'));
+    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] }));
+    await screen.findByText("Couldn't verify deployment-admin authority.");
+    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+    expect(client.operations['app-update.prepare']).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403])('treats diagnostics %s as denial and keeps receipts hidden during retry', async (status) => {
+    const user = userEvent.setup();
+    const client = makeClient({ 'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS) });
+    const { queryClient } = renderScreen(client);
+    await fillPublishedSource(user);
+    await user.click(screen.getByRole('button', { name: 'Prepare' }));
+    await screen.findByText(REQUEST_ID);
+    vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(new ApiCallError(status, 'private detail'));
+    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] }));
+    await screen.findByText('Access denied');
+    const pending = deferred<{ items: [] }>();
+    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+    await act(async () => pending.resolve({ items: [] }));
+    await screen.findByRole('button', { name: 'Prepare' });
+    expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps prior receipts hidden when diagnostics denial is followed by a 500 retry', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({ 'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS) });
+    const { queryClient } = renderScreen(client);
+    await fillPublishedSource(user);
+    await user.click(screen.getByRole('button', { name: 'Prepare' }));
+    await screen.findByText(REQUEST_ID);
+    vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(new ApiCallError(403, 'private detail'));
+    await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] }));
+    await screen.findByText('Access denied');
+    vi.mocked(client.operations['diagnostics.app']).mockRejectedValue(new ApiCallError(500, 'private detail'));
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(client.operations['diagnostics.app']).toHaveBeenCalledTimes(3));
+    expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+    vi.mocked(client.operations['diagnostics.app']).mockResolvedValue(DIAGNOSTICS as never);
+    await user.click(await screen.findByRole('button', { name: 'Retry' }));
+    await screen.findByRole('button', { name: 'Prepare' });
+    expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
+    expect(client.operations['app-update.start']).not.toHaveBeenCalled();
+  });
+
+  it('allows prepare, consented start and receipt inspection after diagnostics 500', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({ 'diagnostics.app': vi.fn().mockRejectedValue(new ApiCallError(500, 'private detail')) });
+    renderScreen(client);
+    await screen.findByText('Operational diagnostics unavailable.');
+    await fillPublishedSource(user);
+    await user.click(screen.getByRole('button', { name: 'Prepare' }));
+    await screen.findByText(REQUEST_ID);
+    await user.click(screen.getByRole('switch'));
+    await user.click(screen.getByRole('button', { name: 'Start update' }));
+    await screen.findByText('launching');
+    await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+    await waitFor(() => expect(client.operations['app-update.status']).toHaveBeenCalledWith({ requestId: REQUEST_ID }));
+    expect(client.operations['app-update.start']).toHaveBeenCalledExactlyOnceWith({ maintenanceConsent: true, requestId: REQUEST_ID });
+  });
+
   it('prepares a published-digest source and starts only after maintenance consent', async () => {
     const user = userEvent.setup();
     const client = makeClient();
@@ -238,6 +393,37 @@ describe('App update administration', () => {
     expect(screen.getByText('Web assets: Not applicable')).toBeInTheDocument();
   });
 
+  it('inspects the same request after an uncertain start without replaying the effect', async () => {
+    const user = userEvent.setup();
+    const privateDetail = 'private-update-detail';
+    const client = makeClient({ 'app-update.start': vi.fn().mockRejectedValue(new Error(privateDetail)) });
+    const { queryClient, container } = renderScreen(client);
+    await fillPublishedSource(user);
+    await user.click(screen.getByRole('button', { name: 'Prepare' }));
+    await screen.findByText(REQUEST_ID);
+    await user.click(screen.getByRole('switch'));
+    await user.click(screen.getByRole('button', { name: 'Start update' }));
+    await screen.findByText(/If start was interrupted, its outcome may be unknown/);
+    expect(container.innerHTML).not.toContain(privateDetail);
+    expect(screen.getByLabelText('Request ID')).toHaveValue(REQUEST_ID);
+    await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+    await screen.findByText('launching');
+    expect(client.operations['app-update.status']).toHaveBeenCalledExactlyOnceWith({ requestId: REQUEST_ID });
+    expect(client.operations['app-update.start']).toHaveBeenCalledTimes(1);
+    expect(queryClient.getMutationCache().getAll().some((mutation) => mutation.state.error?.message.includes(privateDetail))).toBe(false);
+  });
+
+  it('keeps raw diagnostics denial details out of the query cache', async () => {
+    const privateDetail = 'private-update-detail';
+    const client = makeClient({ 'diagnostics.app': vi.fn().mockRejectedValue(new ApiCallError(403, privateDetail, { details: privateDetail })) });
+    const { queryClient, container } = renderScreen(client);
+    await screen.findByText('Access denied');
+    expect(container.innerHTML).not.toContain(privateDetail);
+    const errors = queryClient.getQueryCache().getAll().map((query) => query.state.error);
+    expect(errors.some((error) => error?.message.includes(privateDetail))).toBe(false);
+    expect(JSON.stringify(errors)).not.toContain(privateDetail);
+  });
+
   it('states missing server-admin authority without a credential prompt', async () => {
     const client = makeClient({
       'token.list': vi
@@ -297,3 +483,10 @@ describe('App update administration', () => {
     expect(subtitle.textContent).not.toMatch(/closed source|helper/i);
   });
 });
+
+/** Hold a transport response independently of query cancellation. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
