@@ -4287,7 +4287,7 @@ describe('#144 real Assistant command wiring', () => {
       const requestId = uuidv5(
         JSON.stringify([
           'assistant-generative',
-          'ws_demo',
+          f.thread.workspaceId,
           f.thread.id,
           f.actorUserId,
           f.requestId,
@@ -4296,7 +4296,7 @@ describe('#144 real Assistant command wiring', () => {
       );
       expect(invoked).toHaveBeenCalledExactlyOnceWith(
         'kernel.apps.create',
-        { ...schema, workspaceId: 'ws_demo', requestId },
+        { ...schema, workspaceId: f.thread.workspaceId, requestId },
         expect.objectContaining({
           kind: 'public',
           actor: { kind: 'local', userId: f.actorUserId },
@@ -4305,7 +4305,7 @@ describe('#144 real Assistant command wiring', () => {
           signal: expect.any(AbortSignal),
         })
       );
-      const apps = listLightApps(f.dataRoot, 'ws_demo');
+      const apps = listLightApps(f.dataRoot, f.thread.workspaceId);
       expect(apps.items).toHaveLength(1);
       expect(apps.items[0]).toMatchObject({ title: schema.title });
       expect(skillModelObservations(f.createResponses.mock.calls[2]![1]).join('')).toContain(
@@ -4315,7 +4315,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(replay.status).toBe(200);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(body);
       expect(invoked).toHaveBeenCalledOnce();
-      expect(listLightApps(f.dataRoot, 'ws_demo')).toEqual(apps);
+      expect(listLightApps(f.dataRoot, f.thread.workspaceId)).toEqual(apps);
       expect(f.dispatchCount()).toBe(3);
       const nextRequest = '00000000-0000-4000-8000-000000001441';
       f.createResponses.mockResolvedValueOnce(selectedSkillCall(f)).mockResolvedValueOnce({
@@ -4338,7 +4338,7 @@ describe('#144 real Assistant command wiring', () => {
         requestId: uuidv5(
           JSON.stringify([
             'assistant-generative',
-            'ws_demo',
+            f.thread.workspaceId,
             f.thread.id,
             f.actorUserId,
             nextRequest,
@@ -4347,7 +4347,7 @@ describe('#144 real Assistant command wiring', () => {
         ),
       });
       expect(invoked.mock.calls[1]![1].requestId).not.toBe(requestId);
-      expect(listLightApps(f.dataRoot, 'ws_demo').items).toHaveLength(2);
+      expect(listLightApps(f.dataRoot, f.thread.workspaceId).items).toHaveLength(2);
     } finally {
       f.close();
     }
@@ -4368,11 +4368,13 @@ describe('#144 real Assistant command wiring', () => {
       }
     );
     f.createResponses.mockImplementationOnce(async () => {
-      f.coreDb.sqlite
-        .prepare(
-          "UPDATE workspace_members SET status = 'removed', removed_at = ? WHERE workspace_id = 'ws_demo' AND user_id = ?"
-        )
-        .run(new Date().toISOString(), f.actorUserId);
+      expect(
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE workspace_members SET status = 'removed', removed_at = ? WHERE workspace_id = ? AND user_id = ?"
+          )
+          .run(new Date().toISOString(), f.thread.workspaceId, f.actorUserId).changes
+      ).toBe(1);
       return {
         id: 'native-read-after-revocation',
         object: 'response',
@@ -4392,7 +4394,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(results).toHaveLength(0);
       expect(f.createResponses).toHaveBeenCalledOnce();
-      expect(listLightApps(f.dataRoot, 'ws_demo').items).toEqual([]);
+      expect(listLightApps(f.dataRoot, f.thread.workspaceId).items).toEqual([]);
     } finally {
       f.close();
     }
@@ -4446,12 +4448,12 @@ describe('#144 real Assistant command wiring', () => {
       const response = await f.submit();
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(f.dispatchCount()).toBe(1);
-      expect(listLightApps(f.dataRoot, 'ws_demo').items).toEqual([
+      expect(listLightApps(f.dataRoot, f.thread.workspaceId).items).toEqual([
         expect.objectContaining({ title: 'Retained native effect' }),
       ]);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems(f.thread.workspaceId, f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
