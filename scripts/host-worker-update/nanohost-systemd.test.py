@@ -206,6 +206,22 @@ class MaintenanceTests(unittest.TestCase):
                 self.assertGreaterEqual(fixture.condition_count, 1)
                 self.assertEqual(fixture.snapshot(), before)
 
+    def test_stock_slice_kill_failed_state_passes_only_with_complete_fencing(self):
+        """The stock self-killing stop leaves failed/failed after its whole slice is empty."""
+        with Fixture() as fixture:
+            fixture.facts.update(ActiveState="failed", SubState="failed")
+            before = fixture.snapshot()
+            self.assertIsNone(fixture.maintenance().assert_fenced_and_inhibited())
+            self.assertEqual(fixture.snapshot(), before)
+
+    def test_failed_state_cannot_hide_main_or_sibling_execution(self):
+        """A failed supervisor state grants no exemption from actual process or population checks."""
+        for main, populated, procs in (("1", 0, b""), ("0", 1, b""), ("0", 0, b"4123\n")):
+            with self.subTest(main=main, populated=populated, procs=procs), Fixture() as fixture:
+                fixture.facts.update(ActiveState="failed", SubState="failed", MainPID=main)
+                fixture.group("/docker-retained.scope", populated, procs)
+                self.assert_refusal(fixture)
+
     def test_absent_domain_is_distinct_from_missing_existing_facts(self):
         """A proved absent fixed domain can pass with an empty reported ControlGroup."""
         with Fixture() as fixture:
@@ -391,7 +407,7 @@ class MaintenanceTests(unittest.TestCase):
         """Stopped, loaded, canonical and inhibited are positive facts, not defaults."""
         variants = {
             "MainPID": ("1", "-1", "unknown"), "ActiveState": ("active", "failed", "deactivating"),
-            "SubState": ("running", "stop-sigterm"), "ControlGroup": ("/other.slice", "relative"),
+            "SubState": ("running", "stop-sigterm", "failed"), "ControlGroup": ("/other.slice", "relative"),
             "Slice": ("system.slice", ""), "Restart": ("always", "on-failure", ""),
             "DropInPaths": ("", GUARD + " /etc/systemd/system/service.d/extra.conf"),
             "FragmentPath": ("/run/systemd/system/" + UNIT, ""),
