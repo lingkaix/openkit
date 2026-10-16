@@ -129,7 +129,13 @@ impl AcquisitionError {
     /// Reports safe host-local evidence and preserves the existing effect failure reason.
     ///
     /// Diagnostic output cannot change the result if the journal writer fails.
-    pub(crate) fn report_effect_failure(self, _journal: &mut impl Write) -> &'static str {
+    pub(crate) fn report_effect_failure(self, journal: &mut impl Write) -> &'static str {
+        if self == Self::Io {
+            let _ = writeln!(
+                journal,
+                "nanohost_image_acquisition_failed cause=filesystem_io"
+            );
+        }
         self.static_reason()
     }
 }
@@ -5440,7 +5446,10 @@ mod tests {
             Err(StoreError::Missing)
         ));
         let mut journal = Vec::new();
-        assert_eq!(error.report_effect_failure(&mut journal), "image.acquire failed");
+        assert_eq!(
+            error.report_effect_failure(&mut journal),
+            "image.acquire failed"
+        );
         assert_eq!(
             String::from_utf8(journal).unwrap(),
             "nanohost_image_acquisition_failed cause=filesystem_io\n"
