@@ -201,7 +201,7 @@ async function writeNanoHostConfig(dataRoot, nanoHostPort) {
               secretPath: '/run/openkit-smoke/nanohost-B.token',
             },
           },
-          deploymentId: 'deployment-smoke',
+          deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000601',
           identityId: 'nanohost-smoke',
           rendezvousUrl: `http://127.0.0.1:${nanoHostPort}`,
         },

@@ -1182,11 +1182,11 @@ class DoctorReadinessTests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(encoded)
             def do_GET(self):
-                self.respond({"protocolVersion": "0.5.0", "capabilities": [], "eventFamilies": []})
+                self.respond({"protocolVersion": "0.6.0", "capabilities": [], "eventFamilies": []})
             def do_POST(self):
                 self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 if self.reject_reads:
-                    encoded = json.dumps({"protocolVersion": "0.5.0", "code": "deployment_admin_required", "message": "Administrator authority required."}).encode()
+                    encoded = json.dumps({"protocolVersion": "0.6.0", "code": "deployment_admin_required", "message": "Administrator authority required."}).encode()
                     self.send_response(403)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(encoded)))
