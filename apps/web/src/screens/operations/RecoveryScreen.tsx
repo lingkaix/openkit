@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { QueryObserver, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import {
@@ -188,14 +188,21 @@ export function RecoveryScreen() {
     const query = queryClient.getQueryCache().find({ queryKey, exact: true });
     if (!query) return false;
     const updatesBeforeRead = query.state.dataUpdateCount;
-    await queryClient.refetchQueries({ queryKey, exact: true, type: 'all' });
-    // Cancellation can restore cached success; only this retained query's completed new read settles.
-    return (
-      queryClient.getQueryCache().find({ queryKey, exact: true }) === query &&
-      query.state.status === 'success' &&
-      query.state.fetchStatus === 'idle' &&
-      query.state.dataUpdateCount > updatesBeforeRead
-    );
+    // This existing command still owns its settlement read when the selected Workspace changes.
+    const observer = new QueryObserver(queryClient, { ...query.options, enabled: false });
+    const release = observer.subscribe(() => {});
+    try {
+      await observer.refetch();
+      // Cancellation can restore cached success; only this retained query's completed new read settles.
+      return (
+        queryClient.getQueryCache().find({ queryKey, exact: true }) === query &&
+        query.state.status === 'success' &&
+        query.state.fetchStatus === 'idle' &&
+        query.state.dataUpdateCount > updatesBeforeRead
+      );
+    } finally {
+      release();
+    }
   }
 
   async function settleWorkerRead(originWorkspaceId: string, checkpointId: string) {
