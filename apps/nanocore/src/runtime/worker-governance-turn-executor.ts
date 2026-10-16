@@ -533,6 +533,7 @@ export async function prepareWorkerTurnContextPackage(
     });
     sourceFiles.push(
       ...(await prepareArtifactSourceInputs({
+        admission,
         workspaceRoot,
         artifacts: [...selectedArtifacts.values()],
         assertCurrent: assertCurrentArtifact,

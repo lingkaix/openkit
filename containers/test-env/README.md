@@ -42,3 +42,5 @@ Checks that drive Docker or a real worker runtime themselves run on the host: th
 - Image catalog and build scripts: `containers/README.md`
 - Test taxonomy and verification depth: `docs/specs/20260529-test_strategy.md`
 - Container rule, platform-divergence rule, and oracle classification: `docs/verification-instruments.md`
+
+The PDF text-layer tests use packaged Poppler (`pdfinfo` and `pdftotext`), Bubblewrap and `prlimit` under their actual namespace and per-process limits. These are ordinary test dependencies. Their package presence does not prove that the selected container runtime permits the fixed isolation boundary; the native tests must exercise that boundary and fail when unavailable. No skip, fake parser, container privilege or security-setting change is implied. Host-native PDF results do not qualify this image.

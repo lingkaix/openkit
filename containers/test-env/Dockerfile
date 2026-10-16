@@ -41,6 +41,7 @@ RUN touch /etc/openkit-test-env
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
+    bubblewrap \
     ca-certificates \
     cmake \
     g++ \
@@ -50,7 +51,9 @@ RUN apt-get update \
     libc6-dev \
     make \
     pkg-config \
+    poppler-utils \
     python3 \
+    util-linux \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable \
