@@ -86,7 +86,7 @@ export interface OperationInvocationDependencies {
   /** Private administration tools and configuration services; invocation supplies its store. */
   readonly administrationServices?: Omit<
     Parameters<typeof createAdministrationOperationImplementations>[0],
-    'store'
+    'store' | 'repositoryWorkspaceDb'
   >;
   /** Restricted App-update host adapter and audit database. */
   readonly appUpdateServices?: Parameters<typeof createAppUpdateOperationImplementations>[0];
@@ -175,6 +175,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createAdministrationOperationImplementations({
       ...dependencies.administrationServices!,
       store: dependencies.store!,
+      repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
     }),
     createAppUpdateOperationImplementations({
       ...(dependencies.appUpdateServices ?? { transport: null }),

@@ -876,6 +876,21 @@ export function diffRuntimeConfig(
       )
     );
   }
+  if (
+    !equalSemantic(
+      previous.openKitConfig.policy?.workerGitReadMaintenance ?? [],
+      next.openKitConfig.policy?.workerGitReadMaintenance ?? []
+    )
+  ) {
+    applied.push(
+      change(
+        'policy.workerGitReadMaintenance',
+        'hot-swappable',
+        'applied',
+        'Finite Worker Git-read maintenance assignments changed for later effects.'
+      )
+    );
+  }
   if (!equalSemantic(previous.gatewayConfig, next.gatewayConfig)) {
     applied.push(
       change(
