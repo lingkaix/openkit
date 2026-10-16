@@ -3376,8 +3376,15 @@ export function createConversationService({
 
       /** Validates the objective before creating receiving work through the existing product Turn owner. */
       const startSelectedWorker = async (): Promise<ConversationCommandResult> => {
+        // The confirmed file handoff admits this exact brief and verified originals.
+        // The receiving Thread below has no access to the private source history.
+        const confirmedFileHandoff =
+          acceptedTarget.requiresFileHandoffConfirmation &&
+          chatInput.fileHandoffConfirmed &&
+          filePayloadPaths;
         if (
-          store.getThread(workspaceId, threadId).visibility === 'private' ||
+          (store.getThread(workspaceId, threadId).visibility === 'private' &&
+            !confirmedFileHandoff) ||
           artifacts.some(
             (artifact) =>
               artifact.origin.kind === 'turn-output' &&
