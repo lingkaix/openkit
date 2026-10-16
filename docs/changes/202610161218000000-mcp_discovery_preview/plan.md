@@ -49,3 +49,7 @@ p22-preview-generation-and-schema.log completed successfully: all26AppAPI files 
 p22-preview-request-handle-correction.log then passed the full preview and receipt suites (19cases) and NanoCore typecheck after the request-owned handle fix. The actual credentialed Workspace path proves every fresh request handle closed before teardown, including injected material-resolution failure with no new upstream contact, while Core stays open. Source R1 is corrected; independent exact generated-head delta review remains required. Earlier68native/30Web/type results overlap this rerun and are not additive totals. The native owner now states explicitly that closure remains awaited after the discovery deadline.
 
 Complete affected-module Express gate and mandatory Web e2e, followed by the containing main-push CI, remain open. No live service or whole-P22 completion is claimed.
+
+## Exact Gate Platform Declaration Correction
+
+The exact08c20649 Express gate failed check:repo because the real stdio teardown oracle uses process.kill(pid,0) without the required pre-run platform declaration. The oracle expects POSIX ESRCH after the child exits. Verification Instruments permits the exact openkit-test-platform: posix declaration, already used by the existing Gateway/process suites. Add that declaration and its reason; preserve the same real process probe and every assertion. No check, skip or platform semantics is weakened. The required new exact-head gate reruns check:repo before complete module suites and Web e2e; the failed08 gate is not acceptance evidence.
