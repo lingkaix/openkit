@@ -11,6 +11,10 @@ import { ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
+  recurringNominalMatches,
+  validateRecurringRangeCoverage,
+} from '../lib/recurring-cadence.js';
+import {
   type CreateSchedulerAdmissionEntryInput,
   requireSchedulerAdmissionEntry,
   schedulerAdmissionInputHash,
@@ -45,8 +49,19 @@ export const RecurringOccurrenceSchema = AutomationOccurrenceSchema.omit({
   requiredFeatures: z.array(z.never()).optional(),
 });
 /** Lossless, immutable old-definition coverage for an arbitrary outage interval. */
-export const ExpiredOccurrenceRangeSchema = AutomationExpiredRangeSchema.extend({
+export const ExpiredOccurrenceRangeSchema = AutomationExpiredRangeSchema.safeExtend({
   requiredFeatures: z.array(z.never()).optional(),
+}).superRefine((record, context) => {
+  try {
+    validateRecurringRangeCoverage(record);
+    if (record.snapshot.actor.id !== record.scheduleId)
+      throw new Error('Contradictory expired range actor.');
+  } catch {
+    context.addIssue({
+      code: 'custom',
+      message: 'Expired recurring range contradicts its exact cadence or snapshot.',
+    });
+  }
 });
 /** Frozen scheduler request, including complete root selection. */
 export type RecurringAdmissionPayload = z.infer<typeof RecurringAdmissionPayloadSchema>;
@@ -78,6 +93,11 @@ export function readRecurringOccurrence(json: string): RecurringOccurrence {
     record.id !== `occ_${recurringRequestId(record.scheduleId, record.scheduledAt)}` ||
     record.requestId !== recurringRequestId(record.scheduleId, record.scheduledAt) ||
     record.snapshot.actor.id !== record.scheduleId ||
+    (record.snapshot.monthlyUtc !== undefined &&
+      !recurringNominalMatches(
+        { monthlyUtc: record.snapshot.monthlyUtc },
+        Date.parse(record.scheduledAt)
+      )) ||
     Date.parse(record.deadline) !== Date.parse(record.scheduledAt) + RECURRING_DEADLINE_MS ||
     record.attempts.some((attempt, index) => attempt.number !== index + 1)
   )
@@ -146,7 +166,13 @@ export function readRecurringSchedule(json: string): AutomationRecord {
   )
     throw new Error('RecurringSchedule has unsupported required semantics.');
   const record = AutomationRecordSchema.parse(value);
-  if (record.actor.id !== record.id || record.actor.responsibleUserId !== record.responsibleUserId)
+  if (
+    record.actor.id !== record.id ||
+    record.actor.responsibleUserId !== record.responsibleUserId ||
+    (record.monthlyUtc !== undefined &&
+      record.nextScheduledAt !== null &&
+      !recurringNominalMatches(record, Date.parse(record.nextScheduledAt)))
+  )
     throw new Error('RecurringSchedule has contradictory automation identity.');
   return record;
 }

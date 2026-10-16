@@ -64,6 +64,38 @@ export function recurringPrefixThrough(
   return { count, last: checkedDate(last).getTime(), next: checkedDate(last + step).getTime() };
 }
 
+/** Validates immutable range coverage without granting live actor or admission authority. */
+export function validateRecurringRangeCoverage(
+  range: AutomationCadence & {
+    readonly firstScheduledAt: string;
+    readonly lastScheduledAt: string;
+    readonly count: number;
+    readonly snapshot: { readonly monthlyUtc?: MonthlyUtcSchedule | undefined };
+  }
+): void {
+  const coverage = recurringPrefixThrough(
+    range,
+    Date.parse(range.firstScheduledAt),
+    Date.parse(range.lastScheduledAt)
+  );
+  const rootMonthly = range.monthlyUtc;
+  const snapshotMonthly = range.snapshot.monthlyUtc;
+  if (
+    !coverage ||
+    coverage.last !== Date.parse(range.lastScheduledAt) ||
+    coverage.count !== range.count ||
+    (rootMonthly === undefined) !== (snapshotMonthly === undefined) ||
+    (rootMonthly !== undefined &&
+      snapshotMonthly !== undefined &&
+      (rootMonthly.zone !== snapshotMonthly.zone ||
+        rootMonthly.dayOfMonth !== snapshotMonthly.dayOfMonth ||
+        rootMonthly.hour !== snapshotMonthly.hour ||
+        rootMonthly.minute !== snapshotMonthly.minute ||
+        rootMonthly.second !== snapshotMonthly.second))
+  )
+    throw new RangeError('Expired recurring range contradicts its exact cadence or snapshot.');
+}
+
 /** Restricts arithmetic to integer milliseconds and the four-digit UTC years admitted by the record schema. */
 function checkedDate(instant: number): Date {
   const date = new Date(instant);
