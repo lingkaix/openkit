@@ -344,7 +344,7 @@ function schedulerItemsFor(workspaceId: string) {
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClient {
   return {
-    artifactFiles: createCoreClient({baseUrl:'http://core.test'}).artifactFiles,
+    artifactFiles: createCoreClient({ baseUrl: 'http://core.test' }).artifactFiles,
     core: {
       meta: vi.fn().mockResolvedValue({}),
 
