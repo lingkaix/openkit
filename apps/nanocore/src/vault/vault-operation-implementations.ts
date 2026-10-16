@@ -27,7 +27,9 @@ import {
   createVaultGrant,
   getVaultGrant,
   listExportableWorkspaceVaultGrants,
+  narrowVaultGrant,
   revokeVaultGrant,
+  VaultGrantNarrowingError,
 } from './vault-grants.js';
 import {
   advanceActiveVaultReferenceVersion,
@@ -230,6 +232,9 @@ export function createVaultOperationImplementations(
       secretKind?: string;
       expiresAt?: string | undefined;
       injectionPath?: 'gateway-only' | 'runtime-env' | undefined;
+      targetAgentId?: string | undefined;
+      targetAgentSessionId?: string | undefined;
+      targetCapabilityId?: string | undefined;
     },
     c: AdmittedOperationContext,
     action: 'grant' | 'revoke-grant'
@@ -243,6 +248,9 @@ export function createVaultOperationImplementations(
       secretKind?: string;
       expiresAt?: string | undefined;
       injectionPath?: 'gateway-only' | 'runtime-env' | undefined;
+      targetAgentId?: string | undefined;
+      targetAgentSessionId?: string | undefined;
+      targetCapabilityId?: string | undefined;
     },
     c: AdmittedOperationContext,
     action: 'create' | 'rotate' | 'revoke'
@@ -256,6 +264,9 @@ export function createVaultOperationImplementations(
       secretKind?: string;
       expiresAt?: string | undefined;
       injectionPath?: 'gateway-only' | 'runtime-env' | undefined;
+      targetAgentId?: string | undefined;
+      targetAgentSessionId?: string | undefined;
+      targetCapabilityId?: string | undefined;
     },
     c: AdmittedOperationContext,
     action: 'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant'
@@ -357,16 +368,24 @@ export function createVaultOperationImplementations(
             400
           );
         const workerVisible = input.injectionPath === 'runtime-env';
+        if (workerVisible && input.targetCapabilityId !== undefined)
+          return vaultFailure(
+            'Runtime environment grants cannot prove a capability target.',
+            'invalid_request',
+            400
+          );
         const grant = createVaultGrant(coreDb, {
           grantId: `grant_${randomUUID()}`,
           vaultReferenceId: referenceId,
           ownerScope: 'workspace',
           workspaceId,
           allowedInjectionPaths: [input.injectionPath ?? 'gateway-only'],
-          targetCapabilityId: null,
+          targetAgentId: input.targetAgentId ?? null,
+          targetAgentSessionId: input.targetAgentSessionId ?? null,
+          targetCapabilityId: input.targetCapabilityId ?? null,
           lifetime: 'workspace',
           subjectSummary: workerVisible ? 'Worker GitHub CLI' : 'Gateway-only credential',
-          expiresAt: input.expiresAt ?? null,
+          expiresAt: input.expiresAt ? new Date(input.expiresAt).toISOString() : null,
         });
         audit('succeeded');
         return grant as WorkspaceVaultGrant;
@@ -1001,6 +1020,71 @@ export function createVaultOperationImplementations(
     'vault.secret-rotate': (input, c) => mutate(input, c, 'rotate'),
     'vault.secret-revoke': (input, c) => mutate(input, c, 'revoke'),
     'vault.grant-create': (input, c) => mutate(input, c, 'grant'),
+    'vault.grant-narrow': (input, c) => {
+      const actor = publicOperationActor(c);
+      if (!isDeploymentAdminActor(actor))
+        return vaultFailure('Vault administration is forbidden.', 'deployment_admin_required', 403);
+      if (!coreDb || !vaultUnlockState)
+        return vaultFailure('Vault storage is unavailable.', 'vault_storage_unavailable', 503);
+      const source = getVaultGrant(coreDb, input.grantId);
+      if (!source || source.ownerScope !== 'workspace' || source.workspaceId !== input.workspaceId)
+        return vaultFailure('Vault grant not found.', 'vault_grant_not_found', 404);
+      const reference = getVaultReference(coreDb, source.vaultReferenceId);
+      if (
+        !reference ||
+        reference.ownerScope !== 'workspace' ||
+        reference.workspaceId !== input.workspaceId ||
+        reference.userId !== null
+      )
+        return vaultFailure('Vault reference is not current.', 'vault_reference_not_active', 409);
+      if (
+        source.lifetime !== 'workspace' ||
+        source.userId !== null ||
+        source.allowedInjectionPaths.length !== 1 ||
+        !['gateway-only', 'runtime-env'].includes(source.allowedInjectionPaths[0]!) ||
+        (source.allowedInjectionPaths[0] === 'runtime-env' &&
+          (reference.secretKind !== 'github-token' ||
+            input.constraints.targetCapabilityId !== undefined ||
+            source.targetCapabilityId !== null)) ||
+        (source.targetCapabilityId !== null &&
+          !['mcp.list_tools', 'mcp.call_tool'].includes(source.targetCapabilityId))
+      )
+        return vaultFailure('Grant shape is not supported for narrowing.', 'invalid_request', 400);
+      try {
+        return coreDb.sqlite.transaction(() => {
+          const result = narrowVaultGrant(coreDb, {
+            grantId: source.grantId,
+            replacementGrantId: randomUUID(),
+            constraints: input.constraints,
+          });
+          recordVaultAdminAuditEvent({
+            coreDb,
+            actor,
+            action: 'vault.workspace_narrow-grant',
+            backendKind: vaultUnlockState.backend().kind,
+            outcome: 'succeeded',
+            summary:
+              'Workspace Vault grant narrowed through replacement. Explicit binding update is required.',
+            workspaceId: input.workspaceId,
+            resource: `vault-grant:${source.grantId}`,
+            vaultGrantId: result.grant.grantId,
+          });
+          return result as { revokedGrant: WorkspaceVaultGrant; grant: WorkspaceVaultGrant };
+        })();
+      } catch (error) {
+        if (error instanceof VaultGrantNarrowingError)
+          return vaultFailure(
+            error.message,
+            error.status === 400 ? 'invalid_request' : 'vault_grant_not_active',
+            error.status
+          );
+        return vaultFailure(
+          'Vault grant narrowing failed; inspect inventory before a new request.',
+          'vault_mutation_failed',
+          409
+        );
+      }
+    },
     'vault.grant-revoke': (input, c) => mutate(input, c, 'revoke-grant'),
   } satisfies FamilyImplementations<typeof VAULT_OPERATION_DEFINITIONS>;
 }

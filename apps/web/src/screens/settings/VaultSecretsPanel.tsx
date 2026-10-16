@@ -1,8 +1,9 @@
+import type { OperationInput } from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { Button, Card, ErrorBanner, TextField } from '../../primitives';
+import { Button, Card, ErrorBanner, Select, TextField } from '../../primitives';
 import { redactSecretShapedText } from './secret-safe';
 
 /** Retain status for access-denial handling without retaining server error content. */
@@ -20,6 +21,19 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
   const [secretKind, setSecretKind] = useState('');
   const [material, setMaterial] = useState('');
   const [rotating, setRotating] = useState<string | null>(null);
+  const [targetAgentId, setTargetAgentId] = useState('');
+  const [targetAgentSessionId, setTargetAgentSessionId] = useState('');
+  const [targetCapabilityId, setTargetCapabilityId] = useState<
+    '' | 'mcp.list_tools' | 'mcp.call_tool'
+  >('');
+  const [grantExpiry, setGrantExpiry] = useState('');
+  const [grantStatus, setGrantStatus] = useState<string | null>(null);
+  const constraints: OperationInput<'vault.grant-narrow'>['constraints'] = {
+    ...(targetAgentId.trim() ? { targetAgentId: targetAgentId.trim() } : {}),
+    ...(targetAgentSessionId.trim() ? { targetAgentSessionId: targetAgentSessionId.trim() } : {}),
+    ...(targetCapabilityId ? { targetCapabilityId } : {}),
+    ...(grantExpiry.trim() ? { expiresAt: grantExpiry.trim() } : {}),
+  };
   const hold = useRef<string | null>(null);
   const inventory = useQuery({
     queryKey: ['settings', 'vault-secrets', workspaceId],
@@ -38,11 +52,36 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
               status,
             })
           ),
-          grants: grants.items.map(({ grantId, vaultReferenceId, status }) => ({
-            grantId: redactSecretShapedText(grantId),
-            vaultReferenceId: redactSecretShapedText(vaultReferenceId),
-            status,
-          })),
+          grants: grants.items.map(
+            ({
+              grantId,
+              vaultReferenceId,
+              status,
+              targetAgentId,
+              targetAgentSessionId,
+              targetCapabilityId,
+              allowedInjectionPaths,
+              lifetime,
+              expiresAt,
+              approvalId,
+              policyDecisionId,
+            }) => ({
+              grantId: redactSecretShapedText(grantId),
+              vaultReferenceId: redactSecretShapedText(vaultReferenceId),
+              status,
+              targetAgentId: targetAgentId === null ? null : redactSecretShapedText(targetAgentId),
+              targetAgentSessionId:
+                targetAgentSessionId === null ? null : redactSecretShapedText(targetAgentSessionId),
+              targetCapabilityId:
+                targetCapabilityId === null ? null : redactSecretShapedText(targetCapabilityId),
+              allowedInjectionPaths: allowedInjectionPaths.map(redactSecretShapedText),
+              lifetime,
+              expiresAt,
+              approvalId: approvalId === null ? null : redactSecretShapedText(approvalId),
+              policyDecisionId:
+                policyDecisionId === null ? null : redactSecretShapedText(policyDecisionId),
+            })
+          ),
         };
       } catch (error) {
         throw safeError(error);
@@ -53,8 +92,9 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
   const mutation = useMutation({
     mutationKey: ['vault-admin-secret', workspaceId],
     mutationFn: async (input: {
-      action: 'save' | 'revoke' | 'grant' | 'revoke-grant';
+      action: 'save' | 'revoke' | 'grant' | 'revoke-grant' | 'narrow-grant';
       id?: string;
+      constraints?: OperationInput<'vault.grant-narrow'>['constraints'];
     }) => {
       const secret = hold.current;
       hold.current = null;
@@ -77,6 +117,13 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
           await client.operations['vault.grant-create']({
             workspaceId,
             referenceId: input.id!,
+            ...input.constraints,
+          });
+        else if (input.action === 'narrow-grant')
+          await client.operations['vault.grant-narrow']({
+            workspaceId,
+            grantId: input.id!,
+            constraints: input.constraints ?? {},
           });
         else if (input.action === 'revoke-grant')
           await client.operations['vault.grant-revoke']({
@@ -94,8 +141,19 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       }
     },
     retry: false,
-    onSuccess: async () => {
+    onMutate: () => {
+      setGrantStatus(null);
+    },
+    onSuccess: async (_, input) => {
       setRotating(null);
+      if (input.action === 'grant' || input.action === 'narrow-grant') {
+        setTargetAgentId('');
+        setTargetAgentSessionId('');
+        setTargetCapabilityId('');
+        setGrantExpiry('');
+        if (input.action === 'narrow-grant')
+          setGrantStatus('Grant replaced. Bind the replacement explicitly before use.');
+      }
       await inventory.refetch();
       await queryClient.invalidateQueries({ queryKey: ['settings', 'vault', workspaceId] });
     },
@@ -146,6 +204,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       {inventory.isError || mutation.isError ? (
         <ErrorBanner message="Vault request failed. Refresh inventory before a new request." />
       ) : null}
+      {grantStatus ? <p role="status">{grantStatus}</p> : null}
       <TextField
         label="Secret kind"
         value={secretKind}
@@ -187,6 +246,43 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       <Button variant="outline" isDisabled={busy} onPress={refresh}>
         Refresh inventory
       </Button>
+      <h3 className="font-semibold text-fg">Grant restrictions</h3>
+      <p className="text-sm text-fg-muted">
+        These restrictions apply to the Create or Narrow action you select below. Blank targets add
+        no restriction at creation and preserve existing targets when narrowing. Narrowing must
+        reduce authority and creates a replacement grant.
+      </p>
+      <TextField
+        label="Grant target Agent"
+        value={targetAgentId}
+        onChange={setTargetAgentId}
+        isDisabled={disabled}
+      />
+      <TextField
+        label="Grant target AgentSession"
+        value={targetAgentSessionId}
+        onChange={setTargetAgentSessionId}
+        isDisabled={disabled}
+      />
+      <Select
+        label="Grant capability"
+        selectedKey={targetCapabilityId || 'unchanged'}
+        onSelectionChange={(key) =>
+          setTargetCapabilityId(key === 'mcp.list_tools' || key === 'mcp.call_tool' ? key : '')
+        }
+        isDisabled={disabled}
+        items={[
+          { id: 'unchanged', label: 'No new capability restriction' },
+          { id: 'mcp.list_tools', label: 'MCP tool discovery only' },
+          { id: 'mcp.call_tool', label: 'MCP tool calls only' },
+        ]}
+      />
+      <TextField
+        label="Grant expiry (UTC)"
+        value={grantExpiry}
+        onChange={setGrantExpiry}
+        isDisabled={disabled}
+      />
       {inventory.data?.references.map((reference) => (
         <div key={reference.referenceId} className="flex flex-col gap-2">
           <p>
@@ -208,7 +304,9 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
               <Button
                 variant="outline"
                 isDisabled={disabled}
-                onPress={() => mutation.mutate({ action: 'grant', id: reference.referenceId })}
+                onPress={() =>
+                  mutation.mutate({ action: 'grant', id: reference.referenceId, constraints })
+                }
               >
                 Create gateway grant for {reference.referenceId}
               </Button>
@@ -232,6 +330,25 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
           <p>
             {grant.grantId} · {grant.vaultReferenceId} · {grant.status}
           </p>
+          <p>Agent: {grant.targetAgentId ?? 'Unrestricted'}</p>
+          <p>AgentSession: {grant.targetAgentSessionId ?? 'Unrestricted'}</p>
+          <p>Capability: {grant.targetCapabilityId ?? 'Unrestricted'}</p>
+          <p>Visibility: {grant.allowedInjectionPaths.join(', ')}</p>
+          <p>Lifetime: {grant.lifetime}</p>
+          <p>Expiry: {grant.expiresAt ?? 'No time bound'}</p>
+          <p>Approval: {grant.approvalId ?? 'None'}</p>
+          <p>Policy decision: {grant.policyDecisionId ?? 'None'}</p>
+          {grant.status === 'active' && grant.lifetime === 'workspace' ? (
+            <Button
+              variant="outline"
+              isDisabled={disabled || Object.keys(constraints).length === 0}
+              onPress={() =>
+                mutation.mutate({ action: 'narrow-grant', id: grant.grantId, constraints })
+              }
+            >
+              Narrow grant {grant.grantId}
+            </Button>
+          ) : null}
           {grant.status === 'active' ? (
             <Button
               variant="outline"

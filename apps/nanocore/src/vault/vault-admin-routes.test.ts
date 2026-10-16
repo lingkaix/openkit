@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   globSync,
@@ -5,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -87,6 +89,159 @@ function createSignedInAuthStub(): BetterAuthServer {
 }
 
 describe('vault admin app API', () => {
+  it('narrows a reviewed grant through replacement without expanding authority or reusing the old grant', async () => {
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    const send = (id: OperationId, input: Record<string, unknown>) => {
+      const options = {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      };
+      return app.request(...operationRequest(id, {}, options));
+    };
+    try {
+      const workspaceResponse = await send('workspace.create', {
+        name: 'Grant review',
+        requestId: randomUUID(),
+      });
+      expect(workspaceResponse.status).toBe(201);
+      const workspaceId = (await workspaceResponse.json()).id;
+      const referenceResponse = await send('vault.secret-create', {
+        workspaceId,
+        secretKind: 'github-token',
+        material: 'synthetic-test-material',
+      });
+      expect(referenceResponse.status).toBe(200);
+      const referenceId = (await referenceResponse.json()).referenceId;
+      const originalExpiry = new Date(Date.now() + 86_400_000).toISOString();
+      const grantResponse = await send('vault.grant-create', {
+        workspaceId,
+        referenceId,
+        expiresAt: originalExpiry,
+      });
+      expect(grantResponse.status).toBe(200);
+      const original = await grantResponse.json();
+      const exactTargets = {
+        targetAgentId: randomUUID(),
+        targetAgentSessionId: randomUUID(),
+        targetCapabilityId: 'mcp.list_tools',
+      };
+      const constrained = await send('vault.grant-create', {
+        workspaceId,
+        referenceId,
+        ...exactTargets,
+        expiresAt: '2099-01-01T00:00:00Z',
+      });
+      expect(constrained.status).toBe(200);
+      const constrainedGrant = await constrained.json();
+      expect(constrainedGrant).toMatchObject({
+        ...exactTargets,
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      expect((await (await send('vault.grant-list', { workspaceId })).json()).items).toEqual([
+        original,
+        constrainedGrant,
+      ]);
+      for (const invalid of [
+        { injectionPath: 'runtime-env', targetCapabilityId: 'mcp.call_tool' },
+        { targetCapabilityId: 'mcp' },
+        { injectionPath: 'runtime-file' },
+      ])
+        expect(
+          (await send('vault.grant-create', { workspaceId, referenceId, ...invalid })).status
+        ).toBe(400);
+      const otherWorkspaceResponse = await send('workspace.create', {
+        name: 'Other review scope',
+        requestId: randomUUID(),
+      });
+      expect(otherWorkspaceResponse.status).toBe(201);
+      expect(
+        (
+          await send('vault.grant-narrow', {
+            workspaceId: (await otherWorkspaceResponse.json()).id,
+            grantId: original.grantId,
+            constraints: { targetAgentId: randomUUID() },
+          })
+        ).status
+      ).toBe(404);
+      expect(getVaultGrant(coreDb, original.grantId)).toEqual(original);
+      const expiry = new Date(Date.now() + 3_600_000).toISOString();
+      const targetAgentId = randomUUID();
+      vaultUnlockState.lock();
+      const response = await send('vault.grant-narrow', {
+        workspaceId,
+        grantId: original.grantId,
+        constraints: { expiresAt: expiry, targetAgentId },
+      });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.revokedGrant).toEqual({ ...original, status: 'revoked' });
+      expect(result.grant).toMatchObject({
+        vaultReferenceId: referenceId,
+        targetAgentId,
+        expiresAt: expiry,
+        status: 'active',
+        allowedInjectionPaths: ['gateway-only'],
+        lifetime: 'workspace',
+      });
+      expect(result.grant.grantId).not.toBe(original.grantId);
+      expect(getVaultGrant(coreDb, original.grantId)?.status).toBe('revoked');
+      const widening = await send('vault.grant-narrow', {
+        workspaceId,
+        grantId: result.grant.grantId,
+        constraints: { expiresAt: originalExpiry },
+      });
+      expect(widening.status).toBe(400);
+      expect(getVaultGrant(coreDb, result.grant.grantId)).toEqual(result.grant);
+      const replay = await send('vault.grant-narrow', {
+        workspaceId,
+        grantId: original.grantId,
+        constraints: { expiresAt: expiry },
+      });
+      expect(replay.status).toBe(409);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT actor_json, resource, vault_grant_id, workspace_id FROM audit_events WHERE action = 'vault.workspace_narrow-grant'"
+          )
+          .all()
+      ).toEqual([
+        {
+          actor_json: JSON.stringify({ kind: 'user', id: 'user_local' }),
+          resource: `vault-grant:${original.grantId}`,
+          vault_grant_id: result.grant.grantId,
+          workspace_id: workspaceId,
+        },
+      ]);
+      coreDb.sqlite.exec(
+        "CREATE TRIGGER reject_narrow_audit BEFORE INSERT ON audit_events WHEN NEW.action = 'vault.workspace_narrow-grant' BEGIN SELECT RAISE(ABORT, 'Synthetic Audit failure'); END"
+      );
+      const rollback = await send('vault.grant-narrow', {
+        workspaceId,
+        grantId: result.grant.grantId,
+        constraints: { targetAgentSessionId: randomUUID() },
+      });
+      expect(rollback.status).toBe(409);
+      expect(getVaultGrant(coreDb, result.grant.grantId)).toEqual(result.grant);
+      expect(coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_grants').get()).toEqual({
+        count: 3,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM vault_admin_audit_events WHERE action = 'vault.workspace_narrow-grant'"
+          )
+          .get()
+      ).toEqual({ count: 1 });
+    } finally {
+      vaultUnlockState.lock();
+      masterKey.fill(0);
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('creates, rotates and revokes workspace secrets and gateway-only grants without exposing material', async () => {
     const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
@@ -361,6 +516,14 @@ describe('vault admin app API', () => {
         ['vault.secret-revoke', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
         ['vault.grant-create', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
         ['vault.grant-revoke', { workspaceId: 'ws_demo', grantId: 'grant_test' }],
+        [
+          'vault.grant-narrow',
+          {
+            workspaceId: 'ws_demo',
+            grantId: 'grant_test',
+            constraints: { targetAgentId: randomUUID() },
+          },
+        ],
       ] as const) {
         const response = await app.request(
           ...operationRequest(

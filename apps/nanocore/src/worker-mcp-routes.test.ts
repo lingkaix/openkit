@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
   chmodSync,
@@ -106,7 +106,7 @@ import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
-import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
+import { createVaultGrant, narrowVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems, registerWorkerMcpRoutes } from './worker-mcp-routes.js';
@@ -3811,7 +3811,7 @@ describe('worker MCP routes', () => {
   it.each([
     'raw',
     'bearer',
-  ] as const)('injects an HTTP %s Vault grant at the gateway and rejects the next call after revoke', async (presentation) => {
+  ] as const)('injects an HTTP %s Vault grant and requires explicit replacement binding after narrowing', async (presentation) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
     const upstreamOptions: { credentialListEcho?: string } = {};
     const upstream = await createMcpHttpStub(upstreamOptions);
@@ -3847,10 +3847,9 @@ describe('worker MCP routes', () => {
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['gateway-only'],
       grantId: 'grant_mcp_http',
-      lifetime: 'agent-session',
+      lifetime: 'workspace',
       ownerScope: 'workspace',
-      targetAgentSessionId: 'as_mcp_vault',
-      targetCapabilityId: 'mcp',
+      targetCapabilityId: null,
       vaultReferenceId: 'vault_mcp_http',
       workspaceId: 'ws_demo',
     });
@@ -4113,7 +4112,14 @@ describe('worker MCP routes', () => {
       const toolCallsBeforeRevoke = upstream.observed.filter((request) =>
         request.endsWith('|tools/call')
       ).length;
-      revokeVaultGrant(coreDb, { grantId: 'grant_mcp_http' });
+      const replacement = narrowVaultGrant(coreDb, {
+        grantId: 'grant_mcp_http',
+        replacementGrantId: randomUUID(),
+        constraints: {
+          targetAgentId: environmentPackage.agent.agentId,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      });
       activeCatalog = {
         ...catalog,
         servers: [{ ...catalog.servers[0], timeoutMs: catalog.servers[0]!.timeoutMs + 1 }],
@@ -4140,12 +4146,78 @@ describe('worker MCP routes', () => {
       expect(
         workerMcpGateway.getServerHealth({ server: oldResolved, workspaceId: 'ws_demo' })
       ).toBe('inactive');
+      activeCatalog = {
+        ...catalog,
+        servers: [
+          {
+            ...catalog.servers[0]!,
+            credentialBindings: [
+              {
+                ...catalog.servers[0]!.credentialBindings[0]!,
+                vaultGrantId: replacement.grant.grantId,
+              },
+            ],
+          },
+        ],
+      };
+      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: `lease_${turn.id}`,
+        cause: 'worker-final-status',
+        outcomeRef: `turn:${turn.id}:completed`,
+      });
+      // This fixture submits no Worker. All fake upstream exchanges completed and the old route is inactive.
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const correlation = schedulerExecutionCorrelation(closing);
+      const release = await new SimulatedTurnExecutor({ coreDb }).release({
+        ...correlation,
+        proof,
+      });
+      closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        proof,
+        fenceRef: release.fenceRef!,
+      });
+      const replacementTurn = store.createTurn(
+        'ws_demo',
+        'th_demo',
+        'Use the explicitly rebound grant',
+        turn.triggerActor
+      );
+      environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: randomUUID(),
+        agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
+        backend: { kind: 'openshell' },
+        createdAt: new Date().toISOString(),
+        requestId: randomUUID(),
+        triggerActor: turn.triggerActor,
+        turn: replacementTurn,
+        workspaceCwd: '/workspace',
+        workspaceMcpServerCatalog: activeCatalog,
+        workspaceRoots: [],
+      });
+      recordMcpWorkerLineage(coreDb, environmentPackage);
+      await expect(
+        client.callTool({ arguments: { message: 'explicit replacement' }, name: 'echo' })
+      ).resolves.toMatchObject({ content: [{ text: 'explicit replacement' }] });
+      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+        toolCallsBeforeRevoke + 1
+      );
     } finally {
       await client.close();
       await workerMcpGateway.close();
       await upstream.close();
       vaultUnlockState.lock();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });
