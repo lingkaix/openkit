@@ -6,6 +6,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import {
+  compactWorkspaceEvidenceBundles,
+  recordWorkspaceEvidenceBundle,
+} from '../evidence-bundles.js';
+import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
@@ -89,6 +96,8 @@ function fixture() {
     );
   return {
     dataRoot,
+    coreDb,
+    store,
     workspace,
     workspaceDb,
     first: first.version.digest,
@@ -98,6 +107,101 @@ function fixture() {
 }
 
 describe('native Skill management command evidence', () => {
+  it('keeps unexpired evidence bytes and purges after its existing retention owner expires them', async () => {
+    const f = fixture();
+    recordWorkspaceEvidenceBundle(f.workspaceDb, {
+      id: 'skill-evidence',
+      workspaceId: f.workspace.id,
+      threadId: null,
+      goalId: null,
+      turnId: null,
+      agentSessionId: null,
+      backendType: null,
+      sourceKind: 'skill-comparison',
+      summary: 'Retained Skill input.',
+      rawEvidenceRefs: [],
+      redactedEvidenceRefs: [],
+      contentDigests: [f.second],
+      retentionClass: 'ephemeral-diagnostic',
+      sensitivityClass: 'product-safe',
+      importStatus: 'collected',
+      requiredFeatures: [],
+      createdAt: '2026-10-01T00:00:00.000Z',
+    });
+    const input = {
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      skillId: 'management-example',
+      digest: f.second,
+    };
+    const refused = await f.call('catalog.skill-purge', input);
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain('evidence:skill-evidence');
+    expect(
+      loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.versions.find(
+        (v) => v.digest === f.second
+      )?.contentState
+    ).toBe('retained');
+    compactWorkspaceEvidenceBundles({
+      workspaceDb: f.workspaceDb,
+      workspaceId: f.workspace.id,
+      olderThan: '2026-10-15T00:00:00.000Z',
+    });
+    const removed = await f.call('catalog.skill-purge', { ...input, requestId: randomUUID() });
+    expect(removed.status, await removed.clone().text()).toBe(200);
+    expect(
+      loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.versions.find(
+        (v) => v.digest === f.second
+      )?.contentState
+    ).toBe('purged');
+  });
+
+  it('retains a supplied version named by a real AEP after its default moves', async () => {
+    const f = fixture();
+    const thread = f.store.createThread(f.workspace.id, 'Retained Skill input');
+    const turn = f.store.createTurn(f.workspace.id, thread.id, 'Use retained Skill', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    const snapshot = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSetup: createTestAgentSetup({ skillIds: ['management-example'] }),
+      agentSessionId: 'as_skill_retention',
+      backend: { kind: 'openshell' },
+      coreDb: f.coreDb,
+      createdAt: '2026-10-16T00:00:00.000Z',
+      requestId: null,
+      turn,
+      triggerActor: turn.triggerActor,
+      workspaceRoots: [],
+    });
+    recordAgentEnvironmentPackageSnapshot(f.workspaceDb, {
+      environmentPackage: snapshot,
+      createdAt: '2026-10-16T00:00:00.000Z',
+    });
+    const selected = await f.call('catalog.skill-select', {
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      skillId: 'management-example',
+      digest: f.second,
+      expectedCurrentDigest: f.first,
+    });
+    expect(selected.status, await selected.clone().text()).toBe(200);
+    const refused = await f.call('catalog.skill-purge', {
+      requestId: randomUUID(),
+      expectedRevision: 3,
+      skillId: 'management-example',
+      digest: f.first,
+    });
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain(`aep:${snapshot.snapshotId}`);
+    expect(
+      loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.versions.find(
+        (v) => v.digest === f.first
+      )?.contentState
+    ).toBe('retained');
+  });
+
   it('imports unchanged ecosystem bytes and checks updates without moving selection or contacting an unavailable source on replay', async () => {
     const f = fixture();
     let content =
