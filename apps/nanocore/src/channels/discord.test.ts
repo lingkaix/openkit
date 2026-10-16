@@ -166,8 +166,12 @@ describe('Discord signed transport and account binding', () => {
     expect(verify()).toBeTruthy();
     expect(() => verify({ ...input, body: Buffer.from('{}') })).toThrow();
     expect(() => verify({ ...input, signature: '00'.repeat(64) })).toThrow();
-    expect(() => verify(f.signed({}, '1'))).toThrow();
-    expect(() => verify(f.signed({}, String(Date.parse('2026-10-16T11:00:00Z') / 1000)))).toThrow();
+    expect(() => verify(f.signed(f.envelope('inspect', f.target), '1'))).toThrow();
+    expect(() =>
+      verify(
+        f.signed(f.envelope('inspect', f.target), String(Date.parse('2026-10-16T11:00:00Z') / 1000))
+      )
+    ).toThrow();
     expect(() =>
       verify(f.signed({ ...f.envelope('inspect', f.target), application_id: '999999999999999999' }))
     ).toThrow();
