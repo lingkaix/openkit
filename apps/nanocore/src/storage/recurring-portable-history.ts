@@ -7,7 +7,11 @@ import {
 } from '@openkit/app-api-schemas';
 import { ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { recurringNominalMatches, recurringPrefixThrough, validateRecurringRangeCoverage } from '../lib/recurring-cadence.js';
+import {
+  recurringNominalMatches,
+  recurringPrefixThrough,
+  validateRecurringRangeCoverage,
+} from '../lib/recurring-cadence.js';
 import type { CoreDb } from './db.js';
 import {
   ExpiredOccurrenceRangeSchema,
@@ -37,12 +41,14 @@ const portableSnapshot = AutomationDefinitionSnapshotSchema.omit({ actor: true }
   originActor,
   requiredFeatures,
 });
-const portableSchedule = z.object({
-  ...scheduleFields,
-  originScheduleId: AutomationRecordSchema.shape.id,
-  originActor,
-  requiredFeatures,
-}).and(AutomationCadenceSchema);
+const portableSchedule = z
+  .object({
+    ...scheduleFields,
+    originScheduleId: AutomationRecordSchema.shape.id,
+    originActor,
+    requiredFeatures,
+  })
+  .and(AutomationCadenceSchema);
 const portableOccurrence = AutomationOccurrenceSchema.omit({
   requestId: true,
   queueEntryId: true,
@@ -62,11 +68,13 @@ const portableOccurrence = AutomationOccurrenceSchema.omit({
   originTurnId: AutomationOccurrenceSchema.shape.turnId,
   requiredFeatures,
 });
-const portableRange = z.object({
-  ...AutomationExpiredRangeSchema.shape,
-  snapshot: portableSnapshot,
-  requiredFeatures,
-}).and(AutomationCadenceSchema);
+const portableRange = z
+  .object({
+    ...AutomationExpiredRangeSchema.shape,
+    snapshot: portableSnapshot,
+    requiredFeatures,
+  })
+  .and(AutomationCadenceSchema);
 const historySchema = z.object({
   schedules: z.array(portableSchedule),
   occurrences: z.array(portableOccurrence),
@@ -113,7 +121,8 @@ export function readRecurringPortableHistory(
       schedule.originActor.responsibleUserId !== schedule.responsibleUserId ||
       (schedule.status === 'deleted') !== (schedule.deletedAt !== null) ||
       (schedule.status === 'active') !== (schedule.nextScheduledAt !== null) ||
-      (schedule.nextScheduledAt !== null && !recurringNominalMatches(schedule, Date.parse(schedule.nextScheduledAt))) ||
+      (schedule.nextScheduledAt !== null &&
+        !recurringNominalMatches(schedule, Date.parse(schedule.nextScheduledAt))) ||
       (schedule.nextScheduledAt !== null &&
         schedule.greatestAccountedScheduledAt !== null &&
         Date.parse(schedule.nextScheduledAt) <= Date.parse(schedule.greatestAccountedScheduledAt))
@@ -160,7 +169,8 @@ export function readRecurringPortableHistory(
       occurrence.originRequestId !==
         recurringRequestId(schedule.originScheduleId, occurrence.scheduledAt) ||
       Date.parse(occurrence.deadline) !== at + RECURRING_DEADLINE_MS ||
-      (occurrence.snapshot.monthlyUtc !== undefined && !recurringNominalMatches({ monthlyUtc: occurrence.snapshot.monthlyUtc }, at)) ||
+      (occurrence.snapshot.monthlyUtc !== undefined &&
+        !recurringNominalMatches({ monthlyUtc: occurrence.snapshot.monthlyUtc }, at)) ||
       occurrence.attempts.some(
         (attempt, index) =>
           attempt.number !== index + 1 ||
@@ -212,7 +222,12 @@ export function readRecurringPortableHistory(
       throw new Error('Recurring portable range has contradictory terminal time.');
     const ranges = coverage.get(range.scheduleId) ?? [];
     // A schedule accounts time in ascending order, including across paused definition edits.
-    if (ranges.some((prior) => first <= Date.parse(prior.lastScheduledAt) && last >= Date.parse(prior.firstScheduledAt)))
+    if (
+      ranges.some(
+        (prior) =>
+          first <= Date.parse(prior.lastScheduledAt) && last >= Date.parse(prior.firstScheduledAt)
+      )
+    )
       throw new Error('Recurring portable ranges overlap.');
     ranges.push(range);
     coverage.set(range.scheduleId, ranges);
@@ -223,7 +238,10 @@ export function readRecurringPortableHistory(
       coverage
         .get(occurrence.scheduleId)
         ?.some(
-          (range) => at >= Date.parse(range.firstScheduledAt) && at <= Date.parse(range.lastScheduledAt) && recurringPrefixThrough(range, Date.parse(range.firstScheduledAt), at)?.last === at
+          (range) =>
+            at >= Date.parse(range.firstScheduledAt) &&
+            at <= Date.parse(range.lastScheduledAt) &&
+            recurringPrefixThrough(range, Date.parse(range.firstScheduledAt), at)?.last === at
         )
     )
       throw new Error('Recurring portable range overlaps an individual nominal instant.');

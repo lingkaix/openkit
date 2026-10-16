@@ -431,6 +431,43 @@ it('retains a conflicted draft and requires a read before a new revision-bound r
   );
 });
 
+it.each([
+  'edit',
+  'resume',
+] as const)('keeps the opened %s revision after a newer definition is read', async (mode) => {
+  const user = userEvent.setup();
+  let listed = original;
+  const update = vi
+    .fn<CoreClient['operations']['automation.update']>()
+    .mockRejectedValue(new ApiCallError(409, 'Changed definition'));
+  fixture({
+    'automation.list': vi
+      .fn<CoreClient['operations']['automation.list']>()
+      .mockImplementation(async () => ({ items: [listed] })),
+    'automation.update': update,
+  });
+  await user.click(
+    await screen.findByRole('button', {
+      name: `${mode === 'edit' ? 'Edit' : 'Resume'} Poll status`,
+    })
+  );
+  if (mode === 'edit') {
+    await user.clear(screen.getByLabelText('Edit name'));
+    await user.type(screen.getByLabelText('Edit name'), 'My existing draft');
+  } else await user.type(screen.getByLabelText('Next nominal instant (UTC)'), resumeAt);
+  listed = { ...original, revision: 2, intervalSeconds: 90 };
+  await user.click(screen.getByRole('button', { name: 'Refresh automations' }));
+  await screen.findByText('Every 90 seconds · revision 2');
+  await user.click(
+    screen.getByRole('button', { name: mode === 'edit' ? 'Save changes' : 'Confirm resume' })
+  );
+  await waitFor(() =>
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1 }))
+  );
+  expect(await screen.findByText(/The automation changed/)).toBeInTheDocument();
+  if (mode === 'edit') expect(screen.getByLabelText('Edit name')).toHaveValue('My existing draft');
+});
+
 it('keeps known definitions readable while disabling changes during a disconnected state', async () => {
   connection.failed = true;
   fixture();

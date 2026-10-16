@@ -165,3 +165,5 @@ Knowledge derived-index inspection exposes only link, validation and source-refe
 
 
 `automation.ts` keeps existing fixed `intervalSeconds` shapes and adds mutually exclusive bounded `monthlyUtc` rules. Create and retained definitions/ranges require exactly one timing shape; paused updates replace one complete shape atomically. `MonthlyUtcScheduleSchema` is the shared day-1-through-28, literal-UTC rule validator, and monthly occurrence snapshots retain that immutable rule. Definition-derived model and public projections retain the same cross-field checks.
+
+`administration.ts` admits a closed Agent Git-read proposal branch beside the existing catalog branch. It carries exact registered identity/base, a failed-Turn reference and only existing-grant rules. Immutable Agent candidates additionally retain server-derived AEP and explanation digests. The private delegated apply input contains only request identity and exact candidate reference; human apply retains its digest-bound confirmation. NanoCore owns audience, provenance, current finite Policy and file effects; schema acceptance supplies none of them.

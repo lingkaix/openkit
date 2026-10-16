@@ -421,7 +421,7 @@ describe('workspace export verifier', () => {
       id: 'ws_demo',
     });
     expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest).toMatchObject({
-      requiredFeatures: ['agent.resource-catalog.v1'],
+      requiredFeatures: ['agent.resource-catalog.v1', 'workspace.recurring-triggers.v1'],
       workspaceId: 'ws_demo',
     });
   });

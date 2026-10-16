@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, renameSync, rmSync, symlinkSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -10,12 +10,46 @@ import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { readPublishedTurnRecord } from '../storage/workspace-file-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 
 const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
+
+it.each([
+  'workspace',
+  'thread',
+  'turn',
+] as const)('refuses a redirected canonical %s parent without reading its Turn', (boundary) => {
+  const root = mkdtempSync(join(tmpdir(), 'recurring-parent-'));
+  const outside = mkdtempSync(join(tmpdir(), 'recurring-parent-outside-'));
+  try {
+    const store = new FsStore({ dataRoot: root });
+    const workspace = store.createWorkspace('Canonical source');
+    const thread = store.createThread(workspace.id, 'Target');
+    const turn = store.createTurn(workspace.id, thread.id, 'Retain exact bytes', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    expect(readPublishedTurnRecord(root, workspace.id, thread.id, turn.id)?.id).toBe(turn.id);
+    const workspacePath = join(root, 'workspaces', workspace.id);
+    const threadPath = join(workspacePath, 'threads', thread.id);
+    const turnPath = join(threadPath, 'turns', turn.id);
+    const source =
+      boundary === 'workspace' ? workspacePath : boundary === 'thread' ? threadPath : turnPath;
+    const target = join(outside, 'retained');
+    renameSync(source, target);
+    symlinkSync(target, source, 'dir');
+    expect(() => readPublishedTurnRecord(root, workspace.id, thread.id, turn.id)).toThrow(
+      /symbolic link/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
 
 it.each([
   'before-rename',

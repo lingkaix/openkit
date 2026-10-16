@@ -11,7 +11,7 @@ import type { AdministrationConfigurationTools } from './configuration-tools.js'
 function configurationTools(
   execute = vi.fn(async () => ({ content: [] }))
 ): AdministrationConfigurationTools {
-  return ADMINISTRATION_TOOL_NAMES.slice(0, 3).map((name) => ({
+  return ADMINISTRATION_TOOL_NAMES.slice(0, 4).map((name) => ({
     name,
     description: `Execute ${name}.`,
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
@@ -22,7 +22,7 @@ function configurationTools(
 function environmentTools(
   execute = vi.fn(async () => ({ content: [] }))
 ): AdministrationEnvironmentTools {
-  return ADMINISTRATION_TOOL_NAMES.slice(3, 7).map((name) => ({
+  return ADMINISTRATION_TOOL_NAMES.slice(4, 8).map((name) => ({
     name,
     description: `Execute ${name}.`,
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
@@ -51,11 +51,11 @@ describe('administration Tool assembly', () => {
     });
 
     expect(tools.map((tool) => tool.name)).toEqual(ADMINISTRATION_TOOL_NAMES);
-    await tools[3]!.execute(
+    await tools[4]!.execute(
       {},
       { callId: 'call_1', toolOccurrence: 1, signal: new AbortController().signal }
     );
-    await tools[3]!.execute(
+    await tools[4]!.execute(
       {},
       { callId: 'call_2', toolOccurrence: 1, signal: new AbortController().signal }
     );

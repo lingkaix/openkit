@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
+import { isDeepStrictEqual } from 'node:util';
 import { createZstdCompress } from 'node:zlib';
 
 import {
@@ -1158,6 +1159,9 @@ export function createVerifiedWorkspaceExport({
   const retainedTurns = turns.map((turn) => {
     const published = readPublishedTurnRecord(dataRoot, workspaceId, turn.threadId, turn.id);
     if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
+    // Serialize only the exact published Turn and Items, never an in-memory write that failed.
+    if (!isDeepStrictEqual(turn, published))
+      throw new Error('Workspace export requires canonical Turn publication before export.');
     return { id: published.id, threadId: published.threadId };
   });
   // A missing current file cannot establish that a reserved Turn was never published.

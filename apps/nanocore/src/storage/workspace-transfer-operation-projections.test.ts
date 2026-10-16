@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -20,6 +20,7 @@ import { createApp } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { readPublishedTurnRecord } from './workspace-file-records.js';
 
 const fixtures: Array<{ root: string; db: ReturnType<typeof openCoreDb> }> = [];
 afterEach(() => {
@@ -88,6 +89,42 @@ function exportUsage(root: string) {
 }
 
 describe('Workspace JSON transfer cutover', () => {
+  it('refuses an unpublished cached Turn change instead of serializing it after a failed write', async () => {
+    const { root, store, app } = fixture();
+    const thread = store.listThreads('ws_demo')[0]!;
+    const turn = store.createTurn(
+      'ws_demo',
+      thread.id,
+      'Inspect retained bytes',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { status: 'pending' }
+    );
+    const published = readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id);
+    expect(published).not.toBeNull();
+    expect(published?.status).toBe('pending');
+    // Fail before the persistence owner publishes files; the actual Store has already advanced its cache.
+    const fault = vi
+      .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
+      .mockImplementationOnce(() => {
+        throw new Error('Publication interrupted');
+      });
+    try {
+      expect(() => store.updateTurn(turn.id, { status: 'running' })).toThrow(
+        'Publication interrupted'
+      );
+    } finally {
+      fault.mockRestore();
+    }
+    expect(store.getTurn('ws_demo', thread.id, turn.id).status).toBe('running');
+    expect(readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
+    const exported = await app.request(
+      ...request('/api/app/operations/workspace.export', { workspaceId: 'ws_demo' })
+    );
+    expect(exported.status).toBe(500);
+    expect(readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
+  });
+
   it('round-trips actual archive bytes and Knowledge through the Web session streaming bindings', async () => {
     const source = fixture();
     const target = fixture();

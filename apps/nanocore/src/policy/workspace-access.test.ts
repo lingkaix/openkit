@@ -7,6 +7,7 @@ import {
 
 const EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'api.call': 'ar:core-api-call',
+  'administration.configuration.apply': 'ar:worker-git-read-maintenance-apply',
   'approval.respond': 'ar:approval-respond',
   'artifact.read': 'ar:artifact-read',
   'artifact.write': 'ar:artifact-write',
@@ -63,6 +64,14 @@ const ROLE_MATRIX = [
 ] as const;
 
 describe('Workspace fixed-role policy adapter', () => {
+  it('cannot grant Server maintenance through any Workspace role', () => {
+    for (const role of ['owner', 'editor', 'viewer'] as const) {
+      expect(
+        evaluateWorkspaceRoleAccess({ role, operation: 'administration.configuration.apply' })
+          .effect
+      ).toBe('deny');
+    }
+  });
   it('exports the exact closed product operation to access-right registry', () => {
     expect(PRODUCT_OPERATION_ACCESS_RIGHTS).toEqual(EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS);
   });
