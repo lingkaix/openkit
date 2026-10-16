@@ -376,7 +376,7 @@ function classifyThreadVisibilityCutover(
   kind: WorkspaceKind,
   threadId: string
 ): Pick<Thread, 'visibility' | 'privateOwnerUserId'> {
-  if (kind === 'quick-chat') {
+  if (kind === 'personal') {
     const workspaceId = basename(workspaceRoot);
     const candidates = new Set(listDirectoryNames(join(dataRoot, 'users')));
     if (existsSync(coreDbPath(dataRoot))) {

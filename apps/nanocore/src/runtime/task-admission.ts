@@ -120,7 +120,13 @@ export function createCoordinatorTaskTool(options: {
             options.store.createThread(
               goal.workspaceId,
               input.request.objective.slice(0, 100),
-              threadId
+              threadId,
+              'conversation',
+              {
+                visibility: 'workspace',
+                threadSource: 'worker',
+                parentThreadId: coordinator.threadId,
+              }
             );
             let resolveAccepted!: (turn: ReturnType<FsStore['createTurn']>) => void;
             let rejectAccepted!: (reason: unknown) => void;

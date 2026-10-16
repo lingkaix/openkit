@@ -43,6 +43,13 @@
         "administration"
       ]
     },
+    "threadSource": {
+      "type": "string",
+      "enum": [
+        "conversation",
+        "worker"
+      ]
+    },
     "visibility": {
       "type": "string",
       "enum": [

@@ -91,30 +91,32 @@ describe('Goal durable owner', () => {
       db.sqlite.close();
     }
   });
-  it('refuses a private Quick Chat Coordinator Thread before storing a Goal', async () => {
+  it('creates shared Goal execution in the owner-only personal Workspace', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-audience-'));
     const store = new FsStore({ dataRoot: root });
     const ws = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
-      await expect(
-        executeGoalOperation(
-          'goal.create',
-          {
-            workspaceId: ws.id,
-            requestId: '44444444-4444-4444-8444-444444444444',
-            intent: 'Produce a shared design',
-          },
-          { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
-          store,
-          db
-        )
-      ).rejects.toThrow('Quick Chat requires its owner-only private audience.');
-      expect(new FsStore({ dataRoot: root }).listThreads(ws.id)).toEqual([]);
-      expect(db.sqlite.prepare('SELECT * FROM goals').all()).toEqual([]);
+      const created = await executeGoalOperation(
+        'goal.create',
+        {
+          workspaceId: ws.id,
+          requestId: '44444444-4444-4444-8444-444444444444',
+          intent: 'Produce a shared design',
+        },
+        { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
+        store,
+        db
+      );
+      expect(ws.kind).toBe('personal');
+      expect(
+        new FsStore({ dataRoot: root }).getThread(ws.id, created.goal!.threadId)
+      ).toMatchObject({ visibility: 'workspace', threadSource: 'conversation' });
+      expect(db.sqlite.prepare('SELECT * FROM goals').all()).toHaveLength(1);
     } finally {
       db.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

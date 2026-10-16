@@ -2155,13 +2155,13 @@ describe('selected-Workspace owner management', () => {
       workspace: {
         ...OWNER_WORKSPACES.items[0].workspace,
         id: 'ws_00000000-0000-77bd-b1bb-0f0c80265392',
-        kind: 'quick-chat' as const,
+        kind: 'personal' as const,
         name: 'Quick Chat',
       },
     };
     const { client, methods } = makeSharingClient({
       authorizedWorkspaces: { items: [quickChat] },
-      coreWorkspaces: [{ id: quickChat.workspace.id, kind: 'quick-chat', name: 'Quick Chat' }],
+      coreWorkspaces: [{ id: quickChat.workspace.id, kind: 'personal', name: 'Quick Chat' }],
     });
     useWorkspaceStore.setState({ currentWorkspaceId: quickChat.workspace.id });
     renderApp('/settings/account', client);

@@ -449,7 +449,11 @@ Gateway account rows clear cached quota while pending or logged out, including l
 
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
+The conversation Item projection renders source-bound continuation summaries with their text, covered Item count and inspectable exact source endpoints. The history remains available through its existing Thread. A summary is a view of model continuity and does not remove original Items.
+
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
+
+Knowledge Manager answers show returned citations with owner-checked links to current full page content. Failed page refetches withhold those links even when cached entries remain. Add knowledge can retain an explicitly selected registered Source and its captured digest. The picker accepts only Sources owned by the selected Workspace with a captured digest; a new Source-linked save waits for catalog refresh and requires the selected exact reference to remain available. An uncertain command retries its original Source reference and request identity through current server admission. Source selection stays in its Workspace draft; matching text does not create a relationship. Source listing, detail, registration replay and linked saves retain current source audience checks. Selecting a private-origin Source does not authorize shared Workspace publication; its owner may use it in the owner-only personal Workspace.
 
 New API-key Provider profiles allocate one canonical Vault reference through the browser-safe Protocol codec. The form retains that candidate across a failed create retry and stores it in the authored Provider file; reads and key rotation use the recorded reference.
 
