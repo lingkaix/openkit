@@ -2421,22 +2421,29 @@ export function turnFilePayloadPath(
   );
 }
 
+/** Proves exactly one addressed canonical original, without rescanning other Turn inputs. */
+export function verifyTurnFileInput(workspaceRoot: string, turn: Turn, ordinal: number): void {
+  const input =
+    Number.isSafeInteger(ordinal) && ordinal >= 0 ? turn.fileInputs?.[ordinal] : undefined;
+  if (!input) throw new Error('Turn input original is unavailable.');
+  const path = turnFilePayloadPath(workspaceRoot, turn.threadId, turn.id, ordinal);
+  let parent = dirname(path);
+  for (let level = 0; level < 7; level += 1) {
+    assertCanonicalDirectory(parent);
+    parent = dirname(parent);
+  }
+  assertCanonicalRegularFile(path);
+  if (lstatSync(path).nlink !== 1)
+    throw new Error('Turn input original must have one canonical owner.');
+  const measured = measureCanonicalFile(path);
+  if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
+    throw new Error('Turn original input is recovery_required.');
+}
+
 /** Proves retained originals before replay, restart, export, or imported publication can use their inventory. */
 export function verifyTurnFileInputs(workspaceRoot: string, turn: Turn): void {
-  for (const [ordinal, input] of (turn.fileInputs ?? []).entries()) {
-    const path = turnFilePayloadPath(workspaceRoot, turn.threadId, turn.id, ordinal);
-    let parent = dirname(path);
-    for (let level = 0; level < 7; level += 1) {
-      assertCanonicalDirectory(parent);
-      parent = dirname(parent);
-    }
-    assertCanonicalRegularFile(path);
-    if (lstatSync(path).nlink !== 1)
-      throw new Error('Turn input original must have one canonical owner.');
-    const measured = measureCanonicalFile(path);
-    if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
-      throw new Error('Turn original input is recovery_required.');
-  }
+  for (const ordinal of (turn.fileInputs ?? []).keys())
+    verifyTurnFileInput(workspaceRoot, turn, ordinal);
 }
 
 /** Publishes one complete new file-backed Artifact directory through the existing P01 tree owner. The exact payload and descriptor are staged together, so process loss cannot expose a canonical directory with missing metadata. No reference Item or command receipt is written here. */

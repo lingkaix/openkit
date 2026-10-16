@@ -10021,6 +10021,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     let tick = 1;
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => `2999-10-03T00:00:${String(tick).padStart(2, '0')}.000Z`,
@@ -11770,6 +11771,7 @@ describe('createConfiguredTurnExecutor', () => {
         backend.collectTranscript = async () => ({ eventsJsonl: '', itemsJsonl: '' });
         const submit = vi.spyOn(backend, 'submit');
         const executor = new WorkerGovernanceTurnExecutor({
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
           backend,
           coreDb,
           awaitWorkerCompletion: async (aep) => {

@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -38,6 +39,7 @@ import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -1136,7 +1138,11 @@ describe('workspace archive import boundaries', () => {
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-    const stagedPromise = stageWorkspaceArchive(request, dataRoot);
+    const stagedPromise = stageWorkspaceArchive(
+      request,
+      dataRoot,
+      new FileStorageAdmission(dataRoot, () => 0n)
+    );
     const requestsRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
     const requestEntries = readdirSync(requestsRoot);
 
@@ -1288,9 +1294,9 @@ describe('workspace archive import boundaries', () => {
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-    await expect(stageWorkspaceArchive(request, dataRoot)).rejects.toThrow(
-      'injected upstream abort'
-    );
+    await expect(
+      stageWorkspaceArchive(request, dataRoot, new FileStorageAdmission(dataRoot, () => 0n))
+    ).rejects.toThrow('injected upstream abort');
     expect(openArchiveStagingDescriptors(dataRoot)).toEqual([]);
   });
 

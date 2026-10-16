@@ -63,6 +63,21 @@ pub enum Content {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
+    /// Source-owned extracted UTF-8. The original remains with its canonical adapter.
+    Representation {
+        /// Confined root-relative path to the immutable representation, never the binary original.
+        path: String,
+        /// Exact representation SHA-256, independent of the original digest.
+        digest: String,
+        /// Exact representation byte length.
+        size: u64,
+        /// Version and output-changing processor configuration identity.
+        processor: String,
+        /// Source-owned page or image locators in representation-byte coordinates.
+        fragments: Vec<RepresentationFragment>,
+        /// Whether the source processor covered the entire admitted body.
+        complete: bool,
+    },
     /// Identity-only sidecar; the verified digest must already exist.
     Unreadable,
     /// A discoverable source whose canonical representation is unavailable.
@@ -77,6 +92,20 @@ pub struct ByteRange {
     /// Exclusive canonical-file offset.
     pub end: u64,
 }
+
+/// A source-owned locator for one disjoint extracted-text range; not a permission grant.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RepresentationFragment {
+    /// Inclusive representation UTF-8 byte offset.
+    pub start: u64,
+    /// Exclusive representation UTF-8 byte offset.
+    pub end: u64,
+    /// Opaque original coordinate supplied by the source adapter, such as page:1.
+    pub locator: String,
+}
+
+/// Maximum complete extracted representation; originals have independent admission bounds.
+pub(crate) const REPRESENTATION_BYTES: u64 = 2 * 1024 * 1024;
 
 /// One named scope with current caller-admitted identities and aggregate coverage gaps.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -144,7 +173,7 @@ pub enum Locator {
         /// Original source coordinate, when supplied.
         original: Option<String>,
     },
-    /// Direct canonical UTF-8 byte range, with optional owner locator.
+    /// Searched representation UTF-8 range, with an optional original source locator.
     Text {
         /// Inclusive byte offset.
         start: u64,
@@ -278,8 +307,18 @@ impl Document {
         document
     }
 
-    /// Resolve the adapter's searchable direct-text units without joining their boundaries.
+    /// Resolve canonical or extracted-text ranges without joining their boundaries.
     pub(crate) fn searchable_ranges(&self) -> Vec<ByteRange> {
+        if let Content::Representation { fragments, .. } = &self.content {
+            return fragments
+                .iter()
+                .filter(|fragment| fragment.start < fragment.end)
+                .map(|fragment| ByteRange {
+                    start: fragment.start,
+                    end: fragment.end,
+                })
+                .collect();
+        }
         self.text_ranges.clone().unwrap_or_else(|| {
             vec![ByteRange {
                 start: 0,

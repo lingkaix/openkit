@@ -383,7 +383,7 @@ const KnowledgePageObjectIdSchema = z
   .refine((value) => !value.endsWith('.md') && new TextEncoder().encode(value).length <= 240);
 
 /** Exact page identity admitted by the Knowledge owner. */
-export const KnowledgePageReferenceSchema = PageReferenceSchema.extend({
+export const KnowledgePageReferenceSchema = PageReferenceSchema.safeExtend({
   objectId: KnowledgePageObjectIdSchema,
 });
 

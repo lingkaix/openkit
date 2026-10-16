@@ -3395,7 +3395,7 @@ export function createConversationService({
         }
 
         const objective =
-          StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(conversationPrompt);
+          StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(chatInput.input);
         if (!objective.success) {
           throw new TurnStartValidationError(
             'invalid_request',
@@ -3465,7 +3465,7 @@ export function createConversationService({
           );
         }
         const workerRequest = createStructuredWorkerDelegationRequest({
-          objective: conversationPrompt,
+          objective: objective.data,
           acceptanceCriteria: [
             'The bounded worker task satisfies the requested objective.',
             'The worker reports verification evidence or a clear blocker.',
@@ -3473,7 +3473,11 @@ export function createConversationService({
           contextRefs: [
             { kind: 'workspace', id: workspaceId },
             { kind: 'thread', id: receivingThreadId },
-            ...artifacts.map((artifact) => ({ kind: 'artifact' as const, id: artifact.id })),
+            ...artifacts.map((artifact) => ({
+              kind: 'artifact' as const,
+              id: artifact.id,
+              artifactVersion: artifact.version,
+            })),
           ],
           resources: artifacts.map((artifact) => ({
             kind: 'artifact',

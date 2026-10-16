@@ -71,6 +71,7 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
+import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -682,7 +683,7 @@ async function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
   });
 
   try {
-    return prepareWorkerTurnContextPackage(
+    return await prepareWorkerTurnContextPackage(
       fixture.coreDb,
       workspaceDb,
       fixture.store,
@@ -699,7 +700,8 @@ async function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
         turnId: fixture.turn.id,
         workerRequest: fixture.workerRequest,
         workspaceId: fixture.turn.workspaceId,
-      }
+      },
+      new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
     );
   } finally {
     workspaceDb.sqlite.close();
@@ -1067,6 +1069,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const setup = createTestAgentSetup();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       awaitWorkerCompletion: async (pkg) => {
@@ -1250,7 +1253,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const fixture = await createWorkerContextExecutorFixture('r35-host-dir');
     const backend = new FakeWorkerGovernanceBackend();
     Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb: fixture.coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: fixture.coreDb,
+    });
     const workspaceRoots = materializeWorkspaceRoots({
       config: {
         id: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1366,6 +1373,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const releaseError = new Error('live release interrupted after handoff publication');
     if (releaseInterrupted) release.mockRejectedValueOnce(releaseError);
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: f.coreDb,
       createAgentSessionId: () => f.agentSessionId,
@@ -1542,7 +1550,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       throw new Error('/private/planned-successor-canary native-secret-canary');
     });
     Object.assign(backend, { prepareAgentSessionContinuity: continuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_planned_successor',
@@ -1777,6 +1789,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const fixture = await createWorkerContextExecutorFixture('pre-snapshot-108');
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -1999,6 +2012,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const observations: Array<() => void> = [];
     const effects: string[] = [];
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
       coreDb: f.coreDb,
       store: f.store,
       env: {},
@@ -2228,6 +2242,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }),
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => '2026-08-21T00:00:05.000Z',
@@ -2308,6 +2323,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     Object.assign(backend, { prepareAgentSessionContinuity: continuity });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => '2026-09-06T00:00:01.000Z',
@@ -2435,6 +2451,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           : null,
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => '2026-09-17T00:00:01.000Z',
@@ -2602,7 +2619,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
           ? null
           : { agentSessionId: 'as_00000000-0000-7c02-b5f7-4874fb86e258' },
     });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     Object.assign(executor, {
       previewAgentSessionCompatibilityKey: () => `sha256:${'d'.repeat(64)}`,
     });
@@ -2719,6 +2740,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const agentSetup = createTestAgentSetup();
       const agentSessionId = testEntityId('as', 'as_preview_launch_key');
       const executor = new WorkerGovernanceTurnExecutor({
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
         createAgentSessionId: () => agentSessionId,
@@ -2970,6 +2992,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const cancel = vi.spyOn(backend, 'cancel');
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       workerControlGateway,
@@ -3135,6 +3158,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         : `${JSON.stringify(transcriptRecord)}\n`;
     };
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', `as_governance_live_events_${mode}`),
@@ -3254,13 +3278,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
             },
           }
         );
-        artifactId = result.structuredContent.artifactId as string;
+        artifactId = result.structuredContent!.artifactId as string;
       } finally {
         workspaceDb.sqlite.close();
       }
       return launch(input);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
@@ -3387,6 +3412,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const runtimeProvenanceImporter = vi.fn(importWorkerRuntimeProvenance);
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_governance_stale_publication_1'),
@@ -3465,6 +3491,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       .spyOn(operationAuthorizer, 'currentWorkerLineageWorkspaceAuthority')
       .mockImplementation((_db, _lineage, operation) => (operation === mode ? null : 'owner'));
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
       environmentBackend: { kind: 'openshell' },
@@ -3535,6 +3562,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return transcript;
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_governance_deletion_fence_1'),
@@ -3590,6 +3618,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         });
       });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => '2026-07-15T00:00:01.000Z',
@@ -3647,6 +3676,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_governance_1' });
     const cleanupSession = vi.spyOn(backend, 'cleanupSession');
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_governance_1'),
@@ -3861,6 +3891,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     };
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => ({
         acceptedAt: '2026-07-15T00:00:03.000Z',
         status: kind === 'completed' ? 'completed' : 'failed',
@@ -3951,6 +3982,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => {
         backend.calls.push('awaitWorkerCompletion');
         if (
@@ -4111,6 +4143,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const requestId = 'human-approved-readonly-goal-step-20260917-th7';
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       ...(outcome === 'failed'
         ? {
             awaitWorkerCompletion: async () => ({
@@ -4190,6 +4223,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       readThreadAgentSessionBinding: () => (retained ? { agentSessionId } : null),
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => ({
         acceptedAt: '2026-07-15T00:00:03.000Z',
         status: 'interrupted' as const,
@@ -4240,7 +4274,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     backend.prepareAgentSessionContinuity = async () => 'absent';
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     const input = {
       agentSetup: createTestAgentSetup(),
       freshAgentSessionId: testEntityId('as', 'as_unproved_next'),
@@ -4403,7 +4441,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const inspect = vi.fn(async () => 'absent' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: inspect });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
     const turn = createAssignedTurn(
       restarted,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4544,7 +4582,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         return update(id, input);
       });
     }
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4753,6 +4791,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       retainedStorage: predecessor.retainedStorage!,
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       awaitWorkerCompletion: async () => ({
@@ -4900,6 +4939,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       testEntityId('as', 'as_resume_successor'),
     ];
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => {
         // The backend accepts the ready proof during the Turn, after materialization.
         record?.(digest, {
@@ -5011,7 +5051,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       throw new Error('reference import failed');
     });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -5137,7 +5177,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
     }
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -5288,6 +5328,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     );
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion,
       backend,
       coreDb,
@@ -5351,6 +5392,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const reopenedCoreDb = reopensStore ? openCoreDb(coreDb.dataRoot) : coreDb;
     const reopenedStore = reopensStore ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
     const restartedExecutor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(reopenedCoreDb.dataRoot, () => 0n),
       backend,
       coreDb: reopenedCoreDb,
       environmentBackend: {
@@ -5703,6 +5745,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return importWorkerRuntimeProvenance(input);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_governance_provenance_success_1'),
@@ -5946,6 +5989,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return importWorkerRuntimeProvenance(input);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', `as_governance_provenance_${failure}_1`),
@@ -6049,6 +6093,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       environmentBackend: { kind: 'openshell' },
@@ -6089,6 +6134,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend,
       createAgentSessionId: () => testEntityId('as', 'as_governance_relay_1'),
@@ -6359,6 +6405,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ];
       });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_actor_scope_1'),
@@ -6836,6 +6883,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     vi.spyOn(backend, 'collectWorkspaceChanges').mockResolvedValue([fixture.record]);
     const cleanupSession = vi.spyOn(backend, 'cleanupSession');
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => ({
         acceptedAt: '2026-07-15T00:00:03.000Z',
         status: 'completed' as const,
@@ -6941,6 +6989,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_sandbox_access_1'),
@@ -7038,6 +7087,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     vi.spyOn(backend, 'submit').mockRejectedValue(primaryError);
     backend.failTeardown = cleanupFails;
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_fetch_failure'),
@@ -7166,6 +7216,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_fail_1' });
     backend.failTeardown = true;
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_teardown_fail_1'),
@@ -7227,6 +7278,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_retry_1' });
     backend.teardownFailuresRemaining = 1;
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_teardown_retry_1'),
@@ -7314,6 +7366,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_cleanup_status_1'),
@@ -7386,6 +7439,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       recursive: true,
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_workspace_open_fail_1'),
@@ -7464,6 +7518,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_workspace_migrate_fail_1'),
@@ -7521,6 +7576,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Fail workspace storage close'
     );
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_workspace_close_fail_1'),
@@ -7580,6 +7636,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return updateTurn(turnId, patch);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend: new FakeWorkerGovernanceBackend(),
       createAgentSessionId: () => testEntityId('as', 'as_completed_turn_persistence_fail_1'),
@@ -7639,6 +7696,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const collectEvidenceSpy = vi.spyOn(backend, 'collectEvidence').mockRejectedValue(undefined);
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend,
       createAgentSessionId: () => testEntityId('as', 'as_falsey_rejection_1'),
@@ -7703,6 +7761,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend: new FakeWorkerGovernanceBackend(),
       createAgentSessionId: () => testEntityId('as', 'as_terminal_notify_fail_1'),
@@ -7816,6 +7875,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
 
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend,
       createAgentSessionId: () => testEntityId('as', `as_${failurePoint}_fail_1`),
@@ -7881,6 +7941,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return created;
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend: new FakeWorkerGovernanceBackend(),
       createAgentSessionId: () => testEntityId('as', 'as_setup_fail_1'),
@@ -8008,6 +8069,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       };
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_source_ref_1'),
@@ -8171,6 +8233,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     workspaceDb.sqlite.close();
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -8315,6 +8378,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return nativeLaunch(...args);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -8345,7 +8409,115 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('excludes an automatic binding that exceeds the remaining Context Package budget', async () => {
+  it('snapshots only explicitly selected Artifact versions with bounded delivered text', async () => {
+    const fixture = await createWorkerContextExecutorFixture('selected-artifact');
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    const admission = new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n);
+    const original = 'Selected original text. '.repeat(300);
+    const recordedAt = '2026-10-17T00:00:00.000Z';
+    const makeArtifact = (id: string, body: string) =>
+      withCanonicalFileWriteAdmission(admission, () =>
+        fixture.store.createArtifact({
+          id,
+          workspaceId: fixture.turn.workspaceId,
+          threadId: null,
+          turnId: null,
+          kind: 'file',
+          title: id,
+          status: 'ready',
+          summary: null,
+          version: 1,
+          content: { format: 'text', body },
+          contentDigest: turnRuntimeSha256(Buffer.from(body, 'utf8')),
+          lastMutationRequestId: id,
+          origin: {
+            kind: 'imported',
+            sourceKind: 'direct-import',
+            sourceId: id,
+            sourceDigest: turnRuntimeSha256(Buffer.from(body, 'utf8')),
+            actor: { kind: 'user', id: LOCAL_USER_ID },
+            requestId: id,
+            recordedAt,
+          },
+          createdAt: recordedAt,
+          updatedAt: recordedAt,
+        })
+      );
+    const selected = makeArtifact('ar_context_selected', original);
+    makeArtifact('ar_context_unselected', 'UNSELECTED PRIVATE MARKER');
+    const request = JSON.parse(fixture.workerRequest);
+    request.contextRefs.push({
+      kind: 'artifact',
+      id: selected.id,
+      artifactVersion: selected.version,
+    });
+    try {
+      const prepared = await prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(
+          workspaceDb,
+          fixture.turn.workspaceId,
+          fixture.turn.threadId,
+          fixture.turn.id
+        )!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: JSON.stringify(request),
+          workspaceId: fixture.turn.workspaceId,
+        },
+        admission
+      );
+      const sources = prepared.packageFiles.sourceFiles?.filter(
+        (source) => source.source.kind === 'artifact'
+      );
+      expect(sources).toHaveLength(1);
+      expect(sources![0]).toMatchObject({
+        source: { artifactVersion: 1, reference: { objectId: selected.id } },
+        originalDigest: selected.contentDigest,
+        byteLength: Buffer.byteLength(original),
+        projection: { kind: 'excerpt', byteLength: 2_048, truncated: true },
+      });
+      expect(
+        readFileSync(join(fixture.packageRoot, sources![0]!.originalSnapshotPath), 'utf8')
+      ).toBe(original);
+      expect(readFileSync(join(fixture.packageRoot, sources![0]!.packagePath), 'utf8')).toBe(
+        original.slice(0, 2_048)
+      );
+      request.contextRefs[1].artifactVersion = 2;
+      await expect(
+        prepareWorkerTurnContextPackage(
+          fixture.coreDb,
+          workspaceDb,
+          fixture.store,
+          getWorkerCheckpoint(
+            workspaceDb,
+            fixture.turn.workspaceId,
+            fixture.turn.threadId,
+            fixture.turn.id
+          )!,
+          {
+            agentSessionId: fixture.agentSessionId,
+            requestId: fixture.requestId,
+            threadId: fixture.turn.threadId,
+            turnId: fixture.turn.id,
+            workerRequest: JSON.stringify(request),
+            workspaceId: fixture.turn.workspaceId,
+          },
+          admission
+        )
+      ).rejects.toThrow('Artifact');
+    } finally {
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('delivers a bounded Material excerpt and the exact admitted original without bytes-per-token guessing', async () => {
     const fixture = await createWorkerContextExecutorFixture('binding-budget', {
       materialContent: 'B'.repeat(5_000),
       maxContextTokens: 1_000,
@@ -8354,7 +8526,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       agentSessionId,
       coreDb,
       material,
-      queuedMaterial,
       requestId,
       revision,
       sandboxBindingRef,
@@ -8366,6 +8537,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const launchSpy = vi.spyOn(backend, 'submit');
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
@@ -8387,18 +8559,67 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       expect(launchSpy).toHaveBeenCalledTimes(1);
       expect(JSON.parse(readFileSync(tracePath, 'utf8'))).toMatchObject({
-        materialExclusions: [
+        materialExclusions: [],
+        materialSelections: [
           {
             materialId: material.materialId,
-            reason: 'budget_exceeded',
             revisionId: revision.revisionId,
-            sensitivity: 'internal',
+            contentDigest: fixture.materialContentDigest,
+            projection: {
+              kind: 'excerpt',
+              byteLength: 2_048,
+              representationByteLength: 5_000,
+              representationDigest: fixture.materialContentDigest,
+              truncated: true,
+              availability: 'incomplete',
+            },
           },
         ],
-        materialSelections: [],
+        sourceFiles: [
+          {
+            source: { kind: 'material', revisionId: revision.revisionId },
+            byteLength: 5_000,
+            originalDigest: fixture.materialContentDigest,
+          },
+        ],
       });
       const reopenedDb = openTestWorkspaceDb(coreDb);
-      expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toEqual(queuedMaterial);
+      expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toBeNull();
+      const contextRoot = join(
+        coreDb.dataRoot,
+        'workspaces',
+        turn.workspaceId,
+        'threads',
+        turn.threadId,
+        'turns',
+        turn.id,
+        'context-package'
+      );
+      expect(
+        readFileSync(
+          join(
+            contextRoot,
+            'workspace',
+            'materials',
+            material.materialId,
+            `${revision.revisionId}.md`
+          ),
+          'utf8'
+        )
+      ).toBe('B'.repeat(2_048));
+      expect(
+        readFileSync(
+          join(
+            contextRoot,
+            'originals',
+            'materials',
+            material.materialId,
+            revision.revisionId,
+            'payload'
+          ),
+          'utf8'
+        )
+      ).toBe('B'.repeat(5_000));
       reopenedDb.sqlite.close();
     } finally {
       launchSpy.mockRestore();
@@ -8412,6 +8633,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -8468,7 +8690,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
-    const fixture = await createWorkerContextExecutorFixture('task-knowledge');
+    const fixture = await createWorkerContextExecutorFixture('task-knowledge', { maxContextTokens: 240_000 });
     const knowledge = fixture.store.createKnowledgeEntry(
       'ws_00000000-0000-7000-8000-000000000001',
       {
@@ -8480,7 +8702,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const oversizedKnowledge = fixture.store.createKnowledgeEntry(
       'ws_00000000-0000-7000-8000-000000000001',
       {
-        content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(50_000)}`,
+        content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`,
         kind: 'project-context',
         title: 'Oversized zygomorphic worker guidance',
       }
@@ -8605,6 +8827,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return launch(...args);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -8888,6 +9111,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const launchSpy = vi.spyOn(backend, 'submit');
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -9025,6 +9249,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await releaseCleanup.promise;
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => {
         recordWorkerControlAcceptedRecord(coreDb, {
           acceptedAt: '2026-07-15T00:00:04.000Z',
@@ -9152,6 +9377,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_unexpected_random_1'),
@@ -9229,6 +9455,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => timestamp,
@@ -9285,6 +9512,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     })();
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
@@ -9359,6 +9587,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return materialize(args[0], { ...args[1], beforeMaterialization: undefined });
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
@@ -9429,6 +9658,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       throw new Error('materialize failed after external effect');
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
@@ -9505,6 +9735,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const launchSpy = vi.spyOn(backend, 'submit');
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
@@ -9590,6 +9821,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backendSessionId: `openkit-${environmentPackage.snapshotId}`,
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
@@ -9700,6 +9932,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_governance_vault_1'),
@@ -9839,6 +10072,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_file_1'),
@@ -9966,6 +10200,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return nativeLaunch(...args);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_env_1'),
@@ -10687,6 +10922,7 @@ describe('retained-record failure publication', () => {
       );
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -10755,6 +10991,7 @@ describe('retained-record failure publication', () => {
     const backend = new FakeWorkerGovernanceBackend();
     backend.failTeardown = cleanupFails;
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -10910,6 +11147,7 @@ describe('retained-record failure publication', () => {
       'Workspace review is not actionable (git_repository_missing): review_demo. Link repository resource repo_demo in Repositories. A new authorized Task can recover retained changes if they remain; linking does not replay the old handoff or apply them.';
     vi.spyOn(backend, 'materialize').mockRejectedValueOnce(new Error(message));
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
@@ -11018,6 +11256,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
   const commit = 'e'.repeat(40);
   const effects: NanoHostSessionEffectRequest[] = [];
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
     env: {},
@@ -11396,6 +11635,7 @@ async function launchFinalReviewWorker(suffix: string) {
   });
   let settled = false;
   const executor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     backend,
     coreDb,
     workerControlGateway: gateway,

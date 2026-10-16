@@ -7,6 +7,7 @@ import type {
   OperationInvocationContext,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
 import { dryRunWorkspaceImport, verifyWorkspaceExportTree } from './workspace-export.js';
 import {
   assertRequestedExportHandles,
@@ -19,31 +20,40 @@ import {
 
 /** Joins JSON transfer definitions to the existing verified-tree and staged publication owners. */
 export function createWorkspaceTransferOperationImplementations(
-  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'fileAdmission'
+  >
 ) {
-  const { coreDb, repositoryWorkspaceDb, store } = dependencies;
+  const { coreDb, repositoryWorkspaceDb, store, fileAdmission } = dependencies;
   return {
     'workspace.export': (input, context) => {
       // Definition credential admission proves public context before this native join.
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
       const dataRoot = store?.getDataRoot();
-      if (!dataRoot)
+      if (!dataRoot || !fileAdmission)
         throw new OperationError(
           'workspace_export_unavailable',
           'Workspace export is unavailable.',
           503
         );
-      return createVerifiedWorkspaceExport({
-        authorityActor: context.actorRef,
-        authorityUserId: actor.userId,
-        administratorEligible: Boolean(coreDb && isCurrentDeploymentAdministrator(coreDb, actor)),
-        coreDb,
-        dataRoot,
-        repositoryWorkspaceDb: repositoryWorkspaceDb!,
-        requestActor: actor,
-        store: store!,
-        workspaceId: input.workspaceId,
-      }).response;
+      return withCanonicalFileWriteAdmission(
+        fileAdmission,
+        () =>
+          createVerifiedWorkspaceExport({
+            authorityActor: context.actorRef,
+            authorityUserId: actor.userId,
+            administratorEligible: Boolean(
+              coreDb && isCurrentDeploymentAdministrator(coreDb, actor)
+            ),
+            coreDb,
+            dataRoot,
+            repositoryWorkspaceDb: repositoryWorkspaceDb!,
+            requestActor: actor,
+            store: store!,
+            workspaceId: input.workspaceId,
+          }).response
+      );
     },
     'workspace.import-dry-run': (input, context) => {
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
@@ -87,7 +97,7 @@ export function createWorkspaceTransferOperationImplementations(
     'workspace.import': (input, context) => {
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
       const dataRoot = store?.getDataRoot();
-      if (!dataRoot)
+      if (!dataRoot || !fileAdmission)
         throw new OperationError(
           'workspace_import_unavailable',
           'Workspace import is unavailable.',
@@ -113,14 +123,16 @@ export function createWorkspaceTransferOperationImplementations(
             importedWorkspaceExists(coreDb, store!, dataRoot, workspaceId),
         });
         assertRequestedExportHandles(report, input.sourceWorkspaceId, input.exportId);
-        return importVerifiedWorkspace({
-          authorityUserId: actor.userId,
-          coreDb,
-          dataRoot,
-          requestId: input.requestId ?? null,
-          store: store!,
-          verified,
-        });
+        return withCanonicalFileWriteAdmission(fileAdmission, () =>
+          importVerifiedWorkspace({
+            authorityUserId: actor.userId,
+            coreDb,
+            dataRoot,
+            requestId: input.requestId ?? null,
+            store: store!,
+            verified,
+          })
+        );
       } catch (error) {
         if (error instanceof OperationError) throw error;
         throw new OperationError(

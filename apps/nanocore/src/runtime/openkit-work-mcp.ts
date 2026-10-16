@@ -17,8 +17,15 @@ import { z } from 'zod';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
+import { searchPdfSourceSnapshot } from '../context/pdf-source-representation.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from '../context/worker-context-package.js';
+import {
+  readWorkerSourceSnapshot,
+  resolveCurrentWorkerSource,
+  type WorkerSourceReadResult,
+} from '../context/worker-source-read.js';
+import { viewWorkerSourceSnapshot } from '../context/worker-source-vision.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
@@ -94,6 +101,52 @@ const WorkSubmitArtifactArgsSchema = z
   })
   .strip();
 
+const WorkReadSourceArgsSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    mode: z.enum(['preview', 'read']).default('preview'),
+    cursor: z
+      .object({
+        version: z.literal(1),
+        mode: z.literal('read'),
+        binding: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        range: z
+          .object({
+            start: z.number().int().nonnegative().safe(),
+            end: z.number().int().nonnegative().safe(),
+          })
+          .strip(),
+      })
+      .strip()
+      .optional(),
+  })
+  .strip()
+  .refine((args) => !args.cursor || args.mode === 'read');
+
+const WorkSearchSourceArgsSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    mode: z.enum(['lexical', 'exact', 'regex']).default('lexical'),
+    query: z.string().min(1).max(4096),
+    limit: z.number().int().min(1).max(20).default(10),
+  })
+  .strip();
+const WorkViewSourceArgsSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    page: z.number().int().positive().safe().optional(),
+    crop: z
+      .object({
+        left: z.number().int().nonnegative().max(16_384),
+        top: z.number().int().nonnegative().max(16_384),
+        width: z.number().int().positive().max(16_384),
+        height: z.number().int().positive().max(16_384),
+      })
+      .strip()
+      .optional(),
+  })
+  .strip();
+
 const WorkListPeersArgsSchema = z.object({}).strip();
 const WorkReadPeerArgsSchema = z
   .object({
@@ -139,6 +192,24 @@ export const OPENKIT_WORK_TOOLS = [
     description:
       'Read recent product Turns and Items for one current peer. Results are newest first; use nextCursor for older records. This does not control or change the peer.',
     inputSchema: mcpInputSchema(WorkReadPeerArgsSchema),
+  },
+  {
+    name: 'work_read_source',
+    description:
+      'Preview or read one source from this Turn Context Package. Use its exact inventory packagePath as path. Preview is at most 2048 UTF-8 bytes or 50 lines; read is at most 51200 bytes or 2000 lines, also bounded by the complete result envelope. Continue with mode read and the returned cursor. EOF describes the named representation only; PDF coverage may be incomplete. No host path or unselected source is accepted.',
+    inputSchema: mcpInputSchema(WorkReadSourceArgsSchema),
+  },
+  {
+    name: 'work_search_source',
+    description:
+      'Search one retained PDF text representation selected by its exact source inventory packagePath. Use lexical, exact or line-bounded regex mode. At most 20 bounded snippets return original identity, representation digest, processor and page coordinates. Partial text-layer coverage cannot prove absence in images or unprocessed pages. No unselected source or host path is accepted.',
+    inputSchema: mcpInputSchema(WorkSearchSourceArgsSchema),
+  },
+  {
+    name: 'work_view_source',
+    description:
+      'Explicitly view a selected PNG, JPEG or PDF page by its exact source inventory packagePath. PDF page defaults to 1. Optional crop uses original image pixels, or the selected PDF page raster at 72 dpi after page rotation. The JPEG view is limited to a 1536-pixel edge and 256 KiB. Metadata pins the original, crop, processor and delivered image. Other pages and images are not covered by this view. Unsupported or resource-limited input returns an unavailable descriptor, never the full original.',
+    inputSchema: mcpInputSchema(WorkViewSourceArgsSchema),
   },
   {
     name: 'work_submit_artifact',
@@ -208,6 +279,9 @@ export async function dispatchOpenkitWorkTool(
   ) {
     throw new WorkerControlGatewayError('turn_not_active', 'The Turn is not running.', 409);
   }
+  if (toolName === 'work_read_source') return readSource(input, args);
+  if (toolName === 'work_search_source') return searchSource(input, args);
+  if (toolName === 'work_view_source') return viewSource(input, args);
   if (toolName === 'work_submit_artifact') {
     try {
       return await submitArtifact(input, args);
@@ -376,6 +450,122 @@ export async function dispatchOpenkitWorkTool(
     });
   }
   return pendingToolResult('pending-input', raised.requestId);
+}
+
+/** Searches only the currently authorized retained source representation; the domain-free kernel never receives permission or a binary parser. */
+async function searchSource(
+  input: Parameters<typeof dispatchOpenkitWorkTool>[0],
+  args: Record<string, unknown>
+) {
+  const parsed = WorkSearchSourceArgsSchema.safeParse(args);
+  if (!parsed.success)
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+      code: 'mcp-call-failed',
+    });
+  try {
+    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    const projection = await searchPdfSourceSnapshot({
+      ...selected,
+      dataRoot: input.workspaceDb.dataRoot,
+      query: { mode: parsed.data.mode, query: parsed.data.query, limit: parsed.data.limit },
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    selected.assertCurrent();
+    return sourceToolResult({ ...projection });
+  } catch {
+    return sourceToolResult({
+      status: 'unavailable',
+      reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
+    });
+  }
+}
+
+/** Returns an explicit bounded image with current source and receiving-audience authorization after processing. */
+async function viewSource(
+  input: Parameters<typeof dispatchOpenkitWorkTool>[0],
+  args: Record<string, unknown>
+) {
+  const parsed = WorkViewSourceArgsSchema.safeParse(args);
+  if (!parsed.success)
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+      code: 'mcp-call-failed',
+    });
+  try {
+    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    const projection = await viewWorkerSourceSnapshot({
+      ...selected,
+      fileAdmission: input.fileAdmission,
+      crop: parsed.data.crop,
+      page: parsed.data.page,
+      signal: input.signal,
+    });
+    selected.assertCurrent();
+    if (projection.status === 'unavailable') return sourceToolResult({ ...projection });
+    const { bytes, ...metadata } = projection;
+    const result = {
+      isError: false,
+      // Codex prefers structuredContent over content, which would discard the image blocks.
+      // Metadata stays in the leading text block; undefined is omitted from the wire response.
+      structuredContent: undefined,
+      content: [
+        { type: 'text' as const, text: JSON.stringify(metadata) },
+        {
+          type: 'image' as const,
+          mimeType: projection.delivered.mediaType,
+          data: bytes.toString('base64'),
+        },
+      ],
+    };
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024)
+      return sourceToolResult({ status: 'unavailable', reason: 'resource_limited' });
+    return result;
+  } catch {
+    return sourceToolResult({
+      status: 'unavailable',
+      reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
+    });
+  }
+}
+
+/** Serializes bounded source facts without exposing private exceptions or a fabricated handle. */
+function sourceToolResult(projection: Record<string, unknown>) {
+  const result = {
+    isError: false,
+    structuredContent: projection,
+    content: [{ type: 'text' as const, text: JSON.stringify(projection) }],
+  };
+  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024)
+    throw new WorkerControlGatewayError('mcp-result-too-large', MCP_RESULT_TOO_LARGE_MESSAGE, 413);
+  return result;
+}
+
+/** Reads one accepted source snapshot through existing current Worker and source authority. */
+async function readSource(
+  input: Parameters<typeof dispatchOpenkitWorkTool>[0],
+  args: Record<string, unknown>
+) {
+  const parsed = WorkReadSourceArgsSchema.safeParse(args);
+  if (!parsed.success)
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+      code: 'mcp-call-failed',
+    });
+  let projection: WorkerSourceReadResult;
+  try {
+    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    projection = await readWorkerSourceSnapshot({
+      ...selected,
+      mode: parsed.data.mode,
+      cursor: parsed.data.cursor,
+      signal: input.signal,
+    });
+    selected.assertCurrent();
+  } catch {
+    projection = {
+      status: 'unavailable',
+      reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
+    };
+  }
+  return sourceToolResult({ ...projection });
 }
 
 function workRaiseInput(

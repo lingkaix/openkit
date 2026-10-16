@@ -13,6 +13,7 @@ import {
 } from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -129,7 +130,11 @@ describe('release-declared catalog Skill supply', () => {
       collectTranscript: unexpectedBackendCall,
       collectWorkspaceChanges: unexpectedBackendCall,
     };
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     const failure = await executor
       .prepareAgentSessionForTurn(store, {
         agentSetup,

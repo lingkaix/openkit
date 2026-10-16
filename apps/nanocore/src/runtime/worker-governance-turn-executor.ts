@@ -23,8 +23,16 @@ import {
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { publishedErrorMessage } from '../api-errors.js';
-import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentSchedulerAdmissionWorkspaceAuthority,
+  currentWorkerLineageWorkspaceAuthority,
+} from '../auth/operation-authorizer.js';
+import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
+import { SOURCE_PREVIEW_LIMITS } from '../context/bounded-source-view.js';
+import { prepareMaterialSourceInput } from '../context/material-source-files.js';
+import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
   createWorkerContextPackageFiles,
@@ -38,6 +46,7 @@ import {
   type WorkerContextPackageKnowledgeSelectionReference,
   type WorkerContextPackageMaterialExclusion,
   type WorkerContextPackageMaterialSelectionInput,
+  type WorkerContextPackageSourceFileInput,
   type WorkerContextPackageTrace,
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
@@ -48,7 +57,11 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
-import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import {
+  findSchedulerAdmissionForTurn,
+  type SchedulerWorkerStorageChoice,
+} from '../scheduler-records.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -263,10 +276,11 @@ export interface PreparedWorkerTurnContext {
  * @param store Product store containing canonical Thread Items.
  * @param checkpoint Exact Task diagnostic checkpoint, or null for an outcome-initiated Turn.
  * @param input Exact worker Turn, command, and request bytes.
+ * @param admission Existing App-owned disk reservation shared by all file producers.
  * @returns Prepared immutable package state.
  * @throws TurnStartValidationError when checkpoint or requested Item authority is contradictory.
  */
-export function prepareWorkerTurnContextPackage(
+export async function prepareWorkerTurnContextPackage(
   coreDb: CoreDb | null,
   workspaceDb: WorkspaceDb,
   store: FsStore,
@@ -278,8 +292,9 @@ export function prepareWorkerTurnContextPackage(
     readonly workspaceId: string;
     readonly threadId: string;
     readonly turnId: string;
-  }
-): PreparedWorkerTurnContext {
+  },
+  admission: FileStorageAdmission
+): Promise<PreparedWorkerTurnContext> {
   if (
     !input.requestId ||
     (checkpoint &&
@@ -342,7 +357,6 @@ export function prepareWorkerTurnContextPackage(
   const queuedMaterial = selectQueuedThreadMaterialRevision(workspaceDb, input.threadId);
   const materialSelections: WorkerContextPackageMaterialSelectionInput[] = [];
   const materialExclusions: WorkerContextPackageMaterialExclusion[] = [];
-  let selectedContextBytes = Buffer.byteLength(input.workerRequest, 'utf8');
   let queuedMaterialSelection: QueuedThreadMaterialSelection | null = null;
   const bindingCandidate = queuedMaterial;
   if (bindingCandidate?.inclusionState === 'excluded') {
@@ -360,28 +374,18 @@ export function prepareWorkerTurnContextPackage(
       sensitivity: bindingCandidate.sensitivity,
     });
   } else if (bindingCandidate) {
-    const bindingContentBytes = Buffer.byteLength(bindingCandidate.content, 'utf8');
-    if (Math.ceil((selectedContextBytes + bindingContentBytes) / 4) > contextBudgetTokens) {
-      materialExclusions.push({
-        materialId: bindingCandidate.materialId,
-        reason: 'budget_exceeded',
-        revisionId: bindingCandidate.revisionId,
-        sensitivity: bindingCandidate.sensitivity,
-      });
-    } else {
-      materialSelections.push({
-        bindingMutationRequestId: bindingCandidate.bindingMutationRequestId,
-        content: bindingCandidate.content,
-        contentDigest: bindingCandidate.contentDigest,
-        inclusionReason: bindingCandidate.inclusionReason,
-        materialId: bindingCandidate.materialId,
-        mediaType: bindingCandidate.mediaType,
-        parentRevisionId: bindingCandidate.parentRevisionId,
-        revisionId: bindingCandidate.revisionId,
-        sensitivity: bindingCandidate.sensitivity,
-      });
-      queuedMaterialSelection = bindingCandidate;
-    }
+    materialSelections.push({
+      bindingMutationRequestId: bindingCandidate.bindingMutationRequestId,
+      content: bindingCandidate.content,
+      contentDigest: bindingCandidate.contentDigest,
+      inclusionReason: bindingCandidate.inclusionReason,
+      materialId: bindingCandidate.materialId,
+      mediaType: bindingCandidate.mediaType,
+      parentRevisionId: bindingCandidate.parentRevisionId,
+      revisionId: bindingCandidate.revisionId,
+      sensitivity: bindingCandidate.sensitivity,
+    });
+    queuedMaterialSelection = bindingCandidate;
   }
 
   const knowledgeSelections: WorkerContextPackageKnowledgeSelectionInput[] = [];
@@ -417,8 +421,14 @@ export function prepareWorkerTurnContextPackage(
       );
     }
     for (const page of pages) {
+      // S61 currently provides no notebook commit for a verified excerpt. Admit a complete page only within the independent preview allowance; never infer a token count.
       const pageBytes = Buffer.byteLength(page.content, 'utf8');
-      if (Math.ceil((selectedContextBytes + pageBytes) / 4) > contextBudgetTokens) {
+      if (
+        pageBytes > SOURCE_PREVIEW_LIMITS.bytes ||
+        page.content.split('\n', SOURCE_PREVIEW_LIMITS.lines + 2).length -
+          Number(page.content.endsWith('\n')) >
+          SOURCE_PREVIEW_LIMITS.lines
+      ) {
         knowledgeExclusions.push({
           contentDigest: page.contentDigest,
           knowledgePageId: page.knowledgePageId,
@@ -426,13 +436,148 @@ export function prepareWorkerTurnContextPackage(
         });
         continue;
       }
-      selectedContextBytes += pageBytes;
       knowledgeSelections.push(page);
     }
   }
 
+  const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
+  const originalInputs = structuredClone(turn.fileInputs ?? []);
+  // Only request selectors and explicitly requested Artifact-reference Items select originals.
+  const artifactRefs = [
+    ...workerRequest.requestedArtifactRefs,
+    ...includedPriorItems.flatMap((item) =>
+      item.type === 'artifact-reference'
+        ? [{ artifactId: item.artifactId, artifactVersion: item.artifactVersion }]
+        : []
+    ),
+  ];
+  const selectedArtifacts = new Map<string, ReturnType<FsStore['getArtifact']>>();
+  for (const reference of artifactRefs) {
+    let artifact: ReturnType<FsStore['getArtifact']>;
+    try {
+      artifact = store.getArtifact(input.workspaceId, reference.artifactId);
+    } catch {
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Selected Artifact is unavailable.',
+        503
+      );
+    }
+    if (reference.artifactVersion !== undefined && reference.artifactVersion !== artifact.version)
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Selected Artifact version is unavailable.',
+        503
+      );
+    selectedArtifacts.set(artifact.id, structuredClone(artifact));
+  }
+  const assertCurrentSources = () => {
+    if (!originalInputs.length && !materialSelections.length && !selectedArtifacts.size) return;
+    if (!coreDb)
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Turn source authority is unavailable.',
+        503
+      );
+    const current = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+    const admission = findSchedulerAdmissionForTurn(coreDb, input);
+    if (
+      isSealedTurnTerminal(current.status) ||
+      !isDeepStrictEqual(current.fileInputs ?? [], originalInputs) ||
+      !admission ||
+      !currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, 'thread.read', true) ||
+      !isThreadVisible(
+        store,
+        store.getThread(input.workspaceId, input.threadId),
+        responsibleUserIdForActor(admission.triggerActor) ?? undefined,
+        admission.serverAdminTokenId !== null
+      )
+    )
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Current Turn input authority is unavailable.',
+        503
+      );
+  };
+  const assertCurrentArtifact = (artifact: Readonly<ReturnType<FsStore['getArtifact']>>) => {
+    assertCurrentSources();
+    const current = store.getArtifact(input.workspaceId, artifact.id);
+    const sourceAdmission = findSchedulerAdmissionForTurn(coreDb!, input)!;
+    const destination = store.getThread(input.workspaceId, input.threadId);
+    const sourceThread =
+      current.origin.kind === 'imported'
+        ? null
+        : store.getThread(input.workspaceId, current.origin.threadId);
+    if (
+      current.status !== 'ready' ||
+      !isDeepStrictEqual(current, artifact) ||
+      !isArtifactVisible(
+        store,
+        current,
+        responsibleUserIdForActor(sourceAdmission.triggerActor) ?? undefined,
+        sourceAdmission.serverAdminTokenId !== null
+      ) ||
+      (sourceThread?.visibility === 'private' &&
+        (destination.visibility !== 'private' ||
+          destination.privateOwnerUserId !== sourceThread.privateOwnerUserId))
+    )
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Current Artifact source audience is unavailable.',
+        503
+      );
+  };
+  let sourceFiles: WorkerContextPackageSourceFileInput[];
+  try {
+    sourceFiles = await prepareTurnFileSourceInputs({
+      workspaceRoot,
+      turn,
+      assertCurrent: assertCurrentSources,
+    });
+    sourceFiles.push(
+      ...(await prepareArtifactSourceInputs({
+        admission,
+        workspaceRoot,
+        artifacts: [...selectedArtifacts.values()],
+        assertCurrent: assertCurrentArtifact,
+      }))
+    );
+    for (const [index, selection] of materialSelections.entries()) {
+      const assertCurrentMaterial = () => {
+        assertCurrentSources();
+        if (
+          !isDeepStrictEqual(
+            selectQueuedThreadMaterialRevision(workspaceDb, input.threadId),
+            bindingCandidate
+          )
+        )
+          throw new TurnStartValidationError(
+            'source_unavailable',
+            'Current Material source is unavailable.',
+            503
+          );
+      };
+      const material = await prepareMaterialSourceInput({
+        workspaceId: input.workspaceId,
+        selection,
+        assertCurrent: assertCurrentMaterial,
+      });
+      materialSelections[index] = material.selection;
+      sourceFiles.push(material.source);
+    }
+  } catch (error) {
+    if (error instanceof TurnStartValidationError) throw error;
+    const refusal = new TurnStartValidationError(
+      'source_unavailable',
+      'Selected source originals are unavailable.',
+      503
+    );
+    refusal.cause = error;
+    throw refusal;
+  }
   const includedItemIds = [workerRequestItemId, ...includedPriorItems.map((item) => item.id)];
   const packageFiles = createWorkerContextPackageFiles({
+    sourceFiles,
     contextBudgetTokens,
     includedItemIds,
     knowledgeSelections,
@@ -443,7 +588,6 @@ export function prepareWorkerTurnContextPackage(
     workerRequestItemId,
     workspaceId: input.workspaceId,
   });
-  const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
   const packageRoot = join(
     workspaceRoot,
     'threads',
@@ -452,7 +596,9 @@ export function prepareWorkerTurnContextPackage(
     input.turnId,
     'context-package'
   );
-  writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
+  await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
+  assertCurrentSources();
+  for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);
   return {
     checkpoint,
     requestId: input.requestId,
@@ -540,6 +686,8 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
  * Options for the worker-governance-backed turn executor.
  */
 export interface WorkerGovernanceTurnExecutorOptions {
+  /** App-owned disk reservation shared with upload, capture and package writers. */
+  fileAdmission?: FileStorageAdmission | undefined;
   /** Active configuration snapshot for resolution-time public-route admission. */
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined;
   /** Optional durable completion barrier used after a detached backend launch. */
@@ -606,6 +754,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /** Configured four-operation boundary; the executor retains its existing preparation and closeout responsibility. */
   public readonly executionBackend: import('./execution-backend.js').ExecutionBackend;
   private readonly coreDb: CoreDb | null;
+  private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
   private readonly now: () => string;
   private readonly resolveResidentWorkerStorageWorkSlotRef:
@@ -637,6 +786,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceKnowledgeEditing: false,
     };
     this.coreDb = options.coreDb ?? null;
+    this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
     this.now = options.now ?? (() => new Date().toISOString());
     this.resolveResidentWorkerStorageWorkSlotRef =
@@ -1581,7 +1731,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       if (workspaceDb && (checkpoint || outcomeInitiated) && context.sandboxBindingRef) {
-        preparedWorkerContext = prepareWorkerTurnContextPackage(
+        if (!this.fileAdmission) {
+          throw new TurnStartValidationError(
+            'source_unavailable',
+            'Worker Context Package storage admission is unavailable.',
+            503
+          );
+        }
+        preparedWorkerContext = await prepareWorkerTurnContextPackage(
           this.coreDb,
           workspaceDb,
           store,
@@ -1593,7 +1750,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             turnId: turn.id,
             workerRequest: contextRequest,
             workspaceId: turn.workspaceId,
-          }
+          },
+          this.fileAdmission
         );
       }
       if (preparedWorkerContext && !turn.startedAt) {

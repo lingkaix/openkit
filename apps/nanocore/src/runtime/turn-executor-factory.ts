@@ -345,6 +345,7 @@ function createNanoHostWorkerLifecycleRuntime(
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? new SimulatedTurnExecutor({ coreDb, fileAdmission })
       : new WorkerGovernanceTurnExecutor({
+          fileAdmission,
           awaitWorkerCompletion: (environmentPackage, attemptId) =>
             waitForWorkerControlFinalStatus(coreDb, {
               attemptId: attemptId,
@@ -3249,7 +3250,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     session.pendingImports = [];
     for (const file of pendingImports) {
       const imported = await this.effect(session.identity, session.attemptId, 'reference.import', {
-        body: file.body,
+        ...('source' in file ? { source: file.source } : { body: file.body }),
         byteLength: file.byteLength,
         relativePath: file.relativePath,
         sandboxId: session.sharedHarness.sandbox.sandboxId,
