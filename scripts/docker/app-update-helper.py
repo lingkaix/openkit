@@ -149,7 +149,6 @@ REQUIRED_CONFIG_KEYS = (
     "vaultKeyFile",
     "nanohostCredentialsDir",
     "caddyfile",
-    "compatibility",
 )
 PREDICATE_KEYS = (
     "acceptingProductWork",
@@ -256,12 +255,15 @@ def main(
     environ = os.environ if environ is None else environ
     try:
         apply_id, config_path = _parse_argv(argv)
-        config = load_config(config_path)
+        command = read_command(stdin, now) if apply_id is None else None
+        config = load_config(
+            config_path,
+            require_compatibility=command is None or command["op"] != "status",
+        )
         helper = AppUpdateHelper(config, effects, now)
         if apply_id is not None:
             result = helper.apply(apply_id)
         else:
-            command = read_command(stdin, now)
             result = helper.handle(command)
     except HelperError as error:
         result = host_error(error.code, error.message)
@@ -316,8 +318,8 @@ def _parse_argv(argv: Sequence[str]) -> Tuple[Optional[str], str]:
     return apply_id, config_path
 
 
-def load_config(path: str) -> Dict[str, Any]:
-    """Load the known operator configuration core, ignoring additive fields."""
+def load_config(path: str, *, require_compatibility: bool = True) -> Dict[str, Any]:
+    """Load protected configuration; receipt status alone needs no mutation assessment."""
     try:
         metadata = os.lstat(path)
     except OSError as error:
@@ -372,10 +374,16 @@ def load_config(path: str) -> Dict[str, Any]:
         raise HelperError("app_update_unconfigured", "Helper argv must be a non-empty list.")
     if any(not isinstance(item, str) or not item for item in parsed["helperArgv"]):
         raise HelperError("app_update_unconfigured", "Helper argv entries must be strings.")
-    try:
-        parsed["compatibility"] = _require_compatibility(parsed.get("compatibility"))
-    except HelperError as error:
-        raise HelperError("app_update_unconfigured", error.message) from error
+    if require_compatibility:
+        try:
+            parsed["compatibility"] = _require_compatibility(parsed.get("compatibility"))
+        except HelperError as error:
+            raise HelperError(
+                "app_update_unconfigured",
+                "Helper compatibility assessment must be re-authored for a release candidate. " + error.message,
+            ) from error
+    else:
+        parsed.pop("compatibility", None)
     data_root = os.path.realpath(parsed["dataRoot"])
     for key in ("receiptDir", "lockPath"):
         candidate = os.path.realpath(parsed[key]) if os.path.exists(parsed[key]) else parsed[key]

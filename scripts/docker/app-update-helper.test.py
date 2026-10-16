@@ -816,6 +816,79 @@ def idle_preflight() -> dict:
     }
 
 
+class ReceiptDiagnosticsTests(unittest.TestCase):
+    """Receipt inspection must not depend on a current mutation assessment."""
+
+    def test_status_reads_receipt_with_stale_missing_or_malformed_assessment(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, prepared = _prepare(module, root)
+            authored = json.loads(config_path.read_text())
+            stale = dict(authored["compatibility"], candidate={"kind": "commit", "sourceCommit": COMMIT})
+            for assessment in (stale, None, "invalid", {"candidate": RELEASE_SOURCE}):
+                with self.subTest(assessment=assessment):
+                    changed = dict(authored)
+                    if assessment is None:
+                        changed.pop("compatibility")
+                    else:
+                        changed["compatibility"] = assessment
+                    config_path.write_text(json.dumps(changed))
+                    effects.calls.clear()
+                    body = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, config_path, effects=effects)[1]
+                    self.assertEqual(body, prepared)
+                    for payload in (
+                        {"op": "prepare", "source": RELEASE_SOURCE, "expectedCurrentImageId": DIGEST},
+                        {"op": "start", "requestId": prepared["requestId"], "maintenanceConsent": True},
+                    ):
+                        refused = invoke(module, payload, config_path, effects=effects)[1]
+                        self.assertEqual(refused["error"]["code"], "app_update_unconfigured")
+                    self.assertEqual(effects.calls, [])
+
+    def test_status_still_requires_receipt_location_outside_data_root(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root, receiptDir=str(root / "data"))
+            authored = json.loads(config_path.read_text())
+            authored.pop("compatibility")
+            config_path.write_text(json.dumps(authored))
+            effects = RecordingEffects()
+            body = invoke(module, {"op": "status", "requestId": str(uuid.uuid4())}, config_path, effects=effects)[1]
+            self.assertEqual(body["error"]["code"], "app_update_unconfigured")
+            self.assertIn("outside Data Root", body["error"]["message"])
+            self.assertEqual(effects.calls, [])
+
+    def test_old_receipt_reaches_recovery_while_mutations_refuse_stale_assessment(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, prepared = _prepare(module, root)
+            receipt_path = root / "receipts" / (prepared["requestId"] + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            receipt["source"] = {"kind": "commit", "sourceCommit": COMMIT}
+            receipt_path.write_text(json.dumps(receipt))
+            authored = json.loads(config_path.read_text())
+            authored["compatibility"]["candidate"] = receipt["source"]
+            config_path.write_text(json.dumps(authored))
+            effects.calls.clear()
+            original = receipt_path.read_bytes()
+
+            body = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, config_path, effects=effects)[1]
+            self.assertEqual(body["error"]["code"], "app_update_recovery_required")
+            for payload, argv in (
+                ({"op": "prepare", "source": RELEASE_SOURCE, "expectedCurrentImageId": DIGEST}, None),
+                ({"op": "start", "requestId": prepared["requestId"], "maintenanceConsent": True}, None),
+                ({}, ["--apply", prepared["requestId"]]),
+            ):
+                body = invoke(module, payload, config_path, effects=effects, extra_argv=argv)[1]
+                self.assertEqual(body["error"]["code"], "app_update_unconfigured")
+                self.assertIn("compatibility assessment", body["error"]["message"])
+                self.assertIn("re-authored for a release candidate", body["error"]["message"])
+            self.assertEqual(effects.calls, [])
+            self.assertEqual(receipt_path.read_bytes(), original)
+
+
 class RC6RegressionTests(unittest.TestCase):
     """Accepted update safety, environment and review regressions."""
 
