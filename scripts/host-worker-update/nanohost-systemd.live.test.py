@@ -23,6 +23,8 @@ IDENTIFIER = "41830d22-d653-4838-ae3b-0ad78819b2fe"
 GUARD = Path(str(UNIT_PATH) + ".d/zz-openkit-replacement-" + IDENTIFIER + ".conf")
 ATTEMPT = GUARD.parent / (".openkit-replacement-" + IDENTIFIER + ".attempted")
 PERMIT = Path("/run/openkit-replacement-" + IDENTIFIER + "/permit")
+GUARD_BYTES = ("[Unit]\nConditionPathExists=" + str(PERMIT) + "\n[Service]\nRestart=no\n"
+               "ExecStartPre=/usr/bin/rm -- " + str(PERMIT) + "\n").encode()
 DESTINATIONS = {"nanohost": Path("/usr/lib/openkit/nanohost"),
                 "gateway": Path("/usr/lib/openkit/openshell-gateway"), "unit": UNIT_PATH}
 TRACE = Path("/var/lib/openkit-fixture/starts")
@@ -187,7 +189,7 @@ def inside(phase, case):
             wait_for(lambda: sibling.poll() is not None, "sibling_survived_stop")
             need(domain_empty(), "predecessor_domain_not_empty")
             manager.assert_fenced_and_inhibited()
-            need(GUARD.exists() and not PERMIT.exists(), "persistent_guard_missing")
+            need(GUARD.read_bytes() == GUARD_BYTES and not PERMIT.exists(), "persistent_guard_missing")
             retained_before_vacancy = []
 
             class CustodyFence(module.Maintenance):
@@ -481,10 +483,11 @@ def outer():
     """Run each finite case, proving cleanup even after unavailable setup or a failed case."""
     for case in CASES:
         fixture = None
-        root = Path(tempfile.mkdtemp(prefix="openkit-systemd-live-"))
+        root = None
         facts = {}
         failure = None
         try:
+            root = Path(tempfile.mkdtemp(prefix="openkit-systemd-live-"))
             fixture = PrivateManager(root)
             fixture.prepare(case)
             fixture.start()
@@ -524,12 +527,13 @@ def outer():
                     failure = "private_failure_group_cleanup_failed"
             elif fixture is not None:
                 group_removed = not fixture.group.exists()
-            if group_removed:
+            if group_removed and root is not None:
                 try:
                     shutil.rmtree(root)
                 except OSError:
                     failure = "private_root_cleanup_failed"
-            facts["privateRootsRemoved"] = not root.exists()
+            if root is not None:
+                facts["privateRootsRemoved"] = not root.exists()
         print(json.dumps({"case": case, "outcome": "failed" if failure else "passed", "cause": failure, "facts": facts}), flush=True)
         if failure:
             return 1
@@ -553,6 +557,9 @@ if __name__ == "__main__":
                 facts = {"mainPidAbsent": observed["MainPID"] == "0", "activeState": observed["ActiveState"],
                          "subState": observed["SubState"], "serviceResult": observed["Result"],
                          "serviceExitStatus": int(observed["ExecMainStatus"]), "domainEmpty": domain_empty()}
+                facts["ownGuardExact"] = GUARD.is_file() and GUARD.read_bytes() == GUARD_BYTES
+                facts["volatilePermitPresent"] = PERMIT.exists()
+                facts["attemptPresent"] = ATTEMPT.exists()
                 for name, signature in (("UnitPath", "as"), ("Job", "(uo)"), ("Conditions", "a(sbbsi)")):
                     manager = name == "UnitPath"
                     result = command(["/usr/bin/busctl", "--system", "--json=short", "get-property", "org.freedesktop.systemd1",
