@@ -37,19 +37,31 @@ export function DataRootBackupScreen() {
   const [knownBackupId, setKnownBackupId] = useState('');
   const adminAccess = useQuery({
     queryKey: ['settings', 'data-root-backup', 'admin-access'],
-    queryFn: async () => {
-      await client.operations['token.list']({});
-      return true;
+    queryFn: async ({ signal }) => {
+      try {
+        await client.operations['token.list']({});
+        // A departed observer cannot admit a later mount through an ignored cancellation.
+        signal.throwIfAborted();
+        return true;
+      } catch (error) {
+        signal.throwIfAborted();
+        throw safeBackupError(error);
+      }
     },
     retry: false,
+    refetchOnMount: 'always',
   });
   const backup = useMutation({
     mutationFn: async (action: { kind: 'create' } | { kind: 'verify'; backupId: string }) => {
-      const response =
-        action.kind === 'create'
-          ? await client.operations['backup.create']({})
-          : await client.operations['backup.verify']({ backupId: action.backupId });
-      return { kind: action.kind, ...backupSummary(response) };
+      try {
+        const response =
+          action.kind === 'create'
+            ? await client.operations['backup.create']({})
+            : await client.operations['backup.verify']({ backupId: action.backupId });
+        return { kind: action.kind, ...backupSummary(response) };
+      } catch (error) {
+        throw safeBackupError(error);
+      }
     },
     retry: false,
     onSuccess: (summary) => setKnownBackupId(summary.backupId),
@@ -68,7 +80,7 @@ export function DataRootBackupScreen() {
         title="Create and verify backups"
         subtitle="Create a deployment data-root backup or verify a known backup ID."
       />
-      {adminAccess.isLoading ? (
+      {!adminAccess.isFetchedAfterMount || adminAccess.isPending || adminAccess.fetchStatus !== 'idle' ? (
         <Skeleton lines={6} />
       ) : denied ? (
         <EmptyState
@@ -157,4 +169,12 @@ export function DataRootBackupScreen() {
       )}
     </Page>
   );
+}
+
+/** Keep private server messages and details out of both query and mutation caches. */
+function safeBackupError(error: unknown): Error {
+  if (error instanceof ApiCallError && (error.status === 401 || error.status === 403)) {
+    return new ApiCallError(error.status, 'Administrator access required.');
+  }
+  return new Error('Backup request failed.');
 }
