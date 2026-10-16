@@ -83,7 +83,7 @@ Story documents are still validated mechanically. `pnpm -w check:repo` runs `scr
 
 Admitted L6 stories:
 
-- `first-install-from-release-assets.story.md`: Install a published release on an empty machine. The operator installs that release and checks that it is ready to use.
+- `first-install-from-release-assets.story.md`: Install a published release in an empty installation scope on the dedicated development machine. The operator installs that release and checks that it is ready to use. The installation is retained.
 - `persistent-deployment-prerelease-update.story.md`: Update a persistent deployment to the published prerelease. The operator updates the deployment and keeps carried-forward work readable. After an authorized operator reset, the Actor verifies public disclosure, designated-account sign-in, and new work through public surfaces. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../../docs/decisions/20261014-pre_stable_data_continuity.md).
 - `provider-credential-subscription-reply.story.md`: Configure one provider and receive one reply. The operator connects one provider, stores its credential, attaches one subscription, and gets one ordinary reply.
 - `issue-and-revoke-workspace-access.story.md`: Issue workspace access and then revoke it. The operator grants access that can start a thread, checks that look-only access cannot, and then withdraws the changing access.
