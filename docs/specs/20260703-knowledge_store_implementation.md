@@ -208,6 +208,12 @@ Trace metadata is `{traceId,queryContext,sourceScope,notebookRevision,caller,req
 
 This pipeline and row are the one governed retrieval owner for product search, Knowledge Manager `answer`, Knowledge Manager `prepare-context-material`, and direct-Task Context Package selection. Callers may project different bounded responses but MUST NOT implement a parallel direct-read, substring-search, candidate-selection, filter, ranker, or trace. Retrieval never mutates knowledge. Its trace proves selection and audit facts only; `prepare-context-material` references that same trace, and only S39 may prove exact worker-Turn materialization and delivery. A future worker capability plane requires a separately accepted design and cannot add another retrieval owner. Knowledge Manager `answer`, Task preparation, and public preparation share this retrieval and the `knowledge.read` admission in [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md). Caller assignment and the distinct output views stay with [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md), and `task-mode` stays trusted caller context rather than a caller-supplied field. Source and audience checks, the rule that retrieval never mutates knowledge, and trace authority stay in this section. An index or trace update keeps the separate mutating posture named by [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md).
 
+### Source Representations And Package Budget
+
+Canonical readable page text enters the Kernel directly. [Work Resource Interaction](20260713-work_resource_interaction_model.md#bounded-media-processors) owns admitted source processors and their original/derivative provenance. Indexing or extracting uploaded/generated files never publishes Knowledge or changes review state.
+
+S39 may project selected pages as exact bodies, excerpts, or descriptors under its independent byte and model-specific token budgets. Retain the canonical commit/digest and complete source references separately from the delivered representation digest and ranges. S61's selection, pins, dispositions, audience checks, and trace remain unchanged. A package-budget failure or unavailable representation cannot authorize an unbounded body fallback.
+
 ### Knowledge operations
 
 Product surfaces reach the Knowledge service through its existing transport-neutral operation catalog, App API, Core Client and bundled CLI, never raw Git/file access. Page read/list, Sources, observations/claims/conflicts, retrieval, schema/index inspection and report-only health remain with their current owners. Direct page edits, Agent maintenance, required Proposal decisions and history restoration all call the single notebook publisher. Merge/split/archive are ordinary multi-file edits, not additional executors. Worker-facing Knowledge capability routes remain outside the current accepted surface.
@@ -237,7 +243,7 @@ The `memory` vocabulary has been renamed directly, with no compatibility aliases
 - Invalid material MUST NOT enter active retrieval or default context package selection.
 - The published Git tree of page bytes MUST remain the source of truth; every derived knowledge index MUST be rebuildable from them with identical retrieval results.
 - One governed retrieval owner MUST serve product search, Knowledge Manager answer and preparation, and direct-Task context selection with deterministic results for identical inputs, index state, and policy state.
-- Retrieval traces MUST preserve selected and excluded exact scope-qualified page references plus `revision + contentDigest` tuples plus reasons as selection and audit evidence, but MUST NOT claim worker delivery; only S39 may prove what exact Knowledge Page bytes reached a worker Turn.
+- Retrieval traces MUST preserve selected and excluded exact scope-qualified page references plus `revision + contentDigest` tuples plus reasons as selection and audit evidence, but MUST NOT claim worker delivery; only S39 may prove which exact body, excerpt, or descriptor reached a Worker Turn, separately from the canonical page digest.
 - A required-review proposal MUST fix exact scope, base/candidate commit, sources, producer and decision. Ordinary delegated publication uses explicit current maintenance authority instead of manufacturing a human Review.
 - Decision and application replay MUST be idempotent under one request id; any unverified partial decision/application returns `recovery_required` without inference, repeated effects, evidence deletion, or a recovery workflow.
 - Missing completed command evidence after publication MUST return `recovery_required`; no missing-page continuation or automatic evidence repair is retained after cutover.
@@ -301,7 +307,7 @@ Context-bound retrieval checks must reject absent/contradictory context, source 
 
 ## Resolved Decisions
 
-Previously open questions are resolved by accepted V1 defaults: mixed-language and CJK search uses the per-scope Retrieval Kernel BM25 and shipped segmentation dictionaries; first-slice ingest ships explicit text material registration and deterministic projection for governed pages, while richer plain-text, Markdown, code, transcript, PDF, and media extraction arrives through capability-mediated worker or Knowledge Manager proposal tasks; all admitted page edits publish through the fixed-base notebook contract, including multi-page organization and exact required human decisions.
+Previously open questions are resolved by accepted V1 defaults: mixed-language and CJK search uses the per-scope Retrieval Kernel BM25 and shipped segmentation dictionaries; first-slice ingest ships explicit text material registration and deterministic projection for governed pages, while source-owned bounded PDF text-layer extraction and explicit bounded vision views are admitted for v0.1.0; other richer extraction remains with capability-mediated Worker or Knowledge Manager proposal tasks; all admitted page edits publish through the fixed-base notebook contract, including multi-page organization and exact required human decisions.
 
 ## Deferred / Future Work
 

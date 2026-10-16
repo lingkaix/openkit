@@ -407,6 +407,11 @@ Raising a pending approval is not a provider abort and does not change the Turn'
 
 Chat Mode does not resume the provider invocation after process failure. The caller reads the command and Thread state; replay of a completed request returns the original lineage, a started but incomplete provider attempt returns its terminal failure or `recovery_required`, and a user-requested new attempt uses a new request id and creates a new provider invocation. This deliberately favors no hidden duplicate call over automatic recovery and is not authorization for a Chat settlement or recovery workflow.
 
+### Bounded Source Context
+
+Assistant input and Tool observations follow [Internal Agent Runtime's bounded model projection](20260813-internal_agent_runtime.md#minimal-tool-contract). Large files remain with their source owners; the Assistant receives descriptors, previews, and exact requested ranges. Current source and output-audience checks apply to all metadata and excerpts before model use. Failed storage or retrieval returns a bounded unavailable descriptor, never the full body. This grants no new Tool, shell, host reader, or broader history effect.
+
+
 ## Accepted Design
 
 NanoCore implements Core Assistant as one role assembly over the bounded internal Agent runtime owned by `docs/specs/20260813-internal_agent_runtime.md`. The Assistant supplies its role prompt, bounded current Thread input, entry-path-fixed Core Tools and selected Skill metadata (including exact personal Memory operations), request-scoped sources, and output audience; the generic loop supplies no Assistant authority or product lifecycle.

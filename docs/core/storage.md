@@ -22,7 +22,7 @@ SQLite is a companion store, not the default source of truth for every object.
 
 Use SQLite where the system needs structured query, indexes, vector or embedding metadata, pagination, constraints, transactions, materialized read models, or operational summaries.
 
-Full-text retrieval MUST use the rebuildable Retrieval Kernel projection. Its per-scope generations and derived sidecars retain their canonical source ownership and audience. SQLite retains its other companion-store uses.
+Full-text retrieval MUST use the rebuildable Retrieval Kernel projection. Its per-scope generations and derived sidecars retain their canonical source ownership and audience. SQLite retains its other companion-store uses. Arbitrary-byte originals remain canonical under their existing Artifact/upload owners. Versioned media derivatives remain rebuildable projections; file storage and transfer capacity is separate from raw model output and model-context budgets. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records this separation.
 
 The source of truth MUST be explicit per data class.
 

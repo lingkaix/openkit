@@ -278,7 +278,7 @@ Conformance is observable when low-consequence reversible effects can complete t
 
 ## Assistant Disclosure Authorization
 
-`AssistantReadScope` and `OutputAudience` are separate permission decisions for every Assistant answer and every proposed transfer of Assistant-produced material.
+`AssistantReadScope` and `OutputAudience` are separate permission decisions for every Assistant answer and every proposed transfer of Assistant-produced material. Across all model paths, previews, names, digests, snippets, counts, and diagnostics are disclosures. Recheck source access and destination disclosure on search, reads, downloads, history, and exports. Filter before index-generation access and ranking. A running Turn may retain its admitted local snapshot, but later OpenKit operations and Turns acquire no frozen authorization. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records this boundary.
 
 `AssistantReadScope` is the exact set of sources and source revisions that the current actor may discover or retrieve for the current request. It is bounded by current identity, Workspace membership, resource visibility, source policy, requested operation, sensitivity, and every other applicable permission input. It grants no write, promotion, publication, notification, worker-context, or external-effect authority.
 

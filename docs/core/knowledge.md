@@ -76,7 +76,7 @@ The Workflow Coordinator decides how authorized material combines with task inst
 
 The owning Task boundary persists, materializes, and delivers the resulting Context Package for a standalone Task and for a Task a Goal admitted, through the separately owned delivery trace. The Goal's Coordinator uses assembled input and reads, and does not use that package.
 
-A Knowledge selection or preparation result, workspace record, imported record, or diagnostic trace does not prove that a worker received or used knowledge.
+A Knowledge selection or preparation result, workspace record, imported record, or diagnostic trace does not prove that a worker received or used knowledge. A bounded body, excerpt, or descriptor retains its delivered digest separately from the canonical page/source digest. Indexing or media extraction does not publish Knowledge. Missing or incomplete representations cannot prove body absence; only the Context Package owner proves exact delivered bytes. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records the decision.
 
 ## Lifecycle
 

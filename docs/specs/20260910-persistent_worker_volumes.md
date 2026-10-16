@@ -315,6 +315,12 @@ Retained whole-volume mounts, inherited layout admission, scoped storage associa
 - `docs/specs/20260910-app_update_delivery.md`
 - `docs/specs/20260910-agent_operator_skill.md`
 
+## Bounded Source Copies And Authored Configuration
+
+The [read-only Turn snapshot](20260704-session_static_workspace_materialization.md#read-only-turn-source-snapshot) is disposable input materialization, separate from retained writable work, native homes, and output roots. Remove or fence prior input exposure before a later Turn; retained mounts cannot revive a revoked snapshot. Preserve retained working bytes under current audience rules without treating those bytes as new source authority.
+
+Permit user-supplied native harness configuration within existing policy, including user-installed context-mode. OpenKit does not ship or depend on that code. Native defaults seeded on a fresh home do not update existing homes. Preserve authored configuration; distinguish fresh defaults, existing configuration, and effective native loading during rollout. Do not silently reseed a home or reset the successor's conversation to claim context-bound conformance.
+
 ## Current Implementation Projection
 
 The seven Worker environment definitions live in `packages/app-api-schemas/src/worker-environment-operations.ts` and join the retained native owners through `apps/nanocore/src/worker-environments/worker-environment-operation-implementations.ts`. Public HTTP, Core Client and CLI use canonical operation ids with complete logical selectors. The old routes and handwritten client mappings are removed; immutable candidate, approval, replay, storage revision and host-effect checks remain with their existing owners.

@@ -269,6 +269,10 @@ The historical Pi and OpenCode pins examined under External Evidence And Deliber
 
 The historical Codex `0.153.4` fixture evidence proves only a native `compaction` request classification, not a configurable exact threshold. OpenKit does not yet project the central threshold or normalized compaction evidence. Its first conformance task must verify from the pinned runtime whether the exact threshold can be controlled: retain Codex as `runtime-native` only if that proof passes, otherwise implement and prove the OpenKit-item path before admitting a context-managed Worker package.
 
+## Large Source Projection
+
+Before content enters any active window, apply the [bounded source projection contract](20260703-worker_context_package.md#bounded-model-projection). File size, raw model output, context tokens, and transport bytes remain separate accounting domains. Native compaction and rolling context do not authorize full-body reinsertion or override current source/audience checks. Byte limits cannot replace model-specific token admission, including instructions, history, Tool schemas, media cost, and output reserve. A missing source or failed retrieval stays a bounded unavailable descriptor; context reconstruction never replays an effect to recover its bytes.
+
 ## Quality Control And Optimization
 
 One fixed, versioned evaluation set governs the OpenKit compactor and every adapter's threshold projection before default rollout. The set contains long conversations, Tool-heavy loops, repeated compactions, large user messages, multilingual content, prompt-injection text, negative findings, failed attempts, exact file and resource identifiers, accepted constraints and decisions, pending gates, unresolved questions, and context-overflow recovery. Before any candidate compactor output is observed, each fixture enumerates its required continuation facts, forbidden authority promotions, Tool-call/result pairings, and bounded acceptance tolerances, making those assertions a prior and bounded deciding oracle. Any model-graded or holistic quality score is informing-only and cannot accept a rollout or optimization.
