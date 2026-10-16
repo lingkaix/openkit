@@ -184,8 +184,9 @@ function createDeferred<T>() {
 }
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
-function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClient {
+function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}, files: Partial<CoreClient['artifactFiles']> = {}): CoreClient {
   const client = {
+    artifactFiles: files,
     core: {
       meta: vi.fn().mockResolvedValue({}),
 
@@ -458,6 +459,19 @@ async function switchToThread(
 }
 
 beforeEach(() => {
+  // jsdom lacks the browser byte-read method; FileReader reads the actual fixture bytes.
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+    configurable: true,
+    writable: true,
+    value: function (this: Blob) {
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(this);
+      });
+    },
+  });
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
@@ -490,7 +504,8 @@ describe.each([
       path,
       makeClient(
         { 'artifact.list': listArtifacts },
-        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
+        { 'conversation.submit': submitConversation },
+        { import: importWorkspaceArtifact }
       )
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Review this file');
@@ -519,11 +534,13 @@ describe.each([
       ...{
         title: name,
         mediaType,
-        content,
+        byteLength: new TextEncoder().encode(content).byteLength,
         contentDigest: 'sha256:2641e795d217a25722a8e1554b6d51257b2fabe3c1ce8f760f19da116706b696',
         requestId,
       },
-    });
+    }, expect.any(Blob));
+    expect(new Uint8Array(await (importWorkspaceArtifact.mock.calls[0]![1] as Blob).arrayBuffer())).toEqual(new TextEncoder().encode(content));
+    expect(importWorkspaceArtifact.mock.calls[0]![0]).not.toHaveProperty('content');
     expect(listArtifacts).toHaveBeenCalledTimes(1);
     expect(send).toBeDisabled();
 
@@ -563,7 +580,8 @@ describe.each([
       path,
       makeClient(
         { 'artifact.list': listArtifacts },
-        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
+        { 'conversation.submit': submitConversation },
+        { import: importWorkspaceArtifact }
       )
     );
     const message = await screen.findByRole('textbox', { name: 'Message' });
@@ -617,7 +635,7 @@ describe.each([
       .fn()
       .mockRejectedValueOnce(new Error('Response lost'))
       .mockResolvedValue({ artifactId: 'changed-notes', artifactVersion: 1 });
-    renderApp(path, makeClient({}, { 'artifact.import': importWorkspaceArtifact }));
+    renderApp(path, makeClient({}, {}, {import: importWorkspaceArtifact}));
     const trigger = await screen.findByRole('button', {
       name: 'Add artifact or upload attachment',
     });
@@ -633,8 +651,11 @@ describe.each([
     expect(await screen.findByRole('button', { name: 'Remove notes.txt' })).toBeInTheDocument();
     expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2);
     const [first, second] = importWorkspaceArtifact.mock.calls.map(([input]) => input);
-    expect(first.content).toBe('First bytes');
-    expect(second.content).toBe('Corrected bytes');
+    expect(new TextDecoder().decode(await (importWorkspaceArtifact.mock.calls[0]![1] as Blob).arrayBuffer())).toBe('First bytes');
+    expect(new TextDecoder().decode(await (importWorkspaceArtifact.mock.calls[1]![1] as Blob).arrayBuffer())).toBe('Corrected bytes');
+    expect(first).not.toHaveProperty('content');
+    expect(second).not.toHaveProperty('content');
+    expect(first.contentDigest).not.toBe(second.contentDigest);
     expect(second.requestId).not.toBe(first.requestId);
   });
 
@@ -658,7 +679,8 @@ describe.each([
             items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
           }),
         },
-        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
+        { 'conversation.submit': submitConversation },
+        { import: importWorkspaceArtifact }
       )
     );
     const message = await screen.findByRole('textbox', { name: 'Message' });
