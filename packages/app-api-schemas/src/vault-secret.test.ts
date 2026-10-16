@@ -46,7 +46,9 @@ describe('workspace Vault secret input', () => {
         false
       );
     expect(
-      vault.CreateWorkspaceVaultGrantRequestSchema.parse({ referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a' })
+      vault.CreateWorkspaceVaultGrantRequestSchema.parse({
+        referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
+      })
     ).toMatchObject({ referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a' });
     expect(
       vault.CreateWorkspaceVaultGrantRequestSchema.parse({

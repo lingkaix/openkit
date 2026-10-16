@@ -4,7 +4,6 @@ import {
   ArtifactSchema,
   ItemIdSchema,
   ItemSchema,
-  isEntityId,
   ProductTurnSchema,
   StopReasonSchema,
   ThreadIdSchema,
