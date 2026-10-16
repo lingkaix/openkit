@@ -141,7 +141,7 @@ export const OPENKIT_WORK_TOOLS = [
   {
     name: 'work_submit_artifact',
     description:
-      'Submit one finished file from an eligible output root. Finish writing first. Success returns the durable Artifact id; correction or a new file version uses a new requestId. Read the eligible roots in this package guidance. Admitted media: text/markdown, text/plain, application/json.',
+      'Submit one finished file from an eligible output root. Finish writing first. Success returns the durable Artifact id; correction or a new file version uses a new requestId. Read the eligible roots in this package guidance. Any file media type and exact binary bytes are admitted up to 1,000,000,000 bytes per file. Material proposals separately require their supported UTF-8 text format.',
     inputSchema: mcpInputSchema(WorkSubmitArtifactArgsSchema),
   },
 ] as const;

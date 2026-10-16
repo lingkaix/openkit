@@ -5273,15 +5273,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
           request: { model: string; prompt_cache_key?: string },
           context: LLMGatewayDispatchContext
         ) => {
-          workerRequests.push(request);
-          context.onUsage?.({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
-          return {
-            id: 'resp_provenance_blackbox',
-            model: request.model,
-            object: 'response' as const,
-            output: [],
-            status: 'completed' as const,
-          };
+          // This controlled Provider has a complete empty native output before public conversion.
+          const source = context.transport?.rawOutput;
+          const settle = source?.sourceStarted();
+          try {
+            source?.sourceEvent();
+            workerRequests.push(request);
+            context.onUsage?.({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
+            return {
+              id: 'resp_provenance_blackbox',
+              model: request.model,
+              object: 'response' as const,
+              output: [],
+              status: 'completed' as const,
+            };
+          } finally {
+            settle?.();
+          }
         }
       ),
     } as unknown as LLMGatewayProviderDispatcher;

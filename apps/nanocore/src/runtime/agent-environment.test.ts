@@ -37,6 +37,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
@@ -2475,6 +2476,7 @@ describe('public network AEP admission', () => {
       'requireBootValue',
       'bootWorkerControlGateway',
       'workspaceMutationAdmission',
+      'fileAdmission',
       javascript
     )(
       createConfiguredWorkerLifecycleRuntime,
@@ -2485,7 +2487,8 @@ describe('public network AEP admission', () => {
       undefined,
       (value: unknown) => value,
       undefined,
-      undefined
+      undefined,
+      new FileStorageAdmission(dataRoot, () => 0n)
     ) as ReturnType<typeof createConfiguredWorkerLifecycleRuntime>;
     expect(reads).not.toHaveBeenCalled();
     const preview = runtime.turnExecutor as unknown as {
