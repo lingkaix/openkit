@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { KnowledgeOwnerScopeSchema } from '@openkit/protocol';
+import { type KnowledgeRetrievalAccess, readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { parseOkfDocument, stringListFrontmatterField, updateOkfFrontmatter } from './okf.js';
 
@@ -52,4 +53,28 @@ export function importedWorkspaceNotebookFiles(pages: ReadonlyMap<string, string
     files[path.slice('knowledge/pages/'.length)] = content;
   }
   return files;
+}
+
+/** Checks the complete selected archive tree under current Source and output authority before export. */
+export function assertPortableWorkspaceNotebookDisclosure(input: {
+  readonly dataRoot: string;
+  readonly workspaceId: string;
+  readonly notebookRevision: string;
+  readonly pages: ReadonlyMap<string, string>;
+  readonly access: KnowledgeRetrievalAccess;
+}): void {
+  const pageIds = [...input.pages.keys()]
+    .map((path) => path.slice('knowledge/pages/'.length, -3))
+    .filter((id) => !['index', 'log'].includes(id.split('/').at(-1)!));
+  const admitted = readAuthorizedWorkspaceNotebookPages({
+    dataRoot: input.dataRoot,
+    workspaceId: input.workspaceId,
+    notebookRevision: input.notebookRevision,
+    pageIds,
+    access: input.access,
+  });
+  for (const page of admitted.pages) {
+    if (input.pages.get(`knowledge/pages/${page.path}`) !== page.content)
+      throw new NotebookError('recovery_required');
+  }
 }

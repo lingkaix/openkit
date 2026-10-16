@@ -92,6 +92,8 @@ describe('canonical Notebook Workspace portability', () => {
     });
     const exported = createVerifiedWorkspaceExport({
       authorityUserId: LOCAL_USER_ID,
+      authorityActor: { kind: 'user', id: LOCAL_USER_ID },
+      requestActor: { kind: 'local', userId: LOCAL_USER_ID },
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
       repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(f.dataRoot, workspaceId),
