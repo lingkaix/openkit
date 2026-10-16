@@ -10,6 +10,10 @@ branch: lane/rt-2
 
 Source: coordinator direction to L-RT on 2026-10-16. Implement P29, Automated NanoHost and Worker update orchestration, as one whole feature on `lane/rt-2` created from `lane/rt`. Reuse the reviewed P29 material in the backlog and the implementation selected for train 3. Follow the recommended engineer rulings. Consult Astra only for a real product design decision. Do not start P25 before P14 lands. Do not contact a1 or a2 or alter the retained App. Keep chunk 1 independently landable. Between work items, check train 3 once; when it lands and the window is free, pause this work and land chunk 1 first.
 
+## Intent Revision 2
+
+Source: later coordinator direction on 2026-10-16. Chunk1 landed; prioritize urgent D-RT-5 transport diagnosis and its scoped landing before resuming P29 production. The transport repair may land with Worker acceptance explicitly blocked on separate provider subscription setup. After that landing, continue P29. P25 still waits for P14.
+
 ## Owners And Boundaries
 
 [Release Management](../../specs/20260829-release_management.md#bounded-test-deployment-update) owns the bounded migration-free staging grant, explicit deployment selection, component order, continuity and separate outcomes. [NanoHost Runtime And Transport](../../specs/20260802-nanohost_runtime_and_transport.md#installed-release-replacement) owns stopped replacement through the unchanged installer, whole-domain fencing, retained inputs, activation prevention, complete payload verification and successor readiness. [Persistent Worker Volumes](../../specs/20260910-persistent_worker_volumes.md#planned-environment-replacement) owns exact preparation, confirmation, drain, activation and unknown-outcome recovery. [App Update Delivery](../../specs/20260910-app_update_delivery.md) owns App assessment and update operations. The accepted [operator replacement decision](../../decisions/20261006-nanohost_installed_release_replacement.md) excludes a new installer replacement mode or always-on updater.
@@ -20,11 +24,13 @@ The seam joins published manifest and archive identities, independently observed
 
 ## Working Checkpoint
 
-Branch `lane/rt-2` was created from chunk1 head `ee627ee2`. Train 3 has not landed. Its P29 Worker stage, archive attribution, fixed inspection command and native producer fixtures are available in the lane-owned provisional integration checkout for inspection. They are not yet present in this branch's base. Read their actual bytes and the accepted owners before selecting the smallest missing composition. Do not copy or recreate an existing owner.
+Branch `lane/rt-2` preserves its first two seam commits and the separately authored controlled-start tests. Chunk1 has landed, and train3's existing Worker and inspection producers are now on main. D-RT-5 source and review are frozen while its serialized landing waits; P29 production remains paused. Independent test preparation during the landing wait is the builder's temporary working method; it grants no a1/a2 update authority. Rebase this branch after the transport landing and reuse those producers rather than copying the provisional integration checkout.
 
-Known implementation: the Worker stage already prepares and activates once, checks a fresh exact host observation before each effect and requires separate NanoHost replacement evidence. The App composition already uses prepare/preflight/start/status but its standalone CLI refuses because the live identity adapter is absent. No NanoHost replacement stage is present in the earlier P29 directory. Determine which concrete authorized operator adapter and composition can complete the admitted path without a new lifecycle or duplicate installer.
+Known implementation: the Worker stage already prepares and activates once, checks a fresh exact host observation before each effect and requires separate NanoHost replacement evidence. The App composition uses prepare/preflight/start/status, but its standalone CLI refuses without the live identity adapter. This branch supplies verified old-payload custody, a fixed read-only operator transport and a read-only supervisor predicate. The mutating maintenance module and complete operator composition remain absent.
 
-The next material action is to inspect those adapters and define a short call example, fixed effects, stop conditions and decisive tests. Expected result: an owner-aligned implementation boundary rather than a new update service. A necessary new product decision or consequential owner conflict goes to independent Astra scrutiny; routine implementation choices do not.
+Independent controlled-start tests now contain29methods, including strict requests, actual manager search roots, metadata, substitution, command/proc failures, durable attempt ordering, volatile-permit cleanup and finalization identity preservation. AST validation passed; the Node entry fails only because the production module is absent. This is collection failure, not a behavior verdict. The author has released both paths. The draft permit-under/etc reboot counterexample led to the private volatile/run path specified in the proposal. Neither that reasoning nor a command double proves real manager behavior.
+
+The next work is real isolated-systemd discovery and the accepted bounded maintenance implementation after the D-RT-5 landing. A rootless local namespace probe is temporary external evidence; an unavailable fixture is a setup finding, never a product PASS. Finish the full CLI with explicit App-first compatibility, current grant, actual machine/container identity, unchanged installer and separate component results. Current source data remains owned by the existing component specifications.
 
 ## Verification And Completion
 
@@ -44,7 +50,7 @@ The independent test author supplied 18 Python methods, including all eight chan
 
 The producer replaced the test wrapper's personal cache path with caller TMPDIR; assertions stayed unchanged. Custody remains subject to the accepted exclusive-operator and fenced-writer precondition, and is not a snapshot against later privileged writes. Read-only SSH cancellation is an unknown observation, not proof that the remote process completed. Keep those limits in the full composition.
 
-Train3 landed on main at `79291fa9` while these seams were completed. L-GA holds the window. Chunk1 remains frozen at `ee627ee2`; preserve this P29 work separately while that landing waits for its window. The next P29 work item is the concrete systemd inhibition and fixed privileged procedure, with real isolated-systemd proof required before use. The shipped unit currently uses Restart=always; preserve the accepted observed final policy rather than assuming on-failure or accepting the temporary no-restart baseline.
+Train3 landed on main at `79291fa9` while these seams were completed. At that historical checkpoint L-GA held the window and chunk1 was frozen at `ee627ee2`; chunk1 has since landed and the current transport priority is recorded above. The next P29 work item is the concrete systemd inhibition and fixed privileged procedure, with real isolated-systemd proof required before use. The shipped unit currently uses Restart=always; preserve the accepted observed final policy rather than assuming on-failure or accepting the temporary no-restart baseline.
 
 ## Supervisor Predicate In Progress
 
