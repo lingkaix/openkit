@@ -1,17 +1,17 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
-  closeSync,
   chmodSync,
+  closeSync,
   constants,
+  mkdtempSync as createTemporaryDirectory,
   existsSync,
   fstatSync,
   mkdirSync,
-  mkdtempSync as createTemporaryDirectory,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
-  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -24,12 +24,12 @@ import {
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { chatTaskModeTurnId, commandInputHash } from '../runtime/idempotent-command.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
@@ -45,9 +45,9 @@ import {
   verifyPortableWorkerContextPackageTrace,
   verifyWorkerContextPackageTrace,
   type WorkerContextPackageAuthorityReader,
+  type WorkerContextPackageFiles,
   type WorkerContextPackageProjection,
   type WorkerContextPackageSourceFileInput,
-  type WorkerContextPackageFiles,
   type WorkerContextPackageTrace,
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
@@ -105,9 +105,9 @@ const KNOWLEDGE_PAGE_BYTES = [
   '',
 ].join('\n');
 
-/** Computes the public SHA-256 format for exact UTF-8 bytes. */
-function sha256(value: string): string {
-  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
+/** Computes the public SHA-256 format for exact text or binary bytes. */
+function sha256(value: string | Uint8Array): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 /** Recomputes the canonical trace digest after a test changes immutable trace fields. */
@@ -176,7 +176,9 @@ async function createPackage(
   });
 
   if (writeFiles) {
-    await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission: new FileStorageAdmission(workspaceRoot, () => 0n) });
+    await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, {
+      admission: new FileStorageAdmission(workspaceRoot, () => 0n),
+    });
   }
   return packageFiles;
 }
@@ -188,35 +190,6 @@ function createEnvironmentPackage(
 ): AgentEnvironmentPackage {
   const unresolved = resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
-    agent: {
-      id: 'agent_context',
-      name: 'Context Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: null,
-      skillIds: [],
-      profiles: [
-        {
-          id: 'default',
-          displayName: 'Default',
-          instructionsRef: null,
-          modelId: null,
-          skillIds: [],
-          capabilityIds: [],
-        },
-      ],
-      defaultProfileId: 'default',
-      capabilities: [],
-      sandboxSummary: null,
-      config: {
-        adapterType: 'codex',
-        baseUrl: null,
-        capabilities: [],
-        command: null,
-        environment: {},
-        workspaceRoot: '/workspace',
-      },
-    },
     agentSessionId: 'as_context',
     agentSetup: createTestAgentSetup(),
     triggerActor: { kind: 'user', id: 'user_local' },
@@ -238,7 +211,6 @@ function createEnvironmentPackage(
       workspaceId: packageFiles.workspaceId,
     },
     turnInput: WORKER_REQUEST_BYTES,
-    userId: 'user_context',
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
@@ -276,7 +248,12 @@ async function createAcceptedFixture(
 }> {
   const requestId = options.requestId ?? 'req_context';
   const turnId = options.turnId ?? 'tu_context';
-  let packageFiles = await createPackage(workspaceRoot, !options.knowledge, turnId, options.sourceFiles);
+  let packageFiles = await createPackage(
+    workspaceRoot,
+    !options.knowledge,
+    turnId,
+    options.sourceFiles
+  );
   if (options.knowledge) {
     packageFiles = createWorkerContextPackageFiles({
       contextBudgetTokens: 4_096,
@@ -299,7 +276,9 @@ async function createAcceptedFixture(
       workerRequestItemId: 'it_request',
       workspaceId: 'ws_context',
     });
-    await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission: new FileStorageAdmission(workspaceRoot, () => 0n) });
+    await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, {
+      admission: new FileStorageAdmission(workspaceRoot, () => 0n),
+    });
   }
   const environmentPackage = createEnvironmentPackage(packageFiles, requestId);
   const trace = createWorkerContextPackageTrace({
@@ -377,7 +356,10 @@ async function createAcceptedFixture(
     workerSessionId: 'sandbox_context',
     workspaceId: 'ws_context',
   };
-  const materials = new Map([
+  const materials = new Map<
+    string,
+    NonNullable<ReturnType<WorkerContextPackageAuthorityReader['readMaterialRevision']>>
+  >([
     ...packageFiles.materialSelections.map(
       (selection) =>
         [
@@ -632,11 +614,9 @@ async function createLiveNullKnowledgeFixture(
   workspaceRoot: string,
   options: {
     readonly turnId: string;
-    readonly triggerActor?: {
-      readonly id: string;
-      readonly kind: 'agent' | 'user';
-      readonly responsibleUserId?: string | null;
-    };
+    readonly triggerActor?:
+      | NonNullable<ReturnType<WorkerContextPackageAuthorityReader['readTurn']>>['triggerActor']
+      | undefined;
   }
 ): Promise<{
   authorities: WorkerContextPackageAuthorityReader;
@@ -658,9 +638,13 @@ async function createLiveNullKnowledgeFixture(
 
 describe('worker Context Package owner', () => {
   it.each([
-    false,
-    true,
-  ])('verifies extended retained traces and manifests against original bytes, then reopens (Knowledge: %s)', async (knowledge) => {
+    { knowledge: false, largeMetadata: false },
+    { knowledge: true, largeMetadata: false },
+    { knowledge: false, largeMetadata: true },
+  ])('verifies retained original bytes and reopens (Knowledge: $knowledge, large legacy metadata: $largeMetadata)', async ({
+    knowledge,
+    largeMetadata,
+  }) => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-extended-'));
     const fixture = await createAcceptedFixture(workspaceRoot, { knowledge });
     const packagePath = join(
@@ -669,6 +653,7 @@ describe('worker Context Package owner', () => {
     );
     const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
     manifest.annotation = 'manifest';
+    if (largeMetadata) manifest.largeAnnotation = 'x'.repeat(16_777_216);
     manifest.materialSelections[0].annotation = 'manifest selection';
     if (knowledge) manifest.knowledgeSelections[0].annotation = 'manifest Knowledge selection';
     const canonical = (value: unknown): string => {
@@ -705,23 +690,24 @@ describe('worker Context Package owner', () => {
     entry.contentDigest = sha256(bytes);
     const { contextPackageDigest: _prior, ...withoutDigest } = raw;
     raw.contextPackageDigest = `ctxpkg_sha256_${sha256(canonical(withoutDigest)).slice(7)}`;
-    const originalRead = fixture.authorities.readWorkspaceInputSnapshot;
+    const originalAuthorities = fixture.authorities;
     const packageRootDigest = sha256(canonical(raw.fileInventory));
-    fixture.authorities.readWorkspaceInputSnapshot = (...args) => ({
-      ...originalRead(...args)!,
-      base: { commit: null, contentDigest: packageRootDigest },
-    });
-    const originalAep = fixture.authorities.readAgentEnvironmentPackage;
-    fixture.authorities.readAgentEnvironmentPackage = (...args) => {
-      const aep = structuredClone(originalAep(...args)!);
-      aep.workspace.inputs[0]!.materialization!.contentDigest = packageRootDigest;
-      return aep;
+    fixture.authorities = {
+      ...originalAuthorities,
+      readWorkspaceInputSnapshot: (...args) => ({
+        ...originalAuthorities.readWorkspaceInputSnapshot(...args)!,
+        base: { commit: null, contentDigest: packageRootDigest },
+      }),
+      readAgentEnvironmentPackage: (...args) => {
+        const aep = structuredClone(originalAuthorities.readAgentEnvironmentPackage(...args)!);
+        aep.workspace.inputs[0]!.materialization!.contentDigest = packageRootDigest;
+        return aep;
+      },
+      readWorkspaceMaterializationRecord: (...args) => ({
+        ...originalAuthorities.readWorkspaceMaterializationRecord(...args)!,
+        base: { commit: null, contentDigest: packageRootDigest },
+      }),
     };
-    const originalWmr = fixture.authorities.readWorkspaceMaterializationRecord;
-    fixture.authorities.readWorkspaceMaterializationRecord = (...args) => ({
-      ...originalWmr(...args)!,
-      base: { commit: null, contentDigest: packageRootDigest },
-    });
     const read = parseWorkerContextPackageTrace(raw);
     expect(read).not.toHaveProperty('annotation');
     expect(JSON.stringify(read)).not.toContain('annotation');
@@ -847,7 +833,9 @@ describe('worker Context Package owner', () => {
       workerRequestItemId: 'it_request',
       workspaceId: 'ws_context',
     });
-    await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission: new FileStorageAdmission(workspaceRoot, () => 0n) });
+    await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, {
+      admission: new FileStorageAdmission(workspaceRoot, () => 0n),
+    });
 
     const expectedSelection = {
       contentDigest,
@@ -1191,7 +1179,7 @@ describe('worker Context Package owner', () => {
             return environmentPackage
               ? {
                   ...environmentPackage,
-                  backend: { ...environmentPackage.backend, allowedKinds: ['docker'] },
+                  backend: { ...environmentPackage.backend, allowedKinds: ['docker' as const] },
                 }
               : null;
           },
@@ -1227,7 +1215,10 @@ describe('worker Context Package owner', () => {
     },
     {
       name: 'package byte tamper',
-      alter: (fixture: Awaited<ReturnType<typeof createImportedHistoryFixture>>, workspaceRoot: string) => {
+      alter: (
+        fixture: Awaited<ReturnType<typeof createImportedHistoryFixture>>,
+        workspaceRoot: string
+      ) => {
         writeFileSync(
           join(
             workspaceRoot,
@@ -1285,7 +1276,11 @@ describe('worker Context Package owner', () => {
           const redirected = mkdtempSync(join(tmpdir(), 'openkit-worker-context-redirect-'));
           mkdirSync(join(linkedRoot, 'threads'));
           symlinkSync(redirected, join(linkedRoot, 'threads/th_context'));
-          return writeWorkerContextPackageFiles(linkedRoot, await createPackage(linkedRoot, false), { admission: new FileStorageAdmission(linkedRoot, () => 0n) });
+          return writeWorkerContextPackageFiles(
+            linkedRoot,
+            await createPackage(linkedRoot, false),
+            { admission: new FileStorageAdmission(linkedRoot, () => 0n) }
+          );
         },
       ],
       [
@@ -1362,7 +1357,7 @@ describe('worker Context Package owner', () => {
             readWorkspaceInputSnapshot: (...args) => {
               const snapshot = fixture.authorities.readWorkspaceInputSnapshot(...args);
               return snapshot
-                ? { ...snapshot, base: { ...snapshot.base, contentDigest: sha256('changed') } }
+                ? { ...snapshot, base: { commit: null, contentDigest: sha256('changed') } }
                 : null;
             },
           }),
@@ -1454,24 +1449,43 @@ describe('bounded S39 source representations', () => {
       byteLength: Buffer.byteLength(deliveredContent),
       truncated: true,
       availability: 'incomplete',
-      tokenAccounting: { identity: 'explicit-parent-accounting', budgetTokens: 256, countedTokens: 7 },
+      tokenAccounting: {
+        identity: 'explicit-parent-accounting',
+        budgetTokens: 256,
+        countedTokens: 7,
+      },
     };
     const files = createWorkerContextPackageFiles({
-      workspaceId: 'ws_context', threadId: 'th_context', turnId: 'tu_context',
-      workerRequestItemId: 'it_request', workerRequestBytes: WORKER_REQUEST_BYTES,
-      includedItemIds: ['it_request'], contextBudgetTokens: 4096,
-      materialSelections: [{
-        materialId: 'mat_projected', revisionId: 'rev_projected', parentRevisionId: null,
-        mediaType: 'text/markdown', content, contentDigest: sha256(content),
-        inclusionReason: 'thread_binding', bindingMutationRequestId: 'req_binding',
-        sensitivity: 'public', deliveredContent, projection,
-      }],
+      workspaceId: 'ws_context',
+      threadId: 'th_context',
+      turnId: 'tu_context',
+      workerRequestItemId: 'it_request',
+      workerRequestBytes: WORKER_REQUEST_BYTES,
+      includedItemIds: ['it_request'],
+      contextBudgetTokens: 4096,
+      materialSelections: [
+        {
+          materialId: 'mat_projected',
+          revisionId: 'rev_projected',
+          parentRevisionId: null,
+          mediaType: 'text/markdown',
+          content,
+          contentDigest: sha256(content),
+          inclusionReason: 'thread_binding',
+          bindingMutationRequestId: 'req_binding',
+          sensitivity: 'public',
+          deliveredContent,
+          projection,
+        },
+      ],
     });
     const selected = files.materialSelections[0]!;
     const inventory = files.fileInventory.find((entry) => entry.path === selected.packagePath)!;
     expect(inventory.contentDigest).toBe(sha256(deliveredContent));
     expect(inventory.contentDigest).not.toBe(selected.contentDigest);
-    expect(Buffer.from(files.files.find((file) => file.path === selected.packagePath)!.bytes).toString()).toBe(deliveredContent);
+    expect(
+      Buffer.from(files.files.find((file) => file.path === selected.packagePath)!.bytes).toString()
+    ).toBe(deliveredContent);
     expect(selected).toMatchObject({ contentDigest: sha256(content), projection });
   });
 
@@ -1485,9 +1499,19 @@ describe('bounded S39 source representations', () => {
         const chunk = Buffer.alloc(65_536);
         let total = 0;
         while (total < STREAMED_ORIGINAL_BYTES)
-          total += writeSync(writer, chunk, 0, Math.min(chunk.length, STREAMED_ORIGINAL_BYTES - total));
-      } finally { closeSync(writer); }
-      descriptor = openSync(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          total += writeSync(
+            writer,
+            chunk,
+            0,
+            Math.min(chunk.length, STREAMED_ORIGINAL_BYTES - total)
+          );
+      } finally {
+        closeSync(writer);
+      }
+      descriptor = openSync(
+        sourcePath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+      );
       const held = descriptor;
       const before = fstatSync(held, { bigint: true });
       const delivered = 'Original binary source; text representation unavailable.\n';
@@ -1495,7 +1519,13 @@ describe('bounded S39 source representations', () => {
         const chunk = Buffer.alloc(65_536);
         let offset = 0;
         while (offset < STREAMED_ORIGINAL_BYTES) {
-          const count = readSync(held, chunk, 0, Math.min(chunk.length, STREAMED_ORIGINAL_BYTES - offset), offset);
+          const count = readSync(
+            held,
+            chunk,
+            0,
+            Math.min(chunk.length, STREAMED_ORIGINAL_BYTES - offset),
+            offset
+          );
           if (!count) throw new Error('Unexpected original EOF.');
           offset += count;
           yield chunk.subarray(0, count);
@@ -1503,15 +1533,29 @@ describe('bounded S39 source representations', () => {
       });
       const originalSnapshotPath = 'originals/artifacts/ar_stream/1/payload';
       const sourceFile: WorkerContextPackageSourceFileInput = {
-        source: { kind: 'artifact', reference: { scopeId: 'artifact/workspace/ws_context', objectId: 'ar_stream' }, artifactVersion: 1 },
-        originalDigest: STREAMED_ORIGINAL_DIGEST, byteLength: STREAMED_ORIGINAL_BYTES,
-        mediaType: 'application/octet-stream', originalSnapshotPath,
-        packagePath: 'sources/ar_stream.txt', deliveredBytes: Buffer.from(delivered),
+        source: {
+          kind: 'artifact',
+          reference: { scopeId: 'artifact/workspace/ws_context', objectId: 'ar_stream' },
+          artifactVersion: 1,
+        },
+        originalDigest: STREAMED_ORIGINAL_DIGEST,
+        byteLength: STREAMED_ORIGINAL_BYTES,
+        mediaType: 'application/octet-stream',
+        originalSnapshotPath,
+        packagePath: 'sources/ar_stream.txt',
+        deliveredBytes: Buffer.from(delivered),
         projection: {
-          kind: 'descriptor', sourceRevision: '1', representationId: 'binary-descriptor-v1',
-          representationDigest: sha256(delivered), representationByteLength: Buffer.byteLength(delivered),
-          deliveredDigest: sha256(delivered), ranges: [], byteLength: Buffer.byteLength(delivered),
-          truncated: true, availability: 'unavailable', originalSnapshotPath,
+          kind: 'descriptor',
+          sourceRevision: '1',
+          representationId: 'binary-descriptor-v1',
+          representationDigest: sha256(delivered),
+          representationByteLength: Buffer.byteLength(delivered),
+          deliveredDigest: sha256(delivered),
+          ranges: [],
+          byteLength: Buffer.byteLength(delivered),
+          truncated: true,
+          availability: 'unavailable',
+          originalSnapshotPath,
         },
         open,
         assertUnchanged() {
@@ -1521,17 +1565,30 @@ describe('bounded S39 source representations', () => {
         },
       };
       const files = createWorkerContextPackageFiles({
-        workspaceId: 'ws_context', threadId: 'th_context', turnId: 'tu_streamed',
-        workerRequestItemId: 'it_request', workerRequestBytes: WORKER_REQUEST_BYTES,
-        includedItemIds: ['it_request'], contextBudgetTokens: 4096, materialSelections: [],
+        workspaceId: 'ws_context',
+        threadId: 'th_context',
+        turnId: 'tu_streamed',
+        workerRequestItemId: 'it_request',
+        workerRequestBytes: WORKER_REQUEST_BYTES,
+        includedItemIds: ['it_request'],
+        contextBudgetTokens: 4096,
+        materialSelections: [],
         sourceFiles: [sourceFile],
       });
-      expect(files.fileInventory).toContainEqual({ path: originalSnapshotPath, byteLength: STREAMED_ORIGINAL_BYTES, contentDigest: STREAMED_ORIGINAL_DIGEST });
+      expect(files.fileInventory).toContainEqual({
+        path: originalSnapshotPath,
+        byteLength: STREAMED_ORIGINAL_BYTES,
+        contentDigest: STREAMED_ORIGINAL_DIGEST,
+      });
       expect(open).not.toHaveBeenCalled();
       const admission = new FileStorageAdmission(root, () => 0n);
       await writeWorkerContextPackageFiles(root, files, { admission });
       expect(open).toHaveBeenCalledTimes(1);
-      const published = join(root, 'threads/th_context/turns/tu_streamed/context-package', originalSnapshotPath);
+      const published = join(
+        root,
+        'threads/th_context/turns/tu_streamed/context-package',
+        originalSnapshotPath
+      );
       const output = openSync(published, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const hash = createHash('sha256');
@@ -1540,12 +1597,16 @@ describe('bounded S39 source representations', () => {
         for (;;) {
           const count = readSync(output, chunk, 0, chunk.length, total);
           if (!count) break;
-          total += count; hash.update(chunk.subarray(0, count));
+          total += count;
+          hash.update(chunk.subarray(0, count));
         }
         expect(total).toBe(STREAMED_ORIGINAL_BYTES);
         expect(`sha256:${hash.digest('hex')}`).toBe(STREAMED_ORIGINAL_DIGEST);
-      } finally { closeSync(output); }
-      closeSync(held); descriptor = undefined;
+      } finally {
+        closeSync(output);
+      }
+      closeSync(held);
+      descriptor = undefined;
       rmSync(sourcePath);
       await writeWorkerContextPackageFiles(root, files, { admission });
       expect(open).toHaveBeenCalledTimes(1);
@@ -1557,22 +1618,54 @@ describe('bounded S39 source representations', () => {
 });
 
 /** Creates a small, pinned fixture source with an independently supplied digest. */
-function sourceFixture(bytes: Uint8Array = Buffer.from([0, 255, 1])): WorkerContextPackageSourceFileInput {
+function sourceFixture(
+  bytes: Uint8Array = Buffer.from([0, 255, 1])
+): WorkerContextPackageSourceFileInput {
   const text = Buffer.from('Binary original is available only in the read-only file view.\n');
   return {
-    source: { kind: 'artifact', reference: { scopeId: 'artifact/workspace/ws_context', objectId: 'ar_fixture' }, artifactVersion: 1 },
-    originalDigest: sha256(Buffer.from(bytes)), byteLength: bytes.byteLength, mediaType: 'application/octet-stream',
-    originalSnapshotPath: 'originals/artifacts/ar_fixture/1/payload', packagePath: 'sources/ar_fixture.txt',
-    projection: { kind: 'descriptor', sourceRevision: '1', representationId: 'unavailable-v1', representationDigest: sha256(text), representationByteLength: text.byteLength, deliveredDigest: sha256(text), ranges: [], byteLength: text.byteLength, truncated: true, availability: 'unavailable', originalSnapshotPath: 'originals/artifacts/ar_fixture/1/payload' },
+    source: {
+      kind: 'artifact',
+      reference: { scopeId: 'artifact/workspace/ws_context', objectId: 'ar_fixture' },
+      artifactVersion: 1,
+    },
+    originalDigest: sha256(Buffer.from(bytes)),
+    byteLength: bytes.byteLength,
+    mediaType: 'application/octet-stream',
+    originalSnapshotPath: 'originals/artifacts/ar_fixture/1/payload',
+    packagePath: 'sources/ar_fixture.txt',
+    projection: {
+      kind: 'descriptor',
+      sourceRevision: '1',
+      representationId: 'unavailable-v1',
+      representationDigest: sha256(text),
+      representationByteLength: text.byteLength,
+      deliveredDigest: sha256(text),
+      ranges: [],
+      byteLength: text.byteLength,
+      truncated: true,
+      availability: 'unavailable',
+      originalSnapshotPath: 'originals/artifacts/ar_fixture/1/payload',
+    },
     deliveredBytes: text,
-    async *open() { yield bytes; },
+    async *open() {
+      yield bytes;
+    },
     assertUnchanged() {},
   };
 }
 
 /** Creates package inputs without adding unrelated selection authority. */
 function boundedInputs() {
-  return { workspaceId: 'ws_context', threadId: 'th_context', turnId: 'tu_bounded', workerRequestItemId: 'it_request', workerRequestBytes: WORKER_REQUEST_BYTES, includedItemIds: ['it_request'], contextBudgetTokens: 4096, materialSelections: [] };
+  return {
+    workspaceId: 'ws_context',
+    threadId: 'th_context',
+    turnId: 'tu_bounded',
+    workerRequestItemId: 'it_request',
+    workerRequestBytes: WORKER_REQUEST_BYTES,
+    includedItemIds: ['it_request'],
+    contextBudgetTokens: 4096,
+    materialSelections: [],
+  };
 }
 
 describe('S39 bounded delivery and publication refusal', () => {
@@ -1582,49 +1675,99 @@ describe('S39 bounded delivery and publication refusal', () => {
     ['line ceiling', 'a\n'.repeat(2000), true],
     ['line ceiling plus one', 'a\n'.repeat(2001), false],
   ] as const)('enforces the independent %s', (_name, content, accepted) => {
-    const build = () => createWorkerContextPackageFiles({ ...boundedInputs(), knowledgeSelections: [{ knowledgePageId: 'limits/example', content, contentDigest: sha256(content), sourceRefs: [] }] });
+    const build = () =>
+      createWorkerContextPackageFiles({
+        ...boundedInputs(),
+        knowledgeSelections: [
+          {
+            knowledgePageId: 'limits/example',
+            content,
+            contentDigest: sha256(content),
+            sourceRefs: [],
+          },
+        ],
+      });
     if (accepted) expect(build().knowledgeSelections).toHaveLength(1);
     else expect(build).toThrow(/byte or line bound/);
   });
 
   it('counts exact escaped aggregate metadata and refuses an impossible envelope budget', () => {
-    const input = { ...boundedInputs(), workerRequestItemId: 'it_"request', includedItemIds: ['it_"request'] };
+    const input = {
+      ...boundedInputs(),
+      workerRequestItemId: 'it_"request',
+      includedItemIds: ['it_"request'],
+    };
     const full = createWorkerContextPackageFiles(input);
     const manifest = full.files.find((file) => file.path === 'package.json')!.bytes;
-    expect(() => createWorkerContextPackageFiles({ ...input, maxMetadataBytes: manifest.byteLength })).not.toThrow();
-    expect(() => createWorkerContextPackageFiles({ ...input, maxMetadataBytes: manifest.byteLength - 1 })).toThrow(/metadata exceeds/);
-    expect(() => createWorkerContextPackageFiles({ ...input, maxMetadataBytes: 1 })).toThrow(/metadata exceeds/);
+    expect(() =>
+      createWorkerContextPackageFiles({ ...input, maxMetadataBytes: manifest.byteLength })
+    ).not.toThrow();
+    expect(() =>
+      createWorkerContextPackageFiles({ ...input, maxMetadataBytes: manifest.byteLength - 1 })
+    ).toThrow(/metadata exceeds/);
+    expect(() => createWorkerContextPackageFiles({ ...input, maxMetadataBytes: 1 })).toThrow(
+      /metadata exceeds/
+    );
   });
 
-  it.each(['corrupt', 'overrun', 'drift', 'abort', 'oversized-chunk'] as const)('cleans private original stages after %s and leaves no readiness manifest', async (failure) => {
+  it.each([
+    'corrupt',
+    'overrun',
+    'drift',
+    'abort',
+    'oversized-chunk',
+  ] as const)('cleans private original stages after %s and leaves no readiness manifest', async (failure) => {
     const root = mkdtempSync(join(tmpdir(), 's39-original-refusal-'));
     try {
-      const source = sourceFixture(failure === 'oversized-chunk' ? Buffer.alloc(65_537) : undefined);
+      const source = sourceFixture(
+        failure === 'oversized-chunk' ? Buffer.alloc(65_537) : undefined
+      );
       const controller = new AbortController();
       let checks = 0;
       const modified = {
         ...source,
         originalDigest: failure === 'corrupt' ? `sha256:${'0'.repeat(64)}` : source.originalDigest,
         byteLength: failure === 'overrun' ? source.byteLength - 1 : source.byteLength,
-        assertUnchanged() { if (++checks === 2 && failure === 'drift') throw new Error('Original drift.'); },
-        async *open() { if (failure === 'abort') controller.abort(); yield failure === 'oversized-chunk' ? Buffer.alloc(65_537) : Buffer.from([0, 255, 1]); },
+        assertUnchanged() {
+          if (++checks === 2 && failure === 'drift') throw new Error('Original drift.');
+        },
+        async *open() {
+          if (failure === 'abort') controller.abort();
+          yield failure === 'oversized-chunk' ? Buffer.alloc(65_537) : Buffer.from([0, 255, 1]);
+        },
       };
-      const files = createWorkerContextPackageFiles({ ...boundedInputs(), sourceFiles: [modified] });
+      const files = createWorkerContextPackageFiles({
+        ...boundedInputs(),
+        sourceFiles: [modified],
+      });
       const admission = new FileStorageAdmission(root, () => 0n);
       const release = vi.fn();
       const realReserve = admission.reserve.bind(admission);
       vi.spyOn(admission, 'reserve').mockImplementation((writes) => {
         const reservation = realReserve(writes);
-        return { ...reservation, release() { release(); reservation.release(); } };
+        return {
+          ...reservation,
+          release() {
+            release();
+            reservation.release();
+          },
+        };
       });
-      await expect(writeWorkerContextPackageFiles(root, files, { admission, signal: controller.signal })).rejects.toThrow();
+      await expect(
+        writeWorkerContextPackageFiles(root, files, { admission, signal: controller.signal })
+      ).rejects.toThrow();
       const packageRoot = join(root, 'threads/th_context/turns/tu_bounded/context-package');
       expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
       expect(existsSync(join(packageRoot, source.originalSnapshotPath))).toBe(false);
-      expect(release).toHaveBeenCalledTimes(1);
-      const walk = (path: string): string[] => readdirSync(path, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? walk(join(path, entry.name)) : [entry.name]);
+      expect(release).toHaveBeenCalledTimes(2);
+      const walk = (path: string): string[] =>
+        readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
+          entry.isDirectory() ? walk(join(path, entry.name)) : [entry.name]
+        );
       expect(walk(packageRoot)).toEqual([]);
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('refuses source capture before opening when the shared configured reserve cannot admit it', async () => {
@@ -1632,11 +1775,22 @@ describe('S39 bounded delivery and publication refusal', () => {
     try {
       const source = sourceFixture();
       const open = vi.fn(source.open);
-      const files = createWorkerContextPackageFiles({ ...boundedInputs(), sourceFiles: [{ ...source, open }] });
-      const admission = new FileStorageAdmission(root, () => 900n, () => 1000n);
-      await expect(writeWorkerContextPackageFiles(root, files, { admission })).rejects.toMatchObject({ code: 'storage_capacity_unavailable' });
+      const files = createWorkerContextPackageFiles({
+        ...boundedInputs(),
+        sourceFiles: [{ ...source, open }],
+      });
+      const admission = new FileStorageAdmission(
+        root,
+        () => 900n,
+        () => 1000n
+      );
+      await expect(
+        writeWorkerContextPackageFiles(root, files, { admission })
+      ).rejects.toMatchObject({ code: 'storage_capacity_unavailable' });
       expect(open).not.toHaveBeenCalled();
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1645,30 +1799,320 @@ describe('S39 original source authority and retained proof', () => {
     const root = mkdtempSync(join(tmpdir(), 's39-retained-original-'));
     const source = sourceFixture();
     const fixture = await createAcceptedFixture(root, { sourceFiles: [source] });
-    expect(() => writeWorkerContextPackageTrace({ ...fixture, workspaceRoot: root })).toThrow(/original source authority/);
-    const readSourceFile = vi.fn(() => ({ originalDigest: source.originalDigest, byteLength: source.byteLength, mediaType: source.mediaType }));
+    expect(() => writeWorkerContextPackageTrace({ ...fixture, workspaceRoot: root })).toThrow(
+      /original source authority/
+    );
+    const readSourceFile = vi.fn(() => ({
+      originalDigest: source.originalDigest,
+      byteLength: source.byteLength,
+      mediaType: source.mediaType,
+    }));
     const authorities = { ...fixture.authorities, readSourceFile };
-    const trace = writeWorkerContextPackageTrace({ authorities, trace: fixture.trace, workspaceRoot: root });
+    const trace = writeWorkerContextPackageTrace({
+      authorities,
+      trace: fixture.trace,
+      workspaceRoot: root,
+    });
     expect(readSourceFile).toHaveBeenCalledTimes(1);
-    expect(trace.sourceFiles).toMatchObject([{ source: source.source, originalDigest: source.originalDigest }]);
+    expect(trace.sourceFiles).toMatchObject([
+      { source: source.source, originalDigest: source.originalDigest },
+    ]);
     const missingOriginalOwner = { ...authorities, readSourceFile: vi.fn(() => null) };
-    expect(readWorkerContextPackageTrace({ authorities: missingOriginalOwner, workspaceId: 'ws_context', threadId: 'th_context', turnId: 'tu_context', workspaceRoot: root })).toEqual(trace);
+    expect(
+      readWorkerContextPackageTrace({
+        authorities: missingOriginalOwner,
+        workspaceId: 'ws_context',
+        threadId: 'th_context',
+        turnId: 'tu_context',
+        workspaceRoot: root,
+      })
+    ).toEqual(trace);
     expect(missingOriginalOwner.readSourceFile).not.toHaveBeenCalled();
-    const originalPath = join(root, 'threads/th_context/turns/tu_context/context-package', source.originalSnapshotPath);
+    const originalPath = join(
+      root,
+      'threads/th_context/turns/tu_context/context-package',
+      source.originalSnapshotPath
+    );
     chmodSync(originalPath, 0o600);
     writeFileSync(originalPath, Buffer.from([0, 254, 1]));
-    expect(() => verifyWorkerContextPackageTrace({ authorities, trace, workspaceRoot: root })).toThrow(/digest mismatch/);
+    expect(() =>
+      verifyWorkerContextPackageTrace({ authorities, trace, workspaceRoot: root })
+    ).toThrow(/digest mismatch/);
   });
 
   it.each([
-    ['foreign Workspace', { source: { kind: 'artifact', reference: { scopeId: 'artifact/workspace/ws_other', objectId: 'ar_fixture' }, artifactVersion: 1 } }],
-    ['changed revision', { source: { kind: 'artifact', reference: { scopeId: 'artifact/workspace/ws_context', objectId: 'ar_fixture' }, artifactVersion: 2 } }],
+    [
+      'foreign Workspace',
+      {
+        source: {
+          kind: 'artifact',
+          reference: { scopeId: 'artifact/workspace/ws_other', objectId: 'ar_fixture' },
+          artifactVersion: 1,
+        },
+      },
+    ],
+    [
+      'changed revision',
+      {
+        source: {
+          kind: 'artifact',
+          reference: { scopeId: 'artifact/workspace/ws_context', objectId: 'ar_fixture' },
+          artifactVersion: 2,
+        },
+      },
+    ],
     ['escaping original path', { originalSnapshotPath: '../payload' }],
     ['invalid UTF-8 delivery', { deliveredBytes: Buffer.from([0xff]) }],
   ])('refuses %s before original reads', (_label, change) => {
     const source = sourceFixture();
     const open = vi.fn(source.open);
-    expect(() => createWorkerContextPackageFiles({ ...boundedInputs(), sourceFiles: [{ ...source, ...change, open } as WorkerContextPackageSourceFileInput] })).toThrow();
+    expect(() =>
+      createWorkerContextPackageFiles({
+        ...boundedInputs(),
+        sourceFiles: [{ ...source, ...change, open } as WorkerContextPackageSourceFileInput],
+      })
+    ).toThrow();
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe('S39 exact original UTF-8 ranges', () => {
+  it('preserves BOM and codepoints in a bounded excerpt of a huge single line', () => {
+    const content = `\uFEFF${'界'.repeat(100_000)}`;
+    const deliveredContent = `\uFEFF${'界'.repeat(17_000)}`;
+    const projection: WorkerContextPackageProjection = {
+      kind: 'excerpt',
+      sourceRevision: 'rev_huge',
+      representationId: 'original-utf8',
+      representationDigest: sha256(content),
+      representationByteLength: Buffer.byteLength(content),
+      deliveredDigest: sha256(deliveredContent),
+      ranges: [{ start: 0, end: Buffer.byteLength(deliveredContent) }],
+      byteLength: Buffer.byteLength(deliveredContent),
+      truncated: true,
+      availability: 'incomplete',
+    };
+    const input = {
+      ...boundedInputs(),
+      materialSelections: [
+        {
+          materialId: 'mat_huge',
+          revisionId: 'rev_huge',
+          parentRevisionId: null,
+          mediaType: 'text/plain' as const,
+          content,
+          contentDigest: sha256(content),
+          deliveredContent,
+          projection,
+          inclusionReason: 'thread_binding' as const,
+          bindingMutationRequestId: 'req_huge',
+          sensitivity: 'internal' as const,
+        },
+      ],
+    };
+    const files = createWorkerContextPackageFiles(input);
+    const delivered = files.files.find((file) => file.path.endsWith('rev_huge.txt'))!.bytes;
+    expect(Buffer.from(delivered).equals(Buffer.from(deliveredContent))).toBe(true);
+    expect(delivered.byteLength).toBe(51_003);
+    expect(() =>
+      createWorkerContextPackageFiles({
+        ...input,
+        materialSelections: [
+          {
+            ...input.materialSelections[0]!,
+            projection: { ...projection, ranges: [{ start: 1, end: projection.byteLength + 1 }] },
+          },
+        ],
+      })
+    ).toThrow(/excerpt does not match/);
+    expect(files.materialSelections[0]!.projection?.tokenAccounting).toBeUndefined();
+  });
+});
+
+describe('S39 historical publication fence', () => {
+  it('refuses a missing accepted original without reopening or rebuilding the source', async () => {
+    const root = mkdtempSync(join(tmpdir(), 's39-no-historical-rebuild-'));
+    const source = sourceFixture();
+    const open = vi.fn(source.open);
+    const fixture = await createAcceptedFixture(root, { sourceFiles: [{ ...source, open }] });
+    const authorities = {
+      ...fixture.authorities,
+      readSourceFile: () => ({
+        originalDigest: source.originalDigest,
+        byteLength: source.byteLength,
+        mediaType: source.mediaType,
+      }),
+    };
+    writeWorkerContextPackageTrace({ authorities, trace: fixture.trace, workspaceRoot: root });
+    const path = join(
+      root,
+      'threads/th_context/turns/tu_context/context-package',
+      source.originalSnapshotPath
+    );
+    rmSync(path);
+    await expect(
+      writeWorkerContextPackageFiles(root, fixture.packageFiles, {
+        admission: new FileStorageAdmission(root, () => 0n),
+      })
+    ).rejects.toThrow(/inventory mismatch/);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(existsSync(path)).toBe(false);
+  });
+});
+
+/** Uses the one existing bound Material body path for both its selection and original inventory proof. */
+function sharedMaterialInputs(): Parameters<typeof createWorkerContextPackageFiles>[0] {
+  const content = '# Shared material\nOriginal remainder.\n';
+  const deliveredContent = '# Shared material';
+  const originalSnapshotPath = 'originals/materials/mat_shared/rev_shared/payload';
+  const projection: WorkerContextPackageProjection = {
+    kind: 'excerpt',
+    sourceRevision: 'rev_shared',
+    representationId: 'original-utf8',
+    representationDigest: sha256(content),
+    representationByteLength: Buffer.byteLength(content),
+    deliveredDigest: sha256(deliveredContent),
+    ranges: [{ start: 0, end: Buffer.byteLength(deliveredContent) }],
+    byteLength: Buffer.byteLength(deliveredContent),
+    truncated: true,
+    availability: 'incomplete',
+    originalSnapshotPath,
+  };
+  return {
+    ...boundedInputs(),
+    materialSelections: [
+      {
+        materialId: 'mat_shared',
+        revisionId: 'rev_shared',
+        parentRevisionId: null,
+        mediaType: 'text/markdown',
+        content,
+        contentDigest: sha256(content),
+        deliveredContent,
+        projection,
+        inclusionReason: 'thread_binding',
+        bindingMutationRequestId: 'req_shared',
+        sensitivity: 'internal',
+      },
+    ],
+    sourceFiles: [
+      {
+        source: {
+          kind: 'material',
+          reference: { scopeId: 'material/workspace/ws_context', objectId: 'mat_shared' },
+          revisionId: 'rev_shared',
+        },
+        originalDigest: sha256(content),
+        byteLength: Buffer.byteLength(content),
+        mediaType: 'text/markdown',
+        originalSnapshotPath,
+        packagePath: 'workspace/materials/mat_shared/rev_shared.md',
+        projection,
+        deliveredBytes: Buffer.from(deliveredContent),
+        async *open() {
+          yield Buffer.from(content);
+        },
+        assertUnchanged() {},
+      },
+    ],
+  };
+}
+
+describe('S39 one bound Material delivery path', () => {
+  it('retains one original inventory entry and reuses the exact selected body without duplicate bytes', async () => {
+    const input = sharedMaterialInputs();
+    const files = createWorkerContextPackageFiles(input);
+    const source = files.sourceFiles![0]!;
+    const selected = files.materialSelections[0]!;
+    expect(source.packagePath).toBe(selected.packagePath);
+    expect(files.files.filter((file) => file.path === selected.packagePath)).toHaveLength(1);
+    expect(files.fileInventory.filter((entry) => entry.path === selected.packagePath)).toHaveLength(
+      1
+    );
+    expect(
+      files.fileInventory.filter((entry) => entry.path === source.originalSnapshotPath)
+    ).toHaveLength(1);
+    expect(files.files.some((file) => file.path.startsWith('sources/'))).toBe(false);
+    const root = mkdtempSync(join(tmpdir(), 's39-shared-material-'));
+    await writeWorkerContextPackageFiles(root, files, {
+      admission: new FileStorageAdmission(root, () => 0n),
+    });
+    const packageRoot = join(root, 'threads/th_context/turns/tu_bounded/context-package');
+    expect(readFileSync(join(packageRoot, selected.packagePath), 'utf8')).toBe(
+      input.materialSelections[0]!.deliveredContent
+    );
+    expect(readFileSync(join(packageRoot, source.originalSnapshotPath), 'utf8')).toBe(
+      input.materialSelections[0]!.content
+    );
+    expect(
+      JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).sourceFiles[0].packagePath
+    ).toBe(selected.packagePath);
+  });
+
+  it.each([
+    'identity',
+    'path',
+    'projection',
+    'digest',
+    'size',
+    'bytes',
+    'kind',
+  ] as const)('refuses mismatched shared Material %s before publication', (change) => {
+    const input = sharedMaterialInputs();
+    const source = input.sourceFiles![0]!;
+    const modified: WorkerContextPackageSourceFileInput = {
+      ...source,
+      ...(change === 'identity'
+        ? {
+            source: {
+              kind: 'material' as const,
+              reference: { scopeId: 'material/workspace/ws_context', objectId: 'mat_other' },
+              revisionId: 'rev_shared',
+            },
+          }
+        : {}),
+      ...(change === 'path' ? { packagePath: 'workspace/materials/mat_shared/rev_other.md' } : {}),
+      ...(change === 'projection'
+        ? { projection: { ...source.projection, representationId: 'other-representation' } }
+        : {}),
+      ...(change === 'digest' ? { originalDigest: `sha256:${'0'.repeat(64)}` } : {}),
+      ...(change === 'size' ? { byteLength: source.byteLength + 1 } : {}),
+      ...(change === 'bytes' ? { deliveredBytes: Buffer.from('Changed body') } : {}),
+      ...(change === 'kind'
+        ? {
+            source: {
+              kind: 'artifact' as const,
+              reference: { scopeId: 'artifact/workspace/ws_context', objectId: 'mat_shared' },
+              artifactVersion: 1,
+            },
+          }
+        : {}),
+    };
+    expect(() => createWorkerContextPackageFiles({ ...input, sourceFiles: [modified] })).toThrow();
+  });
+});
+
+describe('S39 empty original stream', () => {
+  it('keeps an empty original valid when its supplier emits an empty chunk', async () => {
+    const source = sourceFixture(Buffer.alloc(0));
+    const files = createWorkerContextPackageFiles({ ...boundedInputs(), sourceFiles: [source] });
+    const root = mkdtempSync(join(tmpdir(), 's39-empty-original-'));
+    await writeWorkerContextPackageFiles(root, files, {
+      admission: new FileStorageAdmission(root, () => 0n),
+    });
+    expect(
+      readFileSync(
+        join(
+          root,
+          'threads/th_context/turns/tu_bounded/context-package',
+          source.originalSnapshotPath
+        )
+      )
+    ).toEqual(Buffer.alloc(0));
+    expect(files.fileInventory).toContainEqual({
+      path: source.originalSnapshotPath,
+      byteLength: 0,
+      contentDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    });
   });
 });
