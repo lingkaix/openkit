@@ -84,7 +84,7 @@ export interface CreateVaultInjectionPlanInput {
  * @param coreDb Open Core database handle.
  * @param input Plan metadata to store.
  * @returns Stored injection plan record.
- * @throws Error when the referenced grant is imported, missing, or has inconsistent target fields.
+ * @throws Error when the grant is imported or missing, targets are invalid, or the identity conflicts.
  */
 export function createVaultInjectionPlan(
   coreDb: CoreDb,
@@ -136,7 +136,23 @@ export function createVaultInjectionPlan(
       timestamp
     );
 
-  return requireVaultInjectionPlan(coreDb, input.planId);
+  const stored = requireVaultInjectionPlan(coreDb, input.planId);
+  // The clock and lifecycle status are not creation input identity; replay preserves their stored facts.
+  if (
+    stored.grantId !== input.grantId ||
+    stored.packageSnapshotId !== (input.packageSnapshotId ?? null) ||
+    stored.capabilityId !== (input.capabilityId ?? null) ||
+    stored.injectionVisibility !== input.injectionVisibility ||
+    stored.targetPath !== (input.targetPath ?? null) ||
+    stored.targetEnvVarName !== (input.targetEnvVarName ?? null) ||
+    stored.expirationBehavior !== input.expirationBehavior ||
+    stored.revocationBehavior !== input.revocationBehavior ||
+    stored.redactionRule !== input.redactionRule ||
+    stored.backendCapabilityRequirement !== input.backendCapabilityRequirement
+  ) {
+    throw new Error('Vault injection plan identity conflict.');
+  }
+  return stored;
 }
 
 /**

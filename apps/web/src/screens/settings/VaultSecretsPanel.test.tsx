@@ -13,19 +13,33 @@ const reference = {
   currentVersion: 1,
   status: 'active',
 };
+const grant = {
+  grantId: 'grant_existing',
+  vaultReferenceId: 'vault_example',
+  status: 'active',
+  targetAgentId: 'agent_review',
+  targetAgentSessionId: null,
+  targetCapabilityId: null,
+  allowedInjectionPaths: ['gateway-only'],
+  lifetime: 'workspace',
+  expiresAt: '2099-01-01T00:00:00.000Z',
+  approvalId: null,
+  policyDecisionId: null,
+};
 
 /** Render the production secret form with observable network and cache boundaries. */
 function setup() {
   const operations = {
     'vault.reference-list': vi.fn().mockResolvedValue({ items: [reference] }),
     'vault.grant-list': vi.fn().mockResolvedValue({
-      items: [{ grantId: 'grant_existing', vaultReferenceId: 'vault_example', status: 'active' }],
+      items: [grant],
     }),
     'vault.secret-create': vi.fn().mockResolvedValue({ ...reference, material: SECRET }),
     'vault.secret-rotate': vi.fn().mockResolvedValue(reference),
     'vault.secret-revoke': vi.fn().mockResolvedValue({ ...reference, status: 'revoked' }),
     'vault.grant-create': vi.fn().mockResolvedValue({ grantId: 'grant_example' }),
     'vault.grant-revoke': vi.fn().mockResolvedValue({ status: 'revoked' }),
+    'vault.grant-narrow': vi.fn().mockResolvedValue({}),
   };
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -57,6 +71,65 @@ function cacheBytes(cache: QueryClient) {
 }
 
 describe('Vault secret administration', () => {
+  it('issues exact entered restrictions instead of first creating a broad grant', async () => {
+    const { operations } = setup();
+    const agent = await screen.findByLabelText('Grant target Agent');
+    await waitFor(() => expect(agent).toBeEnabled());
+    await userEvent.type(agent, 'agent_selected');
+    await userEvent.type(screen.getByLabelText('Grant expiry (UTC)'), '2098-01-01T00:00:00.000Z');
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create gateway grant for vault_example' })
+    );
+    await waitFor(() =>
+      expect(operations['vault.grant-create']).toHaveBeenCalledWith({
+        workspaceId: 'ws_demo',
+        referenceId: reference.referenceId,
+        targetAgentId: 'agent_selected',
+        expiresAt: '2098-01-01T00:00:00.000Z',
+      })
+    );
+    expect(operations['vault.grant-create']).toHaveBeenCalledTimes(1);
+    expect(operations['vault.grant-narrow']).not.toHaveBeenCalled();
+  });
+  it('sanitizes an unknown narrowing failure and refreshes without replay', async () => {
+    const { operations, cache } = setup();
+    operations['vault.grant-narrow'].mockRejectedValue(new Error(SECRET));
+    const expiry = await screen.findByLabelText('Grant expiry (UTC)');
+    await waitFor(() => expect(expiry).toBeEnabled());
+    await userEvent.type(expiry, '2098-01-01T00:00:00.000Z');
+    await userEvent.click(screen.getByRole('button', { name: 'Narrow grant grant_existing' }));
+    await screen.findByText(/Vault request failed/);
+    expect(cacheBytes(cache)).not.toContain(SECRET);
+    expect(document.body.textContent).not.toContain(SECRET);
+    expect(screen.getByRole('button', { name: 'Narrow grant grant_existing' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Narrow grant grant_existing' })).toBeEnabled()
+    );
+    expect(operations['vault.grant-narrow']).toHaveBeenCalledTimes(1);
+    expect(operations['vault.grant-create']).not.toHaveBeenCalled();
+  });
+  it('shows retained constraints and narrows only through an explicit replacement action', async () => {
+    const { operations } = setup();
+    expect(await screen.findByText('Agent: agent_review')).toBeInTheDocument();
+    expect(screen.getByText('Visibility: gateway-only')).toBeInTheDocument();
+    expect(screen.getByText('Lifetime: workspace')).toBeInTheDocument();
+    expect(screen.getByText('Expiry: 2099-01-01T00:00:00.000Z')).toBeInTheDocument();
+    const narrow = screen.getByRole('button', { name: 'Narrow grant grant_existing' });
+    expect(narrow).toBeDisabled();
+    await userEvent.type(screen.getByLabelText('Grant expiry (UTC)'), '2098-01-01T00:00:00.000Z');
+    await userEvent.click(narrow);
+    await waitFor(() =>
+      expect(operations['vault.grant-narrow']).toHaveBeenCalledWith({
+        workspaceId: 'ws_demo',
+        grantId: grant.grantId,
+        constraints: { expiresAt: '2098-01-01T00:00:00.000Z' },
+      })
+    );
+    expect(screen.getByLabelText('Grant expiry (UTC)')).toHaveValue('');
+    expect(screen.getByText(/Bind the replacement explicitly/)).toBeInTheDocument();
+    expect(operations['vault.grant-create']).not.toHaveBeenCalled();
+  });
   it('requires an entered secret kind and points gateway grants at the current MCP binding', async () => {
     const { operations } = setup();
     const kind = await screen.findByLabelText('Secret kind');

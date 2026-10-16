@@ -1,5 +1,7 @@
+import { AgentIdSchema, AgentSessionIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
+import { InjectionVisibilitySchema, WorkspaceVaultGrantSchema } from './vault-injection.js';
 
 /** Vault admin backend kinds exposed through the App API. */
 export const VaultAdminBackendKindSchema = z.enum(['encrypted-file']);
@@ -193,12 +195,45 @@ export const RotateWorkspaceVaultSecretRequestSchema = z
   })
   .strict();
 
-/** Create an ordinary gateway-only grant with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant. */
+/** Exact restrictions supported by current Gateway and Worker credential consumers. */
+const WorkspaceVaultGrantTargets = {
+  targetAgentId: AgentIdSchema.superRefine((value, ctx) =>
+    addRawSecretIssues(value, ctx, [])
+  ).optional(),
+  targetAgentSessionId: AgentSessionIdSchema.superRefine((value, ctx) =>
+    addRawSecretIssues(value, ctx, [])
+  ).optional(),
+  targetCapabilityId: z.enum(['mcp.list_tools', 'mcp.call_tool']).optional(),
+};
+
+/** Create a Workspace-lifetime grant for a supported sink with optional exact restrictions. */
 export const CreateWorkspaceVaultGrantRequestSchema = z
   .object({
     referenceId: z.string().regex(/^vault_[A-Za-z0-9_-]+$/),
     expiresAt: z.string().datetime().optional(),
     injectionPath: z.enum(['gateway-only', 'runtime-env']).optional(),
+    ...WorkspaceVaultGrantTargets,
+  })
+  .strict();
+
+/** Replace an existing Workspace grant with strictly reduced authority. */
+export const NarrowWorkspaceVaultGrantRequestSchema = z
+  .object({
+    constraints: z
+      .object({
+        ...WorkspaceVaultGrantTargets,
+        expiresAt: z.string().datetime().optional(),
+        allowedInjectionPaths: z.array(InjectionVisibilitySchema).min(1).optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Redacted original and replacement grants; bindings require a separate explicit update. */
+export const NarrowWorkspaceVaultGrantResponseSchema = z
+  .object({
+    revokedGrant: WorkspaceVaultGrantSchema,
+    grant: WorkspaceVaultGrantSchema,
   })
   .strict();
 
@@ -210,7 +245,7 @@ export type CreateWorkspaceVaultSecretRequest = z.infer<
 export type RotateWorkspaceVaultSecretRequest = z.infer<
   typeof RotateWorkspaceVaultSecretRequestSchema
 >;
-/** Ordinary gateway-only grant input with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant. */
+/** Workspace grant input with optional exact target restrictions. */
 export type CreateWorkspaceVaultGrantRequest = z.infer<
   typeof CreateWorkspaceVaultGrantRequestSchema
 >;

@@ -14,7 +14,7 @@ export interface RecordVaultAdminAuditEventInput {
   readonly actor?: Actor;
   /** Stable admin action name. */
   readonly action:
-    | `vault.workspace_${'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant'}`
+    | `vault.workspace_${'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant' | 'narrow-grant'}`
     | 'vault.unlock'
     | 'vault.lock'
     | 'vault.bootstrap_codex_auth_json'
@@ -30,6 +30,12 @@ export interface RecordVaultAdminAuditEventInput {
   readonly errorCode?: string | null;
   /** Backend kind administered by the action. */
   readonly backendKind: VaultBackendKind;
+  /** Exact affected Workspace when the administrative effect is Workspace-scoped. */
+  readonly workspaceId?: string;
+  /** Grant created by the administrative effect, when applicable. */
+  readonly vaultGrantId?: string;
+  /** Exact redacted source resource, including a replaced grant when applicable. */
+  readonly resource?: string;
   /** Event creation time. */
   readonly now?: Date;
 }
@@ -73,6 +79,7 @@ export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInpu
     );
 
   recordServerAuditEvent({
+    actor: input.actor ? { kind: 'user', id: input.actor.userId } : null,
     action: input.action,
     auditEventId,
     category: 'system',
@@ -80,7 +87,9 @@ export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInpu
     errorCode: input.errorCode ?? null,
     now,
     outcome: input.outcome,
-    resource: `vault:${input.backendKind}`,
+    resource: input.resource ?? `vault:${input.backendKind}`,
+    workspaceId: input.workspaceId ?? null,
+    vaultGrantId: input.vaultGrantId ?? null,
     severity,
     summary: input.summary,
   });

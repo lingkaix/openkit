@@ -36,6 +36,8 @@ Provider-subscription payload schemas consume the browser-safe `@openkit/config-
 
 Vault administration schemas keep provider API keys in strict request-only payloads and expose only redacted configuration status responses. `ProviderApiKeyProfileIdSchema` is the shared file-, Vault-reference-, and response-safe id boundary used by NanoCore and Web.
 
+Workspace grant creation and narrowing share exact supported Agent, AgentSession and Gateway capability restrictions. `vault.grant-narrow` declares a strict constraint request and redacted original/replacement response; NanoCore owns strict reduction, current authority, atomic replacement and Audit. Runtime-env capability targets remain unavailable. These schemas add no authority or request lifecycle.
+
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
 Authentication schemas include optional exact-owner access-token issuance plus canonical-user and current-administrator redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes.

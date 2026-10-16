@@ -1,13 +1,14 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import {
   createVaultGrant,
   getVaultGrant,
   importWorkspaceVaultGrants,
+  revokeVaultGrant,
 } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import {
@@ -16,6 +17,12 @@ import {
   listVaultInjectionPlans,
 } from './vault-injection-plans.js';
 
+const fixtureRoots = new Set<string>();
+afterEach(() => {
+  for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+  fixtureRoots.clear();
+});
+
 /**
  * Opens a migrated Core database for injection plan tests.
  *
@@ -23,6 +30,7 @@ import {
  */
 function createCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-injection-plan-'));
+  fixtureRoots.add(dataRoot);
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   return coreDb;
@@ -49,17 +57,27 @@ describe('injection plans', () => {
         targetPath: '/openkit/secrets/github-token',
       });
       const duplicate = createVaultInjectionPlan(coreDb, {
-        backendCapabilityRequirement: 'changed',
-        expirationBehavior: 'delete-on-turn-end',
-        grantId: 'grant_github_turn',
-        injectionVisibility: 'gateway-only',
+        ...created,
         now: () => '2026-07-05T00:20:00.000Z',
-        planId: 'plan_github_file',
-        redactionRule: 'status-only',
-        revocationBehavior: 'deny-new-use',
       });
-
       expect(duplicate).toEqual(created);
+      for (const patch of [
+        { backendCapabilityRequirement: 'changed' },
+        { capabilityId: null },
+        { expirationBehavior: 'grant-lifetime' },
+        { packageSnapshotId: null },
+        { redactionRule: 'changed' },
+        { revocationBehavior: 'changed' },
+        { targetPath: '/openkit/secrets/changed' },
+        { injectionVisibility: 'runtime-env', targetPath: null, targetEnvVarName: 'SERVICE_TOKEN' },
+        { injectionVisibility: 'gateway-only', targetPath: null },
+      ] as const) {
+        expect(() => createVaultInjectionPlan(coreDb, { ...created, ...patch })).toThrow(
+          'Vault injection plan identity conflict.'
+        );
+        expect(listVaultInjectionPlans(coreDb)).toEqual([created]);
+      }
+
       expect(getVaultInjectionPlan(coreDb, 'plan_github_file')).toEqual(created);
       expect(listVaultInjectionPlans(coreDb)).toEqual([created]);
       expect(created).toMatchObject({
@@ -76,6 +94,10 @@ describe('injection plans', () => {
         targetPath: '/openkit/secrets/github-token',
       });
       expect(JSON.stringify(created)).not.toContain('ghp_');
+      revokeVaultGrant(coreDb, { grantId: created.grantId });
+      const revoked = getVaultInjectionPlan(coreDb, created.planId);
+      expect(revoked?.status).toBe('revoked');
+      expect(createVaultInjectionPlan(coreDb, { ...created })).toEqual(revoked);
     } finally {
       coreDb.sqlite.close();
     }
