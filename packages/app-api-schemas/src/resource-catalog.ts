@@ -206,7 +206,7 @@ export const CatalogMutationResponseSchema = z
 /** Create an inactive MCP configuration. */
 export const CreateMcpConfigRequestSchema = z
   .object({
-    allowedTools: z.array(z.string().min(1)).min(1),
+    allowedTools: z.array(z.string().min(1)),
     declaration: z.unknown().superRefine((value, context) => {
       if (
         value &&

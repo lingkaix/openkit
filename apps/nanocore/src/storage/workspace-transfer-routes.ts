@@ -1022,6 +1022,20 @@ export function createVerifiedWorkspaceExport({
 
   if (!isEntityId('wsexp', exportId))
     throw new Error('Workspace export requires a canonical wsexp identity.');
+  const deletionRecoveryContext =
+    deletionRecoveryRequestId !== undefined
+      ? {
+          authorityUserId,
+          coreDb,
+          dataRoot,
+          exportId,
+          requestId: deletionRecoveryRequestId,
+          workspaceId,
+        }
+      : undefined;
+  const deletionRecoveryAuthorized = deletionRecoveryContext
+    ? assertWorkspaceDeletionRecoveryExportAuthority(deletionRecoveryContext)
+    : false;
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
   if (

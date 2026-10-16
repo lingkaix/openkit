@@ -26,7 +26,17 @@ Source: L-GA primary's bounded Builder dispatch on 2026-10-17. Preserve the clea
 
 Source: coordinator size choice relayed by the L-GA primary on 2026-10-17. D53 will land first, followed by the coupled Equal remainder. The 60-file guide yields to the demonstrated consumer coupling. The primary owns D53 extraction from the committed joined source and later parent integration. This branch does not extract D53, add behavior or infer landing approval. A primary-operated Grok may perform the exact mechanical lifecycle-test import correction, followed by inspection of its actual diff and a normal merge.
 
+## Intent Revision 6
+
+Source: the L-GA primary's coupled-remainder dispatch on 2026-10-17. Normally merge the separately implemented and committed D53 parent `e732da668eb47a6a7486c4f8c2b58ffbb1d78980`, which carries the committed preview parent. Preserve its private-history owner criteria and Equal's required actual initiator, uniform membership, original recovery owner and post-await current-authority checks. Supply the actual initiating owner in D53's existing deletion-request fixture. Review actual Grok diff and logs before normal merges. Finish the affected checks and generated projections, without a full gate, CI, main integration or new behavior.
+
 ## Working Checkpoint
+
+Both bounded mechanical Grok changes were inspected against their actual diffs and raw outputs and normally merged: imports `a4bfc27be129b05ae98693dd583b2cb95bcae421` and fixture expectations `5ad487b8812af792c5ecebe34b8cfc279caf8fb5`. Their Sol review records live in backlog `evidence/L-GA/equal-grok-*-sol-review.md`. These approve only the named mechanical changes. The D53 parent is normally joined; its existing regression binds the actual original owner as the initiating human, without fallback. Its private-history owner and manual criteria remain, alongside full member eligibility and the required initiating User. The public operation inventory combines the one preview Server operation with removal of the obsolete access-change operation; actual generation and checks remain pending. No current merged-head GREEN is claimed.
+
+### Earlier Preparation Checkpoints
+
+These paragraphs retain earlier observed states and failures; the current checkpoint above supersedes their pending actions.
 
 The resumed coupled remainder corrected the two retired editor/viewer row labels in the existing account assertion to member while retaining their exact canonical User identities and all no-email, lifecycle and Dialog assertions. The full account suite now passes all 85 tests, including both same-member cached-Workspace Remove and Transfer cases, with exit 0 in backlog `evidence/L-GA/equal-p14-account-label-green.log`. The lifecycle fixture remains reserved to the primary-operated Grok's three-import task. Its actual committed diff and raw output must be inspected before normal merge. The committed D53 parent is not yet supplied; it will be normally joined before the remaining Native and final definition-dependent checks. This source remains preparation for the separately approved D53-first and coupled Equal sequence, with no main or gate claim.
 

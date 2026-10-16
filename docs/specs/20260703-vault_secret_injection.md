@@ -218,7 +218,7 @@ An injection receipt should carry:
 - receipt id
 - plan id
 - grant id
-- AgentSession id or capability call id
+- AgentSession id or capability call id; an administrator-only MCP discovery receipt instead requires the exact successful human delivery Audit link defined below
 - backend summary
 - injected at timestamp
 - expires at timestamp
@@ -374,3 +374,9 @@ The existing Server reference/grant scope supports only the bounded shared-MCP a
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
+
+### Administrator MCP Discovery Delivery
+
+The explicit temporary preview under [MCP Catalog Management](20260907-mcp_catalog_management.md#explicit-bounded-discovery-preview) is a Gateway-only human consumer of existing exact-scope MCP grants. It has no Agent, AgentSession, AEP or capability-call identity; these fields remain null. The actual current administrator is the audited actor. Agent/session restrictions cannot match this consumer; an optional capability restriction must equal `mcp.list_tools`. Existing active reference/version, backend identity, expiry, imported-authority and revocation checks remain required before resolution and after discovery. Server preview admits only the Server MCP credential family. An injection plan records this discovery delivery intent, VaultUse records resolution, and a receipt records only actual transport delivery under the existing certainty rules; no record means a tool executed, a preview result was retained, or future execution was authorized. A new explicit preview resolves under current authority again and never reuses an old delivery receipt as permission.
+
+Administrator preview receipts keep AgentSession and capability-call fields null and require their existing `auditEventId` to identify a successful Core `administration.mcp-discovery-preview.delivery` event with an actual user actor, non-null invocation id, exact grant id and exact injection-plan resource. The linked plan has no AEP, capability `mcp.list_tools`, Gateway-only visibility and the exact MCP Gateway backend requirement. Missing, wrong-actor, wrong-plan or wrong-grant Audit refuses receipt creation. This additive attribution branch does not relax Worker receipt lineage or make Audit an injection authority.

@@ -895,6 +895,7 @@ test('one catalog covers the checked App API and public Core projection', async 
     idsWithAccess('deployment admin: implicit local actor or server-admin bearer token'),
     [
       'administration.cleanup-read',
+      'administration.mcp-discovery-preview',
       'administration.server-mcp-create',
       'administration.server-mcp-list',
       'administration.server-mcp-read',
