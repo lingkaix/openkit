@@ -2330,7 +2330,7 @@ function publishNewRecordDirectory(
 }
 
 /**
- * Writes one Turn directory's metadata, item log, and optional event log.
+ * Writes one Turn directory's metadata, item log, optional event log, and exact original inputs before first publication.
  *
  * @param turnRoot Existing Turn directory, either canonical or staged.
  * @param turn Turn record to write.
@@ -2442,6 +2442,7 @@ export function verifyTurnFileInputs(workspaceRoot: string, turn: Turn): void {
       assertCanonicalDirectory(parent);
       parent = dirname(parent);
     }
+    assertCanonicalRegularFile(path);
     if (lstatSync(path).nlink !== 1)
       throw new Error('Turn input original must have one canonical owner.');
     const measured = measureCanonicalFile(path);

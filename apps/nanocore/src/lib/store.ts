@@ -1416,6 +1416,7 @@ export class FsStore {
    * @param workspaceId Workspace to persist.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
+   * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    */
   private persist(
     workspaceId: string,
@@ -1498,6 +1499,7 @@ export class FsStore {
    * @param workspaceRoot Resolved workspace root.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
+   * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
@@ -2752,12 +2754,39 @@ export class FsStore {
       timers: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
-    this.persist(
-      workspaceId,
-      false,
-      new Map(),
-      options.filePayloadPaths ? new Map([[turn.id, options.filePayloadPaths]]) : undefined
-    );
+    try {
+      this.persist(
+        workspaceId,
+        false,
+        new Map(),
+        options.filePayloadPaths ? new Map([[turn.id, options.filePayloadPaths]]) : undefined
+      );
+    } catch (error) {
+      if (options.fileInputs?.length && this.dataRoot) {
+        let unpublished = false;
+        try {
+          const turnRoot = join(
+            this.workspaceRootPath(workspaceId),
+            'threads',
+            threadId,
+            'turns',
+            turn.id
+          );
+          assertCanonicalDirectory(dirname(turnRoot));
+          unpublished = lstatSync(turnRoot, { throwIfNoEntry: false }) === undefined;
+        } catch {
+          // A present or uninspectable canonical owner remains with existing recovery; absence is never inferred from an I/O refusal.
+        }
+        if (unpublished) {
+          this.turns.delete(turn.id);
+          this.turnExecutors.delete(turn.id);
+          this.streams.delete(turn.id);
+          this.turnCaptureCoverage.delete(turn.id);
+          this.threads.set(threadId, thread);
+        }
+      }
+      throw error;
+    }
     this.turnAdmissionHooks?.onAdmitted?.(turn);
     return this.getTurnById(turn.id);
   }

@@ -7,7 +7,11 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
-import { CONVERSATION_FILE_MEDIA_TYPE, ConversationFileBody } from './conversation-file-body.js';
+import {
+  CONVERSATION_FILE_MEDIA_TYPE,
+  ConversationFileBody,
+  MAX_CONVERSATION_FILE_METADATA_BYTES,
+} from './conversation-file-body.js';
 import type { FsStore } from './lib/store.js';
 import type { createConversationService } from './mode-entry-routes.js';
 import { OperationError, projectOperationError } from './operation-error.js';
@@ -123,41 +127,70 @@ export function registerConversationFileRoutes(
         context.get('actor'),
         {
           prepare: async () => {
-            assertAuthorized();
-            const totalBytes = metadata.fileInputs!.reduce(
-              (total, input) => total + input.sizeBytes,
-              0
-            );
-            reservation = dependencies.fileAdmission.reserve({
-              stagingBytes: BigInt(totalBytes),
-              extractionBytes: 0n,
-              derivativeBytes: 0n,
-              publicationBytes: 1_048_576n + BigInt(metadata.fileInputs!.length) * 65_536n,
-            });
-            const submission = new FileByteAdmission();
-            for (const input of metadata.fileInputs!) {
-              staged.push(
-                await stageArtifactPayload({
-                  workspaceRoot,
-                  source: frame.payload(input.sizeBytes),
-                  expectedByteLength: input.sizeBytes,
-                  expectedDigest: input.contentDigest,
-                  reservation,
-                  submission,
-                  signal: context.req.raw.signal,
-                })
+            try {
+              assertAuthorized();
+              const totalBytes = metadata.fileInputs!.reduce(
+                (total, input) => total + input.sizeBytes,
+                0
               );
+              reservation = dependencies.fileAdmission.reserve({
+                stagingBytes: BigInt(totalBytes),
+                extractionBytes: 0n,
+                derivativeBytes: 0n,
+                // Bound new Turn metadata, user Item, Thread preview, their temporary publication overlap, and per-input directories, including empty originals.
+                publicationBytes:
+                  4n * BigInt(MAX_CONVERSATION_FILE_METADATA_BYTES) +
+                  BigInt(metadata.fileInputs!.length) * 65_536n,
+              });
+              const submission = new FileByteAdmission();
+              for (const input of metadata.fileInputs!) {
+                staged.push(
+                  await stageArtifactPayload({
+                    workspaceRoot,
+                    source: frame.payload(input.sizeBytes),
+                    expectedByteLength: input.sizeBytes,
+                    expectedDigest: input.contentDigest,
+                    reservation,
+                    submission,
+                    signal: context.req.raw.signal,
+                  })
+                );
+              }
+              await frame.assertEnd();
+              assertAuthorized();
+              reservation.assertAvailable();
+              return staged.map((payload) => payload.path);
+            } catch (error) {
+              cleanupUnproved ||= error instanceof ArtifactPayloadCleanupError;
+              // The existing conversation owner preserves TurnStartValidationError; classify byte admission before crossing that boundary.
+              if (context.req.raw.signal.aborted)
+                throw new TurnStartValidationError(
+                  'file_submission_aborted',
+                  'Conversation file transfer was aborted.',
+                  499
+                );
+              if (error instanceof OperationError)
+                throw new TurnStartValidationError(error.code, error.message, error.status);
+              if (error instanceof ArtifactPayloadIntegrityError)
+                throw new TurnStartValidationError(error.code, error.message, 400);
+              if (error instanceof FileAdmissionError)
+                throw new TurnStartValidationError(
+                  error.code,
+                  error.message,
+                  error.code === 'file_too_large'
+                    ? 413
+                    : error.code === 'invalid_file_size'
+                      ? 400
+                      : 507
+                );
+              throw error;
             }
-            await frame.assertEnd();
-            assertAuthorized();
-            reservation.assertAvailable();
-            return staged.map((payload) => payload.path);
           },
         }
       );
       return context.json(result.body, result.status);
     } catch (caught) {
-      cleanupUnproved = caught instanceof ArtifactPayloadCleanupError;
+      cleanupUnproved ||= caught instanceof ArtifactPayloadCleanupError;
       let error: unknown = caught;
       if (context.req.raw.signal.aborted)
         error = new OperationError(
@@ -165,22 +198,8 @@ export function registerConversationFileRoutes(
           'Conversation file transfer was aborted.',
           499
         );
-      if (
-        error instanceof TurnStartValidationError ||
-        error instanceof IdempotencyKeyConflictError ||
-        error instanceof ArtifactPayloadIntegrityError
-      )
-        error = new OperationError(
-          error.code,
-          error.message,
-          error instanceof ArtifactPayloadIntegrityError ? 400 : error.status
-        );
-      if (error instanceof FileAdmissionError)
-        error = new OperationError(
-          error.code,
-          error.message,
-          error.code === 'file_too_large' ? 413 : error.code === 'invalid_file_size' ? 400 : 507
-        );
+      if (error instanceof TurnStartValidationError || error instanceof IdempotencyKeyConflictError)
+        error = new OperationError(error.code, error.message, error.status);
       const projected = projectOperationError(error);
       if (!projected) throw error;
       const { status, ...payload } = projected;

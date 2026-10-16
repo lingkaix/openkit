@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import fs, {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +31,7 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  syncBuiltinESMExports();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
@@ -63,6 +72,52 @@ function frame(input: unknown, bytes: readonly Uint8Array[]): Blob {
 }
 
 describe('Turn-owned conversation originals', () => {
+  it('exposes no input inventory after a proved unpublished Turn failure and permits the exact retry', async () => {
+    const state = fixture();
+    const before = state.store.getThread(state.workspaceId, state.thread.id);
+    const bytes = new Uint8Array([0xff, 0]);
+    const input = {
+      workspaceId: state.workspaceId,
+      threadId: state.thread.id,
+      requestId: randomUUID(),
+      input: 'help',
+      targetRef: 'internal-role:assistant',
+      artifactRefs: [],
+      fileInputs: [metadata(bytes)],
+    };
+    const rename = fs.renameSync;
+    const fault = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (
+        String(target).includes(`/threads/${state.thread.id}/turns/`) &&
+        /\/turns\/[^/]+$/.test(String(target))
+      )
+        throw new Error('Injected Turn publication failure.');
+      rename(source, target);
+    });
+    syncBuiltinESMExports();
+    const submit = () =>
+      state.app.request('/api/app/operations/conversation.submit', {
+        method: 'POST',
+        headers: {
+          'content-type': CONVERSATION_FILE_MEDIA_TYPE,
+          'x-openkit-request-id': input.requestId,
+        },
+        body: frame(input, [bytes]),
+      });
+    const failed = await submit();
+    expect(failed.status).toBe(500);
+    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+    expect(state.store.getThread(state.workspaceId, state.thread.id)).toEqual(before);
+    expect(
+      state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
+    ).toBe(false);
+    fault.mockRestore();
+    syncBuiltinESMExports();
+    const retried = await submit();
+    expect(retried.status, await retried.clone().text()).toBe(202);
+    expect((await retried.json()).turn.fileInputs).toEqual(input.fileInputs);
+  });
+
   it('publishes originals before Assistant execution and sends no original bytes into its assembly', async () => {
     const state = fixture();
     const bytes = Buffer.from('UNIQUE_ORIGINAL_CONTENT_MUST_STAY_OUT_OF_MODEL_CONTEXT');
@@ -341,8 +396,26 @@ describe('Turn-owned conversation originals', () => {
     });
     expect(replay.status).toBe(202);
     expect((await replay.json()).turn.id).toBe(accepted.turn.id);
+    const fileReplay = await state.app.request('/api/app/operations/conversation.submit', {
+      method: 'POST',
+      headers: {
+        'content-type': CONVERSATION_FILE_MEDIA_TYPE,
+        'x-openkit-request-id': input.requestId,
+      },
+      body: frame(input, []),
+    });
+    expect(fileReplay.status).toBe(202);
+    expect((await fileReplay.json()).turn.id).toBe(accepted.turn.id);
+    const turnPath = join(root, 'threads', state.thread.id, 'turns', accepted.turn.id, 'turn.json');
+    const retained = JSON.parse(readFileSync(turnPath, 'utf8'));
+    retained.fileInputs[1].futureAnnotation = 'Retained descriptive field';
+    writeFileSync(turnPath, JSON.stringify(retained));
     const restarted = new FsStore({ dataRoot: state.dataRoot });
     expect(restarted.getTurnById(accepted.turn.id).fileInputs).toEqual(input.fileInputs);
+    restarted.updateThread(state.workspaceId, state.thread.id, { name: 'Retained inputs' });
+    expect(JSON.parse(readFileSync(turnPath, 'utf8')).fileInputs[1].futureAnnotation).toBe(
+      'Retained descriptive field'
+    );
     const changed = { ...input, fileInputs: [input.fileInputs[1], input.fileInputs[0]] };
     const conflict = await state.app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
