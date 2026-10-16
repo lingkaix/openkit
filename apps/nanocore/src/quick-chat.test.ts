@@ -2408,6 +2408,13 @@ describe('quick chat app API', () => {
     const { goal } = await goalResponse.json();
     const work = fixture.store.getThread(fixture.selectors.workspaceId, goal.threadId);
     expect(work.visibility).toBe('workspace');
+    // Goal creation admits its own Coordinator Turn; only the subsequent ordinary Assistant dispatch is forbidden.
+    await vi.waitFor(() => {
+      const turns = fixture.store.listThreadTurns(work.workspaceId, work.id);
+      expect(turns.length).toBeGreaterThan(0);
+      expect(turns.every((turn) => turn.status === 'completed')).toBe(true);
+    });
+    const beforeProviderCalls = createResponses.mock.calls.length;
     const beforeTurns = fixture.store.listThreadTurns(work.workspaceId, work.id);
     const beforeItems = fixture.store.listThreadItems(work.workspaceId, work.id);
     const response = await fixture.app.request(
@@ -2422,7 +2429,7 @@ describe('quick chat app API', () => {
     );
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ code: 'assistant_timeline_required' });
-    expect(createResponses).not.toHaveBeenCalled();
+    expect(createResponses).toHaveBeenCalledTimes(beforeProviderCalls);
     expect(fixture.store.listThreadTurns(work.workspaceId, work.id)).toEqual(beforeTurns);
     expect(fixture.store.listThreadItems(work.workspaceId, work.id)).toEqual(beforeItems);
     expect(fixture.store.getThread(work.workspaceId, work.id)).toEqual(work);
