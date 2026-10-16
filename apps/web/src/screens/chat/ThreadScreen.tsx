@@ -160,7 +160,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     hasCandidateInput &&
     !unfinishedSubmission &&
     candidateContextMatches &&
-    (candidate.isPending || candidate.isFetching);
+    candidate.isPending;
   const candidateUnavailable =
     hasCandidateInput &&
     !unfinishedSubmission &&
@@ -579,6 +579,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   ? {
                       targetRef: submission.variables?.draft.targetRef,
                       logicalModelId: submission.variables?.draft.logicalModelId,
+                      ...candidateDraft,
                     }
                   : (submission?.variables?.draft ?? candidateDraft)
               }
@@ -611,7 +612,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                     ? "Couldn't load conversation agents."
                     : candidateUnavailable
                       ? 'The selected candidate is unavailable or has changed.'
-                      : undefined
+                      : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
+                        ? 'Checking the selected candidate.'
+                        : undefined
               }
               onSubmit={submitConversation}
             />}
