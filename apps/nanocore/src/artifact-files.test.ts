@@ -229,7 +229,10 @@ describe('exact Artifact file import and download', () => {
       sandboxSummary: null,
       health: { status: 'ready', message: null, checkedAt: new Date().toISOString() },
     });
-    const thread = store.createThread(workspace.id, 'File Review');
+    const thread = store.createThread(workspace.id, 'File Review', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    });
     const turn = store.createTurn(workspace.id, thread.id, 'Produce original', {
       kind: 'user',
       id: LOCAL_USER_ID,
