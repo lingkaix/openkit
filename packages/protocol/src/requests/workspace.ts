@@ -64,5 +64,10 @@ export const DeleteKnowledgeEntryRequestSchema = z.object({
  */
 export const ListKnowledgeEntriesResponseSchema = z.object({
   notebookRevision: z.string().min(1),
-  items: z.array(KnowledgeEntrySchema),
+  items: z.array(
+    KnowledgeEntrySchema.extend({
+      /** Exact canonical page bytes at the response notebookRevision, for confirmed removal. */
+      contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    })
+  ),
 });

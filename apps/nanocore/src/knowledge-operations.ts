@@ -1476,9 +1476,10 @@ export function createKnowledgeOperationImplementations(
         });
         return ListKnowledgeEntriesResponseSchema.parse({
           notebookRevision: snapshot.notebookRevision,
-          items: snapshot.pages.map(({ path, id, content }) =>
-            parseOwnedKnowledgeEntry(path, id, content)
-          ),
+          items: snapshot.pages.map(({ path, id, content }) => ({
+            ...parseOwnedKnowledgeEntry(path, id, content),
+            contentDigest: `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`,
+          })),
         });
       } catch (error) {
         throw commandFailure(error, 'not_found');

@@ -241,6 +241,7 @@ function workspaceWorker(overrides: Record<string, unknown> = {}) {
 }
 
 const KNOWLEDGE_ENTRY = {
+  contentDigest: `sha256:${'e'.repeat(64)}`,
   id: 'mem1',
   kind: 'preference',
   title: 'Write in English; keep answers concise',
@@ -618,6 +619,9 @@ const KNOWLEDGE_PROPOSAL_ROW = {
   source: {
     type: 'knowledge',
     knowledgeProposalId: 'kp_exact',
+    proposalDigest: `sha256:${'a'.repeat(64)}`,
+    baseRevision: 'saved-base-commit',
+    candidateRevision: 'saved-candidate-commit',
     workspaceId: 'ws_1',
     status: 'pending',
   },
@@ -3540,6 +3544,8 @@ describe('Knowledge (board 14)', () => {
         ...{
           requestId: expect.any(String),
           baseRevision: 'notebook-fixture-revision',
+          expectedContentDigest: KNOWLEDGE_ENTRY.contentDigest,
+          confirmRemoval: true,
         },
       })
     );
@@ -3669,6 +3675,7 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValue(operation === 'delete' ? undefined : laterEntry);
     const listKnowledge = vi.fn().mockImplementation(() =>
       Promise.resolve({
+        notebookRevision: 'notebook-fixture-revision',
         items:
           operation === 'delete'
             ? mutation.mock.calls.length >= 2
@@ -4046,6 +4053,9 @@ describe('Knowledge (board 14)', () => {
       expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
         workspaceId: 'ws_1',
         proposalId: 'kp_exact',
+        proposalDigest: KNOWLEDGE_PROPOSAL_ROW.source.proposalDigest,
+        baseRevision: KNOWLEDGE_PROPOSAL_ROW.source.baseRevision,
+        candidateRevision: KNOWLEDGE_PROPOSAL_ROW.source.candidateRevision,
         ...{
           decision,
           requestId: expect.any(String),

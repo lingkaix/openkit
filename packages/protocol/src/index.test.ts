@@ -297,6 +297,7 @@ describe('protocol schemas', () => {
       notebookRevision: 'opaque-retained-notebook-revision',
       items: [
         {
+          contentDigest: `sha256:${'a'.repeat(64)}`,
           id: 'kn_demo',
           kind: 'preference',
           title: 'Preference',

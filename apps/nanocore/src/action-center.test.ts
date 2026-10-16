@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION } from './knowledge/okf.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
@@ -118,40 +118,37 @@ function createKnowledgeProposalFixture(
   label: string,
   rationale: string
 ) {
-  const source = store.createKnowledgeEntry(workspaceId, {
-    kind: 'project-context',
-    title: `${label} evidence`,
-    content: rationale,
-    sourceReferences: [],
-  });
+  const source = store.getWorkspaceResources(workspaceId).knowledge[0]!;
   const sourceReference = `knowledge:${source.id}@sha256:${createHash('sha256')
     .update(serializeUserAuthoredKnowledgePage(source, { kind: 'workspace', workspaceId }), 'utf8')
     .digest('hex')}`;
   const knowledgePageId = `action-center/${label}`;
-  const canonicalPageBytes = [
-    '---',
-    'type: "KnowledgePage"',
-    `title: ${JSON.stringify(`Review ${label}`)}`,
-    'openkit_entry_kind: "project-context"',
-    `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
-    `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
-    'openkit_status: "active"',
-    'status: "stable"',
-    'scope: "workspace"',
-    `source_refs: ${JSON.stringify([sourceReference])}`,
-    'review_state: "accepted"',
-    'sensitivity: "normal"',
-    'freshness: "current"',
-    `created_at: ${JSON.stringify(timestamp)}`,
-    `updated_at: ${JSON.stringify(timestamp)}`,
-    '---',
-    rationale,
-    '',
-  ].join('\n');
+  const canonicalPageBytes = serializeUserAuthoredKnowledgePage(
+    {
+      id: knowledgePageId,
+      kind: 'project-context',
+      title: `Review ${label}`,
+      content: rationale,
+      sourceReferences: [sourceReference],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    { kind: 'workspace', workspaceId }
+  ).replace('review_state: "user-authored"', 'review_state: "accepted"');
+  const baseRevision = new KnowledgeNotebook({
+    repositoryPath: join(
+      store.getDataRoot()!,
+      'workspaces',
+      workspaceId,
+      'knowledge',
+      'notebook.git'
+    ),
+  }).publishedRevision();
   const requestSuffix = createHash('sha256').update(label, 'utf8').digest('hex').slice(0, 12);
 
   return store.createKnowledgeProposal({
     workspaceId,
+    baseRevision,
     requestId: `00000000-0000-4000-8000-${requestSuffix}`,
     knowledgePageId,
     canonicalPageBytes,
@@ -801,8 +798,18 @@ describe('action center app API', () => {
         );
         expect(response.status, testCase.name).toBe(testCase.status);
         if (response.status === 200) {
-          const visibleIds = ListHumanAttentionResponseSchema.parse(await response.json())
-            .items.map((row) => row.id)
+          const attention = ListHumanAttentionResponseSchema.parse(await response.json());
+          const proposalRow = attention.items.find(
+            (row) => row.id === `knowledge:${knowledgeProposal.id}`
+          );
+          if (proposalRow)
+            expect(proposalRow.source).toMatchObject({
+              proposalDigest: store.knowledgeProposalDigest('ws_demo', knowledgeProposal.id),
+              baseRevision: knowledgeProposal.baseRevision,
+              candidateRevision: knowledgeProposal.candidateRevision,
+            });
+          const visibleIds = attention.items
+            .map((row) => row.id)
             .filter((rowId) => scopedRowIds.has(rowId));
           expect(visibleIds, testCase.name).toEqual(testCase.visibleIds);
         }

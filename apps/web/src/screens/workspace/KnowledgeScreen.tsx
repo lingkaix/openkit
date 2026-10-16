@@ -710,6 +710,8 @@ export function KnowledgeScreen() {
                                         input: {
                                           requestId: createRequestId(),
                                           baseRevision: knowledge.data.notebookRevision,
+                                          expectedContentDigest: entry.contentDigest,
+                                          confirmRemoval: true,
                                         },
                                       });
                                     }}

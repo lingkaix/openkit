@@ -854,6 +854,9 @@ function knowledgeReviewRows(store: FsStore, workspaceId: string): HumanAttentio
         source: {
           type: 'knowledge',
           knowledgeProposalId: proposal.id,
+          proposalDigest: store.knowledgeProposalDigest(workspaceId, proposal.id),
+          baseRevision: proposal.baseRevision,
+          candidateRevision: proposal.candidateRevision,
           workspaceId,
           status,
         },

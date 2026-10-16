@@ -193,6 +193,9 @@ export const KnowledgeHumanAttentionSourceSchema = z
   .object({
     type: z.literal('knowledge'),
     knowledgeProposalId: z.string().min(1),
+    proposalDigest: KnowledgeProposalContentDigestSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
     workspaceId: z.string().min(1),
     status: z.string().min(1),
   })
