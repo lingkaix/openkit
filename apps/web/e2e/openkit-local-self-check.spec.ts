@@ -1,4 +1,4 @@
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import { SubmitConversationResponseSchema, ThreadDashboardResponseSchema } from '@openkit/app-api-schemas';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -236,6 +236,25 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
 }
 
+/** Reads canonical Turn ids before this isolated fixture answers a pending question. */
+async function threadTurnIds(threadId: string): Promise<Set<string>> {
+  const dashboard = ThreadDashboardResponseSchema.parse(await getJson('/api/app/operations/thread.dashboard', {
+    workspaceId: 'ws_demo', threadId,
+  }));
+  return new Set(dashboard.turns.map((turn) => turn.id));
+}
+
+/** The answer acknowledgement resolves the question before its separate outcome-delivery Turn finishes. Wait for that real Turn before restarting Core or reading its outputs. */
+async function waitForAnswerTurn(threadId: string, priorTurnIds: ReadonlySet<string>): Promise<void> {
+  await expect.poll(async () => {
+    const dashboard = ThreadDashboardResponseSchema.parse(await getJson('/api/app/operations/thread.dashboard', {
+      workspaceId: 'ws_demo', threadId,
+    }));
+    const delivered = dashboard.turns.filter((turn) => !priorTurnIds.has(turn.id));
+    return delivered.length === 1 && delivered[0]!.status === 'completed';
+  }, { timeout: 15_000, message: 'The answer must complete its separate canonical outcome-delivery Turn.' }).toBe(true);
+}
+
 /**
  * Proves the fixed visible Plane 1 handoff, restart, proposal, apply, and conflict sequence.
  *
@@ -342,6 +361,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
 
   await page.goto(`${stack.webUrl}/tasks/ws_demo/${threadId}`);
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
+  const beforeAnswer = await threadTurnIds(threadId);
   const answerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const answer = await answerResponse;
@@ -352,10 +372,12 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByText('You answered').last()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
+  await waitForAnswerTurn(threadId, beforeAnswer);
   await stack.restartCore();
   await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
+  const beforeSecondAnswer = await threadTurnIds(threadId);
   const secondAnswerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const secondAnswer = await secondAnswerResponse;
@@ -365,6 +387,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).toBe(true);
   await expect(page.getByText('You answered').last()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
+
+  await waitForAnswerTurn(threadId, beforeSecondAnswer);
 
   const artifacts = (
     await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
