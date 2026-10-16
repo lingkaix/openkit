@@ -1726,6 +1726,7 @@ describe('app api schemas', () => {
         workspaceId: 'ws_demo',
         exportCreatedAt: timestamp,
         exportFormatVersion: 2,
+        knowledgeNotebookRevision: 'a'.repeat(40),
         contentInventory: [
           {
             path: 'records/workspace-record.json',
@@ -1743,6 +1744,7 @@ describe('app api schemas', () => {
       exportId: 'wsexp_demo',
       workspaceId: 'ws_demo',
       fileCount: 1,
+      manifest: { knowledgeNotebookRevision: 'a'.repeat(40) },
     });
 
     expect(() =>

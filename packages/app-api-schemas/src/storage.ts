@@ -113,6 +113,7 @@ export const WorkspaceExportManifestSchema = z
     workspaceId: z.string().min(1),
     exportCreatedAt: z.string().datetime(),
     exportFormatVersion: z.literal(WORKSPACE_EXPORT_FORMAT_VERSION),
+    knowledgeNotebookRevision: z.string().min(1).optional(),
     contentInventory: z.array(WorkspaceExportInventoryEntrySchema),
   })
   .strict();
