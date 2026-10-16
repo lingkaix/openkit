@@ -38,7 +38,11 @@ afterEach(() => {
 });
 
 /** Runs the real worker route with a controlled Provider boundary and real capability storage. */
-function fixture(configured = true, nativeStop = true) {
+function fixture(
+  configured = true,
+  requestKind?: 'turn' | 'prewarm' | 'compaction',
+  nativeStop = true
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-inference-diagnostics-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -153,6 +157,16 @@ function fixture(configured = true, nativeStop = true) {
         body: JSON.stringify({
           model: 'worker-model',
           stream,
+          ...(requestKind
+            ? {
+                openkit_runtime_hint: {
+                  runtimeFamily: 'codex',
+                  nativeSessionId: 'native-session',
+                  nativeThreadId: 'native-thread',
+                  requestKind,
+                },
+              }
+            : {}),
           ...(endpoint === 'responses'
             ? { input: 'prompt-canary' }
             : { messages: [{ role: 'user', content: 'prompt-canary' }] }),
@@ -282,6 +296,35 @@ it.each([
   expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
 });
 
+it('retains observed HTTP rejection when the stock Responses stream loses status', async () => {
+  const f = fixture();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = Object.assign(new Error('exception-canary'), {
+    failure: { kind: 'unknown', settled: false },
+  });
+  f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+    context.transport?.onProviderHandoff?.();
+    context.transport?.onProviderHttpRejection?.(401);
+    throw error;
+  });
+  const response = await f.post(true);
+  expect(response.status).toBe(400);
+  expect(await response.text()).not.toContain('canary');
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
+  expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'worker_inference_failed' }]);
+  expect(warn).toHaveBeenCalledTimes(1);
+  const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
+  expect(diagnostic).toMatchObject({
+    failureKind: 'unknown',
+    httpStatus: 401,
+    phase: 'dispatch',
+    outputBegan: false,
+    attempt: 0,
+  });
+  expect(JSON.stringify(diagnostic)).not.toContain('canary');
+  expect(error.failure).toEqual({ kind: 'unknown', settled: false });
+});
+
 it('keeps terminal SSE and durable failure when logging throws', async () => {
   const f = fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
@@ -299,6 +342,35 @@ it('keeps terminal SSE and durable failure when logging throws', async () => {
   expect(f.calls()).toMatchObject([
     { status: 'failed', error_code: 'worker_inference_stream_failed' },
   ]);
+});
+
+it('clears observed rejection before a retry with no HTTP evidence', async () => {
+  const f = fixture();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.useFakeTimers();
+  f.dispatch
+    .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+      context.transport?.onProviderHttpRejection?.(429);
+      throw Object.assign(new Error('first-exception-canary'), {
+        failure: { kind: 'rate_limited', settled: true, status: 429 },
+      });
+    })
+    .mockImplementationOnce(async () => {
+      throw Object.assign(new Error('second-exception-canary'), {
+        failure: { kind: 'unknown', settled: false },
+      });
+    });
+  const pending = f.post(false);
+  await vi.runAllTimersAsync();
+  const response = await pending;
+  expect(response.status).toBe(400);
+  expect(f.dispatch).toHaveBeenCalledTimes(2);
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(warn.mock.calls[0]![0])).toMatchObject({
+    failureKind: 'unknown',
+    attempt: 1,
+  });
+  expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
 });
 
 it('logs selection failure without inventing an attempt or upstream status', async () => {
@@ -541,7 +613,62 @@ it.each([
 });
 
 it('blocks Provider access before execution when native stop coverage is absent', async () => {
-  const f = fixture(true, false);
+  const f = fixture(true, undefined, false);
   expect((await f.post(false)).status).toBe(503);
   expect(f.dispatch).not.toHaveBeenCalled();
+});
+
+it('maps a confirmed pre-output native compaction failure to the owned envelope', async () => {
+  const f = fixture(true, 'compaction');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockRejectedValue(
+    Object.assign(new Error('private-provider-canary'), {
+      failure: { kind: 'unknown', settled: false },
+    })
+  );
+  const response = await f.post(true);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'context_compaction_unavailable',
+      message: 'Context compaction is unavailable.',
+      type: 'provider_error',
+    },
+  });
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it('maps unavailable routes for confirmed compaction without inventing a Provider attempt', async () => {
+  const f = fixture(false, 'compaction');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const response = await f.post(false);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'context_compaction_unavailable',
+      message: 'Context compaction is unavailable.',
+      type: 'provider_error',
+    },
+  });
+  expect(f.dispatch).not.toHaveBeenCalled();
+});
+
+it('keeps an indistinguishable ordinary native failure in its existing category', async () => {
+  const f = fixture(true, 'turn');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockRejectedValue(
+    Object.assign(new Error('private-provider-canary'), {
+      failure: { kind: 'unknown', settled: false },
+    })
+  );
+  const response = await f.post(true);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'provider_error',
+      message: 'Provider request failed.',
+      type: 'provider_error',
+    },
+  });
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
 });
