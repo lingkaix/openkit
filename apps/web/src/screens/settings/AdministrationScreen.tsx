@@ -232,7 +232,7 @@ export function AdministrationScreen() {
     retry: false,
   });
   // Cached private facts do not establish this mount's authority. Keep command owners mounted while hidden.
-  const candidateHidden = !access.isFetchedAfterMount || !access.isSuccess || !administrationThread.isFetchedAfterMount || !administrationThread.isSuccess || [administrationItems.error, threadCandidates.error].some(isAccessDenied);
+  const candidateHidden = !access.isFetchedAfterMount || !access.isSuccess || !administrationThread.isFetchedAfterMount || !administrationThread.isSuccess || [access.failureReason, administrationThread.failureReason, administrationItems.error, administrationItems.failureReason, threadCandidates.error, threadCandidates.failureReason].some(isAccessDenied);
   const candidateBlocked = connection.failed || !currentAccess || !currentParent || !administrationItems.isSuccess || administrationItems.fetchStatus !== 'idle' || (artifactReferences.length > 0 && (!threadCandidates.isSuccess || threadCandidates.fetchStatus !== 'idle'));
   const conversation = useMutation({
     mutationFn: (request: { input: string; requestId: string; threadId?: string }) =>
@@ -283,7 +283,8 @@ export function AdministrationScreen() {
         />
       ) : null}
       {access.data !== undefined && access.isFetchedAfterMount ? (
-        <div hidden={!access.isSuccess} className={access.isSuccess ? 'contents' : undefined}>
+        <>
+          {currentAccess ? <>
           <AdministratorWorkspaces />
           <section className="flex flex-col gap-3" aria-labelledby="administration-conversation">
             <div>
@@ -348,6 +349,7 @@ export function AdministrationScreen() {
               </div>
             </form>
           </section>
+          </> : null}
 
           {threadCandidates.data?.configuration && quickChat && threadId ? (
             <AdministrationConfigurationReview
@@ -362,6 +364,7 @@ export function AdministrationScreen() {
 
           <WorkerEnvironmentSection
             key={workspaceId ?? 'no-workspace'}
+            administrationVisible={currentAccess}
             administrationThreadId={threadId}
             administrationWorkspaceId={quickChat?.id ?? null}
             candidate={threadCandidates.data?.environment ?? null}
@@ -374,7 +377,7 @@ export function AdministrationScreen() {
             workspaceId={workspaceId}
             workspaceName={workspace?.name ?? null}
           />
-        </div>
+        </>
       ) : null}
     </Page>
   );
@@ -382,6 +385,7 @@ export function AdministrationScreen() {
 
 /** Target-scoped environment state; changing the global Workspace invalidates every pending review. */
 function WorkerEnvironmentSection({
+  administrationVisible,
   administrationThreadId,
   administrationWorkspaceId,
   candidate,
@@ -394,6 +398,7 @@ function WorkerEnvironmentSection({
   workspaceId,
   workspaceName,
 }: {
+  administrationVisible: boolean;
   administrationThreadId: string | null;
   administrationWorkspaceId: string | null;
   candidate: EnvironmentCandidate | null;
@@ -475,7 +480,7 @@ function WorkerEnvironmentSection({
 
   return (
     <section className="flex flex-col gap-3" aria-labelledby="worker-environments">
-      <div>
+      {administrationVisible ? <div>
         <h2 id="worker-environments" className="text-lg font-extrabold text-fg-strong">
           Worker environments
         </h2>
@@ -484,8 +489,9 @@ function WorkerEnvironmentSection({
           The global Workspace selection controls this list. Retained files remain private execution
           storage and are not a browsable volume catalog.
         </p>
-      </div>
+      </div> : null}
       <EnvironmentPreparation
+        administrationVisible={administrationVisible}
         administrationThreadId={administrationThreadId}
         administrationWorkspaceId={administrationWorkspaceId}
         candidate={candidate}
@@ -497,6 +503,7 @@ function WorkerEnvironmentSection({
         onRetryCandidate={onRetryCandidate}
         workspaceId={workspaceId}
       />
+      {administrationVisible ? <>
       {!workspaceId ? (
         <EmptyState
           icon="folder"
@@ -535,8 +542,8 @@ function WorkerEnvironmentSection({
                       status.data?.storage.state !== 'unknown'
                     ))
                 }
-                onInspect={() => status.mutate(environment.storageRef)}
-                onPurge={() => purge.mutate({ environment, requestId: createRequestId() })}
+                onInspect={() => { if (administrationVisible) status.mutate(environment.storageRef); }}
+                onPurge={() => { if (administrationVisible) purge.mutate({ environment, requestId: createRequestId() }); }}
               />
             ))}
           </Card>
@@ -557,12 +564,14 @@ function WorkerEnvironmentSection({
       {purge.isError ? <ErrorBanner message="Couldn't delete that environment." /> : null}
       {purge.data ? <PurgeResult outcome={purge.data.outcome} /> : null}
       {status.data ? <EnvironmentStatus status={status.data} /> : null}
+      </> : null}
     </section>
   );
 }
 
 /** Direct preparation and result-only recovery rooted in one private administration Thread. */
 function EnvironmentPreparation({
+  administrationVisible,
   administrationThreadId,
   administrationWorkspaceId,
   candidate,
@@ -574,6 +583,7 @@ function EnvironmentPreparation({
   onRetryCandidate,
   workspaceId,
 }: {
+  administrationVisible: boolean;
   administrationThreadId: string | null;
   administrationWorkspaceId: string | null;
   candidate: EnvironmentCandidate | null;
@@ -727,6 +737,7 @@ function EnvironmentPreparation({
 
   return (
     <Card className="flex flex-col gap-3">
+      {administrationVisible ? <>
       <div>
         <h3 className="font-bold text-fg-strong">Prepare an Agent environment</h3>
         <p className="mt-1 text-xs text-fg-muted">
@@ -841,9 +852,10 @@ function EnvironmentPreparation({
           {prepare.isPending ? 'Preparing…' : 'Prepare candidate'}
         </Button>
       </div>
-      {candidateLoading ? (
+      </> : null}
+      {administrationVisible && candidateLoading ? (
         <Skeleton lines={5} />
-      ) : candidateError ? (
+      ) : administrationVisible && candidateError ? (
         <ErrorBanner
           message="Couldn't inspect the prepared candidate."
           onRetry={onRetryCandidate}
