@@ -105,6 +105,7 @@ export function ThreadStream({
   const focusedElement = useRef<HTMLDivElement>(null);
   const located = useRef<string | null>(null);
   const focusedDashboard =
+    focusTurnId &&
     !live.isError &&
     dashboard?.thread.id === threadId &&
     dashboard.thread.workspaceId === workspaceId
