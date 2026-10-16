@@ -33,6 +33,9 @@ type Fields = {
   prompt: string;
   threadId: string;
   interval: string;
+  cadence: 'fixed' | 'monthly';
+  monthlyDay: string;
+  monthlyTime: string;
   agentId: string;
   profileId: string;
   modelId: string;
@@ -42,12 +45,15 @@ const emptyFields: Fields = {
   prompt: '',
   threadId: '',
   interval: '60',
+  cadence: 'fixed',
+  monthlyDay: '1',
+  monthlyTime: '00:00:00',
   agentId: '',
   profileId: '',
   modelId: '',
 };
 
-/** Live fixed-interval controls, isolated by the currently admitted Workspace. */
+/** Live admitted recurrence controls, isolated by the current Workspace. */
 export function AutomationsScreen() {
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId();
@@ -97,7 +103,7 @@ function WorkspaceAutomations({ workspaceId }: { workspaceId: string }) {
       <div className="flex min-w-0 flex-1 flex-col gap-5">
         <PageHeader
           title="Automations"
-          subtitle="Fixed intervals in this Workspace. Admission, queue status, and execution are separate outcomes."
+          subtitle="Fixed intervals and monthly UTC schedules in this Workspace. Admission, queue status, and execution are separate outcomes."
         />
         <div className="flex flex-wrap items-center gap-3">
           <Button
@@ -124,7 +130,7 @@ function WorkspaceAutomations({ workspaceId }: { workspaceId: string }) {
           <EmptyState
             icon="automations"
             title="No automations"
-            hint="Create a paused fixed-interval schedule for an existing Thread."
+            hint="Create a paused schedule for an existing Thread."
           />
         ) : (
           listed.data.map((record) => (
@@ -231,7 +237,7 @@ function AutomationRow({
         <div className="min-w-0">
           <h2 className="break-words text-sm font-bold text-fg-strong">{record.name}</h2>
           <p className="text-xs text-fg-muted">
-            Every {record.intervalSeconds} seconds · revision {record.revision}
+            {cadenceLabel(record)} · revision {record.revision}
           </p>
           <p className="break-words text-xs text-fg-muted">
             Responsible user: {record.responsibleUserId}
@@ -465,7 +471,7 @@ function AutomationRow({
   );
 }
 
-/** Shared create/edit fields use the existing React Aria primitives and fixed interval units. */
+/** Shared create/edit fields expose only the two admitted cadence shapes. */
 function DefinitionFields({
   fields,
   setFields,
@@ -479,7 +485,8 @@ function DefinitionFields({
   disabled: boolean;
   editing?: boolean;
 }) {
-  const change = (key: keyof Fields, value: string) => setFields({ ...fields, [key]: value });
+  const change = <K extends keyof Fields>(key: K, value: Fields[K]) =>
+    setFields({ ...fields, [key]: value });
   return (
     <>
       <TextField
@@ -499,14 +506,46 @@ function DefinitionFields({
         </Label>
         <TextArea className="min-h-24 rounded-ok border border-border bg-card px-3 py-2 text-sm text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
       </AriaTextField>
-      <TextField
-        label={editing ? 'Edit interval (seconds)' : 'Interval (seconds)'}
-        value={fields.interval}
-        onChange={(v) => change('interval', v)}
-        inputMode="numeric"
-        description="A whole number of at least 5 seconds."
+      <Select
+        label={editing ? 'Edit cadence' : 'Cadence'}
+        items={[
+          { id: 'fixed', label: 'Fixed interval' },
+          { id: 'monthly', label: 'Monthly UTC' },
+        ]}
+        selectedKey={fields.cadence}
+        onSelectionChange={(key) => {
+          if (key === 'fixed' || key === 'monthly') change('cadence', key);
+        }}
         isDisabled={disabled}
       />
+      {fields.cadence === 'monthly' ? (
+        <>
+          <TextField
+            label={editing ? 'Edit day of month (UTC)' : 'Day of month (UTC)'}
+            value={fields.monthlyDay}
+            onChange={(v) => change('monthlyDay', v)}
+            inputMode="numeric"
+            description="A whole day from 1 to 28."
+            isDisabled={disabled}
+          />
+          <TextField
+            label={editing ? 'Edit time (UTC)' : 'Time (UTC)'}
+            value={fields.monthlyTime}
+            onChange={(v) => change('monthlyTime', v)}
+            description="UTC time as HH:MM:SS, from 00:00:00 to 23:59:59."
+            isDisabled={disabled}
+          />
+        </>
+      ) : (
+        <TextField
+          label={editing ? 'Edit interval (seconds)' : 'Interval (seconds)'}
+          value={fields.interval}
+          onChange={(v) => change('interval', v)}
+          inputMode="numeric"
+          description="A whole number of at least 5 seconds."
+          isDisabled={disabled}
+        />
+      )}
       <Select
         label={editing ? 'Edit target Thread' : 'Target Thread'}
         items={targets}
@@ -593,7 +632,7 @@ function HistoryRow({ item, onRefresh }: { item: HistoryItem; onRefresh: () => P
     return (
       <div className="border-t border-border pt-3 text-xs text-fg-muted">
         <p>
-          {item.record.count} expired instants · every {item.record.intervalSeconds} seconds
+          {item.record.count} expired instants · {cadenceLabel(item.record)}
         </p>
         <p className="break-words">
           {item.record.firstScheduledAt} through {item.record.lastScheduledAt}
@@ -702,7 +741,17 @@ function authoredFields(fields: Fields) {
     name: fields.name.trim(),
     prompt: fields.prompt,
     threadId: fields.threadId,
-    intervalSeconds: Number(fields.interval),
+    ...(fields.cadence === 'monthly'
+      ? {
+          monthlyUtc: {
+            zone: 'UTC' as const,
+            dayOfMonth: Number(fields.monthlyDay),
+            hour: Number(fields.monthlyTime.slice(0, 2)),
+            minute: Number(fields.monthlyTime.slice(3, 5)),
+            second: Number(fields.monthlyTime.slice(6, 8)),
+          },
+        }
+      : { intervalSeconds: Number(fields.interval) }),
     ...(fields.agentId.trim() ? { agentId: fields.agentId.trim() } : {}),
     ...(fields.profileId.trim() ? { profileId: fields.profileId.trim() } : {}),
     ...(fields.modelId.trim() ? { modelId: fields.modelId.trim() } : {}),
@@ -714,21 +763,37 @@ function fieldsFor(record: Automation): Fields {
     name: record.name,
     prompt: record.prompt,
     threadId: record.threadId,
-    interval: String(record.intervalSeconds),
+    interval: String(record.intervalSeconds ?? 60),
+    cadence: record.monthlyUtc ? 'monthly' : 'fixed',
+    monthlyDay: String(record.monthlyUtc?.dayOfMonth ?? 1),
+    monthlyTime: record.monthlyUtc ? monthlyTime(record.monthlyUtc) : '00:00:00',
     agentId: record.agentId ?? '',
     profileId: record.profileId ?? '',
     modelId: record.modelId ?? '',
   };
 }
-/** Checks form completeness without adding a maximum interval or calendar semantics. */
+/** Rejects incomplete cadence inputs before the server validates the exact rule. */
 function validFields(fields: Fields) {
-  return Boolean(
-    fields.name.trim() &&
-      fields.prompt.trim() &&
-      fields.threadId &&
-      Number.isSafeInteger(Number(fields.interval)) &&
-      Number(fields.interval) >= 5
-  );
+  const timingValid =
+    fields.cadence === 'monthly'
+      ? /^\d{1,2}$/.test(fields.monthlyDay) &&
+        Number(fields.monthlyDay) >= 1 &&
+        Number(fields.monthlyDay) <= 28 &&
+        /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(fields.monthlyTime)
+      : Number.isSafeInteger(Number(fields.interval)) && Number(fields.interval) >= 5;
+  return Boolean(fields.name.trim() && fields.prompt.trim() && fields.threadId && timingValid);
+}
+/** Displays the recorded UTC fields without local timezone conversion. */
+function monthlyTime(rule: NonNullable<Automation['monthlyUtc']>) {
+  return [rule.hour, rule.minute, rule.second]
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':');
+}
+/** Uses the retained cadence for both definitions and exact missed ranges. */
+function cadenceLabel(record: Pick<Automation, 'intervalSeconds' | 'monthlyUtc'>) {
+  return record.monthlyUtc
+    ? `Monthly UTC · day ${record.monthlyUtc.dayOfMonth} at ${monthlyTime(record.monthlyUtc)}`
+    : `Every ${record.intervalSeconds} seconds`;
 }
 /** Resuming accepts only a parseable explicit UTC instant; Core owns the clock and cursor checks. */
 function validInstant(value: string) {

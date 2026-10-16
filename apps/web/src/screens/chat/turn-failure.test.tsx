@@ -174,7 +174,9 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
         items: [USER_MESSAGE, ACCEPTED_STATUS_ITEM],
         nextCursor: null,
       }),
-      'thread.dashboard': vi.fn().mockResolvedValue({ turns: [FAILED_DASHBOARD_TURN] }),
+      'thread.dashboard': vi
+        .fn()
+        .mockResolvedValue({ thread: THREAD, turns: [FAILED_DASHBOARD_TURN] }),
       ...core,
       ...app,
       'workspace.list': vi
@@ -229,15 +231,24 @@ beforeEach(() => {
 });
 
 describe('task runtime activity', () => {
-  it.each([true, false])('locates only a retained Turn from the current authorized Thread: %s', async (present) => {
+  it.each([
+    true,
+    false,
+  ])('locates only a retained Turn from the current authorized Thread: %s', async (present) => {
     const prior = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
     const scroll = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scroll,
+    });
     try {
       const target = present ? FAILED_DASHBOARD_TURN.id : 'tu_unavailable';
       const client = makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
-        'thread.dashboard': vi.fn().mockResolvedValue({ turns: [{ ...COMPLETED_DASHBOARD_TURN, status: 'pending', completedAt: null, items: [] }] }),
+        'thread.dashboard': vi.fn().mockResolvedValue({
+          thread: THREAD,
+          turns: [{ ...COMPLETED_DASHBOARD_TURN, status: 'pending', completedAt: null, items: [] }],
+        }),
       });
       renderTask(client, `/tasks/ws1/th_82?turnId=${encodeURIComponent(target)}`);
       if (present) {
@@ -245,7 +256,9 @@ describe('task runtime activity', () => {
         await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
         expect(scroll.mock.contexts[0]).toHaveTextContent(`Recorded Turn ${target}`);
       } else {
-        expect(await screen.findByText('Recorded Turn is unavailable in this Thread.')).toBeInTheDocument();
+        expect(
+          await screen.findByText('Recorded Turn is unavailable in this Thread.')
+        ).toBeInTheDocument();
         expect(scroll).not.toHaveBeenCalled();
       }
       expect(client.operations['turn.start']).not.toHaveBeenCalled();
@@ -267,6 +280,7 @@ describe('task runtime activity', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [HISTORICAL_FAILED_TURN, COMPLETED_DASHBOARD_TURN],
             runtimeActivity: [
               {
@@ -317,6 +331,7 @@ describe('task runtime activity', () => {
         { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [
               { ...HISTORICAL_FAILED_TURN, items: [], status: 'completed', error: null },
               { ...COMPLETED_DASHBOARD_TURN, items: [] },
@@ -365,7 +380,11 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         {},
-        { 'thread.dashboard': vi.fn().mockResolvedValue({ turns: [COMPLETED_DASHBOARD_TURN] }) }
+        {
+          'thread.dashboard': vi
+            .fn()
+            .mockResolvedValue({ thread: THREAD, turns: [COMPLETED_DASHBOARD_TURN] }),
+        }
       )
     );
 
@@ -390,6 +409,7 @@ describe('task turn failure (dashboard reload)', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [HISTORICAL_FAILED_TURN, LATER_COMPLETED_TURN],
           }),
         }
@@ -431,6 +451,7 @@ describe('task turn failure (dashboard reload)', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [
               { ...HISTORICAL_FAILED_TURN, completedAt: '2026-09-16T05:21:30.000Z' },
               FAILED_DASHBOARD_TURN,
@@ -456,7 +477,11 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
-        { 'thread.dashboard': vi.fn().mockResolvedValue({ turns: [EMPTY_FAILED_DASHBOARD_TURN] }) }
+        {
+          'thread.dashboard': vi
+            .fn()
+            .mockResolvedValue({ thread: THREAD, turns: [EMPTY_FAILED_DASHBOARD_TURN] }),
+        }
       )
     );
 
@@ -478,6 +503,7 @@ describe('task turn failure (dashboard reload)', () => {
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
             turns: [HISTORICAL_EMPTY_FAILED_TURN, LATER_COMPLETED_TURN],
           }),
         }

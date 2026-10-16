@@ -118,6 +118,7 @@ function fixture(overrides: Partial<CoreClient['operations']> = {}, initial = [o
           actor: { ...original.actor, id: 'auto_new' },
           status: 'paused' as const,
         };
+        if (input.monthlyUtc) Reflect.deleteProperty(record, 'intervalSeconds');
         records = [...records, record];
         return record;
       }),
@@ -131,6 +132,8 @@ function fixture(overrides: Partial<CoreClient['operations']> = {}, initial = [o
           revision: expectedRevision + 1,
           nextScheduledAt: scheduledAt ?? null,
         } as AutomationRecord;
+        if (input.monthlyUtc) Reflect.deleteProperty(updated, 'intervalSeconds');
+        if (input.intervalSeconds !== undefined) Reflect.deleteProperty(updated, 'monthlyUtc');
         records = records.map((r) => (r.id === automationId ? updated : r));
         return updated;
       }),
@@ -537,4 +540,84 @@ it('does not replay a queue cancellation after an unknown outcome', async () => 
     expect(screen.getByRole('button', { name: 'Cancel queued admission' })).not.toBeDisabled()
   );
   expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+it('creates only the admitted monthly UTC rule and rejects day 29 before submission', async () => {
+  const user = userEvent.setup();
+  const { operations } = fixture({}, []);
+  await screen.findByText('No automations');
+  await user.type(screen.getByLabelText('Name'), 'Monthly review');
+  await user.type(screen.getByLabelText('Worker input'), 'Inspect monthly status');
+  await user.click(screen.getByRole('button', { name: /Target Thread/ }));
+  await user.click(screen.getByRole('option', { name: 'Target thread' }));
+  await user.click(screen.getByRole('button', { name: /Cadence/ }));
+  await user.click(screen.getByRole('option', { name: 'Monthly UTC' }));
+  await user.clear(screen.getByLabelText('Day of month (UTC)'));
+  await user.type(screen.getByLabelText('Day of month (UTC)'), '29');
+  expect(screen.getByRole('button', { name: 'Create paused automation' })).toBeDisabled();
+  expect(operations['automation.create']).not.toHaveBeenCalled();
+  await user.clear(screen.getByLabelText('Day of month (UTC)'));
+  await user.type(screen.getByLabelText('Day of month (UTC)'), '28');
+  await user.clear(screen.getByLabelText('Time (UTC)'));
+  await user.type(screen.getByLabelText('Time (UTC)'), '09:30:00');
+  await user.click(screen.getByRole('button', { name: 'Create paused automation' }));
+  await waitFor(() =>
+    expect(operations['automation.create']).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      threadId: 'th1',
+      name: 'Monthly review',
+      prompt: 'Inspect monthly status',
+      monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 },
+    })
+  );
+  expect(operations['automation.create']).toHaveBeenCalledTimes(1);
+  expect(
+    await screen.findByText('Monthly UTC · day 28 at 09:30:00 · revision 1')
+  ).toBeInTheDocument();
+});
+
+it('keeps monthly edit values and rejects a resume instant outside the recorded UTC rule', async () => {
+  const user = userEvent.setup();
+  const { intervalSeconds: _interval, ...base } = original;
+  const monthly: AutomationRecord = {
+    ...base,
+    monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 },
+  };
+  const { operations } = fixture({}, [monthly]);
+  await user.click(await screen.findByRole('button', { name: 'Edit Poll status' }));
+  expect(screen.getByLabelText('Edit day of month (UTC)')).toHaveValue('28');
+  expect(screen.getByLabelText('Edit time (UTC)')).toHaveValue('09:30:00');
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  await waitFor(() =>
+    expect(operations['automation.update']).toHaveBeenCalledWith({
+      automationId: original.id,
+      expectedRevision: 1,
+      name: original.name,
+      prompt: original.prompt,
+      threadId: original.threadId,
+      monthlyUtc: monthly.monthlyUtc,
+      agentId: null,
+      profileId: null,
+      modelId: null,
+    })
+  );
+  await user.click(screen.getByRole('button', { name: 'Close edit' }));
+  await user.click(screen.getByRole('button', { name: 'Resume Poll status' }));
+  const instant = screen.getByLabelText('Next nominal instant (UTC)');
+  await user.type(instant, '2999-02-27T09:30:00.000Z');
+  expect(screen.getByRole('button', { name: 'Confirm resume' })).toBeDisabled();
+  await user.clear(instant);
+  await user.type(instant, '2999-02-28T09:30:00.001Z');
+  expect(screen.getByRole('button', { name: 'Confirm resume' })).toBeDisabled();
+  await user.clear(instant);
+  await user.type(instant, '2999-02-28T09:30:00.000Z');
+  await user.click(screen.getByRole('button', { name: 'Confirm resume' }));
+  await waitFor(() =>
+    expect(operations['automation.update']).toHaveBeenLastCalledWith({
+      automationId: original.id,
+      expectedRevision: 2,
+      status: 'active',
+      scheduledAt: '2999-02-28T09:30:00.000Z',
+    })
+  );
 });

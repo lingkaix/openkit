@@ -37,6 +37,47 @@ function input(tools: readonly AgentTool[] = []) {
 }
 
 describe('internal Agent loop', () => {
+  it('binds one-based accepted Tool occurrences independently of model call IDs', async () => {
+    const accepted: unknown[] = [];
+    const tool: AgentTool = {
+      name: 'native.test',
+      description: 'Read native state.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async (_value, context) => {
+        accepted.push({
+          callId: context.callId,
+          occurrence: Reflect.get(context, 'toolOccurrence'),
+        });
+        return { content: [{ type: 'text', text: 'Observed.' }] };
+      },
+    };
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          { type: 'toolCall', callId: 'unknown', name: 'missing', arguments: {} },
+          {
+            type: 'toolCall',
+            callId: 'invalid',
+            name: tool.name,
+            arguments: { toolOccurrence: 900 },
+          },
+          { type: 'toolCall', callId: 'provider-900', name: tool.name, arguments: {} },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          { type: 'toolCall', callId: 'provider-1', name: tool.name, arguments: {} },
+        ]),
+      })
+      .mockResolvedValueOnce({ message: assistantMessage([{ type: 'text', text: 'Done.' }]) });
+    expect((await runInternalAgentLoop(input([tool]), call)).kind).toBe('quiescent');
+    expect(accepted).toEqual([
+      { callId: 'provider-900', occurrence: 1 },
+      { callId: 'provider-1', occurrence: 2 },
+    ]);
+  });
+
   it('executes complete tool calls in provider order after strict schema validation', async () => {
     const executionOrder: string[] = [];
     const tools: AgentTool[] = [
