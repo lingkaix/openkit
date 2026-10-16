@@ -150,3 +150,9 @@ node --test tests/release-publication-check.test.mjs tests/release-manifest.test
 ```
 
 `retrieval-packaging.test.mjs` verifies the exact vendored IPADIC archive, offline cache population/reuse, exact COPYING notice, corrupt-cache refusal without replacement, and upstream missing-crate notice provenance. It performs no network requests or container effects.
+
+## Temporary fixtures
+
+Every Vitest config uses `support/vitest-global-setup.mjs`. Before workers start, it creates one private run directory below the caller-selected temporary directory and sets TMPDIR, TMP and TEMP to it. Normal teardown removes that directory after passing or failing runs, then restores the previous values. Tests still close their resources and remove their own directories in afterEach or afterAll; run teardown is the containment backstop. A forcibly killed runner cannot execute teardown.
+
+`vitest-temporary-directory.test.mjs` runs the real fork pool in single-suite and multi-project modes, with successful and deliberately failed subjects. It verifies the workers used the private directory and that teardown leaves no entries in its parent. The same check loads each actual Vitest configuration in a bounded process and requires the shared setup first. This bounded regression does not scan shared temporary storage or fail existing suites merely because the backstop has work to remove.

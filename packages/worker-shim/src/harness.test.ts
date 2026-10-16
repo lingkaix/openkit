@@ -366,6 +366,12 @@ function fakeIntegration(options: { readyAppendStatus?: number; registerFails?: 
   return { boundTokens, calls, client, finalStatuses, loopbacks };
 }
 
+const fixtureRoots = new Set<string>();
+afterEach(() => {
+  for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+  fixtureRoots.clear();
+});
+
 /** One temporary Sandbox layout, a fake adapter and Integration, and command helpers. */
 function harnessFixture(
   options: {
@@ -381,6 +387,7 @@ function harnessFixture(
 ) {
   const adapterId = options.registryAdapterId ?? ADAPTER;
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'openkit-worker-harness-'));
+  if (options.root === undefined) fixtureRoots.add(root);
   const sandboxRoot = join(root, 'openkit');
   const nativeRoot = join(root, 'sandbox', 'native');
   const privateRoot = join(root, 'private');

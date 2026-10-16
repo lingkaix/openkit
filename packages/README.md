@@ -34,3 +34,5 @@ This directory holds reusable libraries, shared configuration packages, internal
 - Cookbook index: [docs/cookbooks/README.md](../docs/cookbooks/README.md)
 
 The shared API schema package owns the Workspace, Thread and Turn operation family declarations. Core Client derives their correlated methods from the composed product table; NanoCore retains executable domain joins and current authority facts.
+
+Package Vitest configurations share the [per-run temporary-directory setup](../tests/support/vitest-global-setup.mjs). Fixture owners close resources and remove their own directories; normal run teardown reclaims residual worker files. See [test support](../tests/README.md#temporary-fixtures).
