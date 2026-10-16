@@ -52,10 +52,9 @@ function setup() {
     'administration.server-mcp-update-binding': vi.fn().mockResolvedValue({ revision: 8 }),
     'administration.server-mcp-remove': vi.fn().mockResolvedValue({ revision: 8 }),
   };
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+    <QueryClientProvider client={cache}>
       <CoreClientProvider
         client={
           { core: { meta: vi.fn().mockResolvedValue({}) }, operations } as unknown as CoreClient
@@ -65,7 +64,7 @@ function setup() {
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  return operations;
+  return Object.assign(operations, { cache });
 }
 
 describe('Shared MCP administration', () => {
@@ -237,5 +236,26 @@ describe('Shared MCP administration', () => {
         })
       )
     );
+  });
+  it('rejects pasted material before mutation variables or transport retain it', async () => {
+    const operations = setup();
+    await screen.findByText('Shared example');
+    await userEvent.type(screen.getByLabelText('New MCP id'), 'new-example');
+    await userEvent.type(screen.getByLabelText('New display name'), 'ghp_fake_canary');
+    await userEvent.type(screen.getByLabelText('New HTTP endpoint'), 'https://new.invalid/mcp');
+    await userEvent.type(screen.getByLabelText('New allowed tools'), 'read');
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add inactive shared configuration' })
+    );
+    await screen.findByText(/Check configuration fields/);
+    expect(operations['administration.server-mcp-create']).not.toHaveBeenCalled();
+    expect(
+      JSON.stringify(
+        operations.cache
+          .getMutationCache()
+          .getAll()
+          .map((mutation) => mutation.state)
+      )
+    ).not.toContain('ghp_fake_canary');
   });
 });

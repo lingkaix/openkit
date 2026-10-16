@@ -95,11 +95,11 @@ The four `automation.list`, `automation.create`, `automation.update`, and `autom
 
 ### Inclusion and exclusions
 
-An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`. The count of that set is 147. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
+An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`. The count of that set is 183. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
 
 The following are excluded from ordinary-user Web and MUST NOT appear on a published ordinary-user route:
 
-- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 46 keys. Roadmap R048 owns their future separate admin surface.
+- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 73 keys. Roadmap R048 owns their future separate admin surface.
 - Gateway-actor operations `POST /v1/chat/completions` and `POST /v1/responses`.
 - Worker-private routes that are not public catalog operations, including `/api/worker-control/*`.
 
