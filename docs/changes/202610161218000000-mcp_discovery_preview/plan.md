@@ -2,7 +2,7 @@
 type: change-plan
 status: implemented
 date: "2026-10-16"
-branch: lane/ga-mcp-preview
+branch: lane/ga-preview-next
 ---
 # Explicit bounded MCP discovery
 
@@ -53,3 +53,11 @@ Complete affected-module Express gate and mandatory Web e2e, followed by the con
 ## Exact Gate Platform Declaration Correction
 
 The exact08c20649 Express gate failed check:repo because the real stdio teardown oracle uses process.kill(pid,0) without the required pre-run platform declaration. The oracle expects POSIX ESRCH after the child exits. Verification Instruments permits the exact openkit-test-platform: posix declaration, already used by the existing Gateway/process suites. Add that declaration and its reason; preserve the same real process probe and every assertion. No check, skip or platform semantics is weakened. The required new exact-head gate reruns check:repo before complete module suites and Web e2e; the failed08 gate is not acceptance evidence.
+
+## Intent Revision 3 — Bounded Preview Feature
+
+The coordinator approved the Server-first decomposition under the engineer's 2026-10-16 simplicity rule. This branch starts at the preserved preview head `870727e14400fb1a656efca4be39d5a0c5bc995b` and merges `lane/ga-server-first` normally. The initial merged parent is `3547dc6f706816503a3a9d8b52c023a1aae5e456`; preview adds 31 paths against that parent, including its existing native, Gateway, Vault delivery, API, Web, manual and generated projections. Equal membership and full secret request/review remain separate features. The one additive runtime-guide merge retained both existing Server approval and preview lifecycle guidance.
+
+The accepted bounded tools/list contract is unchanged. This preparation adds no design, proof store, recovery owner or test matrix. Server catalog scope and session-source changes remain primary-owned. Merge the final Server/P14 parent before final generation and focused Native/Web/API/inventory/type verification. Use the existing lowest-sufficient preview regressions; no duplicate whole-module gate is started during preparation. The cancelled old gates remain failed evidence, with no full-suite or browser pass inferred.
+
+Independent review will cover this preview feature separately. Reviews block only for a reachable defect, a violation of an accepted owner contract, a security defect, or loss of user content. Other findings are non-blocking notes. P14 has landing priority until it lands or the coordinator changes that rule; this helper performs no landing, remote CI or main operation. External current preparation evidence is `evidence/L-GA/preview-next-checkpoint.md` in the backlog.
