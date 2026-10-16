@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
-import { isThreadId, isTurnId, parseReferenceScope } from '@openkit/protocol';
+import {
+  isThreadId,
+  isTurnId,
+  parseReferenceScope,
+  RetrievalTraceReferenceSchema,
+} from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { readAssistantTaskHandoffSource } from './internal-agents/assistant-handoff-source.js';
@@ -47,7 +52,7 @@ import {
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
-import { readTurnRetrievalTraces } from './storage/retrieval-traces.js';
+import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
@@ -657,6 +662,14 @@ describe('Assistant semantic Task handoff', () => {
       threadId: receiving.id,
       turnId: worker.id,
     });
+    expect
+      .soft(
+        RetrievalTraceReferenceSchema.safeParse({
+          scopeId: traceScope,
+          objectId: allocateRetrievalTraceId(),
+        }).success
+      )
+      .toBe(true);
     const reopened = new FsStore({ dataRoot: f.dataRoot });
     expect(reopened.getThread(f.workspace.id, receiving.id)).toEqual(receiving);
     expect(reopened.getTurn(f.workspace.id, receiving.id, worker.id)).toEqual(worker);
