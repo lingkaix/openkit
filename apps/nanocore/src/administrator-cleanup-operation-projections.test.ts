@@ -15,6 +15,7 @@ import {
   type AdministratorCleanupReadResponse,
   AdministratorCleanupReadResponseSchema,
 } from '@openkit/app-api-schemas';
+import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
@@ -481,13 +482,19 @@ describe('administrator cleanup public operation composition', () => {
   it('returns a safe unavailable operation error when current authority storage is lost', async () => {
     const f = fixture();
     populate(f);
-    f.coreDb.sqlite.exec('DROP TABLE openkit_access_tokens');
+    const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
+    vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
+      if (sql.includes('openkit_access_tokens')) {
+        throw new Database.SqliteError('injected authority storage failure', 'SQLITE_ERROR');
+      }
+      return prepare(sql);
+    });
     const http = await f.json();
     expect(http.status).toBe(503);
     const error = await http.json();
     expect(error).toMatchObject({ code: 'operation_storage_unavailable' });
     expect(JSON.stringify(error)).not.toMatch(
-      /openkit_access_tokens|attempt_cleanup_operation|ws_demo|SQLITE/
+      /openkit_access_tokens|attempt_cleanup_operation|ws_demo|SQLITE|injected authority storage failure/
     );
   });
 
@@ -559,10 +566,15 @@ describe('administrator cleanup public operation composition', () => {
         'request.json'
       );
       writeFileSync(path, PRIVATE);
-    } else
-      f.coreDb.sqlite.exec(
-        'ALTER TABLE worker_backend_sessions RENAME TO unavailable_backend_sessions'
-      );
+    } else {
+      const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
+      vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
+        if (sql.includes('worker_backend_sessions')) {
+          throw new Database.SqliteError('unavailable_backend_sessions', 'SQLITE_ERROR');
+        }
+        return prepare(sql);
+      });
+    }
     const result = bounded(await f.native());
     expect(result.sources.find((entry) => entry.source === source)).toMatchObject({
       availability: 'unavailable',

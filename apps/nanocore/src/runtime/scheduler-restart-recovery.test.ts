@@ -1548,6 +1548,20 @@ describe('terminal failed-start product recovery', () => {
           )
       ).toBe(true);
       const executor = new SimulatedTurnExecutor();
+      const createResponses = vi.fn<PiAiGatewayClient['createResponses']>().mockResolvedValue({
+        id: 'response_recovered_thread',
+        object: 'response',
+        status: 'completed',
+        model: 'openai/gpt-5.2',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'Fresh conversation admitted.' }],
+          },
+        ],
+      });
       const app = createApp({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
@@ -1556,19 +1570,7 @@ describe('terminal failed-start product recovery', () => {
         agentManifests: [createTestAgentSetup().manifest],
         gatewayConfig: createTestGatewayConfig(),
         llmPiAiClient: {
-          createChatCompletion: vi.fn(async () => ({
-            id: 'chatcmpl_recovered_thread',
-            object: 'chat.completion',
-            created: 1,
-            model: 'openai/gpt-5.2',
-            choices: [
-              {
-                index: 0,
-                message: { role: 'assistant', content: 'Fresh conversation admitted.' },
-                finish_reason: 'stop',
-              },
-            ],
-          })),
+          createResponses,
         } as unknown as PiAiGatewayClient,
         providerRegistry: new ProviderRegistry([
           {
@@ -1585,7 +1587,7 @@ describe('terminal failed-start product recovery', () => {
           { workspaceId: 'ws_demo', threadId: f.threadId },
           {
             body: JSON.stringify({
-              requestId: 'fresh_after_failed_delivery',
+              requestId: '00000000-0000-4000-8000-000000000179',
               targetRef: 'internal-role:assistant',
               input: 'Continue with a fresh task.',
             }),
@@ -1594,6 +1596,7 @@ describe('terminal failed-start product recovery', () => {
       );
       const body = await response.json();
       expect(response.status, JSON.stringify(body)).toBe(200);
+      expect(createResponses).toHaveBeenCalledOnce();
       expect(body).toMatchObject({
         receivingWorkspaceId: 'ws_demo',
         receivingThreadId: f.threadId,
