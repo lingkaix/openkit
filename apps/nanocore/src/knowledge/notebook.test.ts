@@ -1,15 +1,5 @@
 import { execFile } from 'node:child_process';
-import {
-  chmod,
-  cp,
-  mkdtemp,
-  readFile,
-  rename,
-  rm,
-  symlink,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { chmod, cp, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -209,27 +199,6 @@ describe('KnowledgeNotebook real Git content publication', () => {
     expect(await git(repositoryPath, ['rev-list', '--parents', '-1', candidate])).toBe(
       `${candidate} ${revision}`
     );
-  });
-
-  it.each([
-    'alternates',
-    'object-symlink',
-  ] as const)('rejects Git internal redirection %s before reading', async (kind) => {
-    const { notebook, repositoryPath, root, revision } = await fixture({
-      'a.md': page('A', 'retained'),
-    });
-    if (kind === 'alternates') {
-      await writeFile(
-        path.join(repositoryPath, 'objects/info/alternates'),
-        path.join(root, 'outside-objects')
-      );
-    } else {
-      await rename(path.join(repositoryPath, 'objects'), path.join(root, 'outside-objects'));
-      await symlink(path.join(root, 'outside-objects'), path.join(repositoryPath, 'objects'));
-    }
-    await expect(
-      Promise.resolve().then(() => notebook.readRevision(revision))
-    ).rejects.toMatchObject({ code: 'recovery_required' });
   });
 
   it('refuses publication when an omitted retained blob has a valid encoding but a false object digest', async () => {

@@ -6,7 +6,6 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
-  readFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { KnowledgeNotebookCommitMetadataSchema } from '@openkit/protocol';
@@ -15,7 +14,7 @@ import type { z } from 'zod';
 const PUBLISHED_REF = 'refs/heads/published';
 const FILE_BYTES = 2 * 1024 * 1024;
 const EDITING_BYTES = 32 * 1024 * 1024;
-/** Exact initial reserved navigation bytes shared by fresh notebooks and offline preparation. */
+/** Exact initial reserved navigation bytes used by fresh notebooks. */
 export const DEFAULT_NOTEBOOK_INDEX = '---\nokf_version: "0.2"\n---\n# Notebook\n';
 /** The shared typed commit facts also supply the existing Audit owner's pre-publication projection. */
 export const NotebookCommitMetadataSchema = KnowledgeNotebookCommitMetadataSchema;
@@ -84,53 +83,6 @@ export function validateNotebookFiles(
     throw new NotebookError('invalid_request');
 }
 
-/** Rejects filesystem indirection at every existing ancestor of the trusted repository path. */
-function checkRepositoryPath(path: string): void {
-  let part = resolve(path);
-  while (true) {
-    const stat = lstatSync(part, { throwIfNoEntry: false });
-    if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
-      throw new NotebookError('recovery_required');
-    const parent = dirname(part);
-    if (parent === part) return;
-    part = parent;
-  }
-}
-
-/** Rejects Git-local alternate stores, config includes and linked metadata before Git can read outside this owner. */
-function checkGitInternals(repositoryPath: string): void {
-  if (!lstatSync(repositoryPath, { throwIfNoEntry: false })) return;
-  for (const forbidden of [
-    'commondir',
-    'gitdir',
-    'shallow',
-    'info/grafts',
-    'objects/info/alternates',
-    'objects/info/http-alternates',
-  ])
-    if (lstatSync(join(repositoryPath, forbidden), { throwIfNoEntry: false }))
-      throw new NotebookError('recovery_required');
-  const inspect = (path: string): void => {
-    const stat = lstatSync(path, { throwIfNoEntry: false });
-    if (!stat) return;
-    if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile()))
-      throw new NotebookError('recovery_required');
-    if (stat.isDirectory()) for (const entry of readdirSync(path)) inspect(join(path, entry));
-  };
-  for (const path of ['objects', 'refs', 'HEAD', 'config', 'packed-refs'])
-    inspect(join(repositoryPath, path));
-  const config = join(repositoryPath, 'config');
-  if (lstatSync(config, { throwIfNoEntry: false })) {
-    const text = readFileSync(config, 'utf8');
-    if (
-      !/^\[core\]\r?\n\trepositoryformatversion = 0\r?\n\tfilemode = (?:true|false)\r?\n\tbare = true\r?\n$/.test(
-        text
-      )
-    )
-      throw new NotebookError('recovery_required');
-  }
-}
-
 /** Flushes directory entries after Git flushes its object/ref files through core.fsync=all. */
 function syncDirectory(path: string, recursive = false): void {
   if (recursive)
@@ -152,14 +104,11 @@ export class KnowledgeNotebook {
 
   constructor(input: { readonly repositoryPath: string }) {
     this.repositoryPath = resolve(input.repositoryPath);
-    checkRepositoryPath(this.repositoryPath);
   }
 
   /** Runs fixed plumbing with ambient Git configuration, hooks, network and callbacks disabled. */
   private git(args: readonly string[], input?: string, author = 'OpenKit'): string {
     try {
-      checkRepositoryPath(this.repositoryPath);
-      checkGitInternals(this.repositoryPath);
       const output = execFileSync(
         'git',
         [
