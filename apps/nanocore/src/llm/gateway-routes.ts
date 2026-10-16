@@ -1809,6 +1809,7 @@ export function registerWorkerInferenceRoutes({
       let correlation: { corr: string; attempt: number } | undefined;
       let activeExecution: GatewayAttemptContext | undefined;
       let observedFailure: PiAiFailure | undefined;
+      let observedHttpRejection: number | undefined;
       /** Emits a fixed projection without exception text, private codes, or synthetic HTTP status. */
       function reportFailure(
         error: unknown,
@@ -1819,7 +1820,7 @@ export function registerWorkerInferenceRoutes({
           const kind =
             failure?.kind ??
             (error instanceof LogicalModelRoutesExhaustedError ? error.cause : undefined);
-          const status = failure?.status;
+          const status = failure?.status ?? observedHttpRejection;
           console.warn(
             JSON.stringify({
               code: 'worker_inference_failed',
@@ -1883,6 +1884,7 @@ export function registerWorkerInferenceRoutes({
             phase = 'selection';
             activeExecution = undefined;
             observedFailure = undefined;
+            observedHttpRejection = undefined;
           },
           attempt: async ({
             provider,
@@ -1946,6 +1948,17 @@ export function registerWorkerInferenceRoutes({
                   ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
                   onCodexTurnState: (value: string) => {
                     responseTurnState = value;
+                  },
+                  onProviderHttpRejection: (status: number) => {
+                    // Stock can erase status at terminal wrapping. Keep this diagnostic
+                    // separate from routing evidence and reject a prior attempt's callback.
+                    if (
+                      activeExecution === execution &&
+                      Number.isInteger(status) &&
+                      status >= 400 &&
+                      status <= 599
+                    )
+                      observedHttpRejection = status;
                   },
                   signal: c.req.raw.signal,
                 },
