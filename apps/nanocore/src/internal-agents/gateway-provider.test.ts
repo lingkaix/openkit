@@ -1885,6 +1885,25 @@ describe('internal rolling context Gateway boundary', () => {
     expect(assembled.messages).toEqual(before);
   });
 
+  it('admits final overlays at the real Gateway callback without requiring exact accounting', async () => {
+    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, { context: 16_000, output: 2_000 });
+    createResponses.mockImplementationOnce(async (_provider, input, context) => {
+      await context.transport.finalRequestAdmission({
+        providerId: 'provider', modelId: 'model', api: 'custom-native-api',
+        payload: { ...input, instructions: 'Final serializer instructions. '.repeat(10_000) },
+        outputReserveTokens: 2_000,
+      });
+      return completeResponse;
+    });
+    await expect(provider(request())).rejects.toMatchObject({ code: 'internal_agent_context_exceeded' });
+    expect(createResponses).toHaveBeenCalledOnce();
+    createResponses.mockImplementationOnce(async (_provider, input, context) => {
+      await context.transport.finalRequestAdmission({ providerId: 'provider', modelId: 'model', api: 'custom-native-api', payload: input, outputReserveTokens: 2_000 });
+      return completeResponse;
+    });
+    await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
+  });
+
   it('reserves known output capacity when fitting an otherwise admissible request', async () => {
     const limit = { context: 16_000, output: 1_000 };
     const { provider, createResponses } = boundaryFixture(logicalModel, undefined, limit);

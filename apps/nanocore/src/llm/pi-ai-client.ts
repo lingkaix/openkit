@@ -1186,6 +1186,7 @@ export class PiAiGatewayClient {
       options.samplingParams = { parallel_tool_calls: request.parallel_tool_calls };
     this.applyRequestPayloadOverlay(options, model, maxTokens, request.parallel_tool_calls);
     applyCodexTransport(options, model, transport);
+    this.bindFinalRequestAdmission(options, provider, model, transport);
     this.bindRawOutput(options, model, transport);
     return options;
   }
@@ -1265,6 +1266,9 @@ export class PiAiGatewayClient {
     if (toolChoice !== undefined) options.toolChoice = toolChoice;
     // Native features have one carrier; it never changes stock auth, cache, model or transport fields.
     envelope.fields = {
+      ...(native && envelope.input && request.instructions !== undefined
+        ? { instructions: request.instructions }
+        : {}),
       ...(native && text ? { text } : {}),
       ...(native && reasoning?.context === 'all_turns'
         ? { reasoning: { context: 'all_turns' } }
@@ -1350,8 +1354,46 @@ export class PiAiGatewayClient {
         envelope.output = envelope.output.toSorted((left, right) => left.index - right.index);
       };
     applyCodexTransport(options, selectedModel, transport);
+    this.bindFinalRequestAdmission(options, provider, selectedModel, transport);
     this.bindRawOutput(options, selectedModel, transport);
     return options;
+  }
+
+  /** Admits the final stock payload without changing its identity, overlays, transport or raw observer. */
+  private bindFinalRequestAdmission(
+    options: StreamOptions & Record<string, unknown>,
+    provider: ResolvedLLMProviderConfig,
+    model: Model<string>,
+    transport: LLMGatewayTransportContext
+  ): void {
+    const admit = transport.finalRequestAdmission;
+    if (!admit) return;
+    const previous = options.onPayload;
+    options.onPayload = async (payload, selected) => {
+      const overlaid = await previous?.(payload, selected);
+      const finalPayload = overlaid === undefined ? payload : overlaid;
+      const record = readRecord(finalPayload);
+      const generation = readRecord(record?.config ?? record?.generationConfig ?? record?.generation_config);
+      const caps = [
+        options.maxTokens ?? model.maxTokens,
+        record?.max_output_tokens,
+        record?.max_completion_tokens,
+        record?.max_tokens,
+        generation?.maxOutputTokens,
+      ].filter((value): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
+      await raceProviderWithSignal(
+        () => Promise.resolve(admit({
+          providerId: provider.id,
+          modelId: selected.id,
+          api: selected.api,
+          payload: finalPayload,
+          outputReserveTokens: Math.max(...caps),
+          codexTurnState: options.headers?.['x-codex-turn-state'],
+        }, options.signal)),
+        options.signal
+      );
+      return finalPayload;
+    };
   }
 
   /** Composes the strong raw observer before existing native validation and stock normalization. This observes the selected native transport without changing stream selection. */

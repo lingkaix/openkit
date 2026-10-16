@@ -551,3 +551,5 @@ The App-update family includes an administrator-only content-free deployment pre
 Vault injection plans and receipts preserve immutable intent and completion lineage under repeated creation. Changed input for an existing identity fails without mutation. Exact replay preserves current revocation state and original timestamps. See the [Vault guide](src/vault/README.md) for the focused checks.
 
 All NanoCore Vitest unit and e2e configurations use the shared [temporary-directory setup](../../tests/support/vitest-global-setup.mjs), including the default-off real Codex gate. Workers inherit one private invocation directory; normal teardown reclaims it after success or failure. Tests close database handles and remove owned fixtures before the run-level backstop.
+
+Internal-role Gateway admission estimates complete final Provider requests locally, including native overlays and output reserve. It makes no additional network token-count call and keeps native/custom routes usable without an exact counter. Original-file byte limits and bounded source previews remain independent; see the [Context guide](src/context/README.md).

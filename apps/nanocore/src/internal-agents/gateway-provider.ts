@@ -1,5 +1,5 @@
-import { Buffer } from 'node:buffer';
 import { operationToolName } from '@openkit/app-api-schemas';
+import { admitModelRequest, ModelRequestAdmissionError } from '../context/model-request-admission.js';
 
 import {
   type CapabilityAuditLineage,
@@ -160,13 +160,16 @@ export function createInternalAgentGatewayProvider(
             providerModel
           ).limit;
           const maxOutputTokens = options.logicalModel.contract?.output ?? limits?.output;
-          assertPhysicalContextFits(
-            { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
-            limits?.context === undefined
-              ? undefined
-              : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context),
-            maxOutputTokens
-          );
+          const contextWindowTokens = limits?.context === undefined
+            ? undefined
+            : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context);
+          // Refuse an obviously oversized assembled window before stock preparation; final overlays are checked below.
+          admitModelRequest({
+            payload: { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
+            contextWindowTokens,
+            outputReserveTokens: maxOutputTokens ?? 0,
+          });
+          let admissionFailure: ModelRequestAdmissionError | undefined;
           // A late callback from a settled member cannot replace a later attempt's diagnostics.
           let observedHttpRejection: number | undefined;
           const response = await options.dispatcher
@@ -205,6 +208,20 @@ export function createInternalAgentGatewayProvider(
                     );
                 },
                 transport: {
+                  finalRequestAdmission: (final) => {
+                    try {
+                      admitModelRequest({
+                        payload: final.payload,
+                        continuity: final.codexTurnState,
+                        contextWindowTokens,
+                        outputReserveTokens: final.outputReserveTokens,
+                      });
+                    } catch (error) {
+                      // Stock normalizes hook errors; keep this fixed local refusal for the loop's existing outcome.
+                      if (error instanceof ModelRequestAdmissionError) admissionFailure = error;
+                      throw error;
+                    }
+                  },
                   signal: execution.signal,
                   deadline: execution.deadline,
                   onModelEvent: (event) => {
@@ -223,6 +240,11 @@ export function createInternalAgentGatewayProvider(
               }
             )
             .catch((error: unknown) => {
+              if (admissionFailure) {
+                failurePhase = 'pre-transport';
+                observedStatus = undefined;
+                throw admissionFailure;
+              }
               const failure = (error as { failure?: PiAiFailure } | null)?.failure;
               const status = failure?.status;
               observedStatus =
@@ -309,6 +331,8 @@ export function createInternalAgentGatewayProvider(
       } catch {
         // Optional diagnostics must preserve the original product failure and closeout.
       }
+      if (error instanceof ModelRequestAdmissionError)
+        throw new InternalAgentProviderError(error.code, error.message);
       throw error;
     }
   };
@@ -472,34 +496,6 @@ function fromResponses(
       'Gateway returned empty internal Agent content.'
     );
   return { role: 'assistant', content, truncated };
-}
-
-/** Checks assembled input conservatively without changing canonical history or adding a loop fuse. */
-function assertPhysicalContextFits(
-  value: unknown,
-  contextLimit: number | undefined,
-  outputReserve: number | undefined
-): void {
-  if (
-    contextLimit === undefined ||
-    !Number.isSafeInteger(contextLimit) ||
-    contextLimit <= 0 ||
-    (outputReserve !== undefined && (!Number.isSafeInteger(outputReserve) || outputReserve <= 0))
-  ) {
-    throw new InternalAgentProviderError(
-      'internal_agent_context_unavailable',
-      'The selected model has no usable physical context bounds.'
-    );
-  }
-  // Retain the existing UTF-8 serialization allowance; it includes fixed instructions and Tool schemas.
-  // This is conservative admission, not exact Provider token usage. Upstream overflow remains explicit.
-  const conservativeTokenUpperBound = Buffer.byteLength(JSON.stringify(value), 'utf8') + 4_096;
-  if (conservativeTokenUpperBound + (outputReserve ?? 0) > contextLimit) {
-    throw new InternalAgentProviderError(
-      'internal_agent_context_exceeded',
-      'The assembled internal Agent context exceeds the selected model capacity.'
-    );
-  }
 }
 
 function record(value: unknown): Record<string, unknown> | null {

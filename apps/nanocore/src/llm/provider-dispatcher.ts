@@ -42,6 +42,18 @@ export interface LLMGatewayProviderDispatcherOptions {
  * Provider transport state shared across one gateway dispatch.
  */
 export interface LLMGatewayTransportContext {
+  /** Trusted admission after stock serialization and native overlays; it never replaces the payload. */
+  readonly finalRequestAdmission?: (
+    request: {
+      readonly providerId: string;
+      readonly modelId: string;
+      readonly api: string;
+      readonly payload: unknown;
+      readonly outputReserveTokens: number;
+      readonly codexTurnState?: string | undefined;
+    },
+    signal?: AbortSignal
+  ) => void | Promise<void>;
   /** Strong Worker observation boundary. Its failure aborts this inference before output conversion. */
   readonly rawOutput?: {
     /** Opens actual stock source lifetime, independent of public response cancellation. */
