@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
-import { requireShardResults, shardPlan } from '../scripts/ci-l0-l2.mjs';
+import { coveragePlan, requireShardResults, runShard, shardPlan } from '../scripts/ci-l0-l2.mjs';
 import {
   rootNodeInventory,
   rootNodeSuite,
@@ -42,19 +42,116 @@ test('execution inventory refuses missing and repeated files or cases', () => {
   );
 });
 
-test('every deterministic package belongs to exactly one complete-suite shard', () => {
+test('the complete plan splits only the two slow coverage owners and separates other tasks', () => {
   const owners = testOwners(process.cwd());
   const plan = shardPlan();
   assert.equal(new Set(plan.map((s) => s.id)).size, plan.length);
-  assert.deepEqual(plan.flatMap((s) => s.owners).sort(), owners.map((o) => o.name).sort());
   assert.equal(plan.filter((s) => s.kind === 'root').length, 1);
-  assert.equal(plan.filter((s) => s.kind === 'static').length, 1);
-  for (const owner of owners.filter((o) => o.vitest)) {
+  assert.deepEqual(
+    plan
+      .filter((s) => s.kind === 'static')
+      .map((s) => s.id)
+      .sort(),
+    ['static-build', 'static-check-repo', 'static-lint', 'static-typecheck']
+  );
+  for (const owner of owners) {
     const matches = plan.filter((s) => s.owners.includes(owner.name));
-    assert.equal(matches.length, 1);
-    assert.equal(matches[0].kind, 'coverage');
-    assert.deepEqual(matches[0].owners, [owner.name]);
+    const split = ['@openkit/nanocore', '@openkit/worker-shim'].includes(owner.name);
+    assert.equal(matches.length, split ? 8 : 1);
+    for (const shard of matches) {
+      assert.equal(shard.kind, owner.vitest ? 'coverage' : 'native');
+      assert.deepEqual(shard.owners, [owner.name]);
+    }
+    if (split) {
+      assert.deepEqual(
+        matches.map((s) => s.partition),
+        Array.from({ length: 8 }, (_, index) => ({ index: index + 1, count: 8 }))
+      );
+      assert.deepEqual(
+        matches.map((s) => s.id),
+        Array.from(
+          { length: 8 },
+          (_, index) => `${owner.name.replace('@openkit/', '')}-${index + 1}`
+        )
+      );
+    } else assert.equal(matches[0].partition, undefined);
   }
+});
+
+test('default aggregate requires both merged coverage observations and the exact root inventory', () => {
+  const results = [
+    ...shardPlan().map((s) => s.id),
+    'nanocore-coverage',
+    'worker-shim-coverage',
+  ].map((id) => ({
+    id,
+    conclusion: 'success',
+    ...(id === 'root' ? { files: rootNodeInventory().files } : {}),
+  }));
+  assert.doesNotThrow(() => requireShardResults(results));
+  for (const id of ['nanocore-coverage', 'worker-shim-coverage']) {
+    assert.throws(() => requireShardResults(results.filter((r) => r.id !== id)));
+    assert.throws(() => requireShardResults([...results, { id, conclusion: 'success' }]));
+    assert.throws(() =>
+      requireShardResults(results.map((r) => (r.id === id ? { ...r, conclusion: 'failure' } : r)))
+    );
+  }
+});
+
+test('coverage merge matrix contains exactly the partitioned owners', () => {
+  assert.deepEqual(coveragePlan(), [
+    { id: 'nanocore', owners: ['@openkit/nanocore'] },
+    { id: 'worker-shim', owners: ['@openkit/worker-shim'] },
+  ]);
+});
+
+test('native shards prepare Core only for NanoHost and propagate test failures', () => {
+  const owners = testOwners(process.cwd()).filter((owner) => !owner.vitest);
+  for (const owner of owners) {
+    const commands = [],
+      packages = [];
+    const id = `native-${owner.name.replace('@openkit/', '')}`;
+    runShard(id, {
+      execute: (args) => commands.push(args),
+      runPackage: (selected) => packages.push(selected.name),
+    });
+    assert.deepEqual(packages, [owner.name]);
+    assert.deepEqual(
+      commands,
+      owner.name === '@openkit/nanohost'
+        ? [['pnpm', '--filter', '@openkit/nanocore...', 'build']]
+        : []
+    );
+    assert.throws(
+      () =>
+        runShard(id, {
+          execute: () => {},
+          runPackage: () => {
+            throw Error('guarded failure');
+          },
+        }),
+      /guarded failure/
+    );
+    assert.throws(() => runShard(id, { inventoryOnly: true }), /coverage shards only/);
+  }
+});
+
+test('each static shard runs exactly its selected task and propagates command failure', () => {
+  for (const shard of shardPlan().filter((s) => s.kind === 'static')) {
+    const commands = [];
+    runShard(shard.id, { execute: (args) => commands.push(args) });
+    assert.deepEqual(commands, [['pnpm', '-w', shard.task]]);
+    assert.throws(
+      () =>
+        runShard(shard.id, {
+          execute: () => {
+            throw Error('command failure');
+          },
+        }),
+      /command failure/
+    );
+  }
+  assert.throws(() => runShard('unknown'), /Unknown/);
 });
 
 test('aggregate refuses every missing, duplicate, failed, cancelled and skipped shard', () => {
@@ -212,7 +309,7 @@ if (process.platform === 'linux') {
       );
       writeFileSync(
         join(root, 'scripts/release-ci-reuse.mjs'),
-        "console.log('Fixture exact-source execution citation');\n"
+        "console.log('Reused run 10 attempt 2 job 20');\n"
       );
       const reuse = parse(readFileSync('.github/workflows/ci.yml', 'utf8')).jobs[
         'l0-l2-shards'
@@ -230,9 +327,11 @@ if (process.platform === 'linux') {
         },
       });
       assert.equal(reused.status, 0, reused.stderr);
-      const record = JSON.parse(readFileSync(join(root, 'temp/ci-shards/root.json'), 'utf8'));
-      assert.deepEqual(record.files, rootNodeInventory(root).files);
-      assert.equal(record.reuse, 'Fixture exact-source execution citation');
+      const outputs = readFileSync(join(root, 'outputs'), 'utf8').trim().split('\n');
+      assert.ok(outputs.includes('reused=true'));
+      assert.ok(outputs.includes('run_id=10'));
+      assert.ok(outputs.includes('attempt=2'));
+      assert.equal(existsSync(join(root, 'temp/ci-shards/root.json')), false);
       const workflowPath = join(root, '.github/workflows/ci.yml');
       const workflow = readFileSync(workflowPath, 'utf8');
       writeFileSync(
