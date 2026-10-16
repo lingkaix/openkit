@@ -350,7 +350,6 @@ export function createArtifactOperationImplementations(
           const artifact = store.getArtifact(workspaceId, artifactId);
           if (artifact.version !== artifactVersion || artifact.contentDigest !== input.contentDigest || review.contentDigest !== input.contentDigest || artifact.status !== 'ready') throw new ArtifactReviewError('stale', 'The exact Artifact candidate is unavailable.');
           requireCurrentReviewedArtifact(store, review);
-          artifactReviewContentProof(artifact, workspaceDb);
         };
         return await runIdempotentCommand({
           store, inflightCommands, command: 'artifact.review.select', requestId: input.requestId,
