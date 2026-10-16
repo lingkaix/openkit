@@ -1071,6 +1071,262 @@
         }
       }
     },
+    "/api/app/operations/vault.server-mcp-injection-plan-list": {
+      "post": {
+        "operationId": "vault.server-mcp-injection-plan-list",
+        "tags": [
+          "vault"
+        ],
+        "summary": "List redacted Server shared-MCP planned credential delivery evidence.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-injection-plan-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List redacted Server shared-MCP planned credential delivery evidence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-injection-plan-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-injection-receipt-list": {
+      "post": {
+        "operationId": "vault.server-mcp-injection-receipt-list",
+        "tags": [
+          "vault"
+        ],
+        "summary": "List redacted Server shared-MCP completed credential delivery evidence.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-injection-receipt-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List redacted Server shared-MCP completed credential delivery evidence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-injection-receipt-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.grant-request": {
+      "post": {
+        "operationId": "vault.grant-request",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Request exact supported credential-use authority without issuing a grant.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.grant-request.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request exact supported credential-use authority without issuing a grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.grant-request.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.grant-request-list": {
+      "post": {
+        "operationId": "vault.grant-request-list",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Review supported grant requests on one visible Thread.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.grant-request-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Review supported grant requests on one visible Thread.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.grant-request-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.grant-issue": {
+      "post": {
+        "operationId": "vault.grant-issue",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Issue one grant from an approved exact request after current-authority checks.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.grant-issue.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Issue one grant from an approved exact request after current-authority checks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.grant-issue.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/vault.status": {
       "post": {
         "operationId": "vault.status",
@@ -20080,6 +20336,1254 @@
             "additionalProperties": false
           }
         ]
+      },
+      "vault.server-mcp-injection-plan-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "vault.server-mcp-injection-plan-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "planId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "grantId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "packageSnapshotId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "capabilityId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "injectionVisibility": {
+                  "type": "string",
+                  "enum": [
+                    "gateway-only",
+                    "backend-provider",
+                    "runtime-file",
+                    "runtime-env",
+                    "runtime-token",
+                    "external-handle"
+                  ]
+                },
+                "targetPath": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "targetEnvVarName": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "expirationBehavior": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revocationBehavior": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "redactionRule": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "backendCapabilityRequirement": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "revoked",
+                    "expired"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                }
+              },
+              "required": [
+                "planId",
+                "grantId",
+                "packageSnapshotId",
+                "capabilityId",
+                "injectionVisibility",
+                "targetPath",
+                "targetEnvVarName",
+                "expirationBehavior",
+                "revocationBehavior",
+                "redactionRule",
+                "backendCapabilityRequirement",
+                "status",
+                "createdAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-injection-receipt-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "vault.server-mcp-injection-receipt-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "receiptId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "planId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "grantId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "agentSessionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "capabilityCallId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "backendSummary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "injectedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "expiresAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "revocationStatus": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "revoked",
+                    "expired",
+                    "stale-session"
+                  ]
+                },
+                "auditEventId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "receiptId",
+                "planId",
+                "grantId",
+                "agentSessionId",
+                "capabilityCallId",
+                "backendSummary",
+                "injectedAt",
+                "expiresAt",
+                "revocationStatus",
+                "auditEventId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-request.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "terms": {
+            "type": "object",
+            "properties": {
+              "referenceId": {
+                "type": "string",
+                "pattern": "^vault_[A-Za-z0-9_-]+$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "injectionPath": {
+                "type": "string",
+                "enum": [
+                  "gateway-only",
+                  "runtime-env"
+                ]
+              },
+              "targetAgentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetAgentSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetCapabilityId": {
+                "type": "string",
+                "enum": [
+                  "mcp.list_tools",
+                  "mcp.call_tool"
+                ]
+              },
+              "ownerScope": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server"
+                ]
+              },
+              "lifetime": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server"
+                ]
+              },
+              "mcpSource": {
+                "type": "object",
+                "properties": {
+                  "serverId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "slot": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  }
+                },
+                "required": [
+                  "serverId",
+                  "slot"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "referenceId",
+              "injectionPath",
+              "ownerScope",
+              "lifetime"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "terms"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-request.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "approvalRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raisingTurnId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "responsibleUserId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requesterKind": {
+            "type": "string",
+            "enum": [
+              "person",
+              "worker"
+            ]
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentSessionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "terms": {
+            "type": "object",
+            "properties": {
+              "referenceId": {
+                "type": "string",
+                "pattern": "^vault_[A-Za-z0-9_-]+$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "injectionPath": {
+                "type": "string",
+                "enum": [
+                  "gateway-only",
+                  "runtime-env"
+                ]
+              },
+              "targetAgentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetAgentSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetCapabilityId": {
+                "type": "string",
+                "enum": [
+                  "mcp.list_tools",
+                  "mcp.call_tool"
+                ]
+              },
+              "ownerScope": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server"
+                ]
+              },
+              "lifetime": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server"
+                ]
+              },
+              "mcpSource": {
+                "type": "object",
+                "properties": {
+                  "serverId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "slot": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  }
+                },
+                "required": [
+                  "serverId",
+                  "slot"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "referenceId",
+              "injectionPath",
+              "ownerScope",
+              "lifetime"
+            ],
+            "additionalProperties": false
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "resolved",
+              "ended"
+            ]
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "granted",
+                  "denied",
+                  "answered"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ending": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "withdrawn",
+                  "invalidated"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claim": {
+            "type": "string",
+            "enum": [
+              "unclaimed",
+              "claimed",
+              "finished"
+            ]
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "approved-executed",
+                  "denied-not-executed",
+                  "execution-error",
+                  "outcome-unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery": {
+            "type": "string",
+            "enum": [
+              "undelivered",
+              "frozen",
+              "delivered",
+              "delivery-unknown",
+              "closed-out"
+            ]
+          },
+          "decidingActorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "effect": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "available"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "summary",
+                  "detail"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "unavailable"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "canApprove": {
+            "type": "boolean"
+          },
+          "canIssue": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "approvalRequestId",
+          "workspaceId",
+          "threadId",
+          "raisingTurnId",
+          "responsibleUserId",
+          "requesterKind",
+          "agentId",
+          "agentSessionId",
+          "terms",
+          "state",
+          "resolution",
+          "ending",
+          "claim",
+          "disposition",
+          "delivery",
+          "decidingActorId",
+          "grantId",
+          "createdAt",
+          "effect",
+          "canApprove",
+          "canIssue"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-request-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-request-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "approvalRequestId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "raisingTurnId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "requesterKind": {
+                  "type": "string",
+                  "enum": [
+                    "person",
+                    "worker"
+                  ]
+                },
+                "agentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "agentSessionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "terms": {
+                  "type": "object",
+                  "properties": {
+                    "referenceId": {
+                      "type": "string",
+                      "pattern": "^vault_[A-Za-z0-9_-]+$"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "injectionPath": {
+                      "type": "string",
+                      "enum": [
+                        "gateway-only",
+                        "runtime-env"
+                      ]
+                    },
+                    "targetAgentId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "targetAgentSessionId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "targetCapabilityId": {
+                      "type": "string",
+                      "enum": [
+                        "mcp.list_tools",
+                        "mcp.call_tool"
+                      ]
+                    },
+                    "ownerScope": {
+                      "type": "string",
+                      "enum": [
+                        "workspace",
+                        "server"
+                      ]
+                    },
+                    "lifetime": {
+                      "type": "string",
+                      "enum": [
+                        "workspace",
+                        "server"
+                      ]
+                    },
+                    "mcpSource": {
+                      "type": "object",
+                      "properties": {
+                        "serverId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "slot": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                        }
+                      },
+                      "required": [
+                        "serverId",
+                        "slot"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "referenceId",
+                    "injectionPath",
+                    "ownerScope",
+                    "lifetime"
+                  ],
+                  "additionalProperties": false
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "resolved",
+                    "ended"
+                  ]
+                },
+                "resolution": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ending": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "withdrawn",
+                        "invalidated"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "claim": {
+                  "type": "string",
+                  "enum": [
+                    "unclaimed",
+                    "claimed",
+                    "finished"
+                  ]
+                },
+                "disposition": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "delivery": {
+                  "type": "string",
+                  "enum": [
+                    "undelivered",
+                    "frozen",
+                    "delivered",
+                    "delivery-unknown",
+                    "closed-out"
+                  ]
+                },
+                "decidingActorId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "grantId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "effect": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "const": "available"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "summary",
+                        "detail"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "const": "unavailable"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "canApprove": {
+                  "type": "boolean"
+                },
+                "canIssue": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "approvalRequestId",
+                "workspaceId",
+                "threadId",
+                "raisingTurnId",
+                "responsibleUserId",
+                "requesterKind",
+                "agentId",
+                "agentSessionId",
+                "terms",
+                "state",
+                "resolution",
+                "ending",
+                "claim",
+                "disposition",
+                "delivery",
+                "decidingActorId",
+                "grantId",
+                "createdAt",
+                "effect",
+                "canApprove",
+                "canIssue"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-issue.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "approvalRequestId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "approvalRequestId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-issue.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "approvalRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raisingTurnId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "responsibleUserId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requesterKind": {
+            "type": "string",
+            "enum": [
+              "person",
+              "worker"
+            ]
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentSessionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "terms": {
+            "type": "object",
+            "properties": {
+              "referenceId": {
+                "type": "string",
+                "pattern": "^vault_[A-Za-z0-9_-]+$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "injectionPath": {
+                "type": "string",
+                "enum": [
+                  "gateway-only",
+                  "runtime-env"
+                ]
+              },
+              "targetAgentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetAgentSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetCapabilityId": {
+                "type": "string",
+                "enum": [
+                  "mcp.list_tools",
+                  "mcp.call_tool"
+                ]
+              },
+              "ownerScope": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server"
+                ]
+              },
+              "lifetime": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server"
+                ]
+              },
+              "mcpSource": {
+                "type": "object",
+                "properties": {
+                  "serverId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "slot": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  }
+                },
+                "required": [
+                  "serverId",
+                  "slot"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "referenceId",
+              "injectionPath",
+              "ownerScope",
+              "lifetime"
+            ],
+            "additionalProperties": false
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "resolved",
+              "ended"
+            ]
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "granted",
+                  "denied",
+                  "answered"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ending": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "withdrawn",
+                  "invalidated"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claim": {
+            "type": "string",
+            "enum": [
+              "unclaimed",
+              "claimed",
+              "finished"
+            ]
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "approved-executed",
+                  "denied-not-executed",
+                  "execution-error",
+                  "outcome-unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery": {
+            "type": "string",
+            "enum": [
+              "undelivered",
+              "frozen",
+              "delivered",
+              "delivery-unknown",
+              "closed-out"
+            ]
+          },
+          "decidingActorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "effect": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "available"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "summary",
+                  "detail"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "unavailable"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "canApprove": {
+            "type": "boolean"
+          },
+          "canIssue": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "approvalRequestId",
+          "workspaceId",
+          "threadId",
+          "raisingTurnId",
+          "responsibleUserId",
+          "requesterKind",
+          "agentId",
+          "agentSessionId",
+          "terms",
+          "state",
+          "resolution",
+          "ending",
+          "claim",
+          "disposition",
+          "delivery",
+          "decidingActorId",
+          "grantId",
+          "createdAt",
+          "effect",
+          "canApprove",
+          "canIssue"
+        ],
+        "additionalProperties": false
       },
       "vault.status.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -98417,5 +99921,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:cd3089e75c2ecf67d811ccd0acb379bb93948267a667945ca691bc75e45e854f"
+  "x-openkit-source-digest": "sha256:66a7a30232cb5b6568e4c628c59be6d7cfff158d16a474f6f0fbf30b92258b4b"
 }

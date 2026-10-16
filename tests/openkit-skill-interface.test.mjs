@@ -931,6 +931,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       'vault.server-mcp-grant-list',
       'vault.server-mcp-grant-narrow',
       'vault.server-mcp-grant-revoke',
+      'vault.server-mcp-injection-plan-list',
+      'vault.server-mcp-injection-receipt-list',
       'vault.server-mcp-reference-list',
       'vault.server-mcp-secret-create',
       'vault.server-mcp-secret-revoke',

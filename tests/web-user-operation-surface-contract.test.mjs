@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 258;
-const EXPECTED_SERVER_SIZE = 73;
+const EXPECTED_CATALOG_SIZE = 263;
+const EXPECTED_SERVER_SIZE = 75;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 183;
+const EXPECTED_INCLUDED_SIZE = 186;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -202,6 +202,9 @@ const WEB_OPERATION_GROUPS = {
     'workspace.import': { disposition: 'live', surface: 'Portability' },
   },
   Vault: {
+    'vault.grant-request': { disposition: 'live', surface: 'Vault' },
+    'vault.grant-request-list': { disposition: 'live', surface: 'Vault' },
+    'vault.grant-issue': { disposition: 'live', surface: 'Vault' },
     'vault.grant-create': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-narrow': { disposition: 'live', surface: 'Vault backend' },
     'vault.secret-create': { disposition: 'live', surface: 'Vault backend' },
