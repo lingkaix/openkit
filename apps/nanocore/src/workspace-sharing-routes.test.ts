@@ -15,6 +15,7 @@ import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -255,7 +256,7 @@ describe('Workspace sharing routes', () => {
 
     expect(body.items).toEqual([
       expect.objectContaining({
-        ownerUserId: 'user_owner',
+        ownerUserId: testEntityId('usr', 'user_owner'),
         membershipStatus: null,
         accessCause: 'administrator',
         effectiveRole: null,

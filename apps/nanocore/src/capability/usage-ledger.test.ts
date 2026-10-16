@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   finishCapabilityCall,
   importWorkspaceCapabilityUsageLedger,
@@ -134,14 +135,14 @@ describe('capability usage ledger', () => {
 
       for (let round = 0; round < 2; round += 1) {
         const call = startCapabilityCall({
-          authorityActor: { kind: 'user', id: 'user_ledger' },
+          authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
           capabilityId: 'llm.responses',
           family: 'llm',
           operation: 'responses.create',
           redactionClass: 'metadata-only',
           requestId: null,
-          threadId: 'th_command',
-          turnId: 'turn_command',
+          threadId: testEntityId('th', 'th_command'),
+          turnId: testEntityId('tu', 'turn_command'),
           workspaceDb,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
@@ -175,8 +176,8 @@ describe('capability usage ledger', () => {
         expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
           request_id: null,
           status: 'succeeded',
-          thread_id: 'th_command',
-          turn_id: 'turn_command',
+          thread_id: testEntityId('th', 'th_command'),
+          turn_id: testEntityId('tu', 'turn_command'),
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         });
         expect(usageRows(workspaceDb, call.id)).toEqual([
@@ -185,9 +186,9 @@ describe('capability usage ledger', () => {
             category: 'llm',
             quantity: 12,
             request_id: null,
-            responsible_user_id: 'user_ledger',
-            thread_id: 'th_command',
-            turn_id: 'turn_command',
+            responsible_user_id: testEntityId('usr', 'user_ledger'),
+            thread_id: testEntityId('th', 'th_command'),
+            turn_id: testEntityId('tu', 'turn_command'),
             unit: 'tokens',
             usage_id: usageIds[index][0],
             workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
@@ -201,8 +202,8 @@ describe('capability usage ledger', () => {
             capability_call_id: call.id,
             outcome: 'succeeded',
             request_id: auditLineage.commandRequestId,
-            thread_id: 'th_command',
-            turn_id: 'turn_command',
+            thread_id: testEntityId('th', 'th_command'),
+            turn_id: testEntityId('tu', 'turn_command'),
             workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           }),
         ]);
@@ -242,7 +243,7 @@ describe('capability usage ledger', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
@@ -282,7 +283,7 @@ describe('capability usage ledger', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
@@ -330,7 +331,7 @@ describe('capability usage ledger', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_ledger' },
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',

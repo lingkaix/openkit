@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,7 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -182,7 +184,7 @@ describe('dashboard and search Thread audiences', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       });
       store.createItem({
-        id: `it_${label}`,
+        id: testEntityId('it', `it_${label}`),
         workspaceId: workspace.id,
         threadId: thread.id,
         turnId: turn.id,
@@ -194,7 +196,7 @@ describe('dashboard and search Thread audiences', () => {
       });
       if (label !== 'missing' && label !== 'contradictory')
         store.createArtifact({
-          id: `ar_${label}`,
+          id: testEntityId('ar', `ar_${label}`),
           workspaceId: workspace.id,
           threadId: thread.id,
           turnId: turn.id,
@@ -220,13 +222,13 @@ describe('dashboard and search Thread audiences', () => {
     const sharedTurn = store.listThreadTurns(workspace.id, threads[2]!.id)[0]!;
     for (const label of ['local-private', 'other-private'])
       store.createItem({
-        id: `it_link_${label}`,
+        id: testEntityId('it', `it_link_${label}`),
         workspaceId: workspace.id,
         threadId: threads[2]!.id,
         turnId: sharedTurn.id,
         type: 'artifact-reference',
         status: 'completed',
-        artifactId: `ar_${label}`,
+        artifactId: testEntityId('ar', `ar_${label}`),
         artifactVersion: 1,
         lastMutationRequestId: `link-${label}`,
         title: `${label} needle artifact`,
@@ -379,7 +381,9 @@ describe('dashboard and search Thread audiences', () => {
             )
           );
           expect(attached.status, await attached.clone().text()).toBe(409);
-          expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
+          expect(await attached.json()).toMatchObject({
+            code: testEntityId('ar', 'artifact_not_found'),
+          });
           expect(store.listThreadTurns(workspace.id, receiving.id)).toEqual([]);
           const source = store.getArtifact(workspace.id, ownArtifactId);
           store.createArtifact({
@@ -420,7 +424,9 @@ describe('dashboard and search Thread audiences', () => {
             )
           );
           expect(introduced.status).toBe(409);
-          expect(await introduced.json()).toMatchObject({ code: 'thread_busy' });
+          expect(await introduced.json()).toMatchObject({
+            code: testEntityId('th', 'thread_busy'),
+          });
         }
         exposeUnavailableAudience = true;
         const search = await app.request(

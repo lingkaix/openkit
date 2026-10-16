@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import type {
   PrepareWorkerEnvironmentRequest,
   WorkerEnvironmentImageDeclaration,
@@ -21,6 +20,7 @@ import type { Actor } from '../auth/identity.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environment-operation-implementations.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 import {
@@ -102,7 +102,7 @@ function createFixture() {
   const thread = store.createThread(
     workspace.id,
     'Administration',
-    'thread_admin',
+    testEntityId('th', 'thread_admin'),
     'administration',
     { privateOwnerUserId: actor.userId, visibility: 'private' }
   );
@@ -402,7 +402,7 @@ describe('Worker environment preparation', () => {
     const recoveryThread = fixture.store.createThread(
       fixture.workspace.id,
       'Recovery',
-      'thread_recovery',
+      testEntityId('th', 'thread_recovery'),
       'administration',
       { privateOwnerUserId: actor.userId, visibility: 'private' }
     );
@@ -461,7 +461,7 @@ describe('Worker environment preparation', () => {
       fixture
         .createService()
         .prepare({ actor }, prepareRequest(fixture.thread.id, fixture.configuration))
-    ).rejects.toMatchObject({ code: 'thread_busy' });
+    ).rejects.toMatchObject({ code: testEntityId('th', 'thread_busy') });
     expect(fixture.store.listArtifacts(fixture.workspace.id)).toEqual([]);
     expect(fixture.runtimeEffects.prepareImage).not.toHaveBeenCalled();
   });
@@ -511,8 +511,8 @@ describe('Worker environment preparation', () => {
       ...prepareRequest(fixture.thread.id, fixture.configuration),
       replaceNow: {
         prompt: 'Continue with the prepared environment',
-        threadId: 'thread_product',
-        workspaceId: 'workspace_product',
+        threadId: testEntityId('th', 'thread_product'),
+        workspaceId: testEntityId('ws', 'workspace_product'),
       },
     };
     vi.mocked(fixture.runtimeEffects.prepareImage).mockImplementationOnce(async (input) => {

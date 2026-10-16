@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -384,7 +385,7 @@ describe('workspace portable file state', () => {
         () =>
           readWorkspaceImportSnapshot({
             verified: { ...verified, fileContents },
-            targetWorkspaceId: `ws_${name}_page_import`,
+            targetWorkspaceId: testEntityId('ws', `ws_${name}_page_import`),
           }),
         name
       ).toThrow(/Knowledge Page/i);

@@ -12,6 +12,7 @@ import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerInferenceRoutes } from './gateway-routes.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
@@ -53,10 +54,13 @@ function fixture(configured = true) {
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup({
       logicalModelId: 'worker-model',
-      privateRoute: { providerProfileId: 'provider', providerModel: 'native-model' },
+      privateRoute: {
+        providerProfileId: testEntityId('usr', 'provider'),
+        providerModel: 'native-model',
+      },
       requiredCapabilities: ['trusted-worker-inference-relay'],
     }),
-    agentSessionId: 'as_diagnostics',
+    agentSessionId: testEntityId('as', 'as_diagnostics'),
     backend: { kind: 'openshell' },
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     createdAt: new Date().toISOString(),
@@ -76,7 +80,7 @@ function fixture(configured = true) {
   });
   const providerRegistry = new ProviderRegistry([
     {
-      id: 'provider',
+      id: testEntityId('usr', 'provider'),
       displayName: 'Provider',
       kind: 'local',
       vendor: 'ollama',
@@ -87,7 +91,7 @@ function fixture(configured = true) {
   const dispatch = vi.fn();
   const resolveGatewayProvider = vi.fn(
     (): ResolvedLLMProviderConfig => ({
-      id: 'provider',
+      id: testEntityId('usr', 'provider'),
       displayName: 'Provider',
       backend: 'pi-ai',
       adapterId: 'ollama',
@@ -124,7 +128,11 @@ function fixture(configured = true) {
               routing: { autoFailover: true },
               contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
               routes: [
-                { id: 'primary', providerProfileId: 'provider', providerModel: 'native-model' },
+                {
+                  id: 'primary',
+                  providerProfileId: testEntityId('usr', 'provider'),
+                  providerModel: 'native-model',
+                },
               ],
             },
           ],

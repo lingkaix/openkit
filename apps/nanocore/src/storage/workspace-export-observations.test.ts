@@ -19,6 +19,7 @@ import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -155,7 +156,7 @@ describe('work observation portable closure', () => {
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_runtime_joins',
+        exportId: testEntityId('wsexp', 'export_runtime_joins'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: workspace.id,
@@ -316,7 +317,7 @@ describe('work observation portable closure', () => {
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_environment',
+        exportId: testEntityId('wsexp', 'export_environment'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,
@@ -401,7 +402,7 @@ describe('work observation portable closure', () => {
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_environment_again',
+        exportId: testEntityId('wsexp', 'export_environment_again'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: importedWorkspaceId,
@@ -562,7 +563,7 @@ describe('work observation portable closure', () => {
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_observations',
+        exportId: testEntityId('wsexp', 'export_observations'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,
@@ -705,7 +706,7 @@ describe('work observation portable closure', () => {
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_held_observations',
+        exportId: testEntityId('wsexp', 'export_held_observations'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,
@@ -753,7 +754,7 @@ describe('work observation portable closure', () => {
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_expired_observations',
+        exportId: testEntityId('wsexp', 'export_expired_observations'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,

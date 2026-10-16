@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -24,13 +25,13 @@ import {
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
-
 import { listWorkspaceCapabilityCalls, startCapabilityCall } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import {
@@ -1318,7 +1319,7 @@ function sessionMeta(
 function turnContext(turnId: string): Record<string, unknown> {
   return {
     timestamp: '2026-07-13T00:00:01.000Z',
-    type: 'turn_context',
+    type: testEntityId('tu', 'turn_context'),
     payload: {
       turn_id: turnId,
       cwd: PRIVATE_HOST_PATH,

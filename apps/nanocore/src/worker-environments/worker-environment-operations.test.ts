@@ -1,9 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
@@ -22,6 +20,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
@@ -95,7 +94,7 @@ function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> 
     workspaceId: workspace.id,
   });
   const reserved = reserveWorkerStorageAttachment(coreDb, {
-    agentSessionId: 'session_1',
+    agentSessionId: testEntityId('as', 'session_1'),
     authorizeContributor: () => true,
     expectedRevision: created.revision,
     layout: LAYOUT,
@@ -177,7 +176,7 @@ function addOtherMember(fixture: Fixture): void {
 function prepareConcurrentContributor(fixture: Fixture): () => void {
   addOtherMember(fixture);
   const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: 'session_status',
+    agentSessionId: testEntityId('as', 'session_status'),
     authorizeContributor: () => true,
     expectedRevision: fixture.binding.revision,
     layout: LAYOUT,
@@ -203,7 +202,7 @@ function prepareConcurrentContributor(fixture: Fixture): () => void {
       expectedRevision: fixture.binding.revision,
       layout: LAYOUT,
       purpose: 'work',
-      responsibleUserId: 'user_other',
+      responsibleUserId: testEntityId('usr', 'user_other'),
       storageRef: fixture.binding.storageRef,
       threadId: thread.id,
       workspaceId: fixture.workspaceId,
@@ -220,7 +219,7 @@ describe('Worker environment operations', () => {
       requestedAgentId: 'agent-codex',
       threadId: fixture.threadId,
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      turnId: 'turn-queued-storage-work',
+      turnId: testEntityId('tu', 'turn-queued-storage-work'),
       turnInput: 'Continue existing work.',
       workerStorageChoice: {
         expectedRevision: fixture.binding.revision,
@@ -347,7 +346,7 @@ describe('Worker environment operations', () => {
     const inaccessible = fixture.store.createThread(
       fixture.workspaceId,
       'Other private conversation',
-      'thread_private_other',
+      testEntityId('th', 'thread_private_other'),
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
@@ -360,7 +359,7 @@ describe('Worker environment operations', () => {
       message: 'Worker environment was not found.',
     };
 
-    for (const threadId of ['thread_missing', foreign.id, inaccessible.id]) {
+    for (const threadId of [testEntityId('th', 'thread_missing'), foreign.id, inaccessible.id]) {
       expect(() =>
         fixture.operations.select(context, {
           adjudicatedThreadIds: [],
@@ -382,7 +381,7 @@ describe('Worker environment operations', () => {
     const ownPrivate = fixture.store.createThread(
       fixture.workspaceId,
       'Own private conversation',
-      'thread_private_own',
+      testEntityId('th', 'thread_private_own'),
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001', visibility: 'private' }
     );
@@ -431,13 +430,13 @@ describe('Worker environment operations', () => {
     fixture.store.createThread(
       fixture.workspaceId,
       'Other private conversation',
-      'thread_private_source',
+      testEntityId('th', 'thread_private_source'),
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
     fixture.coreDb.sqlite
       .prepare('UPDATE worker_storage_contributors SET thread_id = ? WHERE storage_ref = ?')
-      .run('thread_private_source', fixture.binding.storageRef);
+      .run(testEntityId('th', 'thread_private_source'), fixture.binding.storageRef);
 
     expect(fixture.operations.list(context, { limit: 50 })).toEqual({
       items: [],

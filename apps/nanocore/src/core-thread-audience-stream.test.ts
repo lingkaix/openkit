@@ -1,9 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it, vi } from 'vitest';
-
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -12,6 +10,7 @@ import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -58,7 +57,7 @@ function createSharedStreamFixture() {
   store.createItem({
     completedAt: null,
     createdAt: STAMP,
-    id: `it_stream_${turn.id}`,
+    id: testEntityId('it', `it_stream_${turn.id}`),
     status: 'in_progress',
     text: '',
     threadId: thread.id,
@@ -77,7 +76,7 @@ function createSharedStreamFixture() {
     data: {
       delta: GRANTED_DELTA,
       deltaKind: 'text-delta',
-      itemId: `it_stream_${turn.id}`,
+      itemId: testEntityId('it', `it_stream_${turn.id}`),
       itemType: 'assistant-message',
       type: 'item-delta',
     },
@@ -193,7 +192,7 @@ describe('core Thread audience streams', () => {
         data: {
           delta: REVOKED_DELTA,
           deltaKind: 'text-delta',
-          itemId: `it_stream_${fixture.turn.id}`,
+          itemId: testEntityId('it', `it_stream_${fixture.turn.id}`),
           itemType: 'assistant-message',
           type: 'item-delta',
         },

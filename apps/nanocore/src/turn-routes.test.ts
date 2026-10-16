@@ -42,6 +42,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -57,7 +58,7 @@ function testProviderRegistry(): ProviderRegistry {
   return new ProviderRegistry([
     {
       displayName: 'Agent OpenRouter',
-      id: 'agent-openrouter',
+      id: testEntityId('usr', 'agent-openrouter'),
       kind: 'local',
       models: ['openai/gpt-5.2'],
     },
@@ -747,7 +748,7 @@ describe('generic turn routes', () => {
       commandRecords: 0,
       completedAtUnchanged: true,
       executorCalls: 0,
-      responseCode: 'turn_not_interruptible',
+      responseCode: testEntityId('tu', 'turn_not_interruptible'),
       responseStatus: 409,
       turnStatus: 'completed',
     });
@@ -785,7 +786,7 @@ describe('generic turn routes', () => {
       await setImmediate();
       const acceptedAt = turn.startedAt ?? new Date().toISOString();
       const requestItem = fixture.store.createItem({
-        id: `it_responsible_user_${turn.id}`,
+        id: testEntityId('it', `it_responsible_user_${turn.id}`),
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,

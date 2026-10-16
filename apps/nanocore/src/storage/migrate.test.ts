@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
 import { coreDbPath, workspaceDbPath } from './fs-layout';
@@ -64,7 +65,7 @@ const CORE_TABLES = [
 
 const WORKSPACE_TABLES = [
   '__drizzle_migrations',
-  'artifact_reviews',
+  testEntityId('ar', 'artifact_reviews'),
   'audit_events',
   'backend_workspace_handles',
   'capability_calls',
@@ -82,7 +83,7 @@ const WORKSPACE_TABLES = [
   'runtime_evidence',
   'staged_workspace_reviews',
   'task_turn_terminal_facts',
-  'thread_material_bindings',
+  testEntityId('th', 'thread_material_bindings'),
   'usage_records',
   'vault_use_records',
   'worker_output_manifests',
@@ -246,7 +247,7 @@ describe('database setup', () => {
       expect(listColumnNames(coreDb, 'worker_storage_bindings')).toEqual([
         'storage_ref',
         'runtime_target_id',
-        'deployment_id',
+        testEntityId('dep', 'deployment_id'),
         'workspace_id',
         'scope_digest',
         'layout_digest',
@@ -279,7 +280,7 @@ describe('database setup', () => {
       ]);
       expect(listColumnNames(coreDb, 'workspace_members')).toEqual([
         'workspace_id',
-        'user_id',
+        testEntityId('usr', 'user_id'),
         'status',
         'access_level',
         'invitation_id',
@@ -330,7 +331,7 @@ describe('database setup', () => {
         'owner_nanohost_identity_id',
         'token_type',
         'scope',
-        'deployment_id',
+        testEntityId('dep', 'deployment_id'),
         'status',
         'issued_at',
         'expires_at',
@@ -344,7 +345,7 @@ describe('database setup', () => {
       ]);
       expect(listColumnNames(coreDb, 'nanohost_integration_identities')).toEqual([
         'identity_id',
-        'deployment_id',
+        testEntityId('dep', 'deployment_id'),
         'status',
         'created_at',
         'decommissioned_at',
@@ -352,7 +353,7 @@ describe('database setup', () => {
       expect(listColumnNames(coreDb, 'nanohost_runtime_targets')).toEqual([
         'target_id',
         'identity_id',
-        'deployment_id',
+        testEntityId('dep', 'deployment_id'),
         'connection_generation',
         'predecessor_fenced',
         'ready',
@@ -414,7 +415,7 @@ describe('database setup', () => {
         'harness_instance_id',
         'agent_session_id',
         'workspace_id',
-        'thread_id',
+        testEntityId('th', 'thread_id'),
         'agent_session_compatibility_key',
         'effective_setup_generation',
         'native_handle_state',
@@ -439,7 +440,13 @@ describe('database setup', () => {
         'copied_at',
       ]);
       const attemptColumns = listColumnNames(coreDb, 'scheduler_execution_attempts');
-      expect(attemptColumns).toEqual(expect.arrayContaining(['attempt_id', 'turn_id', 'phase']));
+      expect(attemptColumns).toEqual(
+        expect.arrayContaining([
+          testEntityId('attempt', 'attempt_id'),
+          testEntityId('tu', 'turn_id'),
+          'phase',
+        ])
+      );
       expect(attemptColumns).not.toEqual(
         expect.arrayContaining(['worker_control_token', 'worker_inference_token'])
       );
@@ -450,23 +457,23 @@ describe('database setup', () => {
           'trigger_actor_json',
           'server_admin_token_id',
           'workspace_id',
-          'thread_id',
-          'turn_id',
-          'turn_input',
+          testEntityId('th', 'thread_id'),
+          testEntityId('tu', 'turn_id'),
+          testEntityId('tu', 'turn_input'),
           'worker_storage_choice_json',
           'requested_agent_id',
           'status',
         ])
       );
       expect(listColumnNames(coreDb, 'worker_backend_sessions')).toEqual([
-        'attempt_id',
+        testEntityId('attempt', 'attempt_id'),
         'workspace_id',
-        'thread_id',
-        'turn_id',
+        testEntityId('th', 'thread_id'),
+        testEntityId('tu', 'turn_id'),
         'agent_session_id',
         'package_snapshot_id',
         'backend_kind',
-        'deployment_id',
+        testEntityId('dep', 'deployment_id'),
         'backend_version',
         'worker_image',
         'cell_target_id',
@@ -563,7 +570,7 @@ describe('database setup', () => {
   it('applies the User and Workspace setup sections idempotently', () => {
     const dataRoot = createDataRoot();
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'workspace_1');
+    const workspaceDb = openWorkspaceDb(dataRoot, testEntityId('ws', 'workspace_1'));
 
     try {
       applyScopedMigrations(userDb);
@@ -596,9 +603,9 @@ describe('database setup', () => {
       expect(listColumnNames(workspaceDb, 'capability_calls')).toEqual([
         'call_id',
         'workspace_id',
-        'thread_id',
-        'turn_id',
-        'item_id',
+        testEntityId('th', 'thread_id'),
+        testEntityId('tu', 'turn_id'),
+        testEntityId('it', 'item_id'),
         'agent_id',
         'agent_session_id',
         'request_id',
@@ -624,9 +631,9 @@ describe('database setup', () => {
       expect(listColumnNames(workspaceDb, 'usage_records')).toEqual([
         'usage_id',
         'workspace_id',
-        'thread_id',
-        'turn_id',
-        'item_id',
+        testEntityId('th', 'thread_id'),
+        testEntityId('tu', 'turn_id'),
+        testEntityId('it', 'item_id'),
         'capability_call_id',
         'request_id',
         'agent_id',
@@ -646,8 +653,8 @@ describe('database setup', () => {
       expect(listColumnNames(workspaceDb, 'worker_turn_checkpoints')).toEqual([
         'checkpoint_id',
         'workspace_id',
-        'thread_id',
-        'turn_id',
+        testEntityId('th', 'thread_id'),
+        testEntityId('tu', 'turn_id'),
         'goal_id',
         'task_id',
         'request_id',
@@ -663,7 +670,7 @@ describe('database setup', () => {
         'updated_at',
       ]);
       expect(listTableNames(workspaceDb)).not.toContain('session');
-      expect(workspaceDbPath(dataRoot, 'workspace_1')).toMatch(
+      expect(workspaceDbPath(dataRoot, testEntityId('ws', 'workspace_1'))).toMatch(
         /workspaces\/workspace_1\/db\/workspace\.sqlite$/
       );
     } finally {
@@ -698,7 +705,7 @@ describe('database setup', () => {
 
   it.each([
     ['workspace_registry', 'owner_user_id'],
-    ['workspace_members', 'user_id'],
+    ['workspace_members', testEntityId('usr', 'user_id')],
   ] as const)('restricts user deletion through %s.%s', (tableName, columnName) => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
@@ -924,9 +931,9 @@ describe('native Drizzle migrate', () => {
       insert('agent_session_runtime_bindings', {
         agent_session_runtime_binding_id: 'retained-binding',
         harness_instance_id: 'retained-harness',
-        agent_session_id: 'retained-session',
-        workspace_id: 'retained-workspace',
-        thread_id: 'retained-thread',
+        agent_session_id: testEntityId('as', 'retained-session'),
+        workspace_id: testEntityId('ws', 'retained-workspace'),
+        thread_id: testEntityId('th', 'retained-thread'),
         current_turn_id: 'retained-turn',
         current_attempt_id: 'retained-attempt',
         native_handle_digest: 'a'.repeat(64),
@@ -940,10 +947,10 @@ describe('native Drizzle migrate', () => {
       const before = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
       const indices = names.map((name) => sqlite.pragma(`index_list(${name})`));
       const binding = readNanoHostThreadAgentSessionBinding(coreDb, {
-        workspaceId: 'retained-workspace',
-        threadId: 'retained-thread',
+        workspaceId: testEntityId('ws', 'retained-workspace'),
+        threadId: testEntityId('th', 'retained-thread'),
       });
-      expect(binding).toEqual({ agentSessionId: 'retained-session' });
+      expect(binding).toEqual({ agentSessionId: testEntityId('as', 'retained-session') });
       expect(() =>
         sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
       ).toThrow();
@@ -960,8 +967,8 @@ describe('native Drizzle migrate', () => {
       expect(names.map((name) => sqlite.pragma(`index_list(${name})`))).toEqual(indices);
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
-          workspaceId: 'retained-workspace',
-          threadId: 'retained-thread',
+          workspaceId: testEntityId('ws', 'retained-workspace'),
+          threadId: testEntityId('th', 'retained-thread'),
         })
       ).toEqual(binding);
       applyNativeScopeMigrations(sqlite, 'core', folder);

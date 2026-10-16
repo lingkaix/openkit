@@ -23,6 +23,7 @@ import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -89,7 +90,7 @@ function createQuickChatProviderOptions() {
           routes: [
             {
               id: 'primary',
-              providerProfileId: 'ollama',
+              providerProfileId: testEntityId('usr', 'ollama'),
               providerModel: 'openai/gpt-5.2',
             },
           ],
@@ -106,7 +107,7 @@ function createQuickChatProviderOptions() {
       {
         defaultModel: 'openai/gpt-5.2',
         displayName: 'Ollama',
-        id: 'ollama',
+        id: testEntityId('usr', 'ollama'),
         kind: 'local' as const,
         models: ['openai/gpt-5.2'],
       },
@@ -257,7 +258,7 @@ describe('quick chat app API', () => {
       );
       expect(freshStop.status).toBe(409);
       await expect(freshStop.json()).resolves.toMatchObject({
-        code: 'turn_not_interruptible',
+        code: testEntityId('tu', 'turn_not_interruptible'),
       });
       expect(store.getTurnById(turn.id)).toEqual(retained);
       expect(
@@ -673,7 +674,10 @@ describe('quick chat app API', () => {
     const store = createDemoStore();
     const workerSetup = createTestAgentSetup({
       logicalModelId: 'quick-chat',
-      privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
+      privateRoute: {
+        providerProfileId: testEntityId('usr', 'ollama'),
+        providerModel: 'openai/gpt-5.2',
+      },
     });
     const states = [
       'ready',
@@ -692,7 +696,7 @@ describe('quick chat app API', () => {
         `Worker ${status}`
       );
       store.createAgentSession({
-        id: `as_${status}`,
+        id: testEntityId('as', `as_${status}`),
         agentId: workerSetup.manifest.id,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
@@ -830,13 +834,18 @@ describe('quick chat app API', () => {
     );
 
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({ code: 'thread_entry_path_mismatch' });
+    await expect(response.json()).resolves.toMatchObject({
+      code: testEntityId('th', 'thread_entry_path_mismatch'),
+    });
   });
 
   it('falls back only to the configured default Worker when Assistant is unavailable', async () => {
     const workerSetup = createTestAgentSetup({
       logicalModelId: 'quick-chat',
-      privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
+      privateRoute: {
+        providerProfileId: testEntityId('usr', 'ollama'),
+        providerModel: 'openai/gpt-5.2',
+      },
     });
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
@@ -979,7 +988,7 @@ describe('quick chat app API', () => {
       actor: parsed.turn.triggerActor,
     });
     expect(calls[0]).toMatchObject({
-      providerId: 'ollama',
+      providerId: testEntityId('usr', 'ollama'),
       request: {
         instructions: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT,
         input: [
@@ -1129,7 +1138,7 @@ describe('quick chat app API', () => {
     ).id;
     for (const status of ['in_progress', 'failed'] as const) {
       store.createItem({
-        id: `it_partial_${status}`,
+        id: testEntityId('it', `it_partial_${status}`),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: priorTurn,
@@ -2164,7 +2173,7 @@ describe('quick chat app API', () => {
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001'
       )
-      .find((item) => item.id === `it_chat_user_${accepted.turn.id}`);
+      .find((item) => item.id === testEntityId('it', `it_chat_user_${accepted.turn.id}`));
     if (userItem?.type !== 'user-message') {
       throw new Error('Expected the stored Chat user message.');
     }
@@ -2340,7 +2349,7 @@ describe('quick chat app API', () => {
           privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         }
       );
-      const artifactId = 'artifact_private_goal';
+      const artifactId = testEntityId('ar', 'artifact_private_goal');
       if (source === 'private-artifact') {
         const turn = store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -2510,7 +2519,7 @@ describe('quick chat app API', () => {
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
-      providerId: 'ollama',
+      providerId: testEntityId('usr', 'ollama'),
       request: {
         model: 'openai/gpt-5.2',
         messages: [
@@ -2943,12 +2952,12 @@ describe('quick chat app API', () => {
         expect(usage).toMatchObject({
           category: 'llm',
           model_id: 'quick-chat',
-          provider_ref: 'ollama',
+          provider_ref: testEntityId('usr', 'ollama'),
           quantity: 12,
           unit: 'tokens',
           workspace_id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
         });
-        expect(usage?.provider_ref).toBe('ollama');
+        expect(usage?.provider_ref).toBe(testEntityId('usr', 'ollama'));
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -3082,8 +3091,8 @@ describe('slice 1d round 2 Quick Chat deadline', () => {
     vi.useFakeTimers();
     const options = createQuickChatProviderOptions();
     options.gatewayConfig.logicalModels[0]!.routes.push({
-      id: 'backup',
-      providerProfileId: 'backup',
+      id: testEntityId('usr', 'backup'),
+      providerProfileId: testEntityId('usr', 'backup'),
       providerModel: 'openai/gpt-5.2',
     });
     const contexts: Array<Parameters<LLMGatewayProviderDispatcher['createChatCompletion']>[2]> = [];
@@ -3108,8 +3117,18 @@ describe('slice 1d round 2 Quick Chat deadline', () => {
       store: createDemoStore(),
       ...options,
       providerRegistry: new ProviderRegistry([
-        { id: 'ollama', displayName: 'Primary', kind: 'local', models: ['openai/gpt-5.2'] },
-        { id: 'backup', displayName: 'Backup', kind: 'local', models: ['openai/gpt-5.2'] },
+        {
+          id: testEntityId('usr', 'ollama'),
+          displayName: 'Primary',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+        {
+          id: testEntityId('usr', 'backup'),
+          displayName: 'Backup',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
       ]),
       llmGatewayDispatcher: { createChatCompletion: dispatch } as never,
       turnExecutor: new ThrowingTurnExecutor(),
@@ -3130,7 +3149,11 @@ describe('slice 1d round 2 Quick Chat deadline', () => {
       await vi.runAllTimersAsync();
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(200);
-      expect(dispatch.mock.calls.map(([p]) => p.id)).toEqual(['ollama', 'ollama', 'backup']);
+      expect(dispatch.mock.calls.map(([p]) => p.id)).toEqual([
+        testEntityId('usr', 'ollama'),
+        testEntityId('usr', 'ollama'),
+        testEntityId('usr', 'backup'),
+      ]);
       expect(contexts.map((c) => c?.transport?.deadline)).toEqual([
         before + 120000,
         before + 120000,

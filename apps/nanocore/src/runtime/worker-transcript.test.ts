@@ -8,6 +8,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
@@ -953,7 +954,7 @@ function prepareCandidate(
     store: fixture.store,
     workspaceDb: fixture.workspaceDb,
     environmentPackage: fixture.environmentPackage,
-    artifactId: 'worker-artifact-candidate',
+    artifactId: testEntityId('ar', 'worker-artifact-candidate'),
     requestId: 'request_file',
     recordedAt: '2026-10-05T00:00:00.000Z',
     metadata: { kind: 'file', mediaType: 'text/markdown', title: 'Candidate' },

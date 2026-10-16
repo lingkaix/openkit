@@ -37,6 +37,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -135,7 +136,7 @@ function createRemoteGitProductFixture(
     {
       defaultModel: 'openai/gpt-5.2',
       displayName: 'Simulator remote Git inference',
-      id: 'agent-openrouter',
+      id: testEntityId('usr', 'agent-openrouter'),
       kind: 'local',
       models: ['openai/gpt-5.2'],
     },
@@ -249,7 +250,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator inference',
-          id: 'agent-openrouter',
+          id: testEntityId('usr', 'agent-openrouter'),
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -395,7 +396,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator continuity inference',
-          id: 'agent-openrouter',
+          id: testEntityId('usr', 'agent-openrouter'),
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -513,7 +514,7 @@ describe('SimulatedTurnExecutor', () => {
       {
         defaultModel: 'openai/gpt-5.2',
         displayName: 'Simulator continuity inference',
-        id: 'agent-openrouter',
+        id: testEntityId('usr', 'agent-openrouter'),
         kind: 'local',
         models: ['openai/gpt-5.2'],
       },
@@ -730,7 +731,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator backend inference',
-          id: 'agent-openrouter',
+          id: testEntityId('usr', 'agent-openrouter'),
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -1217,7 +1218,7 @@ describe('SimulatedTurnExecutor', () => {
     expect(store.getTurnById(turn.id)).toMatchObject({
       agentId: selectedAgentSetup.manifest.id,
       agentProfileId: 'review',
-      agentSessionId: `session_sim_turn_${turn.id}`,
+      agentSessionId: testEntityId('as', `session_sim_turn_${turn.id}`),
     });
     expect(store.getAgentSession(`session_sim_turn_${turn.id}`).agentId).toBe(
       selectedAgentSetup.manifest.id
@@ -1360,7 +1361,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator inference',
-          id: 'agent-openrouter',
+          id: testEntityId('usr', 'agent-openrouter'),
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -1391,7 +1392,7 @@ describe('SimulatedTurnExecutor', () => {
       const turn = (await turnResponse.json()) as { id: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
-      const commandItemId = `it_command_${turn.id}`;
+      const commandItemId = testEntityId('it', `it_command_${turn.id}`);
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
         const data = event.data as { item?: { id: string }; itemId?: string };
         return (data.itemId ?? data.item?.id) === commandItemId;

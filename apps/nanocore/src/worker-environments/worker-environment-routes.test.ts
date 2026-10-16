@@ -8,6 +8,7 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -167,10 +168,10 @@ describe('Worker environment routes', () => {
         {},
         {
           body: JSON.stringify({
-            administrationThreadId: 'thread_admin',
+            administrationThreadId: testEntityId('th', 'thread_admin'),
             requestId: REQUEST_ID,
             recoverFrom: {
-              artifactId: 'artifact_candidate',
+              artifactId: testEntityId('ar', 'artifact_candidate'),
               artifactVersion: 1,
               contentDigest: `sha256:${'b'.repeat(64)}`,
             },
@@ -200,10 +201,10 @@ describe('Worker environment routes', () => {
     });
     registerFamilyFixture({ app, operations: null, prepare });
     const input = {
-      administrationThreadId: 'thread_admin',
+      administrationThreadId: testEntityId('th', 'thread_admin'),
       requestId: REQUEST_ID,
       recoverFrom: {
-        artifactId: 'artifact_candidate',
+        artifactId: testEntityId('ar', 'artifact_candidate'),
         artifactVersion: 1,
         contentDigest: `sha256:${'b'.repeat(64)}`,
       },

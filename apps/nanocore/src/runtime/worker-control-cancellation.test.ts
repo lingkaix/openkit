@@ -13,6 +13,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -57,7 +58,7 @@ import {
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
 const NOW = '2026-07-13T00:00:06.000Z';
-const ATTEMPT_ID = 'attempt_cancellation';
+const ATTEMPT_ID = testEntityId('attempt', 'attempt_cancellation');
 const BINDING = 'lease-binding:cancellation';
 const CONTROL_TOKEN = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const INFERENCE_TOKEN = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
@@ -90,7 +91,7 @@ function createFixture() {
     resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'as_cancellation',
+      agentSessionId: testEntityId('as', 'as_cancellation'),
       backend: { kind: 'openshell' },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_cancellation',

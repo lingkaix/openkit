@@ -13,6 +13,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -236,8 +237,8 @@ describe('Pending Request operations', () => {
       });
       recordTestExecutionAttempt(fixture.coreDb, {
         entry,
-        attemptId: `lease_${fixture.turn.id}`,
-        agentSessionId: `as_${fixture.turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+        agentSessionId: testEntityId('as', `as_${fixture.turn.id}`),
         inputRef: `pkg_${fixture.turn.id}`,
         bindingRef: `binding_${fixture.turn.id}`,
         sessionCompatibilityKey: `session_${fixture.turn.id}`,
@@ -284,8 +285,8 @@ describe('Pending Request operations', () => {
       });
       recordTestExecutionAttempt(fixture.coreDb, {
         entry,
-        attemptId: `lease_${fixture.turn.id}`,
-        agentSessionId: `as_${fixture.turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+        agentSessionId: testEntityId('as', `as_${fixture.turn.id}`),
         inputRef: `pkg_${fixture.turn.id}`,
         bindingRef: `binding_${fixture.turn.id}`,
         sessionCompatibilityKey: `session_${fixture.turn.id}`,

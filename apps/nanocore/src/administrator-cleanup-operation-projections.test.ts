@@ -139,7 +139,7 @@ function deletion(f: ReturnType<typeof fixture>, requestId = REQUEST) {
 }
 
 /** Creates a real prepared Scheduler attempt with no execution or Host contact. */
-function attempt(coreDb: CoreDb, label = 'attempt_cleanup_operation') {
+function attempt(coreDb: CoreDb, label = testEntityId('attempt', 'attempt_cleanup_operation')) {
   const id = testEntityId('attempt', label);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -451,7 +451,9 @@ describe('administrator cleanup public operation composition', () => {
     await expect(f.native()).rejects.toMatchObject({ status: 403 });
     const http = await f.json();
     expect(http.status).toBe(403);
-    expect(JSON.stringify(await http.json())).not.toContain('attempt_cleanup_operation');
+    expect(JSON.stringify(await http.json())).not.toContain(
+      testEntityId('attempt', 'attempt_cleanup_operation')
+    );
   });
 
   it('denies the next read after the current administrator is disabled', async () => {

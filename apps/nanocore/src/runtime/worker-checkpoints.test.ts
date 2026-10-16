@@ -2,13 +2,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
 import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
 } from '../capability/usage-ledger.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   listWorkspaceRuntimeEvidence,
   recordWorkerBackendTeardownEvidence,
@@ -193,7 +193,7 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:worker_demo',
         stage: 'running_worker',
         iteration: 2,
-        workerSessionId: 'session_demo',
+        workerSessionId: testEntityId('as', 'session_demo'),
         contextDigest: 'ctxpkg_sha256_abc',
         stopReason: null,
         diagnosticsSummary: 'worker is running',
@@ -212,7 +212,7 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:worker_demo',
         stage: 'running_worker',
         iteration: 2,
-        workerSessionId: 'session_demo',
+        workerSessionId: testEntityId('as', 'session_demo'),
         contextDigest: 'ctxpkg_sha256_abc',
         replayInstruction: false,
         createdAt: '2026-05-31T00:00:00.000Z',
@@ -392,11 +392,11 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:tu_00000000-0000-784a-b5cd-eb5f8f622c05',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: 'session_demo',
+        workerSessionId: testEntityId('as', 'session_demo'),
         contextDigest: 'sha256:ctx_demo',
         diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics({
           itemIds: ['it_00000000-0000-7a37-91be-d019992bbed5'],
-          artifactIds: ['artifact_worker_result'],
+          artifactIds: [testEntityId('ar', 'artifact_worker_result')],
         }),
         now: () => '2026-05-31T00:00:00.000Z',
       });
@@ -438,7 +438,7 @@ describe('worker checkpoint storage', () => {
           turnId: 'tu_00000000-0000-784a-b5cd-eb5f8f622c05',
           goalId: 'goal_demo',
           taskId: 'task_demo',
-          agentSessionId: 'session_demo',
+          agentSessionId: testEntityId('as', 'session_demo'),
           phase: 'checkpoint',
           summary: 'Worker checkpoint terminal: completed.',
           outcome: 'succeeded',
@@ -463,7 +463,7 @@ describe('worker checkpoint storage', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-784a-b5cd-eb5f8f622c05',
-          agentSessionId: 'session_demo',
+          agentSessionId: testEntityId('as', 'session_demo'),
           capabilityId: 'runtime.worker_turn',
           family: 'runtime',
           operation: 'worker.checkpoint.terminal',
@@ -480,7 +480,7 @@ describe('worker checkpoint storage', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-784a-b5cd-eb5f8f622c05',
-          agentSessionId: 'session_demo',
+          agentSessionId: testEntityId('as', 'session_demo'),
           responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
           category: 'runtime',
           unit: 'sandbox_sessions',
@@ -509,11 +509,11 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:tu_00000000-0000-7a0d-b527-6df9c8763406',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: 'session_backend',
+        workerSessionId: testEntityId('as', 'session_backend'),
         now: () => '2026-05-31T00:00:00.000Z',
       });
       recordWorkerBackendTeardownEvidence(workspaceDb, {
-        agentSessionId: 'session_backend',
+        agentSessionId: testEntityId('as', 'session_backend'),
         backendType: 'openshell',
         backendVersion: '0.0.80',
         completedAt: '2026-05-31T00:09:00.000Z',
@@ -547,7 +547,7 @@ describe('worker checkpoint storage', () => {
         )
       ).toEqual([
         expect.objectContaining({
-          agentSessionId: 'session_backend',
+          agentSessionId: testEntityId('as', 'session_backend'),
           backendType: 'openshell',
           backendVersion: '0.0.80',
           goalId: 'goal_backend',

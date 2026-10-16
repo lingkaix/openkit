@@ -48,6 +48,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
@@ -463,7 +464,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
   });
   recordTestExecutionAttempt(f.coreDb, {
     entry,
-    attemptId: 'lease_operation',
+    attemptId: testEntityId('attempt', 'lease_operation'),
     agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     inputRef: environmentPackage.snapshotId,
     bindingRef: 'binding_operation',
@@ -1006,7 +1007,7 @@ describe('operation projection cutover', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-7f0b-950b-062b02380791',
-          agentSessionId: 'session_wrong',
+          agentSessionId: testEntityId('as', 'session_wrong'),
           packageSnapshotId: 'package_wrong',
         },
       };

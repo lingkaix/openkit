@@ -9,7 +9,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-
 import { AgentSessionSchema, RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
@@ -19,6 +18,7 @@ import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { parseCanonicalWorkspaceHistory } from '../storage/workspace-file-records.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { FsStore } from './store.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -111,7 +111,7 @@ function createImportedArtifact(
   const contentDigest = claimedDigest ?? artifactDigest(body);
 
   return store.createArtifact({
-    id: `ar_${requestId}`,
+    id: testEntityId('ar', `ar_${requestId}`),
     workspaceId,
     threadId: null,
     turnId: null,
@@ -436,10 +436,13 @@ describe('FsStore persistence', () => {
       LOCAL_ACTOR
     );
     const currentRequestId = 'artifact-save-revision-lineage';
-    const currentReferenceId = `it_artifact_${createHash('sha256')
-      .update(JSON.stringify([artifact.id, communicatingTurn.id]), 'utf8')
-      .digest('hex')
-      .slice(0, 24)}`;
+    const currentReferenceId = testEntityId(
+      'it',
+      `it_artifact_${createHash('sha256')
+        .update(JSON.stringify([artifact.id, communicatingTurn.id]), 'utf8')
+        .digest('hex')
+        .slice(0, 24)}`
+    );
     const currentReference = {
       id: currentReferenceId,
       workspaceId: workspace.id,
@@ -614,7 +617,7 @@ describe('FsStore persistence', () => {
     } catch (caught) {
       error = caught;
     }
-    expect(error).toMatchObject({ code: 'thread_busy', status: 409 });
+    expect(error).toMatchObject({ code: testEntityId('th', 'thread_busy'), status: 409 });
     expect(store.listThreadTurns(workspace.id, busyThread.id)).toHaveLength(1);
 
     const firstIntroduction = store.introduceArtifact(firstInput);

@@ -11,6 +11,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -61,7 +62,7 @@ describe('Generative UI App API', () => {
       }
     );
     const sourceItem = store.createItem({
-      id: `it_${turn.id}_source`,
+      id: testEntityId('it', `it_${turn.id}_source`),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,

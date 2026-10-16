@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -18,6 +19,7 @@ import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js'
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
@@ -131,7 +133,12 @@ describe('workspace derived index rebuild', () => {
         targetId: sourceId,
         resolved: false,
       },
-      { id: 'missing', reference: `source:${missingId}`, targetId: missingId, resolved: false },
+      {
+        id: testEntityId('ws', 'missing'),
+        reference: `source:${missingId}`,
+        targetId: missingId,
+        resolved: false,
+      },
       {
         id: 'missing-pinned',
         reference: `source:${missingId}@${digest}`,
@@ -755,9 +762,9 @@ describe('workspace derived index rebuild', () => {
   it('fails closed when the workspace projection is missing', () => {
     const dataRoot = createDataRoot();
 
-    expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'missing' })).toThrow(
-      'Workspace projection is missing: workspaces/missing/workspace-record.json'
-    );
+    expect(() =>
+      rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: testEntityId('ws', 'missing') })
+    ).toThrow('Workspace projection is missing: workspaces/missing/workspace-record.json');
   });
 
   it('rejects a symlinked canonical subtree instead of reading external content', () => {
@@ -1428,7 +1435,7 @@ describe('workspace derived index rebuild', () => {
         {
           fromId: 'alpha',
           target: './missing.md',
-          toId: 'missing',
+          toId: testEntityId('ws', 'missing'),
           resolved: false,
         },
       ]),

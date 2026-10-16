@@ -10,6 +10,7 @@ import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -160,8 +161,8 @@ function createCoreAudienceFixture() {
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease_${approvalTurn.id}`,
-    agentSessionId: `as_${approvalTurn.id}`,
+    attemptId: testEntityId('attempt', `lease_${approvalTurn.id}`),
+    agentSessionId: testEntityId('as', `as_${approvalTurn.id}`),
     inputRef: `pkg_${approvalTurn.id}`,
     bindingRef: `binding_${approvalTurn.id}`,
     sessionCompatibilityKey: 'audience-fixture',
@@ -246,7 +247,7 @@ function seedCompletedSurface(
   store.createItem({
     completedAt: STAMP,
     createdAt: STAMP,
-    id: `it_${label}`,
+    id: testEntityId('it', `it_${label}`),
     status: 'completed',
     text: `${label} needle content`,
     threadId: thread.id,
@@ -654,7 +655,9 @@ describe('core Thread audience', () => {
         if (row.headers === admin) {
           if (row.path.endsWith('turn.start')) {
             expect(response.status).toBe(409);
-            expect(await response.json()).toMatchObject({ code: 'thread_busy' });
+            expect(await response.json()).toMatchObject({
+              code: testEntityId('th', 'thread_busy'),
+            });
             row.after();
           } else {
             expect(response.status).toBe(200);

@@ -21,6 +21,7 @@ import {
   createAppWithWorkspaceAuthority,
 } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -215,7 +216,7 @@ function fixture(
   vi.spyOn(executor, 'startTurn');
   const providerRegistry = new ProviderRegistry([
     {
-      id: 'agent-openrouter',
+      id: testEntityId('usr', 'agent-openrouter'),
       displayName: 'Port fixture',
       kind: 'local',
       models: ['openai/gpt-5.2'],
@@ -241,7 +242,7 @@ function fixture(
     }),
   };
   const queue = (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
-    const turnId = `turn_port_${suffix}`;
+    const turnId = testEntityId('tu', `turn_port_${suffix}`);
     if (threadId !== 'th_00000000-0000-7000-8000-000000000001')
       store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
     store.createTurn(
@@ -346,7 +347,7 @@ describe('execution backend port through real Core coordination', () => {
       },
     });
     const first = f.queue('native-first');
-    const second = f.queue('native-second', 'thread_native_second');
+    const second = f.queue('native-second', testEntityId('th', 'thread_native_second'));
     const input = {
       ...f.dispatchInput,
       now: () => new Date().toISOString(),
@@ -546,10 +547,13 @@ describe('execution backend port through real Core coordination', () => {
         attemptId,
         agentSessionId: sessionId,
       });
-      await acquire(f.db, candidateFor(control, 'control-attempt', 'control-session'));
+      await acquire(
+        f.db,
+        candidateFor(control, testEntityId('attempt', 'control-attempt'), 'control-session')
+      );
       expect(attempts(f.db)).toContainEqual(
         expect.objectContaining({
-          attempt_id: 'control-attempt',
+          attempt_id: testEntityId('attempt', 'control-attempt'),
           phase: 'open',
           turn_id: control.turnId,
         })
@@ -587,13 +591,14 @@ describe('execution backend port through real Core coordination', () => {
       const close = attemptRecords.closeSchedulerExecutionAttemptWithoutEffects;
       expect(close).toBeTypeOf('function');
       await close(f.db, {
-        attemptId: 'control-attempt',
+        attemptId: testEntityId('attempt', 'control-attempt'),
         cause: 'turn-start-failed',
         noOutstandingEffects: true,
       });
-      expect(attempts(f.db).find((row) => row.attempt_id === 'control-attempt')?.phase).toBe(
-        'closed'
-      );
+      expect(
+        attempts(f.db).find((row) => row.attempt_id === testEntityId('attempt', 'control-attempt'))
+          ?.phase
+      ).toBe('closed');
       // Acquisition made this control admitted; retain that history after its no-effect close.
       expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
       const setup = createTestAgentSetup();
@@ -725,7 +730,7 @@ describe('execution backend port through real Core coordination', () => {
 
   it.each([
     'missing',
-    'stale-attempt',
+    testEntityId('attempt', 'stale-attempt'),
     'wrong-operation',
     'wrong-backend',
     'wrong-binding',
@@ -738,7 +743,9 @@ describe('execution backend port through real Core coordination', () => {
       const original = f.effectCalls[0]!;
       const correlation = {
         ...original,
-        ...(kind === 'stale-attempt' ? { attemptId: 'stale-attempt' } : {}),
+        ...(kind === testEntityId('attempt', 'stale-attempt')
+          ? { attemptId: testEntityId('attempt', 'stale-attempt') }
+          : {}),
         ...(kind === 'wrong-operation' ? { operationId: 'wrong-operation' } : {}),
         ...(kind === 'wrong-backend' ? { backendId: 'other-backend' } : {}),
         ...(kind === 'wrong-binding' ? { bindingRef: 'other-binding' } : {}),

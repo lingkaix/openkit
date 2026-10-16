@@ -24,6 +24,7 @@ import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { assembleAssistantCommandRun, runAssistantCommand } from './assistant-command-run.js';
@@ -110,7 +111,7 @@ async function fixture(selected = true, description?: string) {
       (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
       VALUES (?, 'skill-reader', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
     .run(workspace.id, timestamp, timestamp, timestamp);
-  const actor: Actor = { kind: 'session', userId: 'skill-reader' };
+  const actor: Actor = { kind: 'session', userId: testEntityId('usr', 'skill-reader') };
   const thread = store.createThread(workspace.id, 'Assistant command');
   const turn = store.createTurn(
     workspace.id,
@@ -419,7 +420,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
       workspaceId: f.workspaceId,
-      responsibleUserId: 'skill-reader',
+      responsibleUserId: testEntityId('usr', 'skill-reader'),
       requestId: null,
       threadId: f.threadId,
       turnId: f.turn.id,
@@ -516,7 +517,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId)).toEqual([
       expect.objectContaining({
         capabilityCallId: calls[0]!.id,
-        responsibleUserId: 'skill-reader',
+        responsibleUserId: testEntityId('usr', 'skill-reader'),
       }),
     ]);
     expect(
@@ -575,7 +576,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       expect(records.filter((record) => record.capabilityCallId === call.id)).toEqual([
         expect.objectContaining({
           requestId: null,
-          responsibleUserId: 'skill-reader',
+          responsibleUserId: testEntityId('usr', 'skill-reader'),
           workspaceId: f.workspaceId,
           threadId: f.threadId,
           turnId: f.turn.id,
@@ -777,7 +778,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           f.workspaceId,
           f.threadId,
           'Another turn.',
-          { kind: 'user', id: 'skill-reader' },
+          { kind: 'user', id: testEntityId('usr', 'skill-reader') },
           null,
           { captureCoverage: { scope: 'server', value: 'off' } }
         ),
@@ -787,7 +788,10 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         ...input,
         gateway: {
           ...input.gateway,
-          promptCacheScope: { sessionId: f.threadId, workspaceId: 'another-workspace' },
+          promptCacheScope: {
+            sessionId: f.threadId,
+            workspaceId: testEntityId('ws', 'another-workspace'),
+          },
         },
       };
     if (condition === 'revoked')

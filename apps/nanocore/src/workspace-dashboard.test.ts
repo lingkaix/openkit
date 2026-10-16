@@ -9,6 +9,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -168,7 +169,7 @@ describe('workspace dashboard app API', () => {
     });
     store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
     store.createAgentSession({
-      id: `session_${activeThread.id}`,
+      id: testEntityId('as', `session_${activeThread.id}`),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: activeThread.id,

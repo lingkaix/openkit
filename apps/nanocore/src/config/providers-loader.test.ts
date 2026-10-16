@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,7 +12,7 @@ import { join } from 'node:path';
 
 import { ProviderProfileSchema } from '@openkit/config-schema';
 import { isEntityId } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   assertConfiguredModelsHaveKnownContext,
@@ -229,6 +230,38 @@ describe('loadProviderProfiles', () => {
     const references = [...profiles.map((profile) => profile.secretRef), exampleParsed.secretRef];
     expect(new Set(references).size).toBe(references.length);
     expect(loadProviderProfiles(dataRoot)).toEqual(profiles);
+  });
+
+  it('preserves published Provider candidates when a missing template cannot allocate', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-template-entropy-'));
+    try {
+      ensureLayout(dataRoot);
+      const providersRoot = join(dataRoot, 'config', 'providers');
+      const missing = join(providersRoot, 'openai-default.provider.jsonc');
+      rmSync(missing);
+      const retained = readdirSync(providersRoot).map(
+        (name) => [name, readFileSync(join(providersRoot, name), 'utf8')] as const
+      );
+      const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
+        throw new Error('Synthetic Provider template entropy failure.');
+      });
+      try {
+        expect(() => ensureLayout(dataRoot)).toThrow(
+          'Synthetic Provider template entropy failure.'
+        );
+      } finally {
+        entropy.mockRestore();
+      }
+      expect(existsSync(missing)).toBe(false);
+      for (const [name, bytes] of retained)
+        expect(readFileSync(join(providersRoot, name), 'utf8')).toBe(bytes);
+      ensureLayout(dataRoot);
+      const profile = parseJsoncObject(readFileSync(missing, 'utf8'), 'provider');
+      expect(String(profile.secretRef).startsWith('vault://')).toBe(true);
+      expect(isEntityId('vault', String(profile.secretRef).slice('vault://'.length))).toBe(true);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('loads JSONC provider profiles from data/config/providers', () => {

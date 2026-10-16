@@ -21,6 +21,7 @@ import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { readWorkspaceDeletionRequest } from './workspace-deletion-request.js';
@@ -88,7 +89,7 @@ it('allows the administrator recovery-state read through a closed mutation gate 
   const f = fixture(undefined, 'server');
   try {
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'target',
+      ownerUserId: testEntityId('usr', 'target'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -164,7 +165,7 @@ function fixture(
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const now = Date.now();
-  for (const id of ['member', 'target'])
+  for (const id of ['member', testEntityId('usr', 'target')])
     coreDb.sqlite
       .prepare(
         "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES (?, ?, ?, 0, ?, ?, 'human', 'active')"
@@ -342,7 +343,7 @@ it.each(
       ...(id === 'workspace.member-access-change' || id === 'workspace.member-remove'
         ? { targetUserId: 'member' }
         : id === 'user.disable'
-          ? { targetUserId: 'target' }
+          ? { targetUserId: testEntityId('usr', 'target') }
           : {}),
     };
     const canonical = await state.app.request(
@@ -365,14 +366,14 @@ it.each([
   const f = fixture();
   try {
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'target',
+      ownerUserId: testEntityId('usr', 'target'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const actor: Actor = {
       kind,
-      userId: 'target',
+      userId: testEntityId('usr', 'target'),
       ...(kind === 'token'
         ? { tokenId: admin.record.tokenId, tokenScope: 'server-admin' as const }
         : {}),
@@ -389,7 +390,11 @@ it.each([
       kind: 'public',
       actor,
     });
-    expect(output.member).toMatchObject({ userId: 'member', accessLevel: 'viewer', revision: 2 });
+    expect(output.member).toMatchObject({
+      userId: testEntityId('usr', 'member'),
+      accessLevel: 'viewer',
+      revision: 2,
+    });
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
@@ -398,7 +403,7 @@ it.each([
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, 'target')
+        .get(f.workspaceId, testEntityId('usr', 'target'))
     ).toBeUndefined();
     expect(
       listServerAuditEvents(f.coreDb).filter((event) => event.requestId === requestId)
@@ -427,7 +432,7 @@ it.each([
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, 'target')
+        .get(f.workspaceId, testEntityId('usr', 'target'))
     ).toBeUndefined();
     const transfer = await f.invoke(
       'workspace.ownership-transfer',
@@ -463,7 +468,7 @@ it.each([
         deniedId,
         {
           coreId: 'server',
-          actorId: 'target',
+          actorId: testEntityId('usr', 'target'),
           targetWorkspaceId: f.workspaceId,
           targetUserId: 'member',
         },
@@ -550,19 +555,21 @@ it('refuses HTTP user.disable during closed product admission without disabling 
   const f = fixture(() => readiness);
   try {
     const requestId = randomUUID();
-    const before = f.coreDb.sqlite.prepare('SELECT * FROM users WHERE id = ?').get('target');
+    const before = f.coreDb.sqlite
+      .prepare('SELECT * FROM users WHERE id = ?')
+      .get(testEntityId('usr', 'target'));
     const response = await f.app.request(
       ...operationRequest(
         'user.disable',
-        { targetUserId: 'target' },
+        { targetUserId: testEntityId('usr', 'target') },
         { body: JSON.stringify({ requestId }) }
       )
     );
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM users WHERE id = ?').get('target')).toEqual(
-      before
-    );
+    expect(
+      f.coreDb.sqlite.prepare('SELECT * FROM users WHERE id = ?').get(testEntityId('usr', 'target'))
+    ).toEqual(before);
     expect(
       f.store.getCommandRequest(
         'user.disable',
@@ -570,7 +577,7 @@ it('refuses HTTP user.disable during closed product admission without disabling 
         {
           coreId: 'server',
           actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          targetUserId: 'target',
+          targetUserId: testEntityId('usr', 'target'),
         },
         f.coreDb
       )
@@ -584,7 +591,7 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
   const f = fixture(undefined, 'server');
   try {
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'target',
+      ownerUserId: testEntityId('usr', 'target'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -772,7 +779,7 @@ it('preserves private-history export refusal during administrator Workspace dele
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'target',
+      ownerUserId: testEntityId('usr', 'target'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',

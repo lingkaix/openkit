@@ -20,6 +20,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -130,7 +131,9 @@ describe('Agent public native environment administration', () => {
       })
     );
     f.admit();
-    expect(() => f.service.view({ kind: 'session', userId: 'foreign' }, f.fileId)).toThrow();
+    expect(() =>
+      f.service.view({ kind: 'session', userId: testEntityId('usr', 'foreign') }, f.fileId)
+    ).toThrow();
     expect(f.service.view(actor, f.fileId)).toMatchObject({
       defaults: values,
       desired: { values: { DEFAULT: 'image', EMPTY: '' } },
@@ -224,7 +227,7 @@ describe('Agent public native environment administration', () => {
     ).toThrow('measured Sandbox');
     for (const row of [thread, hidden])
       openNanoHostAgentSessionBinding(f.db, {
-        agentSessionId: `as_${row.id.slice(3)}`,
+        agentSessionId: testEntityId('as', `as_${row.id.slice(3)}`),
         agentSessionRuntimeBindingId: `binding-${row.id}`,
         agentSessionCompatibilityKey: 'c'.repeat(64),
         effectiveSetupGeneration: 1,
@@ -246,7 +249,7 @@ describe('Agent public native environment administration', () => {
     const body = {
       adapterId: 'pi',
       agentSessionCompatibilityKey: 'c'.repeat(64),
-      agentSessionId: `as_${thread.id.slice(3)}`,
+      agentSessionId: testEntityId('as', `as_${thread.id.slice(3)}`),
       agentSessionRuntimeBindingId: `binding-${thread.id}`,
       effectiveSetupGeneration: 1,
       resume: null,
@@ -361,7 +364,7 @@ describe('Agent public native environment administration', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).overrides).toEqual({ EMPTY: '' });
     expect(readFileSync(f.path, 'utf8')).not.toContain('inert request metadata');
-    viewer = { kind: 'session', userId: 'foreign' };
+    viewer = { kind: 'session', userId: testEntityId('usr', 'foreign') };
     expect(
       (
         await app.request(

@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import {
   existsSync,
   mkdirSync,
@@ -12,11 +13,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-
 import { describe, expect, it, vi } from 'vitest';
-
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from '../runtime/feedback.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   readEncryptedFileVaultText,
   writeEncryptedFileVaultJsonAtomically,
@@ -214,7 +214,7 @@ describe('direct canonical write boundaries', () => {
   ] as const)('rejects a symlinked staged source %s parent without writing outside', (family) => {
     const { store, workspace } = createFixture(`openkit-staged-source-${family}-`);
     const workspaceRoot = mkdtempSync(join(tmpdir(), `openkit-staged-source-root-${family}-`));
-    const sourceId = `ks_staged_${family}_symlink`;
+    const sourceId = testEntityId('ks', `ks_staged_${family}_symlink`);
     const source = knowledgeSource(workspace.id, sourceId);
     const outsideRoot = installOutsideParent(
       join(workspaceRoot, 'sources', family, sourceId),
@@ -322,7 +322,7 @@ describe('direct canonical write boundaries', () => {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,

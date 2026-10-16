@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
@@ -23,6 +22,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
@@ -667,7 +667,7 @@ function admittedWorker(
           gatewayConfig: createTestGatewayConfig(),
           providerRegistry: new ProviderRegistry([
             {
-              id: 'agent-openrouter',
+              id: testEntityId('usr', 'agent-openrouter'),
               displayName: 'Fixture',
               kind: 'local',
               baseUrl: 'http://127.0.0.1:11434/v1',

@@ -14,6 +14,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -205,7 +206,7 @@ describe('search app API', () => {
         content: `${prefix} visibility needle content`,
       });
       store.createArtifact({
-        id: `ar_search_${prefix}`,
+        id: testEntityId('ar', `ar_search_${prefix}`),
         workspaceId: workspace.id,
         threadId: thread.id,
         turnId: turn.id,
@@ -227,7 +228,7 @@ describe('search app API', () => {
         updatedAt: timestamp,
       });
       store.createItem({
-        id: `it_search_${prefix}`,
+        id: testEntityId('it', `it_search_${prefix}`),
         workspaceId: workspace.id,
         threadId: thread.id,
         turnId: turn.id,

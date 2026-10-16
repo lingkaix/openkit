@@ -48,6 +48,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -362,7 +363,7 @@ function writeReloadableModelCatalog(dataRoot: string): void {
     `${JSON.stringify(
       {
         displayName: 'Worker environment fixture provider',
-        id: 'worker-environment-fixture',
+        id: testEntityId('usr', 'worker-environment-fixture'),
         kind: 'local',
         models: ['openai/gpt-5.2'],
       },
@@ -383,9 +384,9 @@ function writeReloadableModelCatalog(dataRoot: string): void {
             id: 'smart',
             routes: [
               {
-                id: 'worker-environment-fixture',
+                id: testEntityId('usr', 'worker-environment-fixture'),
                 providerModel: 'openai/gpt-5.2',
-                providerProfileId: 'worker-environment-fixture',
+                providerProfileId: testEntityId('usr', 'worker-environment-fixture'),
               },
             ],
           },
@@ -421,7 +422,7 @@ function attachResidentStorage(input: {
     )
     .run('a'.repeat(64), now);
   const created = createWorkerStorageBinding(input.coreDb, {
-    deploymentId: 'deployment_local',
+    deploymentId: testEntityId('dep', 'deployment_local'),
     layout: STORAGE_LAYOUT,
     now,
     runtimeTargetId: 'target_local',
@@ -521,7 +522,7 @@ describe('Worker environment App composition', () => {
       const administrationThread = store.createThread(
         privateWorkspace.id,
         'Administration',
-        'thread_worker_environment_app',
+        testEntityId('th', 'thread_worker_environment_app'),
         'administration',
         { privateOwnerUserId: USER_ID, visibility: 'private' }
       );
@@ -754,7 +755,7 @@ describe('Worker environment App composition', () => {
       const foreignThread = store.createThread(
         foreignHome.id,
         'Foreign administration',
-        'thread_foreign_administration',
+        testEntityId('th', 'thread_foreign_administration'),
         'administration',
         { visibility: 'private', privateOwnerUserId: foreignUserId }
       );
@@ -769,7 +770,7 @@ describe('Worker environment App composition', () => {
         ['worker-environment.recover', logicalRecovery],
       ] as const) {
         for (const [secret, refusedInput, status, code] of [
-          [workspaceToken.secret, input, 403, 'deployment_admin_required'],
+          [workspaceToken.secret, input, 403, testEntityId('dep', 'deployment_admin_required')],
           [
             foreignAdmin.secret,
             operation === 'worker-environment.recover'
@@ -949,7 +950,7 @@ describe('Worker environment App composition', () => {
       const administrationThread = store.createThread(
         privateWorkspace.id,
         'Administration',
-        'thread_worker_environment_replacement',
+        testEntityId('th', 'thread_worker_environment_replacement'),
         'administration',
         { privateOwnerUserId: USER_ID, visibility: 'private' }
       );
@@ -993,7 +994,7 @@ describe('Worker environment App composition', () => {
         logicalModelId: 'smart',
         privateRoute: {
           providerModel: 'openai/gpt-5.2',
-          providerProfileId: 'worker-environment-fixture',
+          providerProfileId: testEntityId('usr', 'worker-environment-fixture'),
         },
       } as const;
       const agentSetup = createTestAgentSetup(agentSetupOptions);
@@ -1011,7 +1012,7 @@ describe('Worker environment App composition', () => {
           {
             defaultModel: 'openai/gpt-5.2',
             displayName: 'Worker environment fixture provider',
-            id: 'worker-environment-fixture',
+            id: testEntityId('usr', 'worker-environment-fixture'),
             kind: 'local',
             models: ['openai/gpt-5.2'],
           },

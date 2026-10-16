@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { openWorkspaceDb } from './db.js';
 import { applyGoalCutover, removeGoalSandboxPin } from './goal-cutover.js';
 import { applyScopedMigrations } from './migrate.js';
@@ -71,7 +72,7 @@ describe('Goal one-way cutover', () => {
         .run(
           'ws_00000000-0000-7509-8702-098e8909b075',
           `arev_${'a'.repeat(24)}`,
-          'artifact_kept',
+          testEntityId('ar', 'artifact_kept'),
           1,
           `sha256:${'b'.repeat(64)}`,
           '2026-10-03T00:00:00.000Z'
@@ -289,7 +290,11 @@ describe('Goal one-way cutover', () => {
       expect(db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').all()).toEqual([ordinary]);
       expect(
         db.sqlite.prepare('PRAGMA index_info(pending_requests_thread_state_idx)').all()
-      ).toMatchObject([{ name: 'workspace_id' }, { name: 'thread_id' }, { name: 'state' }]);
+      ).toMatchObject([
+        { name: 'workspace_id' },
+        { name: testEntityId('th', 'thread_id') },
+        { name: 'state' },
+      ]);
       expect(() =>
         db.sqlite
           .prepare(

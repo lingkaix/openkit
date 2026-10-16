@@ -10,6 +10,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -42,7 +43,7 @@ const event = {
 };
 const publish = {
   threadId: 'th_00000000-0000-7000-8000-000000000001',
-  turnId: 'missing-turn',
+  turnId: testEntityId('tu', 'missing-turn'),
   title: 'Proof',
   fallbackText: 'Proof',
   messages: [{}, {}],

@@ -17,6 +17,7 @@ import { OperationError } from './operation-error.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -113,15 +114,27 @@ async function fixture() {
 /** Seeds distinct shared, caller-private and other-private canonical records; Artifact references are real Items. */
 function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   const threads = [
-    f.store.createThread(f.owned.id, 'Shared secret text', 'th_shared'),
-    f.store.createThread(f.owned.id, 'Caller private text', 'th_own', 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: f.userId,
-    }),
-    f.store.createThread(f.owned.id, 'Other private text', 'th_other', 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    }),
+    f.store.createThread(f.owned.id, 'Shared secret text', testEntityId('th', 'th_shared')),
+    f.store.createThread(
+      f.owned.id,
+      'Caller private text',
+      testEntityId('th', 'th_own'),
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: f.userId,
+      }
+    ),
+    f.store.createThread(
+      f.owned.id,
+      'Other private text',
+      testEntityId('th', 'th_other'),
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    ),
   ];
   const turns = threads.map((thread, index) => {
     const turn = f.store.createTurn(f.owned.id, thread.id, 'Retained input', {
@@ -129,7 +142,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
       id: f.userId,
     });
     f.store.createItem({
-      id: `it_caller_${index}`,
+      id: testEntityId('it', `it_caller_${index}`),
       workspaceId: f.owned.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -145,7 +158,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   for (const [index, turn] of [turns[0]!, turns[2]!].entries()) {
     const body = `Artifact private-content-${index}`;
     f.store.createArtifact({
-      id: `ar_turn_${index}`,
+      id: testEntityId('ar', `ar_turn_${index}`),
       workspaceId: f.owned.id,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -170,7 +183,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   const body = 'Imported private-content';
   const digest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
   f.store.createArtifact({
-    id: 'ar_imported',
+    id: testEntityId('ar', 'ar_imported'),
     workspaceId: f.owned.id,
     threadId: null,
     turnId: null,
@@ -195,7 +208,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
     updatedAt: timestamp,
   });
   // A later revision changes bytes but not the number of current canonical Items.
-  f.store.updateItem('it_caller_0', { text: 'Revised private-content' });
+  f.store.updateItem(testEntityId('it', 'it_caller_0'), { text: 'Revised private-content' });
 }
 
 /** Returns a real Core Client over the App's actual JSON and authentication boundaries. */
@@ -296,7 +309,9 @@ describe('caller operation projections', () => {
     });
     expect(Number.isFinite(Date.parse(session.workspace.observedAt))).toBe(true);
     expect(JSON.stringify(session)).not.toMatch(/private-content|Other private|caller@example/);
-    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain('th_other');
+    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain(
+      testEntityId('th', 'th_other')
+    );
     const admin = f.token();
     const client = clientFor(f, { authorization: `Bearer ${admin.secret}` });
     const read = Reflect.get(client.operations, 'caller.read');
@@ -347,7 +362,7 @@ describe('caller operation projections', () => {
       expect(JSON.stringify(result)).not.toContain(admin.secret);
     }
     const reloaded = new FsStore({ dataRoot: f.dataRoot });
-    reloaded.createThread(f.owned.id, 'New canonical record', 'th_restart');
+    reloaded.createThread(f.owned.id, 'New canonical record', testEntityId('th', 'th_restart'));
     const restarted = f.makeApp(new FsStore({ dataRoot: f.dataRoot }));
     const afterRestart = await f.post(
       'caller.read',
@@ -546,7 +561,7 @@ describe('caller operation projections', () => {
     const threads = vi.spyOn(f.store, 'listThreads');
     const artifacts = vi.spyOn(f.store, 'listArtifacts');
     const bodies = [];
-    for (const id of ['ws_absent', f.foreign.id]) {
+    for (const id of [testEntityId('ws', 'ws_absent'), f.foreign.id]) {
       const response = await f.post(
         'caller.read',
         { workspaceId: id },

@@ -9,6 +9,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
@@ -235,9 +236,14 @@ describe('synchronous Worker file submission', () => {
   it('publishes nothing for a proved missing path and permits a corrected same-Turn call', async () => {
     const fixture = submissionFixture();
     fixture.captureArtifact.mockRejectedValueOnce(
-      Object.assign(new Error('File not found.'), { code: 'artifact_file_missing', status: 400 })
+      Object.assign(new Error('File not found.'), {
+        code: testEntityId('ar', 'artifact_file_missing'),
+        status: 400,
+      })
     );
-    await expect(fixture.submit()).rejects.toMatchObject({ code: 'artifact_file_missing' });
+    await expect(fixture.submit()).rejects.toMatchObject({
+      code: testEntityId('ar', 'artifact_file_missing'),
+    });
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
     acknowledgedArtifactId(await fixture.submit('req_file_corrected'));
     expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
@@ -336,7 +342,7 @@ describe('synchronous Worker file submission', () => {
       return clean;
     });
     await expect(fixture.submit()).rejects.toMatchObject({
-      code: 'turn_not_active',
+      code: testEntityId('tu', 'turn_not_active'),
     });
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
@@ -590,7 +596,7 @@ describe('submission seals and immutable exact output', () => {
       return captured;
     });
     await expect(fixture.submit()).rejects.toMatchObject({
-      code: 'turn_not_active',
+      code: testEntityId('tu', 'turn_not_active'),
     });
     expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });

@@ -12,6 +12,7 @@ import {
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -46,7 +47,7 @@ describe('scheduler admission routes', () => {
         requestId: `request_${queueEntryId}`,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
-        turnId: `turn_${queueEntryId}`,
+        turnId: testEntityId('tu', `turn_${queueEntryId}`),
         turnInput: 'Exercise scheduler admission database lifecycle.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
@@ -171,8 +172,8 @@ describe('scheduler admission routes', () => {
         queueEntryId,
         requestId: `request_${queueEntryId}`,
         workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405',
-        threadId: 'thread_foreign',
-        turnId: `turn_${queueEntryId}`,
+        threadId: testEntityId('th', 'thread_foreign'),
+        turnId: testEntityId('tu', `turn_${queueEntryId}`),
         turnInput: 'Keep foreign scheduler admission existence private.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
@@ -287,7 +288,7 @@ describe('scheduler admission routes', () => {
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed6-81e5-051501208741' },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: shared.id,
-        turnId: `turn_${queueEntryId}`,
+        turnId: testEntityId('tu', `turn_${queueEntryId}`),
         turnInput: 'Shared workspace admission from another actor.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',

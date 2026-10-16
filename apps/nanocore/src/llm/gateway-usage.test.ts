@@ -6,6 +6,7 @@ import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { GatewayUsageTracker, parseUsage, recordInternalLlmGatewayUsage } from './gateway-usage.js';
 
 /**
@@ -59,14 +60,14 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_usage' },
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
         redactionClass: 'metadata-only',
         requestId,
-        threadId: 'th_usage',
-        turnId: 'turn_usage',
+        threadId: testEntityId('th', 'th_usage'),
+        turnId: testEntityId('tu', 'turn_usage'),
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
@@ -96,8 +97,8 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         error_code: 'usage_record_failed',
         request_id: requestId,
         status: 'failed',
-        thread_id: 'th_usage',
-        turn_id: 'turn_usage',
+        thread_id: testEntityId('th', 'th_usage'),
+        turn_id: testEntityId('tu', 'turn_usage'),
         workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(
@@ -117,8 +118,8 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           outcome: 'failed',
           request_id: expectedRequestId,
           severity: 'error',
-          thread_id: 'th_usage',
-          turn_id: 'turn_usage',
+          thread_id: testEntityId('th', 'th_usage'),
+          turn_id: testEntityId('tu', 'turn_usage'),
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
@@ -135,14 +136,14 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_usage' },
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
         redactionClass: 'metadata-only',
         requestId: null,
-        threadId: 'th_usage',
-        turnId: 'turn_usage',
+        threadId: testEntityId('th', 'th_usage'),
+        turnId: testEntityId('tu', 'turn_usage'),
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
@@ -175,8 +176,8 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           quantity: 12,
           request_id: null,
           source: 'gateway-reported',
-          thread_id: 'th_usage',
-          turn_id: 'turn_usage',
+          thread_id: testEntityId('th', 'th_usage'),
+          turn_id: testEntityId('tu', 'turn_usage'),
           unit: 'tokens',
           usage_id: usageIds[0],
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',

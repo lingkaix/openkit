@@ -8,12 +8,12 @@ import {
   type LightAppSchemaInput,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
 import { createLightApp, createRecord, updateRecord } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   type GenerativeUiCommandContext,
   getGenerativePresentation,
@@ -123,7 +123,7 @@ describe('Generative UI commands', () => {
         context.actor
       );
       const sourceItem = context.store.createItem({
-        id: `it_${turn.id}_source`,
+        id: testEntityId('it', `it_${turn.id}_source`),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
@@ -401,7 +401,7 @@ describe('Generative UI commands', () => {
         context.actor
       );
       const sourceItem = context.store.createItem({
-        id: `it_${turn.id}_source`,
+        id: testEntityId('it', `it_${turn.id}_source`),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
@@ -453,7 +453,7 @@ describe('Generative UI commands', () => {
         context.actor
       );
       const sourceItem = context.store.createItem({
-        id: `it_${turn.id}_source`,
+        id: testEntityId('it', `it_${turn.id}_source`),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,

@@ -13,6 +13,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
@@ -79,7 +80,7 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
           providerRegistry: new ProviderRegistry([
             {
               displayName: 'Fixture',
-              id: 'agent-openrouter',
+              id: testEntityId('usr', 'agent-openrouter'),
               kind: 'local',
               models: ['openai/gpt-5.2'],
             },
@@ -285,14 +286,18 @@ describe('pending requests', () => {
         freezeReadyOutcomes(db.sqlite, {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: 'delivery_count',
+          turnId: testEntityId('tu', 'delivery_count'),
           executor: 'worker',
           agentId: 'agent_demo',
           cause: 'carried',
           now: NOW,
         })
       ).toHaveLength(16);
-      const bytes = frozenPendingOutcomeInput(db.sqlite, 'delivery_count', trigger);
+      const bytes = frozenPendingOutcomeInput(
+        db.sqlite,
+        testEntityId('tu', 'delivery_count'),
+        trigger
+      );
       const value = JSON.parse(bytes);
       expect(value.triggerInput).toBe(trigger);
       expect(value.pendingOutcomes).toHaveLength(16);
@@ -302,7 +307,9 @@ describe('pending requests', () => {
       db.sqlite.close();
       const reopened = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(frozenPendingOutcomeInput(reopened.sqlite, 'delivery_count', trigger)).toBe(bytes);
+        expect(
+          frozenPendingOutcomeInput(reopened.sqlite, testEntityId('tu', 'delivery_count'), trigger)
+        ).toBe(bytes);
       } finally {
         reopened.sqlite.close();
       }
@@ -361,7 +368,7 @@ describe('pending requests', () => {
           `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'another-user', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(NOW, NOW, NOW);
-      expect(preview('not for this viewer', 'another-user')).toMatchObject({
+      expect(preview('not for this viewer', testEntityId('usr', 'another-user'))).toMatchObject({
         status: 'unavailable',
       });
       const privateThread = store.createThread(
@@ -369,7 +376,7 @@ describe('pending requests', () => {
         'Private source',
         undefined,
         'conversation',
-        { visibility: 'private', privateOwnerUserId: 'another-user' }
+        { visibility: 'private', privateOwnerUserId: testEntityId('usr', 'another-user') }
       );
       expect(
         projectApprovalEffect({
@@ -386,10 +393,10 @@ describe('pending requests', () => {
         .run();
       expect(
         projectApprovalEffect({
-          record: { ...record, responsibleUserId: 'another-user' },
+          record: { ...record, responsibleUserId: testEntityId('usr', 'another-user') },
           store,
           coreDb,
-          actor: { kind: 'session', userId: 'another-user' },
+          actor: { kind: 'session', userId: testEntityId('usr', 'another-user') },
         })
       ).toMatchObject({ status: 'unavailable' });
       expect(
@@ -1025,7 +1032,7 @@ describe('pending requests', () => {
     try {
       for (const id of ['good', 'bad']) {
         store.createItem({
-          id: `it_attention_${id}`,
+          id: testEntityId('it', `it_attention_${id}`),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
@@ -1040,7 +1047,7 @@ describe('pending requests', () => {
         });
         raiseRecordedPendingRequest(store, db.sqlite, {
           requestId: `ap_attention_${id}`,
-          requestItemId: `it_attention_${id}`,
+          requestItemId: testEntityId('it', `it_attention_${id}`),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           raisingTurnId: turn.id,
@@ -1191,7 +1198,7 @@ describe('pending requests', () => {
           )
         );
         expect(refused.status).toBe(409);
-        expect(await refused.json()).toMatchObject({ code: 'thread_busy' });
+        expect(await refused.json()).toMatchObject({ code: testEntityId('th', 'thread_busy') });
         if (cause === 'boot') store.setTurnAdmissionHooks(null);
         store.updateTurn(busy.id, { status: 'completed', completedAt: new Date().toISOString() });
         if (cause === 'boot')
@@ -1958,7 +1965,7 @@ describe('pending requests', () => {
       )
     );
     expect(busy.status).toBe(409);
-    await expect(busy.json()).resolves.toMatchObject({ code: 'thread_busy' });
+    await expect(busy.json()).resolves.toMatchObject({ code: testEntityId('th', 'thread_busy') });
     expect(
       store.getThread(
         'ws_00000000-0000-7000-8000-000000000001',

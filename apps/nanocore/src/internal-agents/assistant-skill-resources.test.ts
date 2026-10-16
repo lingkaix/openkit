@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 // Snapshot containment fixtures require POSIX symbolic-link behavior.
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -21,6 +22,7 @@ import { FsStore } from '../lib/store.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { AssistantSkillAdmissionSchema } from '../storage/work-observations.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -69,9 +71,9 @@ function fixture() {
   const thread = store.createThread(workspace.id, 'Use selected resources');
   const turn = store.createTurn(workspace.id, thread.id, 'Use selected resources', {
     kind: 'user',
-    id: 'skill-reader',
+    id: testEntityId('usr', 'skill-reader'),
   });
-  const actor: Actor = { kind: 'session', userId: 'skill-reader' };
+  const actor: Actor = { kind: 'session', userId: testEntityId('usr', 'skill-reader') };
   return {
     dataRoot,
     coreDb,
@@ -412,7 +414,7 @@ describe('Assistant selected Skill assembly', () => {
     if (condition === 'audience')
       Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
         visibility: 'private',
-        privateOwnerUserId: 'another-user',
+        privateOwnerUserId: testEntityId('usr', 'another-user'),
       });
     if (condition === 'turn-lineage')
       f.threadId = f.store.createThread(f.workspaceId, 'Different thread').id;
@@ -472,9 +474,9 @@ describe('Assistant progressive Skill reads', () => {
     const admitted = contexts.get(assembled)!;
     const mismatches: Record<typeof field, unknown> = {
       actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-      workspaceId: 'another-workspace',
-      threadId: 'another-thread',
-      turnId: 'another-turn',
+      workspaceId: testEntityId('ws', 'another-workspace'),
+      threadId: testEntityId('th', 'another-thread'),
+      turnId: testEntityId('tu', 'another-turn'),
       kind: 'worker',
       entryScope: 'chat.quick',
       requestId: '00000000-0000-4000-8000-000000000145',
@@ -641,7 +643,7 @@ describe('Assistant progressive Skill reads', () => {
     if (condition === 'audience')
       Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
         visibility: 'private',
-        privateOwnerUserId: 'another-user',
+        privateOwnerUserId: testEntityId('usr', 'another-user'),
       });
     if (condition === 'turn-lineage')
       f.store.getTurn(f.workspaceId, f.threadId, f.turnId).threadId = f.store.createThread(
@@ -725,7 +727,7 @@ describe('Assistant progressive Skill reads', () => {
       },
       { ...base, versionId: `sha256:${'f'.repeat(64)}` },
       { ...base, contentDigest: `sha256:${'f'.repeat(64)}` },
-      { ...base, workspaceId: 'untrusted-workspace' },
+      { ...base, workspaceId: testEntityId('ws', 'untrusted-workspace') },
       ...unsafePaths.map((path) => ({ ...base, path })),
     ])
       refusal(await modelTool(assembled).execute(args, context), f);

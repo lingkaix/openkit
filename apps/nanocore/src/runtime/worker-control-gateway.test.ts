@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -24,6 +23,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   hashWorkerRouteToken,
@@ -58,12 +58,12 @@ function createWorkerControlFixture(
       id: 'usr_00000000-0000-7000-8000-000000000001',
     },
     null,
-    { turnId: `tu_control_${suffix}` }
+    { turnId: testEntityId('tu', `tu_control_${suffix}`) }
   );
   const environmentPackage = resolveAgentEnvironmentPackage({
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     agentSetup: createTestAgentSetup(),
-    agentSessionId: `as_control_${suffix}`,
+    agentSessionId: testEntityId('as', `as_control_${suffix}`),
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     backend: {
       kind: 'openshell',
@@ -77,7 +77,7 @@ function createWorkerControlFixture(
 
   if (dataRoot) {
     store.createAgentSession({
-      id: `as_control_${suffix}`,
+      id: testEntityId('as', `as_control_${suffix}`),
       agentId: environmentPackage.agent.agentId,
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
@@ -86,12 +86,12 @@ function createWorkerControlFixture(
       createdAt: turn.startedAt!,
       updatedAt: turn.startedAt!,
     });
-    store.updateTurn(turn.id, { agentSessionId: `as_control_${suffix}` });
+    store.updateTurn(turn.id, { agentSessionId: testEntityId('as', `as_control_${suffix}`) });
   }
   return {
     environmentPackage: AgentEnvironmentPackageSchema.parse(environmentPackage),
     lineage: {
-      agentSessionId: `as_control_${suffix}`,
+      agentSessionId: testEntityId('as', `as_control_${suffix}`),
       packageSnapshotId: environmentPackage.snapshotId,
       requestId: `req_control_${suffix}`,
       threadId: 'th_00000000-0000-7000-8000-000000000001',

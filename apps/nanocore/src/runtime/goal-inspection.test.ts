@@ -14,6 +14,7 @@ import {
 } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -152,11 +153,15 @@ it.each([
       services
     );
 
-    const completed = store.createThread(workspace.id, 'Completed note', `th_task_${randomUUID()}`);
+    const completed = store.createThread(
+      workspace.id,
+      'Completed note',
+      testEntityId('th', `th_task_${randomUUID()}`)
+    );
     const refused = store.createThread(
       workspace.id,
       'Cancelled attempt',
-      `th_task_${randomUUID()}`
+      testEntityId('th', `th_task_${randomUUID()}`)
     );
     for (const thread of [completed, refused]) {
       db.sqlite.transaction(() =>
@@ -184,7 +189,7 @@ it.each([
     const body = 'Verified note: the issue is closed.';
     const digest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
     const artifact = store.createArtifact({
-      id: `ar_${randomUUID()}`,
+      id: testEntityId('ar', `ar_${randomUUID()}`),
       workspaceId: workspace.id,
       threadId: completed.id,
       turnId: taskTurn.id,
@@ -256,7 +261,7 @@ it.each([
     const unrelated = store.createThread(
       workspace.id,
       'Unrelated visible Task',
-      `th_task_${randomUUID()}`
+      testEntityId('th', `th_task_${randomUUID()}`)
     );
     const unrelatedTurn = store.createTurn(workspace.id, unrelated.id, 'Unlinked note', {
       kind: 'user',
@@ -264,7 +269,7 @@ it.each([
     });
     const unrelatedArtifact = store.createArtifact({
       ...artifact,
-      id: `ar_${randomUUID()}`,
+      id: testEntityId('ar', `ar_${randomUUID()}`),
       threadId: unrelated.id,
       turnId: unrelatedTurn.id,
       origin: {
@@ -287,7 +292,7 @@ it.each([
     const privateThread = store.createThread(
       workspace.id,
       'Private origin',
-      `th_private_${randomUUID()}`,
+      testEntityId('th', `th_private_${randomUUID()}`),
       'conversation',
       { visibility: 'private', privateOwnerUserId }
     );
@@ -297,7 +302,7 @@ it.each([
     });
     const privateArtifact = store.createArtifact({
       ...artifact,
-      id: `ar_${randomUUID()}`,
+      id: testEntityId('ar', `ar_${randomUUID()}`),
       content: { format: 'markdown', body: privateBody },
       contentDigest: `sha256:${createHash('sha256').update(privateBody).digest('hex')}`,
       threadId: privateThread.id,
@@ -395,15 +400,19 @@ it.each([
               role: 'assistant' as const,
               truncated: false,
               content: [
-                call('items', 'thread_items', { threadId: completed.id }),
+                call('items', testEntityId('th', 'thread_items'), { threadId: completed.id }),
                 call('terminal', 'tu_00000000-0000-77a7-a194-9ad9d8661498', {
                   threadId: completed.id,
                   turnId: taskTurn.id,
                 }),
                 call('refusal', 'evidence_runtime_list', {}),
-                call('unrelated', 'thread_items', { threadId: unrelated.id }),
-                call('unlinked-artifact', 'artifact_read', { artifactId: unrelatedArtifact.id }),
-                call('private', 'artifact_read', { artifactId: privateArtifact.id }),
+                call('unrelated', testEntityId('th', 'thread_items'), { threadId: unrelated.id }),
+                call('unlinked-artifact', testEntityId('ar', 'artifact_read'), {
+                  artifactId: unrelatedArtifact.id,
+                }),
+                call('private', testEntityId('ar', 'artifact_read'), {
+                  artifactId: privateArtifact.id,
+                }),
               ],
             },
           };
@@ -432,7 +441,9 @@ it.each([
             message: {
               role: 'assistant' as const,
               truncated: false,
-              content: [call('note', 'artifact_read', { artifactId: artifact.id })],
+              content: [
+                call('note', testEntityId('ar', 'artifact_read'), { artifactId: artifact.id }),
+              ],
             },
           };
         }
@@ -540,14 +551,16 @@ it.each([
         })
       ).isError
     ).toBe(true);
-    expect((await read('thread_items', { threadId: privateThread.id })).isError).toBe(true);
+    expect(
+      (await read(testEntityId('th', 'thread_items'), { threadId: privateThread.id })).isError
+    ).toBe(true);
     for (const [name, args] of [
       [
-        'thread_items',
+        testEntityId('th', 'thread_items'),
         { threadId: completed.id, workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405' },
       ],
       [
-        'artifact_read',
+        testEntityId('ar', 'artifact_read'),
         {
           artifactId: artifact.id,
           actor: { kind: 'local', userId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
@@ -558,8 +571,8 @@ it.each([
     // Presence of the fixed Tools cannot cache authority after the responsible user is disabled.
     coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, actor.userId))();
     for (const [name, args] of [
-      ['thread_items', { threadId: completed.id }],
-      ['artifact_read', { artifactId: artifact.id }],
+      [testEntityId('th', 'thread_items'), { threadId: completed.id }],
+      [testEntityId('ar', 'artifact_read'), { artifactId: artifact.id }],
       ['tu_00000000-0000-77a7-a194-9ad9d8661498', { threadId: completed.id, turnId: taskTurn.id }],
       ['evidence_runtime_list', {}],
     ] as const)

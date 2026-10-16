@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +15,7 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -171,7 +173,7 @@ describe('Generative UI Thread audience', () => {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const ownPrivateSource = store.createItem({
-      id: `it_${ownPrivateTurn.id}_source`,
+      id: testEntityId('it', `it_${ownPrivateTurn.id}_source`),
       workspaceId: workspace.id,
       threadId: ownPrivateThread.id,
       turnId: ownPrivateTurn.id,
@@ -182,7 +184,7 @@ describe('Generative UI Thread audience', () => {
       completedAt: ownPrivateTurn.startedAt ?? stamp,
     });
     const otherPrivateSource = store.createItem({
-      id: `it_${otherPrivateTurn.id}_source`,
+      id: testEntityId('it', `it_${otherPrivateTurn.id}_source`),
       workspaceId: workspace.id,
       threadId: otherPrivateThread.id,
       turnId: otherPrivateTurn.id,
@@ -193,7 +195,7 @@ describe('Generative UI Thread audience', () => {
       completedAt: otherPrivateTurn.startedAt ?? stamp,
     });
     const sharedSource = store.createItem({
-      id: `it_${sharedTurn.id}_source`,
+      id: testEntityId('it', `it_${sharedTurn.id}_source`),
       workspaceId: workspace.id,
       threadId: sharedThread.id,
       turnId: sharedTurn.id,

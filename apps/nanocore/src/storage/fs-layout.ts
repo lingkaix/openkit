@@ -879,7 +879,16 @@ function copyConfigTemplates(
       continue;
     }
 
-    copyFileSync(sourcePath, targetPath);
+    const template = readFileSync(sourcePath, 'utf8');
+    // Each first-published Provider template retains its own independent Vault candidate.
+    const content =
+      templateKind === 'providers'
+        ? template.replace(
+            /("secretRef"\s*:\s*)"vault:\/\/[^"\n]+"/,
+            (_match, field) => `${field}${JSON.stringify(`vault://${allocateEntityId('vault')}`)}`
+          )
+        : template;
+    writeFileSync(targetPath, content, { encoding: 'utf8', flag: 'wx' });
   }
 }
 

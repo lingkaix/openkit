@@ -658,7 +658,7 @@ describe('Assistant pending input', () => {
         agentManifests: [setup.manifest],
         providerRegistry: new ProviderRegistry([
           {
-            id: 'agent-openrouter',
+            id: testEntityId('usr', 'agent-openrouter'),
             displayName: 'Fixture',
             kind: 'local',
             models: ['openai/gpt-5.2'],
@@ -1558,7 +1558,7 @@ describe('mode command failure diagnostics', () => {
           gatewayConfig: createTestGatewayConfig(),
           providerRegistry: new ProviderRegistry([
             {
-              id: 'agent-openrouter',
+              id: testEntityId('usr', 'agent-openrouter'),
               displayName: 'Test provider',
               kind: 'local',
               defaultModel: 'openai/gpt-5.2',
@@ -1936,7 +1936,7 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
   setup.manifest.models.allowedLogicalModelIds = models;
   const providerRegistry = new ProviderRegistry([
     {
-      id: 'agent-openrouter',
+      id: testEntityId('usr', 'agent-openrouter'),
       kind: 'local',
       displayName: 'Catalog fixture',
       models,
@@ -1962,7 +1962,9 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
         ...base.logicalModels[0]!,
         id,
         displayName: id,
-        routes: [{ id, providerProfileId: 'agent-openrouter', providerModel: id }],
+        routes: [
+          { id, providerProfileId: testEntityId('usr', 'agent-openrouter'), providerModel: id },
+        ],
       })),
     },
     agentManifests: [setup.manifest],
@@ -2287,7 +2289,7 @@ describe('Task durable admission response', () => {
           agentManifests: [setup.manifest],
           providerRegistry: new ProviderRegistry([
             {
-              id: 'agent-openrouter',
+              id: testEntityId('usr', 'agent-openrouter'),
               displayName: 'Fixture',
               kind: 'local',
               models: ['openai/gpt-5.2'],
@@ -2648,7 +2650,7 @@ describe('Task terminal replay closeout ownership', () => {
           agentManifests: [setup.manifest],
           providerRegistry: new ProviderRegistry([
             {
-              id: 'agent-openrouter',
+              id: testEntityId('usr', 'agent-openrouter'),
               displayName: 'Fixture',
               kind: 'local',
               models: ['openai/gpt-5.2'],
@@ -3028,7 +3030,7 @@ describe('exact Task Agent selection', () => {
         },
         providerRegistry: new ProviderRegistry([
           {
-            id: 'agent-openrouter',
+            id: testEntityId('usr', 'agent-openrouter'),
             displayName: 'Healthy local Provider',
             kind: 'local',
             models: [healthyModelId],
@@ -3108,7 +3110,7 @@ describe('exact Task Agent selection', () => {
         },
         providerRegistry: new ProviderRegistry([
           {
-            id: 'agent-openrouter',
+            id: testEntityId('usr', 'agent-openrouter'),
             displayName: 'Healthy local Provider',
             kind: 'local',
             models: [healthyModelId],
@@ -3402,7 +3404,7 @@ describe('route B queued Task receipts', () => {
         agentManifests: [setup.manifest],
         providerRegistry: new ProviderRegistry([
           {
-            id: 'agent-openrouter',
+            id: testEntityId('usr', 'agent-openrouter'),
             displayName: 'Fixture',
             kind: 'local',
             models: ['openai/gpt-5.2'],
@@ -4006,7 +4008,7 @@ function assistantWiringFixture(
       gatewayConfig: createTestGatewayConfig(),
       providerRegistry: new ProviderRegistry([
         {
-          id: 'agent-openrouter',
+          id: testEntityId('usr', 'agent-openrouter'),
           displayName: 'Entry Provider',
           kind: 'local',
           defaultModel: 'openai/gpt-5.2',
@@ -4419,7 +4421,7 @@ describe('#144 real Assistant command wiring', () => {
             threadId: f.thread.id,
             turnId: original.turn.id,
             responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            providerRef: 'agent-openrouter',
+            providerRef: testEntityId('usr', 'agent-openrouter'),
           }),
         ]);
         expect(
@@ -4667,9 +4669,9 @@ describe('#144 real Assistant command wiring', () => {
     const f = assistantWiringFixture(true);
     const changed: Record<string, unknown> = {
       actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-      workspaceId: 'another-workspace',
-      threadId: 'another-thread',
-      turnId: 'another-turn',
+      workspaceId: testEntityId('ws', 'another-workspace'),
+      threadId: testEntityId('th', 'another-thread'),
+      turnId: testEntityId('tu', 'another-turn'),
       entryScope: 'chat.quick',
       requestId: '00000000-0000-4000-8000-000000001499',
       kind: 'unknown',
@@ -4769,7 +4771,7 @@ describe('#144 real Assistant command wiring', () => {
             .run('ws_00000000-0000-7000-8000-000000000001', f.actorUserId);
         if (condition === 'audience')
           Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
-            privateOwnerUserId: 'another-user',
+            privateOwnerUserId: testEntityId('usr', 'another-user'),
           });
         if (condition === 'removed') {
           const catalog = loadWorkspaceResourceCatalog(
@@ -5077,7 +5079,7 @@ describe('#144 real Assistant command wiring', () => {
       .mockImplementationOnce(async (...args) => {
         const result = await final(...args);
         Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
-          privateOwnerUserId: 'another-user',
+          privateOwnerUserId: testEntityId('usr', 'another-user'),
         });
         return result;
       });

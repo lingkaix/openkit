@@ -19,6 +19,7 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
@@ -97,7 +98,7 @@ it.each([
           workspaceId: entry.workspaceId,
         });
         throw new TurnStartValidationError(
-          'turn_cancelled',
+          testEntityId('tu', 'turn_cancelled'),
           'Task request cancelled before product acceptance.',
           409
         );
@@ -154,7 +155,7 @@ it.each([
             updatedAt: at,
           });
           store.createItem({
-            id: `it_user_${turnId}`,
+            id: testEntityId('it', `it_user_${turnId}`),
             workspaceId: ws.id,
             threadId: input.threadId,
             turnId,
@@ -203,7 +204,7 @@ it.each([
           gatewayConfig: createTestGatewayConfig(),
           providerRegistry: new ProviderRegistry([
             {
-              id: 'agent-openrouter',
+              id: testEntityId('usr', 'agent-openrouter'),
               displayName: 'Fixture',
               kind: 'local',
               defaultModel: 'openai/gpt-5.2',
@@ -442,7 +443,7 @@ it.each([
           outcome === 'recovery-required-refusal'
             ? 'recovery_required'
             : outcome === 'cancelled'
-              ? 'turn_cancelled'
+              ? testEntityId('tu', 'turn_cancelled')
               : 'scheduler_admission_denied',
       });
       // Retained pre-fix timestamps remain usable data but cannot prove a Turn was admitted.

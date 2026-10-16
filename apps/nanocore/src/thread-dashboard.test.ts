@@ -13,6 +13,7 @@ import * as workObservations from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -75,7 +76,7 @@ describe('thread dashboard app API', () => {
       ...store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', foreign.id),
     ]) {
       store.createItem({
-        id: `message_${candidate.id}`,
+        id: testEntityId('it', `message_${candidate.id}`),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: candidate.threadId,
         turnId: candidate.id,
@@ -538,7 +539,7 @@ describe('thread dashboard app API', () => {
       }
     );
     store.createAgentSession({
-      id: 'session_old',
+      id: testEntityId('as', 'session_old'),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,

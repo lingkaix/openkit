@@ -452,7 +452,7 @@ function testProviderRegistry(): ProviderRegistry {
   return new ProviderRegistry([
     {
       displayName: 'Agent OpenRouter',
-      id: 'agent-openrouter',
+      id: testEntityId('usr', 'agent-openrouter'),
       kind: 'local',
       models: ['openai/gpt-5.2'],
     },
@@ -5224,7 +5224,7 @@ describe('nanocore server', () => {
           baseUrl: 'https://openrouter.ai/api/v1',
           defaultModel: 'openai/gpt-5.2',
           displayName: 'OpenRouter',
-          id: 'agent-openrouter',
+          id: testEntityId('usr', 'agent-openrouter'),
           kind: 'gateway',
           models: ['openai/gpt-5.2'],
           secretRef: 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0',
@@ -6505,7 +6505,7 @@ describe('nanocore server', () => {
       ...(status === 'failed'
         ? {
             error: {
-              code: 'turn_start_failed',
+              code: testEntityId('tu', 'turn_start_failed'),
               message: 'Turn was queued but not dispatched.',
             },
           }
@@ -6571,7 +6571,7 @@ describe('nanocore server', () => {
     );
     store.updateTurn(turn.id, {
       completedAt,
-      error: { code: 'turn_start_failed', message: 'Worker start failed.' },
+      error: { code: testEntityId('tu', 'turn_start_failed'), message: 'Worker start failed.' },
       status: 'failed',
     });
     await recordWorkerRetryLease(coreDb, {
@@ -6646,7 +6646,7 @@ describe('nanocore server', () => {
       ...(status === 'failed'
         ? {
             error: {
-              code: 'turn_start_failed',
+              code: testEntityId('tu', 'turn_start_failed'),
               message: 'Worker start failed.',
             },
           }
@@ -6738,7 +6738,7 @@ describe('nanocore server', () => {
     );
     store.updateTurn(turn.id, {
       completedAt,
-      error: { code: 'turn_start_failed', message: 'Worker start failed.' },
+      error: { code: testEntityId('tu', 'turn_start_failed'), message: 'Worker start failed.' },
       status: 'failed',
     });
     await recordWorkerRetryLease(coreDb, {
@@ -9018,7 +9018,9 @@ describe('nanocore server', () => {
 
       await Promise.resolve();
       expect(competing.status).toBe(409);
-      await expect(competing.json()).resolves.toMatchObject({ code: 'thread_busy' });
+      await expect(competing.json()).resolves.toMatchObject({
+        code: testEntityId('th', 'thread_busy'),
+      });
       expect(executor.starts).toBe(1);
 
       executor.release();
@@ -9103,9 +9105,13 @@ describe('nanocore server', () => {
       ).count;
 
       expect(first.status).toBe(409);
-      await expect(first.json()).resolves.toMatchObject({ code: 'thread_busy' });
+      await expect(first.json()).resolves.toMatchObject({
+        code: testEntityId('th', 'thread_busy'),
+      });
       expect(replay.status).toBe(409);
-      await expect(replay.json()).resolves.toMatchObject({ code: 'thread_busy' });
+      await expect(replay.json()).resolves.toMatchObject({
+        code: testEntityId('th', 'thread_busy'),
+      });
       expect(admissionCountWhileActive).toBe(0);
       expect(executor.startContexts).toHaveLength(0);
       expect(store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual(

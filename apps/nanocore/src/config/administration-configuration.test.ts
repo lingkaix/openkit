@@ -17,6 +17,7 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -284,7 +285,13 @@ describe('administration catalog configuration', () => {
         logicalModels: [
           {
             ...f.logicalModel,
-            routes: [{ id: 'primary', providerProfileId: 'missing', providerModel: 'gpt-6' }],
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: testEntityId('ar', 'missing'),
+                providerModel: 'gpt-6',
+              },
+            ],
           },
         ],
       },
@@ -369,7 +376,10 @@ describe('administration catalog configuration', () => {
     expect(await f.service.apply(request)).toEqual(result);
     expect(f.reload).toHaveBeenCalledTimes(1);
     await expect(
-      f.service.apply({ ...request, candidate: { ...request.candidate, artifactId: 'missing' } })
+      f.service.apply({
+        ...request,
+        candidate: { ...request.candidate, artifactId: testEntityId('ar', 'missing') },
+      })
     ).rejects.toThrow();
   });
 

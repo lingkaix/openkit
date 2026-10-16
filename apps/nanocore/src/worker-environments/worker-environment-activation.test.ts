@@ -30,6 +30,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -113,7 +114,7 @@ function createBaseFixture(): BaseFixture {
   const administrationThread = store.createThread(
     privateWorkspace.id,
     'Administration',
-    'thread_administration',
+    testEntityId('th', 'thread_administration'),
     'administration'
   );
   return {
@@ -164,12 +165,12 @@ function candidatePair(
   declaration: WorkerEnvironmentAuthoredCandidateArtifact['declaration'] = DECLARATION
 ): ReadWorkerEnvironmentResolvedCandidate {
   const authoredCandidate = {
-    artifactId: 'artifact_authored_environment',
+    artifactId: testEntityId('ar', 'artifact_authored_environment'),
     artifactVersion: 1 as const,
     contentDigest: CANDIDATE_DIGEST,
   };
   const resolvedCandidate = {
-    artifactId: 'artifact_resolved_environment',
+    artifactId: testEntityId('ar', 'artifact_resolved_environment'),
     artifactVersion: 1 as const,
     contentDigest: `sha256:${'e'.repeat(64)}`,
   };
@@ -336,7 +337,7 @@ describe('Worker environment activation', () => {
     await expect(
       activation.activate({ actor: ACTOR }, activationRequest(pair))
     ).rejects.toMatchObject({
-      code: 'thread_busy',
+      code: testEntityId('th', 'thread_busy'),
     });
     expect(inspectImage).toHaveBeenCalledTimes(phase === 'before-inspection' ? 0 : 1);
     expect(
@@ -798,14 +799,14 @@ function createResidentFixture(): ResidentFixture {
     )
     .run('a'.repeat(64), NOW);
   const created = createWorkerStorageBinding(fixture.coreDb, {
-    deploymentId: 'deployment_activation',
+    deploymentId: testEntityId('dep', 'deployment_activation'),
     layout: LAYOUT,
     now: NOW,
     runtimeTargetId: 'target_activation',
     workspaceId: workspace.id,
   });
   const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: 'agent_session_activation',
+    agentSessionId: testEntityId('as', 'agent_session_activation'),
     authorizeContributor: () => true,
     expectedRevision: created.revision,
     layout: LAYOUT,
