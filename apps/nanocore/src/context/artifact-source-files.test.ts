@@ -47,8 +47,9 @@ async function fixture(
   body: Buffer,
   format: 'file' | 'text' | 'markdown' | 'json' = 'file',
   mediaType = 'text/plain',
-  artifactId = 'ar_00000000-0000-7000-8000-0000000003ea'
+  sourceId = 'artifact-source-import'
 ) {
+  const artifactId = 'ar_00000000-0000-7000-8000-0000000003ea';
   const root = mkdtempSync(join(tmpdir(), 'artifact-source-files-'));
   roots.push(root);
   const store = createDemoStore({ dataRoot: root });
@@ -56,7 +57,7 @@ async function fixture(
   const workspaceRoot = join(root, 'workspaces', workspace.id);
   const admission = new FileStorageAdmission(root, () => 0n);
   const digest = sha256(body);
-  const requestId = 'artifact-source-import';
+  const requestId = sourceId;
   const artifact: Artifact = {
     id: artifactId,
     workspaceId: workspace.id,
@@ -489,12 +490,14 @@ it.runIf(process.platform === 'linux')(
   }
 );
 
-it('keeps unavailable descriptor bytes fixed even when opaque identifiers require JSON escaping', async () => {
-  const id = '\u0001'.repeat(200);
-  const f = await fixture(Buffer.from([255]), 'file', 'application/octet-stream', id);
+it('keeps unavailable descriptor bytes fixed when opaque import metadata requires JSON escaping', async () => {
+  const sourceId = '\u0001'.repeat(200);
+  const f = await fixture(Buffer.from([255]), 'file', 'application/octet-stream', sourceId);
+  expect(f.artifact.origin).toMatchObject({ kind: 'imported', sourceId });
+  expect(JSON.stringify(f.artifact.origin)).toContain('\\u0001');
   const [source] = await prepareArtifactSourceInputs(f.input);
-  expect(source!.source.reference.objectId).toBe(id);
-  expect(source!.originalSnapshotPath).toBe(`originals/artifacts/${id}/1/payload`);
+  expect(source!.source.reference.objectId).toBe(f.artifact.id);
+  expect(source!.originalSnapshotPath).toBe(`originals/artifacts/${f.artifact.id}/1/payload`);
   expect(Buffer.from(source!.deliveredBytes).toString('utf8')).toBe(
     '{"status":"unavailable","reason":"unsupported"}'
   );

@@ -836,7 +836,7 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string) {
   });
   recordTestExecutionAttempt(fixture.coreDb, {
     entry,
-    attemptId: 'attempt_source_read',
+    attemptId: testEntityId('attempt', 'attempt_source_read'),
     agentSessionId: scope.agentSessionId,
     inputRef: fixture.environmentPackage.snapshotId,
     bindingRef: 'binding_source_read',

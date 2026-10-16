@@ -285,7 +285,7 @@ describe('S39 exact source owner map', () => {
       });
       const material = createWorkspaceMaterial(workspaceDb, {
         acceptedAt: timestamp,
-        actorId: 'usr_00000000-0000-7000-8000-000000000001',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         kind: 'text',
         requestId: 'material_create',
         sensitivity: 'internal',
@@ -295,7 +295,7 @@ describe('S39 exact source owner map', () => {
       const materialDigest = `sha256:${createHash('sha256').update(materialText).digest('hex')}`;
       const revision = saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: timestamp,
-        actorId: 'usr_00000000-0000-7000-8000-000000000001',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         content: materialText,
         contentDigest: materialDigest,
         expectedRevisionId: null,
@@ -305,7 +305,7 @@ describe('S39 exact source owner map', () => {
       const later = 'Later revision';
       saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: timestamp,
-        actorId: 'usr_00000000-0000-7000-8000-000000000001',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         content: later,
         contentDigest: `sha256:${createHash('sha256').update(later).digest('hex')}`,
         expectedRevisionId: revision.revisionId,
