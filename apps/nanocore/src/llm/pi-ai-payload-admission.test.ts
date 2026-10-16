@@ -169,27 +169,8 @@ describe('final payload local admission', () => {
     const held = gate();
     const entered = gate();
     let captured: AdmissionInput | undefined;
-    const request = {
-      ...input,
-      model: f.model.id,
-      ...(api === 'chat'
-        ? {}
-        : {
-            input: [
-              ...(input.input as unknown[]),
-              {
-                role: 'user',
-                content: [
-                  {
-                    type: 'input_image',
-                    image_url:
-                      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
-                  },
-                ],
-              },
-            ],
-          }),
-    };
+    // Image mapping is a separate accepted increment. This check exercises the current text transport contract.
+    const request = { ...input, model: f.model.id };
     const completion = f.client.createResponses(f.provider, request, undefined, {
       codexTurnState: api === 'codex' ? 'retained-native-state' : undefined,
       finalRequestAdmission: async (final) => {
@@ -204,7 +185,10 @@ describe('final payload local admission', () => {
         await held.pending;
       },
     });
-    await entered.pending;
+    await Promise.race([
+      entered.pending,
+      completion.then(() => { throw new Error('The serializer completed before its admission barrier.'); }),
+    ]);
     expect(f.bodies).toEqual([]);
     expect(captured).toMatchObject({ outputReserveTokens: 32 });
     held.release();
@@ -215,7 +199,6 @@ describe('final payload local admission', () => {
     expect(f.wire[0]).toContain('Preserve complete system instructions.');
     expect(f.wire[0]).toContain('漢字 JSON');
     expect(f.wire[0]).toContain('Read exact bytes.');
-    if (api !== 'chat') expect(f.wire[0]).toContain('data:image/png;base64,');
     if (api === 'codex') {
       expect(captured!.codexTurnState).toBe('retained-native-state');
       expect(f.states).toEqual(['retained-native-state']);

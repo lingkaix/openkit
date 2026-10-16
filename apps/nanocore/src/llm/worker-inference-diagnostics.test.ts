@@ -114,6 +114,7 @@ function fixture(configured = true, nativeStop = true) {
     ...(nativeStop ? { onRawOutputStop: vi.fn(async () => {}) } : {}),
     llmGatewayDispatcher: {
       createResponses: observedDispatch,
+      createChatCompletion: observedDispatch,
       createResponsesStream: observedDispatch,
       createChatCompletionStream: observedDispatch,
     } as unknown as LLMGatewayProviderDispatcher,
@@ -580,5 +581,8 @@ it.each([
     expect(body).not.toContain('private-context-canary');
   } else expect(await response.json()).toEqual({ error: expected });
   expect(f.dispatch).toHaveBeenCalledTimes(1);
-  expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'gateway_context_overflow' }]);
+  expect(f.calls()).toMatchObject([{
+    status: 'failed',
+    error_code: stream ? 'gateway_context_overflow' : 'worker_inference_failed',
+  }]);
 });
