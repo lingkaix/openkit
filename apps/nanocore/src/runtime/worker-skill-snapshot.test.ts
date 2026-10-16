@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import fs, { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -126,6 +128,8 @@ describe('exact retained Worker Skill delivery', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    syncBuiltinESMExports();
     coreDb.sqlite.close();
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
   });
@@ -165,9 +169,9 @@ describe('exact retained Worker Skill delivery', () => {
       'worker-supply',
     ]);
     const expectedFiles = [
-      ['SKILL.md', SKILL_BODY],
       ['empty-file', Buffer.alloc(0)],
       ['run.sh', SCRIPT_BODY],
+      ['SKILL.md', SKILL_BODY],
       ['supporting.bin', SUPPORTING_BODY],
     ] as const;
     expect(imports.slice(1)).toEqual(
@@ -241,6 +245,7 @@ describe('exact retained Worker Skill delivery', () => {
     'provenance',
     'version',
     'source',
+    'entry',
   ] as const)('refuses changed admitted %s claims against exact retained authority', async (claim) => {
     const candidate = structuredClone(environmentPackage);
     const skill = candidate.supply.skills[0]!;
@@ -253,7 +258,8 @@ describe('exact retained Worker Skill delivery', () => {
     else if (claim === 'digest') skill.integrity = { sha256: `sha256:${'0'.repeat(64)}` };
     else if (claim === 'provenance') skill.lineage!.baseDigest = `sha256:${'0'.repeat(64)}`;
     else if (claim === 'version') skill.version = 'invented-version';
-    else skill.sourceRef = 'invented-source';
+    else if (claim === 'source') skill.sourceRef = 'invented-source';
+    else skill.id = 'unavailable-entry';
     await expect(prepare(candidate)).rejects.toThrow();
   });
 
@@ -266,6 +272,54 @@ describe('exact retained Worker Skill delivery', () => {
     });
     expect(() => resolvePackage()).toThrow();
     await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+  });
+
+  it.each([
+    ['aep', 'removed', CatalogNotFoundError],
+    ['aep', 'purged', CatalogContentUnavailableError],
+    ['aep', 'missing version', CatalogNotFoundError],
+    ['aep', 'inventory', CatalogIntegrityError],
+    ['native', 'removed', CatalogNotFoundError],
+    ['native', 'purged', CatalogContentUnavailableError],
+    ['native', 'missing version', CatalogNotFoundError],
+    ['native', 'inventory', CatalogIntegrityError],
+  ] as const)('discards %s bytes when %s changes during the actual read', async (boundary, change, failure) => {
+    const source = join(
+      skillSnapshotPath(coreDb.dataRoot, turn.workspaceId, 'repo-guidelines', first.version.digest),
+      'SKILL.md'
+    );
+    let changed = false;
+    const mutate = (path: unknown) => {
+      if (String(path) !== source || changed) return;
+      changed = true;
+      const catalog = loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId);
+      if (change === 'removed') catalog.skills.entries[0]!.availability = 'removed';
+      else if (change === 'purged') catalog.skills.versions[0]!.contentState = 'purged';
+      else if (change === 'missing version') catalog.skills.versions = [];
+      else catalog.skills.versions[0]!.inventory[0]!.executable = true;
+      publishWorkspaceResourceCatalog({
+        dataRoot: coreDb.dataRoot,
+        workspaceId: turn.workspaceId,
+        expectedRevision: catalog.revision,
+        catalog,
+      });
+    };
+    const originalSyncRead = fs.readFileSync;
+    vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
+      const bytes = originalSyncRead(path, options);
+      mutate(path);
+      return bytes;
+    });
+    const originalRead = fsPromises.readFile;
+    vi.spyOn(fsPromises, 'readFile').mockImplementation(async (path, options) => {
+      const bytes = await originalRead(path, options);
+      mutate(path);
+      return bytes;
+    });
+    syncBuiltinESMExports();
+    if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
+    else await expect(prepare()).rejects.toThrow(failure);
+    expect(changed).toBe(true);
   });
 
   it('refuses a missing retained version without choosing the newer default', async () => {
@@ -285,6 +339,16 @@ describe('exact retained Worker Skill delivery', () => {
       },
     });
     await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+  });
+
+  it('refuses current selection when its retained version metadata is missing', () => {
+    publishWorkspaceResourceCatalog({
+      dataRoot: coreDb.dataRoot,
+      workspaceId: turn.workspaceId,
+      expectedRevision: first.catalog.revision,
+      catalog: { ...first.catalog, skills: { ...first.catalog.skills, versions: [] } },
+    });
+    expect(() => resolvePackage()).toThrow(CatalogNotFoundError);
   });
 
   it('refuses purged content even if its exact residual bytes reappear', async () => {
