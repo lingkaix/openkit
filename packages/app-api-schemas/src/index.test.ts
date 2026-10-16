@@ -241,8 +241,11 @@ const knowledgeContentDigest = `sha256:${createHash('sha256')
   .update(canonicalKnowledgePageBytes)
   .digest('hex')}`;
 const knowledgeProposalDigest = `sha256:${'2'.repeat(64)}`;
+const knowledgeBaseRevision = 'a'.repeat(40);
+const knowledgeCandidateRevision = 'b'.repeat(40);
 const knowledgeProposalDraftRequest = {
   requestId: '00000000-0000-4000-8000-000000000601',
+  baseRevision: knowledgeBaseRevision,
   knowledgePageId,
   canonicalPageBytes: canonicalKnowledgePageBytes,
   contentDigest: knowledgeContentDigest,
@@ -1449,7 +1452,10 @@ describe('app api schemas', () => {
       proposal: {
         id: 'kp_demo',
         workspaceId: 'ws_demo',
-        operation: 'create' as const,
+        operation: 'notebook-change' as const,
+        ownerScope: { kind: 'workspace' as const, workspaceId: 'ws_demo' },
+        baseRevision: request.baseRevision,
+        candidateRevision: knowledgeCandidateRevision,
         knowledgePageId: request.knowledgePageId,
         canonicalPageBytes: request.canonicalPageBytes,
         contentDigest: request.contentDigest,
@@ -5339,6 +5345,9 @@ describe('app api schemas', () => {
           type: 'knowledge',
           knowledgeProposalId: 'knowledge_proposal_demo',
           workspaceId: 'ws_demo',
+          proposalDigest: knowledgeProposalDigest,
+          baseRevision: knowledgeBaseRevision,
+          candidateRevision: knowledgeCandidateRevision,
           status: 'pending',
         },
         actions: [
@@ -5489,6 +5498,9 @@ describe('app api schemas', () => {
         SubmitKnowledgeProposalDecisionRequestSchema.parse({
           requestId: requestIds[decision],
           decision,
+          proposalDigest: knowledgeProposalDigest,
+          baseRevision: knowledgeBaseRevision,
+          candidateRevision: knowledgeCandidateRevision,
         }).decision
       ).toBe(decision);
     }
@@ -5498,6 +5510,9 @@ describe('app api schemas', () => {
         reviewId: 'kr_demo',
         proposalId: 'kp_demo',
         workspaceId: 'ws_demo',
+        ownerScope: { kind: 'workspace' as const, workspaceId: 'ws_demo' },
+        baseRevision: knowledgeBaseRevision,
+        candidateRevision: knowledgeCandidateRevision,
         requestId: requestIds.accepted,
         decision: 'accepted' as const,
         actor: { kind: 'user' as const, id: 'user_demo' },
@@ -5511,6 +5526,7 @@ describe('app api schemas', () => {
         knowledgePageId,
         contentDigest: knowledgeContentDigest,
         present: true as const,
+        notebookRevision: knowledgeCandidateRevision,
       },
     };
 
@@ -5552,12 +5568,20 @@ describe('app api schemas', () => {
       },
     ],
   ])('rejects removed knowledge proposal request %s', (_name, request) => {
-    expect(SubmitKnowledgeProposalDecisionRequestSchema.safeParse(request).success).toBe(false);
+    expect(
+      SubmitKnowledgeProposalDecisionRequestSchema.safeParse({
+        proposalDigest: knowledgeProposalDigest,
+        baseRevision: knowledgeBaseRevision,
+        candidateRevision: knowledgeCandidateRevision,
+        ...request,
+      }).success
+    ).toBe(false);
   });
 
   it('accepts only bounded knowledge proposal reversal projections', () => {
     const request = {
       requestId: '00000000-0000-4000-8000-000000000618',
+      baseRevision: knowledgeCandidateRevision,
       reviewId: 'kr_demo',
       knowledgePageId,
       expectedContentDigest: knowledgeContentDigest,
@@ -5569,6 +5593,7 @@ describe('app api schemas', () => {
         knowledgePageId: request.knowledgePageId,
         contentDigest: request.expectedContentDigest,
         present: false as const,
+        notebookRevision: 'c'.repeat(40),
       },
     };
 
