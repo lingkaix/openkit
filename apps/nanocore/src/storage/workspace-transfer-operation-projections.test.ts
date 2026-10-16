@@ -288,7 +288,7 @@ describe('Workspace JSON transfer cutover', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line))
-    ).toEqual([published.turn]);
+    ).toEqual([{ ...published.turn, captureCoverage: published.captureCoverage }]);
     expect(exportedTurns).not.toContain('failed-cache');
     // A discarded cache candidate cannot hide the same complete canonical Turn from later exports.
     (store as unknown as { turns: Map<string, unknown> }).turns.delete(turn.id);
