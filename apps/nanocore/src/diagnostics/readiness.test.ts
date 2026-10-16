@@ -28,7 +28,10 @@ describe('operational readiness dimensions', () => {
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const observedAt = '2026-10-11T00:00:00.000Z';
-    const nanoHostConfig = { identityId: 'nh_age', deploymentId: 'dep_age' };
+    const nanoHostConfig = {
+      identityId: 'nh_age',
+      deploymentId: 'dep_00000000-0000-787c-af58-ea110715292e',
+    };
     try {
       allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...nanoHostConfig,

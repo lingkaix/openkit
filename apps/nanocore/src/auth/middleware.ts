@@ -71,6 +71,8 @@ type SessionDeploymentAdminResolver = (userId: string) => string | null | Promis
  * Optional auth middleware dependencies.
  */
 interface AuthMiddlewareOptions {
+  /** Unique recorded local User selected at trusted app construction; never a caller input. */
+  localUserId?: string;
   /** Verifier for OpenKit `okt_` bearer tokens. */
   accessTokenVerifier?: AccessTokenVerifier;
   /** Verifier for the canonical lifecycle status of local and session users. */
@@ -118,7 +120,8 @@ export function createAuthMiddleware(
 
     // Remote MCP always requires a presented Token, including on a local-mode listener.
     if (mode === 'local' && c.req.path !== '/mcp') {
-      const actor = actorFromRequest(c.req.raw, mode);
+      if (!options.localUserId) return unauthorized(c);
+      const actor = actorFromRequest(c.req.raw, mode, options.localUserId);
       if (options.canonicalUserActive && !(await options.canonicalUserActive(actor.userId))) {
         return unauthorized(c);
       }

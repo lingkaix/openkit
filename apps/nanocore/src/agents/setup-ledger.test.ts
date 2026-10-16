@@ -22,8 +22,8 @@ import type { ResolvedAgentSetup } from './setup-resolver.js';
 function createWorkspaceDb() {
   const workspaceDb = openWorkspaceDb(
     mkdtempSync(join(tmpdir(), 'openkit-agent-setup-ledger-')),
-    'user_1',
-    'ws_1'
+    'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+    'ws_00000000-0000-73c3-900f-8d310e4ba201'
   );
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
@@ -69,12 +69,14 @@ describe('resolved agent setup ledger', () => {
     try {
       const record = recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_encoding',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup: createTestAgentSetup({ network }),
         createdAt: '2026-10-08T00:00:00.000Z',
       });
       expect(record.setup.manifest.sandbox.network).toEqual(network);
-      expect(requireResolvedAgentSetup(workspaceDb, 'ws_1', record.id)).toEqual(record);
+      expect(
+        requireResolvedAgentSetup(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201', record.id)
+      ).toEqual(record);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -86,8 +88,8 @@ describe('resolved agent setup ledger', () => {
     try {
       const record = recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_1',
-        workspaceId: 'ws_1',
-        turnId: 'turn_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
         requestId: 'req_1',
         setup: resolvedSetup(),
         createdAt: '2026-07-06T00:00:00.000Z',
@@ -95,8 +97,8 @@ describe('resolved agent setup ledger', () => {
 
       expect(record).toMatchObject({
         id: 'ras_1',
-        workspaceId: 'ws_1',
-        turnId: 'turn_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
         requestId: 'req_1',
         agentId: 'agent_codex_host',
         logicalModelId: 'openai/gpt-5.2',
@@ -104,7 +106,9 @@ describe('resolved agent setup ledger', () => {
         runtimeAdapter: 'codex',
         requiredFeatures: ['workspace.mount.fuse'],
       });
-      expect(requireResolvedAgentSetup(workspaceDb, 'ws_1', 'ras_1')).toEqual(record);
+      expect(
+        requireResolvedAgentSetup(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'ras_1')
+      ).toEqual(record);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -124,7 +128,7 @@ describe('resolved agent setup ledger', () => {
     try {
       const record = recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_unknown_family',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup,
         createdAt: '2026-07-06T00:00:00.000Z',
       });
@@ -162,20 +166,20 @@ describe('resolved agent setup ledger', () => {
                 profileId: 'provider_profile',
                 type: 'openai-compatible',
               },
-              vaultGrantId: 'grant_provider_api_key',
+              vaultGrantId: 'grant_00000000-0000-7fa7-82fe-c356c64344cc',
               visibility: 'sandbox-provider',
             },
             {
               id: 'runtime_auth_file',
               targetPath: '/run/secrets/runtime-auth.json',
-              vaultGrantId: 'grant_runtime_auth_file',
+              vaultGrantId: 'grant_00000000-0000-720f-937b-38f5395bee21',
               visibility: 'runtime-file',
             },
             {
               id: 'runtime_api_key',
               requirementId: 'runtime-api-key',
               targetEnvVarName: 'RUNTIME_API_KEY',
-              vaultGrantId: 'grant_runtime_api_key',
+              vaultGrantId: 'grant_00000000-0000-7960-b949-4bf702bf6168',
               visibility: 'runtime-env',
             },
           ],
@@ -213,7 +217,7 @@ describe('resolved agent setup ledger', () => {
     try {
       const record = recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_redacted',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup,
         createdAt: '2026-07-06T00:00:00.000Z',
       });
@@ -242,9 +246,13 @@ describe('resolved agent setup ledger', () => {
         .prepare('SELECT setup_json FROM resolved_agent_setups WHERE setup_record_id = ?')
         .get(record.id) as { setup_json: string };
       expect(JSON.parse(stored.setup_json)).toEqual(expectedSetup);
-      expect(listExportableResolvedAgentSetups(workspaceDb, 'ws_1')).toEqual([record]);
+      expect(
+        listExportableResolvedAgentSetups(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201')
+      ).toEqual([record]);
 
-      const exportableJson = JSON.stringify(listExportableResolvedAgentSetups(workspaceDb, 'ws_1'));
+      const exportableJson = JSON.stringify(
+        listExportableResolvedAgentSetups(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201')
+      );
       for (const secret of [
         'extension-secret',
         'lifecycle-secret',
@@ -309,7 +317,7 @@ describe('resolved agent setup ledger', () => {
       importResolvedAgentSetups(workspaceDb, [
         {
           id: 'ras_imported',
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           turnId: null,
           requestId: null,
           agentId: setup.manifest.id,
@@ -326,10 +334,16 @@ describe('resolved agent setup ledger', () => {
         .prepare('SELECT setup_json FROM resolved_agent_setups WHERE setup_record_id = ?')
         .get('ras_imported') as { setup_json: string };
       expect(JSON.parse(stored.setup_json)).toEqual(redactedSetup);
-      expect(requireResolvedAgentSetup(workspaceDb, 'ws_1', 'ras_imported').setup).toEqual(
-        redactedSetup
+      expect(
+        requireResolvedAgentSetup(
+          workspaceDb,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          'ras_imported'
+        ).setup
+      ).toEqual(redactedSetup);
+      const exportableJson = JSON.stringify(
+        listExportableResolvedAgentSetups(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201')
       );
-      const exportableJson = JSON.stringify(listExportableResolvedAgentSetups(workspaceDb, 'ws_1'));
       for (const secret of [
         'import-extension-secret',
         'import-route-secret',
@@ -350,7 +364,7 @@ describe('resolved agent setup ledger', () => {
     try {
       const record = recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_stored',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup: resolvedSetup(),
         createdAt: '2026-07-06T00:00:00.000Z',
       });
@@ -377,7 +391,10 @@ describe('resolved agent setup ledger', () => {
           record.id
         );
 
-      const exportable = listExportableResolvedAgentSetups(workspaceDb, 'ws_1');
+      const exportable = listExportableResolvedAgentSetups(
+        workspaceDb,
+        'ws_00000000-0000-73c3-900f-8d310e4ba201'
+      );
 
       expect(exportable[0]?.setup).toEqual(record.setup);
       const exportableJson = JSON.stringify(exportable);

@@ -144,12 +144,12 @@ function seedWorkspaceDeletionRequest(dataRoot) {
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
+    const localUserId = ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Deletion recovery smoke');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: localUserId,
       workspaceId: workspace.id,
     });
     const request = {
@@ -160,7 +160,7 @@ function seedWorkspaceDeletionRequest(dataRoot) {
     createWorkspaceDeletionRequest(dataRoot, {
       ...request,
       createdAt: new Date().toISOString(),
-      originalOwnerUserId: 'user_local',
+      originalOwnerUserId: localUserId,
       workspaceId: workspace.id,
     });
     return { request, workspaceId: workspace.id };

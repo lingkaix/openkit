@@ -5,13 +5,16 @@ import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import {
+  allocateEntityId,
+  deriveEntityId,
   isThreadId,
   isTurnId,
   parseReferenceScope,
   RetrievalTraceReferenceSchema,
 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
+import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
+import * as packageFilesOwner from './context/worker-context-package.js';
 import { readAssistantTaskHandoffSource } from './internal-agents/assistant-handoff-source.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import * as workerCoordinator from './internal-agents/worker-coordinator.js';
@@ -27,6 +30,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import {
   answerPendingRequest,
+  assistantPendingOutcomeSource,
   assistantPendingOutcomeSourceHash,
   freezeReadyOutcomes,
   listThreadPendingRequests,
@@ -45,16 +49,20 @@ import {
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
+import { prepareWorkerTurnContextPackage } from './runtime/worker-governance-turn-executor.js';
 import {
   createSchedulerAdmissionEntry,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -101,7 +109,7 @@ function fixture(targetWorkspaceId?: string) {
   });
   const timestamp = old.startedAt!;
   store.createItem({
-    id: randomUUID(),
+    id: allocateEntityId('it'),
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: old.id,
@@ -234,7 +242,7 @@ function fixture(targetWorkspaceId?: string) {
 describe('Assistant semantic Task handoff', () => {
   it('keeps a retained predecessor receipt-free Task inspect-only after reopen without resuming it', async () => {
     const f = fixture();
-    // Reconstruct the queued boundary from origin/main acceptPendingInput, before Worker closeout.
+    // Reconstruct the P14-canonical queued boundary before P19 selection proofs and Worker closeout.
     // The old receiving Thread has no parent/source, and an ordinary answer has no exact selection.
     f.store.setTurnAdmissionHooks(null);
     const now = '2026-10-14T00:00:00.000Z';
@@ -247,13 +255,13 @@ describe('Assistant semantic Task handoff', () => {
       actor,
       null,
       {
-        turnId: 'tu_predecessor_clarification',
+        turnId: 'tu_00000000-0000-761d-86dc-d622daff63ac',
         agentId: 'quick-chat',
         startedAt: now,
       }
     );
     const requestId = `ui_chat_clarify_${raising.id}`;
-    const requestItemId = `it_chat_clarify_${raising.id}`;
+    const requestItemId = pendingRequestItemId(requestId, 'request');
     const questions = [
       {
         id: 'chat_clarification',
@@ -302,7 +310,7 @@ describe('Assistant semantic Task handoff', () => {
       actor,
       null,
       {
-        turnId: 'tu_predecessor_outcome',
+        turnId: 'tu_00000000-0000-70e1-87b7-8529640d6c74',
         agentId: 'quick-chat',
         executorKind: 'assistant',
         startedAt: now,
@@ -366,11 +374,14 @@ describe('Assistant semantic Task handoff', () => {
     const receiving = f.store.createThread(
       f.workspace.id,
       input,
-      `th_task_${priorHash.slice(0, 24)}`,
+      deriveEntityId('th', assistantPendingOutcomeSource(source, [record], LOCAL_USER_ID)),
       'conversation',
       { visibility: 'workspace', threadSource: undefined }
     );
-    const turnId = `tu_task_${priorHash.slice(0, 24)}`;
+    const turnId = deriveEntityId(
+      'tu',
+      assistantPendingOutcomeSource(source, [record], LOCAL_USER_ID)
+    );
     const workerRequestId = `pending_${priorHash}`;
     const workerRequest = StructuredWorkerDelegationRequestSchema.parse({
       schemaVersion: 1,
@@ -701,8 +712,70 @@ describe('Assistant semantic Task handoff', () => {
         checkpoint: getWorkerCheckpoint(f.workspaceDb, f.workspace.id, receiving.id, worker.id)!,
       })
     ).resolves.toBe('live');
+    const prepared = prepareWorkerTurnContextPackage(
+      f.coreDb,
+      f.workspaceDb,
+      reopened,
+      getWorkerCheckpoint(f.workspaceDb, f.workspace.id, receiving.id, worker.id)!,
+      {
+        agentSessionId: allocateEntityId('as'),
+        workerRequest: admission!.turnInput,
+        requestId: admission!.requestId,
+        workspaceId: f.workspace.id,
+        threadId: receiving.id,
+        turnId: worker.id,
+      }
+    );
+    expect(prepared.knowledgeSelectionInput).toBeNull();
+    expect(prepared.packageFiles.knowledgeSelections).toEqual([]);
+    expect(prepared.packageFiles.fileInventory.map((entry) => entry.path)).toEqual([
+      'instructions.md',
+      'package.json',
+    ]);
+    expect(JSON.stringify(prepared.packageFiles.files)).not.toContain(privateMarker);
     const delivered = readPendingRequest(f.workspaceDb.sqlite, request.userInputRequestId)!;
     expect(delivered).toMatchObject({ state: 'resolved', delivery: 'delivered' });
+    const authority = createWorkerContextPackageAuthorityReader({
+      coreDb: f.coreDb,
+      workspaceDb: f.workspaceDb,
+      store: reopened,
+    });
+    const sourceBinding = {
+      workspaceId: f.workspace.id,
+      threadId: receiving.id,
+      turnId: worker.id,
+      requestId: admission!.requestId!,
+      workerRequest: admission!.turnInput,
+    };
+    expect(authority.readAssistantTaskHandoffSource?.(sourceBinding)).toMatchObject({
+      sourceTurnId: delivered.deliveryTurnId,
+    });
+    const retainedAnswer = f.workspaceDb.sqlite
+      .prepare('SELECT answer_map_json FROM pending_requests WHERE request_id = ?')
+      .get(request.userInputRequestId) as { answer_map_json: string };
+    const writes = vi.spyOn(packageFilesOwner, 'writeWorkerContextPackageFiles');
+    try {
+      // Alter only a retained source fact; live admission and source verification remain real.
+      f.workspaceDb.sqlite
+        .prepare('UPDATE pending_requests SET answer_map_json = ? WHERE request_id = ?')
+        .run(JSON.stringify({ handoff: ['Do not start'] }), request.userInputRequestId);
+      expect(authority.readAssistantTaskHandoffSource?.(sourceBinding)).toBeNull();
+      expect(() =>
+        prepareWorkerTurnContextPackage(
+          f.coreDb,
+          f.workspaceDb,
+          reopened,
+          getWorkerCheckpoint(f.workspaceDb, f.workspace.id, receiving.id, worker.id)!,
+          { ...sourceBinding, agentSessionId: allocateEntityId('as') }
+        )
+      ).toThrow('Task Knowledge selection authority is contradictory');
+      expect(writes).not.toHaveBeenCalled();
+    } finally {
+      f.workspaceDb.sqlite
+        .prepare('UPDATE pending_requests SET answer_map_json = ? WHERE request_id = ?')
+        .run(retainedAnswer.answer_map_json, request.userInputRequestId);
+      writes.mockRestore();
+    }
     expect(delivered.deliveryTurnId).not.toBe(accepted.turn.id);
     expect(f.store.getTurnById(delivered.deliveryTurnId!)).toMatchObject({ status: 'completed' });
     const handoff = f.store
@@ -860,7 +933,7 @@ describe('Assistant semantic Task handoff', () => {
   });
 
   it('refuses a confirmed unavailable destination without creating execution owners or another model call', async () => {
-    const f = fixture('unavailable-receiving-workspace');
+    const f = fixture(allocateEntityId('ws'));
     expect((await f.submit()).status).toBe(202);
     const request = f.store
       .listThreadItems(f.workspace.id, f.thread.id)

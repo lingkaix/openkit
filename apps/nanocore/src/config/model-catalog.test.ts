@@ -129,7 +129,7 @@ describe('deployment model extension catalog', () => {
     const service = new RuntimeConfigFileService({
       dataRoot: root,
       workspaceIds: [],
-      userId: 'admin',
+      userId: 'usr_00000000-0000-7000-8000-000000000002',
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
     });
@@ -189,7 +189,7 @@ describe('deployment model extension catalog', () => {
     const service = new RuntimeConfigFileService({
       dataRoot: root,
       workspaceIds: [],
-      userId: 'admin',
+      userId: 'usr_00000000-0000-7000-8000-000000000002',
       runtimeConfigManager: manager,
       readRuntimeConfigStatus: () => manager.status(),
     });
@@ -388,10 +388,24 @@ describe('deployment model extension catalog', () => {
   });
 
   it.each([
-    { kind: 'session', userId: 'member' },
-    { kind: 'token', userId: 'member', tokenScope: 'workspace', tokenWorkspaceIds: ['workspace'] },
-    { kind: 'token', userId: 'admin', tokenId: 'admin-token', tokenScope: 'server-admin' },
-    { kind: 'session', userId: 'admin', adminTokenId: 'admin-token' },
+    { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000003' },
+    {
+      kind: 'token',
+      userId: 'usr_00000000-0000-7000-8000-000000000003',
+      tokenScope: 'workspace',
+      tokenWorkspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+    },
+    {
+      kind: 'token',
+      userId: 'usr_00000000-0000-7000-8000-000000000002',
+      tokenId: 'tok_00000000-0000-7000-8000-000000000002',
+      tokenScope: 'server-admin',
+    },
+    {
+      kind: 'session',
+      userId: 'usr_00000000-0000-7000-8000-000000000002',
+      adminTokenId: 'tok_00000000-0000-7000-8000-000000000002',
+    },
   ] as Actor[])('enforces deployment authority before generic catalog access for %j', async (actor) => {
     const { root, path } = fixture();
     const manager = createRuntimeConfigManager({ dataRoot: root });
@@ -409,15 +423,18 @@ describe('deployment model extension catalog', () => {
     });
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
-    for (const userId of ['admin', 'member'])
+    for (const userId of [
+      'usr_00000000-0000-7000-8000-000000000002',
+      'usr_00000000-0000-7000-8000-000000000003',
+    ])
       coreDb.sqlite
         .prepare(
           "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES (?, ?, ?, 0, ?, ?, 'human')"
         )
         .run(userId, userId, `${userId}@example.test`, Date.now(), Date.now());
     createOpenKitAccessTokenRecord(coreDb, {
-      tokenId: 'admin-token',
-      ownerUserId: 'admin',
+      tokenId: 'tok_00000000-0000-7000-8000-000000000002',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000002',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterAll } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
@@ -14,6 +15,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import {
   admitWorkerImageEnvironment,
+  readWorkerImageSettlement,
   writeWorkerImageSettlement,
 } from '../runtime/worker-image-settlements.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
@@ -36,8 +38,9 @@ export function admitTestNativeEnvironment(
       : measuredDigest;
   const defaultsDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
   const requestId = createHash('sha256').update(`native-test:${inputDigest}`).digest('hex');
+  const prior = readWorkerImageSettlement(coreDb, requestId);
   const candidate = {
-    authoredArtifactId: `ar_test_${requestId}`,
+    authoredArtifactId: prior?.authoredArtifactId ?? allocateEntityId('ar'),
     authoredArtifactVersion: 1 as const,
     authoredContentDigest: inputDigest,
     inputDigest,

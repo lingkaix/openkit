@@ -7,11 +7,11 @@ import {
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -71,8 +71,12 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  const db = openWorkspaceDb(dataRoot, 'ws_demo');
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   cleanups.push(() => {
     db.sqlite.close();
@@ -96,7 +100,7 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
               {
                 sink: { kind: 'env', name: 'ECHO_AUTH' },
                 slot: 'auth',
-                vaultGrantId: 'grant_missing',
+                vaultGrantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
               },
             ]
           : [],
@@ -108,17 +112,17 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
     ],
   };
   const turn = store.createTurn(
-    'ws_demo',
-    'th_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
     'Capture an exact effect',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     { agentId: 'agent_demo' }
   );
   const environmentPackage: AgentEnvironmentPackage = resolveAgentEnvironmentPackage({
     coreDb,
     captureCoverage: { scope: 'server', value: 'off' },
-    agentSessionId: 'as_captured',
+    agentSessionId: 'as_00000000-0000-7be5-8407-bc63f27c8ec0',
     agentSetup: setup,
     backend: { kind: 'openshell' },
     createdAt: '2026-10-15T00:00:00.000Z',
@@ -137,14 +141,14 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
       source: 'live',
       tools: nextTools,
       workspaceDb: db,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   const capturedId = retain(tools(), 'schema_captured');
   const resolved = resolveWorkspaceMcpServer({ catalog, serverId: 'echo-server' });
   store.createItem({
-    id: 'it_captured',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    id: 'it_00000000-0000-74e7-bec8-70d5a20db395',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: turn.id,
     type: 'approval-request',
     status: 'completed',
@@ -157,14 +161,14 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
   });
   const record = raiseRecordedPendingRequest(store, db.sqlite, {
     requestId: 'ap_captured',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     raisingTurnId: turn.id,
-    requestItemId: 'it_captured',
+    requestItemId: 'it_00000000-0000-74e7-bec8-70d5a20db395',
     kind: 'approval',
     requesterKind: 'worker',
     agentId: 'agent_demo',
-    responsibleUserId: 'user_local',
+    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     call: {
       serverId: 'echo-server',
       catalogRevision: resolved.catalogDigest,
@@ -175,11 +179,11 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
       packageDigest: null,
       policyDecisionId: null,
       authorizationContext: {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         agentSessionId: null,
         agentId: 'agent_demo',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         packageDigest: null,
         policyDecisionId: null,
       },
@@ -211,13 +215,13 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
     return respondRecordedApproval({
       store,
       sqlite: db.sqlite,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       approvalRequestId: record.requestId,
       decision: 'granted',
-      actorId: 'user_local',
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
       coreDb,
-      requestActor: { kind: 'local', userId: 'user_local' },
+      requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
       dependencies: { coreDb, openWorkspace: (id) => openWorkspaceDb(dataRoot, id) },
       prepare: async () => {
         prepared = await prepareCapturedPendingCall({
@@ -333,7 +337,7 @@ describe('captured pending MCP schema identity at grant', () => {
       expect.objectContaining({
         toolName: 'echo',
         arguments: { message: 'approved' },
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     );
     await expect(f.grant()).rejects.toMatchObject({ code: 'request_not_pending' });
@@ -381,7 +385,10 @@ describe('captured pending MCP schema identity at grant', () => {
 
   it('uses imported retained captured evidence without making it current live authority', async () => {
     const f = fixture();
-    const captured = listExportableMcpToolSchemaSnapshots(f.db, 'ws_demo');
+    const captured = listExportableMcpToolSchemaSnapshots(
+      f.db,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     f.db.sqlite.prepare('DELETE FROM mcp_tool_schema_snapshots').run();
     importMcpToolSchemaSnapshots(f.db, captured);
     const current = tools();
@@ -393,7 +400,10 @@ describe('captured pending MCP schema identity at grant', () => {
 
   it('refuses imported-only history when no current live schema exists', async () => {
     const f = fixture();
-    const captured = listExportableMcpToolSchemaSnapshots(f.db, 'ws_demo');
+    const captured = listExportableMcpToolSchemaSnapshots(
+      f.db,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     f.db.sqlite.prepare('DELETE FROM mcp_tool_schema_snapshots').run();
     importMcpToolSchemaSnapshots(f.db, captured);
     expect(await f.grant()).toMatchObject({ disposition: 'denied-not-executed' });
@@ -411,7 +421,7 @@ describe('captured pending MCP schema identity at grant', () => {
       expect.objectContaining({
         toolName: 'echo',
         arguments: { message: 'approved' },
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     );
     await expect(f.grant()).rejects.toMatchObject({ code: 'request_not_pending' });
@@ -451,7 +461,9 @@ describe('captured pending MCP schema identity at grant', () => {
       if (guard === 'agent') f.removeAgent();
       if (guard === 'user-authority')
         f.coreDb.sqlite
-          .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'user_local'")
+          .prepare(
+            "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
+          )
           .run(new Date().toISOString());
       if (guard === 'catalog' || guard === 'eligibility' || guard === 'policy') {
         const catalog = f.catalog();

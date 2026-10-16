@@ -36,7 +36,7 @@ describe('internal role profile resolution', () => {
   it('applies explicit, User, Workspace, Server profile, and Gateway preferences in order', () => {
     const resolved = resolveInternalRoleProfile({
       roleId: 'assistant',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       gatewayConfig,
       providerRegistry: providers,
       profilesConfig: {
@@ -76,7 +76,7 @@ describe('internal role profile resolution', () => {
     expect(
       resolveInternalRoleProfile({
         roleId: 'assistant',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         gatewayConfig,
         providerRegistry: providers,
         profilesConfig: {
@@ -94,7 +94,7 @@ describe('internal role profile resolution', () => {
           schemaVersion: 1,
           workspaces: [
             {
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               internalRoles: [{ roleId: 'assistant', profileId: 'knowledge-default' }],
             },
           ],
@@ -107,7 +107,7 @@ describe('internal role profile resolution', () => {
     expect(
       resolveInternalRoleProfile({
         roleId: 'assistant',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestedLogicalModelId: 'unlisted',
         gatewayConfig,
         providerRegistry: providers,

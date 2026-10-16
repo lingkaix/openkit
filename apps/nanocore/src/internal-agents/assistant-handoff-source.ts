@@ -5,6 +5,7 @@ import { requireUsableRecord } from '../runtime/pending-request-flow.js';
 import {
   assistantPendingHandoffIds,
   assistantPendingHandoffResultItemId,
+  assistantPendingOutcomeSource,
   assistantPendingOutcomeSourceHash,
   listThreadPendingRequests,
 } from '../runtime/pending-requests.js';
@@ -79,7 +80,7 @@ export function readAssistantTaskHandoffSource(
         record.deliveryTurnId
       );
       const result = source.items.find(
-        (item) => item.id === assistantPendingHandoffResultItemId(source.id)
+        (item) => item.id === assistantPendingHandoffResultItemId(source.id, 'task')
       );
       if (
         source.status !== 'completed' ||
@@ -108,7 +109,9 @@ export function readAssistantTaskHandoffSource(
           thread.parentThreadId
         );
       const sourceInputHash = assistantPendingOutcomeSourceHash(source, associated, userId);
-      const ids = assistantPendingHandoffIds(sourceInputHash);
+      const ids = assistantPendingHandoffIds(
+        assistantPendingOutcomeSource(source, associated, userId)
+      );
       if (
         receiving.requestId !== ids.requestId ||
         receiving.threadId !== ids.threadId ||

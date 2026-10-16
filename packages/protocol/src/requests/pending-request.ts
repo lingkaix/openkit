@@ -1,11 +1,12 @@
 import { z } from 'zod';
+import { ThreadIdSchema, WorkspaceIdSchema } from '../common/ids.js';
 
 /** Answer command for one pending user-input request. */
 export const AnswerUserInputRequestSchema = z
   .object({
     userInputRequestId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
     requestId: z.string().min(1),
     answers: z.record(z.string().min(1), z.tuple([z.string().min(1)])),
   })
@@ -15,8 +16,8 @@ export const AnswerUserInputRequestSchema = z
 export const WithdrawPendingRequestSchema = z
   .object({
     pendingRequestId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
     requestId: z.string().min(1),
   })
   .strip();
@@ -25,8 +26,8 @@ export const WithdrawPendingRequestSchema = z
 export const PendingRequestOutcomeSchema = z
   .object({
     requestId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
     state: z.enum(['pending', 'resolved', 'ended']),
     resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
     ending: z.enum(['withdrawn', 'invalidated']).nullable(),

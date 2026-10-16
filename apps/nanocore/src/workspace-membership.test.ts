@@ -3,13 +3,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
   ensureUserQuickChatWorkspace,
@@ -55,17 +55,17 @@ describe('workspace membership foundation', () => {
             kind
           )
           VALUES
-            ('user_subject', 'Subject', 'subject@example.com', false, ?, ?, 'human'),
-            ('user_steward', 'Steward', 'steward@example.com', false, ?, ?, 'human')`
+            ('usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'Subject', 'subject@example.com', false, ?, ?, 'human'),
+            ('usr_00000000-0000-704f-b567-268fed2478ec', 'Steward', 'steward@example.com', false, ?, ?, 'human')`
         )
         .run(now, now, now, now);
       for (const [workspaceId, ownerUserId] of [
-        ['ws_owner', 'user_subject'],
-        ['ws_editor', 'user_steward'],
-        ['ws_viewer', 'user_steward'],
-        ['ws_removed', 'user_steward'],
-        ['ws_deleting', 'user_steward'],
-        ['ws_contradictory', 'user_subject'],
+        ['ws_00000000-0000-764a-ac14-15573e6f8983', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'],
+        ['ws_00000000-0000-7b56-b84d-e36c3b9e04dc', 'usr_00000000-0000-704f-b567-268fed2478ec'],
+        ['ws_00000000-0000-7f6f-8712-e3b3efe0bcb4', 'usr_00000000-0000-704f-b567-268fed2478ec'],
+        ['ws_00000000-0000-772f-bc57-457ac1c70d5b', 'usr_00000000-0000-704f-b567-268fed2478ec'],
+        ['ws_00000000-0000-701f-a9e3-0acd1b3c7409', 'usr_00000000-0000-704f-b567-268fed2478ec'],
+        ['ws_00000000-0000-72d2-bf6a-59509134d28f', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'],
       ] as const) {
         recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
       }
@@ -76,10 +76,10 @@ describe('workspace membership foundation', () => {
             joined_at, removed_at, revision, created_at, updated_at
           )
           VALUES
-            ('ws_editor', 'user_subject', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
-            ('ws_viewer', 'user_subject', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
-            ('ws_removed', 'user_subject', 'removed', 'editor', NULL, ?, ?, 2, ?, ?),
-            ('ws_deleting', 'user_subject', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ('ws_00000000-0000-7b56-b84d-e36c3b9e04dc', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
+            ('ws_00000000-0000-7f6f-8712-e3b3efe0bcb4', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
+            ('ws_00000000-0000-772f-bc57-457ac1c70d5b', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'removed', 'editor', NULL, ?, ?, 2, ?, ?),
+            ('ws_00000000-0000-701f-a9e3-0acd1b3c7409', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(
           timestamp,
@@ -98,25 +98,25 @@ describe('workspace membership foundation', () => {
         );
       coreDb.sqlite
         .prepare("UPDATE workspace_registry SET status = 'deleting' WHERE workspace_id = ?")
-        .run('ws_deleting');
+        .run('ws_00000000-0000-701f-a9e3-0acd1b3c7409');
       coreDb.sqlite
         .prepare(
           `INSERT INTO users (
             id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
-          ) VALUES ('user_disabled', 'Disabled', 'disabled@example.com', false, ?, ?, 'human', 'disabled', ?)`
+          ) VALUES ('usr_00000000-0000-7e63-b85a-c188de8ee1c3', 'Disabled', 'disabled@example.com', false, ?, ?, 'human', 'disabled', ?)`
         )
         .run(now, now, timestamp);
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_steward',
-        workspaceId: 'ws_disabled_member',
+        ownerUserId: 'usr_00000000-0000-704f-b567-268fed2478ec',
+        workspaceId: 'ws_00000000-0000-755d-9653-0bbaa7f8fdb4',
       });
       coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_members (
             workspace_id, user_id, status, access_level, invitation_id,
             joined_at, removed_at, revision, created_at, updated_at
-          ) VALUES ('ws_disabled_member', 'user_disabled', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          ) VALUES ('ws_00000000-0000-755d-9653-0bbaa7f8fdb4', 'usr_00000000-0000-7e63-b85a-c188de8ee1c3', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(timestamp, timestamp, timestamp);
       coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
@@ -124,28 +124,80 @@ describe('workspace membership foundation', () => {
         .prepare(
           `UPDATE workspace_members
            SET access_level = 'viewer'
-           WHERE workspace_id = 'ws_contradictory' AND user_id = 'user_subject'`
+           WHERE workspace_id = 'ws_00000000-0000-72d2-bf6a-59509134d28f' AND user_id = 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'`
         )
         .run();
       const filesystemOnlyWorkspace = new FsStore({ dataRoot }).createWorkspace('Filesystem only');
 
-      expect(resolveWorkspaceRole(coreDb, 'ws_owner', 'user_subject')).toBe('owner');
-      expect(resolveWorkspaceRole(coreDb, 'ws_editor', 'user_subject')).toBe('editor');
-      expect(resolveWorkspaceRole(coreDb, 'ws_viewer', 'user_subject')).toBe('viewer');
-      expect(resolveWorkspaceRole(coreDb, 'ws_removed', 'user_subject')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_deleting', 'user_subject')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_disabled_member', 'user_disabled')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_contradictory', 'user_subject')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_missing', 'user_subject')).toBeNull();
-      expect(listActiveWorkspaceIdsForActor(coreDb, 'user_subject')).toEqual([
-        'ws_editor',
-        'ws_owner',
-        'ws_viewer',
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-764a-ac14-15573e6f8983',
+          'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
+        )
+      ).toBe('owner');
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-7b56-b84d-e36c3b9e04dc',
+          'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
+        )
+      ).toBe('editor');
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-7f6f-8712-e3b3efe0bcb4',
+          'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
+        )
+      ).toBe('viewer');
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-772f-bc57-457ac1c70d5b',
+          'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
+        )
+      ).toBeNull();
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-701f-a9e3-0acd1b3c7409',
+          'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
+        )
+      ).toBeNull();
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-755d-9653-0bbaa7f8fdb4',
+          'usr_00000000-0000-7e63-b85a-c188de8ee1c3'
+        )
+      ).toBeNull();
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-72d2-bf6a-59509134d28f',
+          'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
+        )
+      ).toBeNull();
+      expect(
+        resolveWorkspaceRole(
+          coreDb,
+          'ws_00000000-0000-7490-845b-dcfa3ee49925',
+          'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
+        )
+      ).toBeNull();
+      expect(
+        listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad')
+      ).toEqual([
+        'ws_00000000-0000-764a-ac14-15573e6f8983',
+        'ws_00000000-0000-7b56-b84d-e36c3b9e04dc',
+        'ws_00000000-0000-7f6f-8712-e3b3efe0bcb4',
       ]);
-      expect(listActiveWorkspaceIdsForActor(coreDb, 'user_subject')).not.toContain(
-        filesystemOnlyWorkspace.id
-      );
-      expect(listActiveWorkspaceIdsForActor(coreDb, 'user_disabled')).toEqual([]);
+      expect(
+        listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad')
+      ).not.toContain(filesystemOnlyWorkspace.id);
+      expect(
+        listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7e63-b85a-c188de8ee1c3')
+      ).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -158,10 +210,12 @@ describe('workspace membership foundation', () => {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       const store = new FsStore({ dataRoot });
-      const input = { coreDb, store, userId: 'user_local' };
+      const input = { coreDb, store, userId: 'usr_00000000-0000-7000-8000-000000000001' };
       ensureUserQuickChatWorkspace(input);
-      const workspace = store.ensureQuickChatWorkspace('user_local');
-      expect(resolveWorkspaceRole(coreDb, workspace.id, 'user_local')).toBe('owner');
+      const workspace = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
+      expect(
+        resolveWorkspaceRole(coreDb, workspace.id, 'usr_00000000-0000-7000-8000-000000000001')
+      ).toBe('owner');
       // Seed a retained contradiction directly; normal owner-removal commands prohibit this state.
       coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
       coreDb.sqlite
@@ -214,11 +268,11 @@ describe('workspace membership foundation', () => {
             kind,
             last_seen_at
           )
-           VALUES ('user_owner', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
+           VALUES ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
         )
         .run(Date.now(), Date.now());
       const app = createApp({
-        auth: authForUser('user_owner'),
+        auth: authForUser('usr_00000000-0000-7011-88df-c2b1e8466b6f'),
         coreDb,
         dataRoot,
         mode: 'server',
@@ -250,7 +304,7 @@ describe('workspace membership foundation', () => {
 
       expect(response.status).toBe(201);
       expect(registry).toEqual({
-        owner_user_id: 'user_owner',
+        owner_user_id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         revision: 1,
         status: 'active',
         workspace_id: workspace.id,
@@ -262,7 +316,7 @@ describe('workspace membership foundation', () => {
         removed_at: null,
         revision: 1,
         status: 'active',
-        user_id: 'user_owner',
+        user_id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         workspace_id: workspace.id,
       });
     } finally {
@@ -290,19 +344,19 @@ describe('workspace membership foundation', () => {
             kind
           )
           VALUES
-            ('user_first', 'First User', 'first@example.com', false, ?, ?, 'human'),
-            ('user_second', 'Second User', 'second@example.com', false, ?, ?, 'human')`
+            ('usr_00000000-0000-7036-b7d6-6d53799d5d56', 'First User', 'first@example.com', false, ?, ?, 'human'),
+            ('usr_00000000-0000-750e-951f-bebbf278d045', 'Second User', 'second@example.com', false, ?, ?, 'human')`
         )
         .run(now, now, now, now);
       const requestId = randomUUID();
       const firstApp = createApp({
-        auth: authForUser('user_first'),
+        auth: authForUser('usr_00000000-0000-7036-b7d6-6d53799d5d56'),
         coreDb,
         mode: 'server',
         store,
       });
       const secondApp = createApp({
-        auth: authForUser('user_second'),
+        auth: authForUser('usr_00000000-0000-750e-951f-bebbf278d045'),
         coreDb,
         mode: 'server',
         store,
@@ -359,20 +413,23 @@ describe('workspace membership foundation', () => {
           kind
         )
          VALUES
-          ('user_first', 'First User', 'first@example.com', false, ?, ?, 'human'),
-          ('user_second', 'Second User', 'second@example.com', false, ?, ?, 'human')`
+          ('usr_00000000-0000-7036-b7d6-6d53799d5d56', 'First User', 'first@example.com', false, ?, ?, 'human'),
+          ('usr_00000000-0000-750e-951f-bebbf278d045', 'Second User', 'second@example.com', false, ?, ?, 'human')`
         )
         .run(now, now, now, now);
 
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_first',
-        workspaceId: 'ws_imported_shared',
+        ownerUserId: 'usr_00000000-0000-7036-b7d6-6d53799d5d56',
+        workspaceId: 'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9',
       });
       expect(() =>
         coreDb.sqlite
           .prepare('UPDATE workspace_registry SET owner_user_id = ? WHERE workspace_id = ?')
-          .run('user_second', 'ws_imported_shared')
+          .run(
+            'usr_00000000-0000-750e-951f-bebbf278d045',
+            'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9'
+          )
       ).toThrow('workspace_owner_membership_required');
       expect(() =>
         coreDb.sqlite
@@ -381,7 +438,10 @@ describe('workspace membership foundation', () => {
              SET status = 'removed'
              WHERE workspace_id = ? AND user_id = ?`
           )
-          .run('ws_imported_shared', 'user_first')
+          .run(
+            'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9',
+            'usr_00000000-0000-7036-b7d6-6d53799d5d56'
+          )
       ).toThrow();
       expect(() =>
         coreDb.sqlite
@@ -390,24 +450,30 @@ describe('workspace membership foundation', () => {
              SET access_level = 'viewer'
              WHERE workspace_id = ? AND user_id = ?`
           )
-          .run('ws_imported_shared', 'user_first')
+          .run(
+            'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9',
+            'usr_00000000-0000-7036-b7d6-6d53799d5d56'
+          )
       ).toThrow();
       expect(() =>
         coreDb.sqlite
           .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-          .run('ws_imported_shared', 'user_first')
+          .run(
+            'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9',
+            'usr_00000000-0000-7036-b7d6-6d53799d5d56'
+          )
       ).toThrow();
       expect(() =>
         recordWorkspaceOwnerMembership({
           coreDb,
-          ownerUserId: 'user_second',
-          workspaceId: 'ws_imported_shared',
+          ownerUserId: 'usr_00000000-0000-750e-951f-bebbf278d045',
+          workspaceId: 'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9',
         })
       ).toThrow('Workspace is already owned by another user.');
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_first',
-        workspaceId: 'ws_imported_shared',
+        ownerUserId: 'usr_00000000-0000-7036-b7d6-6d53799d5d56',
+        workspaceId: 'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9',
       });
 
       expect(
@@ -418,19 +484,19 @@ describe('workspace membership foundation', () => {
              WHERE workspace_id = ?
              ORDER BY user_id`
           )
-          .all('ws_imported_shared')
+          .all('ws_00000000-0000-70d7-9c64-1e9a1f80c0e9')
       ).toEqual([
         {
-          workspace_id: 'ws_imported_shared',
-          user_id: 'user_first',
+          workspace_id: 'ws_00000000-0000-70d7-9c64-1e9a1f80c0e9',
+          user_id: 'usr_00000000-0000-7036-b7d6-6d53799d5d56',
           status: 'active',
         },
       ]);
       expect(
         coreDb.sqlite
           .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-          .get('ws_imported_shared')
-      ).toEqual({ owner_user_id: 'user_first' });
+          .get('ws_00000000-0000-70d7-9c64-1e9a1f80c0e9')
+      ).toEqual({ owner_user_id: 'usr_00000000-0000-7036-b7d6-6d53799d5d56' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -456,8 +522,8 @@ describe('workspace membership foundation', () => {
             last_seen_at
           )
            VALUES
-            ('user_owner', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL),
-            ('user_actual_owner', 'Actual Owner', 'actual-owner@example.com', false, NULL, ?, ?, 'human', NULL)`
+            ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL),
+            ('usr_00000000-0000-70a2-a677-942b1cfdc1b0', 'Actual Owner', 'actual-owner@example.com', false, NULL, ?, ?, 'human', NULL)`
         )
         .run(Date.now(), Date.now(), Date.now(), Date.now());
       const store = new FsStore({ dataRoot });
@@ -465,7 +531,7 @@ describe('workspace membership foundation', () => {
       const removed = store.createWorkspace('Removed membership');
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_actual_owner',
+        ownerUserId: 'usr_00000000-0000-70a2-a677-942b1cfdc1b0',
         workspaceId: removed.id,
       });
       const joinedAt = new Date().toISOString();
@@ -477,16 +543,16 @@ describe('workspace membership foundation', () => {
           )
           VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
-        .run(removed.id, 'user_owner', joinedAt, joinedAt, joinedAt);
+        .run(removed.id, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', joinedAt, joinedAt, joinedAt);
       coreDb.sqlite
         .prepare(
           `UPDATE workspace_members
            SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
            WHERE workspace_id = ? AND user_id = ?`
         )
-        .run(joinedAt, joinedAt, removed.id, 'user_owner');
+        .run(joinedAt, joinedAt, removed.id, 'usr_00000000-0000-7011-88df-c2b1e8466b6f');
       const app = createApp({
-        auth: authForUser('user_owner'),
+        auth: authForUser('usr_00000000-0000-7011-88df-c2b1e8466b6f'),
         coreDb,
         dataRoot,
         mode: 'server',
@@ -503,12 +569,12 @@ describe('workspace membership foundation', () => {
       expect(
         coreDb.sqlite
           .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-          .get(missing.id, 'user_owner')
+          .get(missing.id, 'usr_00000000-0000-7011-88df-c2b1e8466b6f')
       ).toBeUndefined();
       expect(
         coreDb.sqlite
           .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-          .get(removed.id, 'user_owner')
+          .get(removed.id, 'usr_00000000-0000-7011-88df-c2b1e8466b6f')
       ).toEqual({ status: 'removed' });
     } finally {
       coreDb.sqlite.close();
@@ -534,8 +600,8 @@ describe('workspace membership foundation', () => {
             kind
           )
           VALUES
-            ('user_exporter', 'Exporter', 'exporter@example.com', false, ?, ?, 'human'),
-            ('user_other', 'Other', 'other@example.com', false, ?, ?, 'human')`
+            ('usr_00000000-0000-778d-b552-9947e8876ed1', 'Exporter', 'exporter@example.com', false, ?, ?, 'human'),
+            ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.com', false, ?, ?, 'human')`
         )
         .run(now, now, now, now);
       const store = new FsStore({ dataRoot });
@@ -547,18 +613,18 @@ describe('workspace membership foundation', () => {
       });
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_exporter',
+        ownerUserId: 'usr_00000000-0000-778d-b552-9947e8876ed1',
         workspaceId: source.id,
       });
       const exporterApp = createApp({
-        auth: authForUser('user_exporter'),
+        auth: authForUser('usr_00000000-0000-778d-b552-9947e8876ed1'),
         coreDb,
         dataRoot,
         mode: 'server',
         store,
       });
       const otherApp = createApp({
-        auth: authForUser('user_other'),
+        auth: authForUser('usr_00000000-0000-73d4-904a-d4c4b905df7c'),
         coreDb,
         dataRoot,
         mode: 'server',
@@ -569,7 +635,7 @@ describe('workspace membership foundation', () => {
         ...operationRequest('workspace.export', { workspaceId: source.id }, { method: 'POST' })
       );
       const exported = (await exportedResponse.json()) as { exportId: string };
-      recordDataRootDeploymentMove(dataRoot, 'dep_moved_after_export');
+      recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-717e-ba4e-06034b3d4ea9');
       const request = {
         exportId: exported.exportId,
         sourceWorkspaceId: source.id,
@@ -607,8 +673,8 @@ describe('workspace membership foundation', () => {
           {},
           {
             body: JSON.stringify({
-              exportId: 'wsexp_missing',
-              sourceWorkspaceId: 'ws_missing',
+              exportId: 'wsexp_00000000-0000-76e9-a1ff-f4d43a476b8c',
+              sourceWorkspaceId: 'ws_00000000-0000-7490-845b-dcfa3ee49925',
             }),
             headers: { 'content-type': 'application/json' },
             method: 'POST',

@@ -48,7 +48,7 @@ describe('definition-derived client operations', () => {
     const requests: Request[] = [];
     const result = {
       id: '11111111-1111-4111-a111-111111111111',
-      collectionId: '22222222-2222-4222-a222-222222222222',
+      collectionId: 'col_00000000-0000-70c5-bf32-acc687f8947c',
       collectionName: 'entries',
       revision: 1,
       schemaRevision: 1,
@@ -64,7 +64,7 @@ describe('definition-derived client operations', () => {
       },
     });
     const input = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       appId: '33333333-3333-4333-a333-333333333333',
       collection: 'entries',
       schemaRevision: 1,
@@ -92,10 +92,16 @@ describe('definition-derived client operations', () => {
         return new Response(null, { status: 204 });
       },
     });
-    expect(await client.operations['automation.delete']({ automationId: 'auto_one' })).toBeNull();
+    expect(
+      await client.operations['automation.delete']({
+        automationId: 'auto_00000000-0000-7ff8-926b-e5836fad4671',
+      })
+    ).toBeNull();
     expect(requests[0]!.method).toBe('POST');
     expect(requests[0]!.headers.get('authorization')).toBe('Bearer test-token');
-    expect(await requests[0]!.json()).toEqual({ automationId: 'auto_one' });
+    expect(await requests[0]!.json()).toEqual({
+      automationId: 'auto_00000000-0000-7ff8-926b-e5836fad4671',
+    });
     await expect(client.operations['automation.list']({})).rejects.toThrow();
     const failed = createCoreClient({
       baseUrl: 'http://nanocore.test',
@@ -110,14 +116,18 @@ describe('definition-derived client operations', () => {
         ),
     });
     await expect(
-      failed.operations['automation.delete']({ automationId: 'auto_one' })
+      failed.operations['automation.delete']({
+        automationId: 'auto_00000000-0000-7ff8-926b-e5836fad4671',
+      })
     ).rejects.toMatchObject({ status: 400, code: 'automation_delete_failed' });
     const invalid = createCoreClient({
       baseUrl: 'http://nanocore.test',
       fetch: async () => Response.json({ deleted: true }),
     });
     await expect(
-      invalid.operations['automation.delete']({ automationId: 'auto_one' })
+      invalid.operations['automation.delete']({
+        automationId: 'auto_00000000-0000-7ff8-926b-e5836fad4671',
+      })
     ).rejects.toThrow();
   });
   it.each([200, 202])('rejects HTTP %s JSON null for a declared empty success', async (status) => {
@@ -126,7 +136,9 @@ describe('definition-derived client operations', () => {
       fetch: async () => Response.json(null, { status }),
     });
     await expect(
-      client.operations['automation.delete']({ automationId: 'auto_one' })
+      client.operations['automation.delete']({
+        automationId: 'auto_00000000-0000-7ff8-926b-e5836fad4671',
+      })
     ).rejects.toBeInstanceOf(ProtocolValidationError);
   });
   it('rejects exposed response bytes on a declared HTTP 204 success', async () => {
@@ -137,7 +149,9 @@ describe('definition-derived client operations', () => {
       fetch: async () => response,
     });
     await expect(
-      client.operations['automation.delete']({ automationId: 'auto_one' })
+      client.operations['automation.delete']({
+        automationId: 'auto_00000000-0000-7ff8-926b-e5836fad4671',
+      })
     ).rejects.toBeInstanceOf(ProtocolValidationError);
   });
 });

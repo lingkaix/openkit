@@ -17,6 +17,7 @@ import {
   ProductRetrievalTraceSchema,
 } from '@openkit/app-api-schemas';
 import {
+  allocateEntityId,
   parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
@@ -90,7 +91,7 @@ export function publishRetrievalTrace(
 
 /** Allocates through the existing retrieval-trace identifier owner. */
 export function allocateRetrievalTraceId(): string {
-  return `krt_${randomUUID()}`;
+  return allocateEntityId('krt');
 }
 
 /** Reads Knowledge evidence after caller-owned containing-record and source admission. */

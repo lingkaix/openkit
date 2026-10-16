@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { KnowledgeQueryContextSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  isEntityId,
   ReferenceScopeIdSchema,
   RetrievalTraceReferenceSchema,
   responsibleUserIdForActor,
@@ -31,7 +32,7 @@ import {
   type RetrievalScope,
 } from './retrieval-service.js';
 import { type CoreDb, openWorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID, readDataRootLayoutMarker } from './storage/fs-layout.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import {
   listKnowledgePageIds,
   readWorkspaceKnowledgePage,
@@ -106,8 +107,9 @@ export function admitKnowledgeRetrieval(input: Pick<Target, 'workspaceId' | 'acc
           true
         ) !== null
     : access.actor.kind === 'user' &&
-      access.actor.id === LOCAL_USER_ID &&
-      access.requestActor?.kind === 'local';
+      isEntityId('usr', access.actor.id) &&
+      access.requestActor?.kind === 'local' &&
+      access.requestActor.userId === access.actor.id;
   if (!allowed || (access.outputThreadId && !threadReadable(input, access.outputThreadId)))
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
 }

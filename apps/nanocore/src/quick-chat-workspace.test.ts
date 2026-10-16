@@ -15,7 +15,7 @@ describe('personal Workspace mode', () => {
 
     expect(body.items.map((entry) => entry.workspace)).toContainEqual(
       expect.objectContaining({
-        id: 'ws_quick_chat',
+        id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
         name: 'Personal',
         kind: 'personal',
       })

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 
 import { VaultBackendError } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
@@ -53,13 +54,15 @@ describe('encrypted-file vault backend', () => {
     firstBackend.store({
       material: 'ghp_live_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
 
     const reopenedBackend = createEncryptedFileVaultBackend({ masterKey, storeDir });
 
     expect(
-      Buffer.from(reopenedBackend.resolve({ referenceId: 'vault_github' })).toString('utf8')
+      Buffer.from(
+        reopenedBackend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+      ).toString('utf8')
     ).toBe('ghp_live_secret');
   });
 
@@ -77,7 +80,7 @@ describe('encrypted-file vault backend', () => {
     backend.store({
       material: 'ghp_live_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
 
     const headerBefore = readFileSync(headerPath, 'utf8');
@@ -100,9 +103,11 @@ describe('encrypted-file vault backend', () => {
     expect(String(failure)).not.toContain(wrongKeyHex);
     expect(wrongKey).toEqual(Buffer.alloc(32));
     expect(String(failure)).not.toContain('ghp_live_secret');
-    expect(Buffer.from(backend.resolve({ referenceId: 'vault_github' })).toString('utf8')).toBe(
-      'ghp_live_secret'
-    );
+    expect(
+      Buffer.from(
+        backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+      ).toString('utf8')
+    ).toBe('ghp_live_secret');
   });
 
   it.each([
@@ -221,22 +226,27 @@ describe('encrypted-file vault backend', () => {
       material: Buffer.from('ghp_live_secret'),
       metadata: {
         ownerScope: 'workspace',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
-    const resolved = backend.resolve({ referenceId: 'vault_github' });
-    const entryPath = join(storeDir, 'entries', 'vault_github', '1.enc');
+    const resolved = backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' });
+    const entryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+      '1.enc'
+    );
 
     expect(inventory).toEqual({
       backendKind: 'encrypted-file',
       currentVersion: 1,
       ownerScope: 'workspace',
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       revoked: false,
       updatedAt: '2026-07-05T01:00:00.000Z',
       versionCount: 1,
-      workspaceId: 'ws_1',
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
     });
     expect(Buffer.from(resolved).toString('utf8')).toBe('ghp_live_secret');
     expect(readFileSync(entryPath, 'utf8')).not.toContain('ghp_live_secret');
@@ -260,7 +270,7 @@ describe('encrypted-file vault backend', () => {
       masterKey: Buffer.alloc(32, 9),
       storeDir: externalStoreDir,
     });
-    const externalReferenceId = 'vault_external_read';
+    const externalReferenceId = 'vault_00000000-0000-73a2-b16b-e16f5ac85523';
     externalBackend.store({
       material: 'external_secret_must_not_escape',
       metadata: { ownerScope: 'server' },
@@ -287,7 +297,7 @@ describe('encrypted-file vault backend', () => {
         backend.store({
           material: 'must_not_escape_the_store',
           metadata: { ownerScope: 'server' },
-          referenceId: 'vault_symlinked_entries',
+          referenceId: 'vault_00000000-0000-7477-bc0f-c59650afed4a',
         })
       )
       .toThrow(VaultBackendError);
@@ -307,7 +317,7 @@ describe('encrypted-file vault backend', () => {
       now: () => timestamps.shift() ?? '2026-07-05T01:10:00.000Z',
       storeDir,
     });
-    const referenceId = 'vault_symlinked_reference';
+    const referenceId = 'vault_00000000-0000-76fb-9f5d-433cd74ffb86';
     const referenceDir = join(storeDir, 'entries', referenceId);
     const externalReferenceDir = join(externalRoot, referenceId);
 
@@ -347,21 +357,25 @@ describe('encrypted-file vault backend', () => {
       storeDir,
     });
 
-    expect(() => backend.resolve({ referenceId: 'vault_missing' })).toThrow(VaultBackendError);
-    expect(() => backend.resolve({ referenceId: 'vault_missing' })).toThrow('reference-not-found');
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-722b-b433-75d118b2149c' })
+    ).toThrow(VaultBackendError);
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-722b-b433-75d118b2149c' })
+    ).toThrow('reference-not-found');
     expect(existsSync(join(storeDir, 'entries'))).toBe(false);
 
     backend.store({
       material: 'ghp_live_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
 
     expect(() =>
       backend.store({
         material: 'changed_secret',
         metadata: { ownerScope: 'server' },
-        referenceId: 'vault_github',
+        referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       })
     ).toThrow('backend-unavailable: Vault reference material already exists.');
   });
@@ -377,8 +391,8 @@ describe('encrypted-file vault backend', () => {
     expect(() =>
       backend.store({
         material: 'ghp_live_secret',
-        metadata: { ownerScope: 'server', workspaceId: 'ws_1' },
-        referenceId: 'vault_github',
+        metadata: { ownerScope: 'server', workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' },
+        referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       })
     ).toThrow('backend-unavailable: Vault entry metadata does not match its owner scope.');
     expect(existsSync(join(storeDir, 'entries'))).toBe(false);
@@ -398,7 +412,7 @@ describe('encrypted-file vault backend', () => {
           subscriptionProviderId: 'xai',
         },
       },
-      referenceId: 'vault_subscription',
+      referenceId: 'vault_00000000-0000-74a6-9dc6-af55fa43eb8f',
     } as never);
 
     expect(stored).toMatchObject({
@@ -407,7 +421,10 @@ describe('encrypted-file vault backend', () => {
         subscriptionProviderId: 'xai',
       },
     });
-    backend.rotate({ material: 'rotated_subscription_secret', referenceId: 'vault_subscription' });
+    backend.rotate({
+      material: 'rotated_subscription_secret',
+      referenceId: 'vault_00000000-0000-74a6-9dc6-af55fa43eb8f',
+    });
     expect(createEncryptedFileVaultBackend({ masterKey, storeDir }).listReferences()).toEqual([
       expect.objectContaining({
         providerSubscriptionAccount: {
@@ -425,14 +442,14 @@ describe('encrypted-file vault backend', () => {
     backend.store({
       material: 'entry_only_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_entry_only',
+      referenceId: 'vault_00000000-0000-731b-8bf2-16a1252c2b27',
     });
-    rmSync(join(storeDir, 'entries', 'vault_entry_only', 'state.json'));
+    rmSync(join(storeDir, 'entries', 'vault_00000000-0000-731b-8bf2-16a1252c2b27', 'state.json'));
 
     expect(() => backend.listReferences()).toThrow('backend-unavailable');
-    expect(() => backend.resolve({ referenceId: 'vault_entry_only' })).toThrow(
-      'backend-unavailable'
-    );
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-731b-8bf2-16a1252c2b27' })
+    ).toThrow('backend-unavailable');
   });
 
   it('fails closed when active state exists without its current entry', () => {
@@ -442,14 +459,14 @@ describe('encrypted-file vault backend', () => {
     backend.store({
       material: 'state_only_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_state_only',
+      referenceId: 'vault_00000000-0000-7fd5-8f52-bdaca086a645',
     });
-    rmSync(join(storeDir, 'entries', 'vault_state_only', '1.enc'));
+    rmSync(join(storeDir, 'entries', 'vault_00000000-0000-7fd5-8f52-bdaca086a645', '1.enc'));
 
     expect(() => backend.listReferences()).toThrow('backend-unavailable');
-    expect(() => backend.resolve({ referenceId: 'vault_state_only' })).toThrow(
-      'backend-unavailable'
-    );
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-7fd5-8f52-bdaca086a645' })
+    ).toThrow('backend-unavailable');
   });
 
   it('fails closed when an extra material version is absent from state', () => {
@@ -460,52 +477,64 @@ describe('encrypted-file vault backend', () => {
     backend.store({
       material: 'current_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_extra_version',
+      referenceId: 'vault_00000000-0000-79c2-881d-93cd6e20cf74',
     });
     sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T01:10:00.000Z',
       masterKey,
       material: 'orphan_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_extra_version',
+      referenceId: 'vault_00000000-0000-79c2-881d-93cd6e20cf74',
       storeDir,
       version: 2,
       versionExpirations: {},
     } as never);
 
     expect(() => backend.listReferences()).toThrow('backend-unavailable');
-    expect(() => backend.resolve({ referenceId: 'vault_extra_version', version: 2 })).toThrow(
-      'backend-unavailable'
-    );
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-79c2-881d-93cd6e20cf74', version: 2 })
+    ).toThrow('backend-unavailable');
   });
 
   it('fails closed when current entry metadata contradicts state', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const backend = createEncryptedFileVaultBackend({ masterKey: Buffer.alloc(32, 9), storeDir });
-    const statePath = join(storeDir, 'entries', 'vault_mismatch', 'state.json');
+    const statePath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7669-9098-86ad2961a1ef',
+      'state.json'
+    );
 
     backend.store({
       material: 'mismatched_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_mismatch',
+      referenceId: 'vault_00000000-0000-7669-9098-86ad2961a1ef',
     });
     const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
-    state.metadata = { ownerScope: 'user', userId: 'user_other' };
+    state.metadata = { ownerScope: 'user', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' };
     writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 
     expect(() => backend.listReferences()).toThrow('backend-unavailable');
-    expect(() => backend.resolve({ referenceId: 'vault_mismatch' })).toThrow('backend-unavailable');
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-7669-9098-86ad2961a1ef' })
+    ).toThrow('backend-unavailable');
   });
 
   it('rejects a huge integral state version with a typed bounded failure instead of RangeError', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const backend = createEncryptedFileVaultBackend({ masterKey: Buffer.alloc(32, 9), storeDir });
-    const statePath = join(storeDir, 'entries', 'vault_huge_state', 'state.json');
+    const statePath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7f91-ac99-431b1c1f1f40',
+      'state.json'
+    );
 
     backend.store({
       material: 'huge_state_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_huge_state',
+      referenceId: 'vault_00000000-0000-7f91-ac99-431b1c1f1f40',
     });
     const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
     state.currentVersion = Number.MAX_SAFE_INTEGER;
@@ -529,14 +558,14 @@ describe('encrypted-file vault backend', () => {
   it('rejects an unsafe numeric entry filename as an unknown artifact before coercion', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const backend = createEncryptedFileVaultBackend({ masterKey: Buffer.alloc(32, 9), storeDir });
-    const referenceDir = join(storeDir, 'entries', 'vault_unsafe_filename');
+    const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-7238-adf9-8eb418522c47');
     const entryPath = join(referenceDir, '1.enc');
     const unsafeEntryPath = join(referenceDir, '9007199254740993.enc');
 
     backend.store({
       material: 'unsafe_filename_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_unsafe_filename',
+      referenceId: 'vault_00000000-0000-7238-adf9-8eb418522c47',
     });
     writeFileSync(unsafeEntryPath, readFileSync(entryPath), { mode: 0o600 });
 
@@ -560,7 +589,7 @@ describe('encrypted-file vault backend', () => {
   it('rejects a direct unsafe numeric version with a typed redacted failure', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const backend = createEncryptedFileVaultBackend({ masterKey: Buffer.alloc(32, 9), storeDir });
-    const referenceId = 'vault_unsafe_direct_version';
+    const referenceId = 'vault_00000000-0000-7645-a69d-79606a0b9ae4';
 
     backend.store({
       material: 'unsafe_direct_version_secret',
@@ -596,48 +625,70 @@ describe('encrypted-file vault backend', () => {
       rotationGraceMs: 900_000,
       storeDir,
     });
-    const firstEntryPath = join(storeDir, 'entries', 'vault_github', '1.enc');
-    const secondEntryPath = join(storeDir, 'entries', 'vault_github', '2.enc');
+    const firstEntryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+      '1.enc'
+    );
+    const secondEntryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+      '2.enc'
+    );
 
     backend.store({
       material: 'first_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
 
-    const rotated = backend.rotate({ material: 'second_secret', referenceId: 'vault_github' });
+    const rotated = backend.rotate({
+      material: 'second_secret',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+    });
 
     expect(rotated).toMatchObject({
       currentVersion: 2,
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       revoked: false,
       updatedAt: '2026-07-05T01:10:00.000Z',
       versionCount: 2,
     });
-    expect(Buffer.from(backend.resolve({ referenceId: 'vault_github' })).toString('utf8')).toBe(
-      'second_secret'
-    );
     expect(
-      Buffer.from(backend.resolve({ referenceId: 'vault_github', version: 1 })).toString('utf8')
+      Buffer.from(
+        backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+      ).toString('utf8')
+    ).toBe('second_secret');
+    expect(
+      Buffer.from(
+        backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', version: 1 })
+      ).toString('utf8')
     ).toBe('first_secret');
 
-    const revoked = backend.revoke({ referenceId: 'vault_github' });
+    const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' });
 
     expect(existsSync(firstEntryPath)).toBe(false);
     expect(existsSync(secondEntryPath)).toBe(false);
     expect(revoked).toMatchObject({
       currentVersion: 2,
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       revoked: true,
       updatedAt: '2026-07-05T01:20:00.000Z',
       versionCount: 2,
     });
-    expect(() => backend.resolve({ referenceId: 'vault_github' })).toThrow('reference-revoked');
-    expect(() => backend.resolve({ referenceId: 'vault_github', version: 1 })).toThrow(
-      'reference-revoked'
-    );
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+    ).toThrow('reference-revoked');
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', version: 1 })
+    ).toThrow('reference-revoked');
     expect(
-      readFileSync(join(storeDir, 'entries', 'vault_github', 'state.json'), 'utf8')
+      readFileSync(
+        join(storeDir, 'entries', 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', 'state.json'),
+        'utf8'
+      )
     ).not.toContain('second_secret');
     expect(backend.listReferences()).toEqual([revoked]);
   });
@@ -651,18 +702,18 @@ describe('encrypted-file vault backend', () => {
       rotationGraceMs: 60_000,
       storeDir,
     });
-    const referenceDir = join(storeDir, 'entries', 'vault_revoked_residue');
+    const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-7e80-b5eb-5e28a5ed589c');
     const statePath = join(referenceDir, 'state.json');
     const entryPaths = [1, 2, 3].map((version) => join(referenceDir, `${version}.enc`));
 
     backend.store({
       material: 'first_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_revoked_residue',
+      referenceId: 'vault_00000000-0000-7e80-b5eb-5e28a5ed589c',
     });
     backend.rotate({
       material: 'second_secret',
-      referenceId: 'vault_revoked_residue',
+      referenceId: 'vault_00000000-0000-7e80-b5eb-5e28a5ed589c',
     });
     const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
     sealEncryptedFileVaultEntry({
@@ -670,7 +721,7 @@ describe('encrypted-file vault backend', () => {
       masterKey,
       material: 'attributable_third_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_revoked_residue',
+      referenceId: 'vault_00000000-0000-7e80-b5eb-5e28a5ed589c',
       storeDir,
       version: 3,
       versionExpirations: {
@@ -684,12 +735,15 @@ describe('encrypted-file vault backend', () => {
 
     expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
     expect
-      .soft(() => backend.resolve({ referenceId: 'vault_revoked_residue' }))
+      .soft(() => backend.resolve({ referenceId: 'vault_00000000-0000-7e80-b5eb-5e28a5ed589c' }))
       .toThrow('backend-unavailable');
 
-    const revoked = backend.revoke({ referenceId: 'vault_revoked_residue' });
+    const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-7e80-b5eb-5e28a5ed589c' });
 
-    expect(revoked).toMatchObject({ referenceId: 'vault_revoked_residue', revoked: true });
+    expect(revoked).toMatchObject({
+      referenceId: 'vault_00000000-0000-7e80-b5eb-5e28a5ed589c',
+      revoked: true,
+    });
     for (const entryPath of entryPaths) {
       expect(existsSync(entryPath)).toBe(false);
     }
@@ -700,29 +754,43 @@ describe('encrypted-file vault backend', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const masterKey = Buffer.alloc(32, 9);
     const backend = createEncryptedFileVaultBackend({ masterKey, storeDir });
-    const firstEntryPath = join(storeDir, 'entries', 'vault_cleanup', '1.enc');
-    const extraEntryPath = join(storeDir, 'entries', 'vault_cleanup', '2.enc');
+    const firstEntryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7366-94bb-1926692eabfe',
+      '1.enc'
+    );
+    const extraEntryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7366-94bb-1926692eabfe',
+      '2.enc'
+    );
 
     backend.store({
       material: 'first_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_cleanup',
+      referenceId: 'vault_00000000-0000-7366-94bb-1926692eabfe',
     });
     sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T01:10:00.000Z',
       masterKey,
       material: 'attributable_orphan_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_cleanup',
+      referenceId: 'vault_00000000-0000-7366-94bb-1926692eabfe',
       storeDir,
       version: 2,
       versionExpirations: {},
     } as never);
 
-    expect(backend.revoke({ referenceId: 'vault_cleanup' })).toMatchObject({ revoked: true });
+    expect(
+      backend.revoke({ referenceId: 'vault_00000000-0000-7366-94bb-1926692eabfe' })
+    ).toMatchObject({ revoked: true });
     expect(existsSync(firstEntryPath)).toBe(false);
     expect(existsSync(extraEntryPath)).toBe(false);
-    expect(() => backend.resolve({ referenceId: 'vault_cleanup' })).toThrow('reference-revoked');
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-7366-94bb-1926692eabfe' })
+    ).toThrow('reference-revoked');
   });
 
   it('fails ordinary operations closed but explicit revoke cleans an exact complete entry temp', () => {
@@ -734,7 +802,7 @@ describe('encrypted-file vault backend', () => {
       now: () => timestamps.shift() ?? '2026-07-05T01:20:00.000Z',
       storeDir,
     });
-    const referenceDir = join(storeDir, 'entries', 'vault_complete_entry_temp');
+    const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-7703-a0ed-bba6a2bbc169');
     const firstEntryPath = join(referenceDir, '1.enc');
     const secondEntryPath = join(referenceDir, '2.enc');
     const entryTempPath = join(referenceDir, `.2.enc.${STALE_WRITER_PID}.tmp`);
@@ -742,14 +810,14 @@ describe('encrypted-file vault backend', () => {
     backend.store({
       material: 'first_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_complete_entry_temp',
+      referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
     });
     sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T01:10:00.000Z',
       masterKey,
       material: 'complete_temp_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_complete_entry_temp',
+      referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
       storeDir,
       version: 2,
       versionExpirations: { '1': '2026-07-05T01:11:00.000Z' },
@@ -760,14 +828,14 @@ describe('encrypted-file vault backend', () => {
 
     expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
     expect
-      .soft(() => backend.resolve({ referenceId: 'vault_complete_entry_temp' }))
+      .soft(() => backend.resolve({ referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169' }))
       .toThrow('backend-unavailable');
 
-    const revoked = backend.revoke({ referenceId: 'vault_complete_entry_temp' });
+    const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169' });
 
     expect(revoked).toMatchObject({
       currentVersion: 2,
-      referenceId: 'vault_complete_entry_temp',
+      referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
       revoked: true,
       versionCount: 2,
     });
@@ -784,7 +852,7 @@ describe('encrypted-file vault backend', () => {
       now: () => '2026-07-05T01:00:00.000Z',
       storeDir,
     });
-    const referenceDir = join(storeDir, 'entries', 'vault_complete_state_temp');
+    const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-75ef-936c-e9644868d706');
     const entryPath = join(referenceDir, '1.enc');
     const statePath = join(referenceDir, 'state.json');
     const stateTempPath = join(referenceDir, `.state.json.${STALE_WRITER_PID}.tmp`);
@@ -792,19 +860,19 @@ describe('encrypted-file vault backend', () => {
     backend.store({
       material: 'state_temp_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_complete_state_temp',
+      referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706',
     });
     writeFileSync(stateTempPath, readFileSync(statePath), { mode: 0o600 });
 
     expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
     expect
-      .soft(() => backend.resolve({ referenceId: 'vault_complete_state_temp' }))
+      .soft(() => backend.resolve({ referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706' }))
       .toThrow('backend-unavailable');
 
-    const revoked = backend.revoke({ referenceId: 'vault_complete_state_temp' });
+    const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706' });
 
     expect(revoked).toMatchObject({
-      referenceId: 'vault_complete_state_temp',
+      referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706',
       revoked: true,
     });
     expect(existsSync(entryPath)).toBe(false);
@@ -821,7 +889,7 @@ describe('encrypted-file vault backend', () => {
       masterKey: Buffer.alloc(32, 9),
       storeDir,
     });
-    const referenceId = `vault_${corruption}_entry_temp`;
+    const referenceId = testEntityId('vault', `vault_${corruption}_entry_temp`);
     const referenceDir = join(storeDir, 'entries', referenceId);
     const firstEntryPath = join(referenceDir, '1.enc');
     const entryTempPath = join(referenceDir, `.2.enc.${STALE_WRITER_PID}.tmp`);
@@ -862,7 +930,7 @@ describe('encrypted-file vault backend', () => {
   it('does not mutate revocation state when discovered material is unverifiable', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const backend = createEncryptedFileVaultBackend({ masterKey: Buffer.alloc(32, 9), storeDir });
-    const referenceDir = join(storeDir, 'entries', 'vault_unverifiable');
+    const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-735e-94c9-41a514def93b');
     const statePath = join(referenceDir, 'state.json');
     const firstEntryPath = join(referenceDir, '1.enc');
     const malformedEntryPath = join(referenceDir, '2.enc');
@@ -870,14 +938,14 @@ describe('encrypted-file vault backend', () => {
     backend.store({
       material: 'first_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_unverifiable',
+      referenceId: 'vault_00000000-0000-735e-94c9-41a514def93b',
     });
     writeFileSync(malformedEntryPath, '{"formatVersion":', { mode: 0o600 });
     const stateBefore = readFileSync(statePath, 'utf8');
 
-    expect(() => backend.revoke({ referenceId: 'vault_unverifiable' })).toThrow(
-      'backend-unavailable'
-    );
+    expect(() =>
+      backend.revoke({ referenceId: 'vault_00000000-0000-735e-94c9-41a514def93b' })
+    ).toThrow('backend-unavailable');
     expect(readFileSync(statePath, 'utf8')).toBe(stateBefore);
     expect(existsSync(firstEntryPath)).toBe(true);
     expect(existsSync(malformedEntryPath)).toBe(true);
@@ -897,28 +965,43 @@ describe('encrypted-file vault backend', () => {
       rotationGraceMs: 60_000,
       storeDir,
     });
-    const priorEntryPath = join(storeDir, 'entries', 'vault_github', '1.enc');
+    const priorEntryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+      '1.enc'
+    );
 
     backend.store({
       material: 'first_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
-    backend.rotate({ material: 'second_secret', referenceId: 'vault_github' });
+    backend.rotate({
+      material: 'second_secret',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+    });
 
     expect(
-      Buffer.from(backend.resolve({ referenceId: 'vault_github', version: 1 })).toString('utf8')
+      Buffer.from(
+        backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', version: 1 })
+      ).toString('utf8')
     ).toBe('first_secret');
     expect(existsSync(priorEntryPath)).toBe(true);
-    expect(() => backend.resolve({ referenceId: 'vault_github', version: 1 })).toThrow(
-      'version-expired'
-    );
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', version: 1 })
+    ).toThrow('version-expired');
     expect(existsSync(priorEntryPath)).toBe(false);
-    expect(Buffer.from(backend.resolve({ referenceId: 'vault_github' })).toString('utf8')).toBe(
-      'second_secret'
-    );
-    expect(readFileSync(join(storeDir, 'entries', 'vault_github', 'state.json'), 'utf8')).toContain(
-      '"1": "2026-07-05T01:11:00.000Z"'
-    );
+    expect(
+      Buffer.from(
+        backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+      ).toString('utf8')
+    ).toBe('second_secret');
+    expect(
+      readFileSync(
+        join(storeDir, 'entries', 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', 'state.json'),
+        'utf8'
+      )
+    ).toContain('"1": "2026-07-05T01:11:00.000Z"');
   });
 });

@@ -19,7 +19,9 @@ describe('vault unlock state', () => {
       kind: 'encrypted-file',
       state: 'locked',
     });
-    expect(() => state.backend().resolve({ referenceId: 'vault_github' })).toThrow('vault-locked');
+    expect(() =>
+      state.backend().resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+    ).toThrow('vault-locked');
 
     const unlocked = state.unlock({
       masterKey,
@@ -34,10 +36,12 @@ describe('vault unlock state', () => {
     unlocked.store({
       material: 'ghp_live_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
     expect(
-      Buffer.from(state.backend().resolve({ referenceId: 'vault_github' })).toString('utf8')
+      Buffer.from(
+        state.backend().resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+      ).toString('utf8')
     ).toBe('ghp_live_secret');
 
     const locked = state.lock();
@@ -47,12 +51,14 @@ describe('vault unlock state', () => {
       kind: 'encrypted-file',
       state: 'locked',
     });
-    expect(() => state.backend().resolve({ referenceId: 'vault_github' })).toThrow('vault-locked');
+    expect(() =>
+      state.backend().resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+    ).toThrow('vault-locked');
 
     let retainedBackendFailure: unknown;
 
     try {
-      unlocked.resolve({ referenceId: 'vault_github' });
+      unlocked.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' });
     } catch (error) {
       retainedBackendFailure = error;
     }
@@ -63,10 +69,12 @@ describe('vault unlock state', () => {
       unlocked.store({
         material: 'must_not_write',
         metadata: { ownerScope: 'server' },
-        referenceId: 'vault_after_lock',
+        referenceId: 'vault_00000000-0000-7128-98c2-a63082444bec',
       })
     ).toThrow('vault-locked');
-    expect(existsSync(join(storeDir, 'entries', 'vault_after_lock'))).toBe(false);
+    expect(
+      existsSync(join(storeDir, 'entries', 'vault_00000000-0000-7128-98c2-a63082444bec'))
+    ).toBe(false);
     expect(String(retainedBackendFailure)).not.toContain(storeDir);
     expect(String(retainedBackendFailure)).not.toContain(masterKey.toString('base64'));
     expect(String(retainedBackendFailure)).not.toContain(masterKey.toString('hex'));
@@ -83,7 +91,7 @@ describe('vault unlock state', () => {
     currentBackend.store({
       material: 'ghp_live_secret',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
 
     let replacement: ReturnType<typeof state.unlock> | undefined;
@@ -99,7 +107,9 @@ describe('vault unlock state', () => {
     expect(failure).toBeInstanceOf(VaultBackendError);
     expect(state.backend()).toBe(currentBackend);
     expect(
-      Buffer.from(state.backend().resolve({ referenceId: 'vault_github' })).toString('utf8')
+      Buffer.from(
+        state.backend().resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
+      ).toString('utf8')
     ).toBe('ghp_live_secret');
     expect(String(failure)).not.toContain(storeDir);
     expect(String(failure)).not.toContain(wrongKey.toString('base64'));

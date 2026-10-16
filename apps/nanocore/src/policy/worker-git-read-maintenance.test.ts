@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { evaluateWorkerGitReadMaintenance } from './worker-git-read-maintenance.js';
 
 const assignment = {
-  responsibleUserId: 'user_admin',
+  responsibleUserId: 'usr_00000000-0000-7000-8000-000000000002',
   agentId: 'agent_worker',
   networkGrantId: 'git-read',
   host: 'git.example.test',
@@ -16,7 +16,7 @@ const assignment = {
   enabled: true,
 };
 const facts = {
-  responsibleUserId: 'user_admin',
+  responsibleUserId: 'usr_00000000-0000-7000-8000-000000000002',
   agentId: 'agent_worker',
   networkGrantId: 'git-read',
   host: 'git.example.test',

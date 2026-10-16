@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   GOAL_OPERATION_DEFINITIONS,
   type GoalCard,
@@ -13,7 +13,12 @@ import {
   type GoalView,
   type OperationInput,
 } from '@openkit/app-api-schemas';
-import { isSealedTurnTerminal, type TurnSchema } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  isSealedTurnTerminal,
+  type TurnSchema,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -315,7 +320,7 @@ function raiseIntent(
       'The proposal request Turn was not admitted.',
       409
     );
-  const itemId = `it_${randomUUID()}`;
+  const itemId = allocateEntityId('it');
   raiseRecordedPendingRequest(store, db.sqlite, {
     requestId,
     workspaceId: goal.workspaceId,
@@ -637,7 +642,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
           const thread = store.createThread(
             input.workspaceId,
             input.intent.slice(0, 100),
-            `th_goal_${commandInput.requestId}`,
+            deriveEntityId('th', ['goal', commandInput.requestId]),
             'conversation',
             {
               visibility: 'workspace',
@@ -891,7 +896,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   if (id === 'goal.create' && input.originThreadId && result.goal) {
     // The committed Goal is authority; publish its replayable origin snapshot outside SQL admission.
     const origin = input.originThreadId;
-    const itemId = `it_goal_handoff_${goalId}`;
+    const itemId = deriveEntityId('it', ['goal_handoff', goalId]);
     if (!store.listThreadItems(input.workspaceId, origin).some((item) => item.id === itemId)) {
       const turn = context.originTurnId
         ? store.getTurnById(context.originTurnId)
@@ -901,7 +906,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
             'Goal handoff',
             { kind: 'user', id: context.actor.userId },
             undefined,
-            { turnId: `tr_goal_handoff_${commandInput.requestId}` }
+            { turnId: deriveEntityId('tu', ['goal_handoff', commandInput.requestId]) }
           );
       if (
         turn.workspaceId !== input.workspaceId ||

@@ -7,7 +7,6 @@ import {
   type AgentSetupResolverDependencies,
   resolveAgentSetup,
 } from '../agents/setup-resolver.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -18,6 +17,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { ExecutionBackend } from './execution-backend.js';
@@ -124,7 +124,11 @@ function fixture(kind: SupplyCase) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   recordTestNativeRuntimeTarget(coreDb);
   cleanups.push(() => {
     coreDb.sqlite.close();
@@ -203,12 +207,12 @@ function enqueue(f: ReturnType<typeof fixture>) {
     queueEntryId: 'queue_readiness',
     requestId: '00000000-0000-4000-8000-000000000301',
     requestedAgentId: f.manifest.id,
-    threadId: 'th_demo',
-    turnId: 'turn_readiness',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-7f8d-8f63-56fe4f577045',
     turnInput: 'Recheck current provider supply.',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     workspaceCwd: null,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     workspaceRoots: [],
   });
   f.store.createTurn(entry.workspaceId, entry.threadId, entry.turnInput, entry.triggerActor, null, {
@@ -229,7 +233,11 @@ function publishReceipt(
     command: 'turn.start',
     requestId: entry.requestId,
     inputHash: 'readiness-fixture',
-    scope: { actorId: 'user_local', workspaceId: entry.workspaceId, threadId: entry.threadId },
+    scope: {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: entry.workspaceId,
+      threadId: entry.threadId,
+    },
     response: { kind: 'turn', id: entry.turnId },
     createdAt: new Date().toISOString(),
   });
@@ -251,13 +259,18 @@ describe('provider readiness at Turn boundaries', () => {
       agentId: f.manifest.id,
       input: 'Use current supply.',
       store: f.store,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turnExecutor: f.executor,
     });
     await expect(result).rejects.toThrow(/logical model/i);
-    expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
     expectNoRuntimeEffects(f);
   });
 
@@ -280,11 +293,11 @@ describe('provider readiness at Turn boundaries', () => {
       workerPlacement: 'local',
       requestedAgentId: f.manifest.id,
       providerCredentialResolver: () => null,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       input: {
         requestId: '00000000-0000-4000-8000-000000000302',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         input: 'Use current supply.',
       },
       onTurnCreated: admitted,
@@ -292,7 +305,12 @@ describe('provider readiness at Turn boundaries', () => {
     await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
     expect(admitted).not.toHaveBeenCalled();
     expect(f.admissions()).toEqual([]);
-    expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
     expectNoRuntimeEffects(f);
   });
 
@@ -333,9 +351,9 @@ describe('provider readiness at Turn boundaries', () => {
       agentId: f.manifest.id,
       input: 'Use current supply.',
       store: f.store,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turnExecutor: f.executor,
     });
     expect(result.agentSetupDiagnostics).toEqual([]);
@@ -363,11 +381,11 @@ describe('provider readiness at Turn boundaries', () => {
         workerPlacement: 'local',
         requestedAgentId: f.manifest.id,
         providerCredentialResolver: () => null,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         input: {
           requestId: '00000000-0000-4000-8000-000000000303',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           input: 'Use current supply.',
         },
         onTurnCreated: admitted,
@@ -464,11 +482,11 @@ describe('product admission to queued dispatch readiness handoff', () => {
       workerPlacement: 'local',
       requestedAgentId: f.manifest.id,
       providerCredentialResolver: () => null,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       input: {
         requestId: '00000000-0000-4000-8000-000000000304',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         input: 'Recheck supply after admission.',
       },
       onTurnCreated: (turn) => {

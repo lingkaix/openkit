@@ -1,9 +1,9 @@
 {
-  "protocolVersion": "0.5.0",
+  "protocolVersion": "0.6.0",
   "schema": "item-delta",
   "data": {
     "type": "item-delta",
-    "itemId": "0190f4c8-0017-7abc-8def-000000000017",
+    "itemId": "it_00000000-0000-7786-b9f4-d57ea3304946",
     "itemType": "reasoning",
     "deltaKind": "indexed-text-delta",
     "delta": "Missing part id."

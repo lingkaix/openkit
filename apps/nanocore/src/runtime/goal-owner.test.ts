@@ -18,7 +18,9 @@ describe('Goal durable owner', () => {
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
-      const context = { actor: { kind: 'local' as const, userId: 'user_local' } };
+      const context = {
+        actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      };
       const created = await executeGoalOperation(
         'goal.create',
         {
@@ -90,7 +92,7 @@ describe('Goal durable owner', () => {
   it('creates shared Goal execution in the owner-only personal Workspace', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-audience-'));
     const store = new FsStore({ dataRoot: root });
-    const ws = store.ensureQuickChatWorkspace('user_local');
+    const ws = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
@@ -101,7 +103,7 @@ describe('Goal durable owner', () => {
           requestId: '44444444-4444-4444-8444-444444444444',
           intent: 'Produce a shared design',
         },
-        { actor: { kind: 'local', userId: 'user_local' } },
+        { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
         store,
         db
       );
@@ -125,7 +127,9 @@ describe('Proposed Plan eligibility', () => {
     const ws = store.createWorkspace('Plan eligibility');
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
-    const human = { actor: { kind: 'local' as const, userId: 'user_local' } };
+    const human = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
     let serial = 10;
     const requestId = () => `00000000-0000-4000-8000-${String(serial++).padStart(12, '0')}`;
     const created = await executeGoalOperation(
@@ -144,7 +148,7 @@ describe('Proposed Plan eligibility', () => {
       ws.id,
       scope.threadId,
       'Coordinate',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       undefined,
       { executorKind: 'coordinator', agentId: 'goal-coordinator' }
     );
@@ -581,7 +585,7 @@ describe('Proposed Plan eligibility', () => {
       const link = {
         goalId: f.scope.goalId,
         cardId: f.card.cardId,
-        threadId: 'th_missing_task',
+        threadId: 'th_00000000-0000-749e-a37d-2ae7769a39a8',
         planVersionId: plan.planVersionId,
         cardRevision: 0,
         admittedAt: new Date().toISOString(),
@@ -707,7 +711,7 @@ describe('Proposed Plan eligibility', () => {
       expect(ended.goal!.disposition).toMatchObject({
         kind: 'accepted',
         candidate,
-        actorId: 'user_local',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
       });
     } finally {
       f.db.sqlite.close();
@@ -721,8 +725,12 @@ describe('Public Goal command publication', () => {
     const ws = store.createWorkspace('Public proposal');
     const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-public-plan-')), ws.id);
     applyScopedMigrations(db);
-    const person = { actor: { kind: 'local' as const, userId: 'user_local' } };
-    const caller = { actor: { kind: 'session' as const, userId: 'another-writer' } };
+    const person = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
+    const caller = {
+      actor: { kind: 'session' as const, userId: 'usr_00000000-0000-7000-8000-000000000099' },
+    };
     try {
       const created = await executeGoalOperation(
         'goal.create',
@@ -764,14 +772,14 @@ describe('Public Goal command publication', () => {
         requesterKind: 'coordinator',
         agentId: 'goal-coordinator',
         agentSessionId: null,
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         state: 'pending',
       });
       const turn = store.getTurnById(request.raisingTurnId);
       expect(turn).toMatchObject({
         agentId: 'goal-coordinator',
         status: 'completed',
-        triggerActor: { kind: 'user', id: 'another-writer' },
+        triggerActor: { kind: 'user', id: caller.actor.userId },
       });
       expect(turn.agentSessionId).toBeUndefined();
       const replay = await executeGoalOperation('goal.plan.propose', input, caller, store, db);
@@ -788,7 +796,9 @@ describe('Public Goal command publication', () => {
     const origin = store.createThread(ws.id, 'Chat');
     const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-origin-')), ws.id);
     applyScopedMigrations(db);
-    const context = { actor: { kind: 'local' as const, userId: 'user_local' } };
+    const context = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
     const input = {
       workspaceId: ws.id,
       requestId: '10000000-0000-4000-8000-000000000004',

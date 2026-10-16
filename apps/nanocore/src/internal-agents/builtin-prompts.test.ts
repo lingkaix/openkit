@@ -26,8 +26,8 @@ describe('built-in Agent System Prompts', () => {
 
   it('keeps administration framing in the counted fixed text and current identifiers separate', () => {
     const context = {
-      workspaceId: 'ws_current',
-      threadId: 'th_current',
+      workspaceId: 'ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+      threadId: 'th_00000000-0000-7d53-83f1-7e7cac9ae169',
       workspaceKind: 'personal',
     } as const;
 

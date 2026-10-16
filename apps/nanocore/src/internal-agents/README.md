@@ -42,4 +42,6 @@ The history Tool also reads an exact source-bound range. Its byte cursor resumes
 
 `assistant-handoff-source.ts` verifies the confirmed, frozen Pending Request source tuple, completed Assistant handoff Item and linked receiving Task. Scheduler dispatch, queued/terminal boot classification and native closeout reuse this proof. It grants no current permission and writes no receipt. Missing or contradictory provenance stays inspectable; immutable conversation and answer receipts retain their original accepted results.
 
+Delegation references validate Workspace, Thread, Artifact and Item identities through their Protocol kind owners. Knowledge context identity and historical Task review selectors stay with their own owners. The private instruction schema stays exact while the Task response projection keeps its descriptive-reader boundary.
+
 The fixed administration prompt describes the sole delegated configuration exception: an exact registered Worker Git-read candidate under current finite Server Policy. It keeps other candidates human-confirmed and directs unknown command outcomes to inspection. Tool assembly, candidate validation, current authority and file effects remain with `../administration/`, `../config/` and `../policy/`; prompt text grants no authority.

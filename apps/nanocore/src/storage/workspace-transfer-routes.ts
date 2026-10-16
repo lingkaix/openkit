@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -10,7 +10,7 @@ import {
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import { type ActorRef, allocateEntityId, deriveEntityId, isEntityId } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
 import {
@@ -178,18 +178,21 @@ import {
 } from './workspace-portable-file-state.js';
 
 /**
- * Returns the first available imported workspace id using numeric suffixes.
+ * Returns the first available owner-derived imported Workspace identity.
  *
- * @param baseId Preferred imported workspace id.
+ * @param sourceWorkspaceId Complete canonical source Workspace identity.
  * @param exists Target workspace existence predicate.
  * @returns Available workspace id.
  */
-function nextImportedWorkspaceId(baseId: string, exists: (workspaceId: string) => boolean): string {
-  let workspaceId = baseId;
-  let suffix = 2;
+function nextImportedWorkspaceId(
+  sourceWorkspaceId: string,
+  exists: (workspaceId: string) => boolean
+): string {
+  let ordinal = 1;
+  let workspaceId = deriveEntityId('ws', ['imported', sourceWorkspaceId, ordinal]);
   while (exists(workspaceId)) {
-    workspaceId = `${baseId}_${suffix}`;
-    suffix += 1;
+    ordinal += 1;
+    workspaceId = deriveEntityId('ws', ['imported', sourceWorkspaceId, ordinal]);
   }
   return workspaceId;
 }
@@ -271,12 +274,13 @@ export function canReadWorkspaceExport(
         .prepare(`
         SELECT call.workspace_id AS call_workspace_id, call.family, call.operation,
                call.capability_id, call.status, usage.workspace_id, usage.usage_id,
-               usage.category, usage.unit, usage.responsible_user_id
+               usage.category, usage.unit, usage.quantity, usage.model_id, usage.provider_ref,
+               usage.source, usage.source_ids_json, usage.responsible_user_id
         FROM capability_calls call
         JOIN usage_records usage ON usage.capability_call_id = call.call_id
         WHERE call.call_id = ?
       `)
-        .all(`cap_storage_export_${verified.manifest.id}`) as Array<{
+        .all(deriveEntityId('cap', ['storage_export', verified.manifest.id])) as Array<{
         call_workspace_id: string;
         family: string;
         operation: string;
@@ -286,17 +290,32 @@ export function canReadWorkspaceExport(
         usage_id: string;
         category: string;
         unit: string;
+        quantity: number;
+        model_id: string | null;
+        provider_ref: string | null;
+        source: string | null;
+        source_ids_json: string;
         responsible_user_id: string | null;
       }>;
+      const expected = new Map([
+        ['files', verified.checkedFiles.length],
+        [
+          'bytes',
+          verified.manifest.contentInventory.reduce((total, entry) => total + entry.bytes, 0),
+        ],
+      ]);
       return (
-        rows.some(
-          (row) =>
-            row.usage_id === `use_storage_export_files_${verified.manifest.id}` &&
-            row.category === 'storage' &&
-            row.unit === 'files'
-        ) &&
+        rows.length === expected.size &&
+        new Set(rows.map((row) => row.unit)).size === expected.size &&
         rows.every(
           (row) =>
+            isEntityId('use', row.usage_id) &&
+            row.category === 'storage' &&
+            row.quantity === expected.get(row.unit) &&
+            row.model_id === null &&
+            row.provider_ref === 'nanocore-storage' &&
+            row.source === 'workspace-export-inventory' &&
+            row.source_ids_json === '[]' &&
             row.call_workspace_id === verified.manifest.workspaceId &&
             row.family === 'storage' &&
             row.operation === 'workspace.export.write' &&
@@ -737,11 +756,9 @@ function importWorkspaceDatabaseRows({
       summary: `Workspace import created ${importedWorkspaceId} from ${report.exportedWorkspaceId}.`,
     });
     const now = new Date();
-    const storageImportId = randomUUID();
     const call = startCapabilityCall({
       authorityActor: { kind: 'user', id: authorityUserId },
       workspaceDb,
-      callId: `cap_storage_import_${storageImportId}`,
       workspaceId: importedWorkspaceId,
       requestId,
       family: 'storage',
@@ -758,7 +775,6 @@ function importWorkspaceDatabaseRows({
       call,
       records: [
         {
-          usageId: `use_storage_import_files_${storageImportId}`,
           category: 'storage',
           unit: 'files',
           quantity: report.verification.fileCount,
@@ -766,7 +782,6 @@ function importWorkspaceDatabaseRows({
           source: 'workspace-import-inventory',
         },
         {
-          usageId: `use_storage_import_bytes_${storageImportId}`,
           category: 'storage',
           unit: 'bytes',
           quantity: report.verification.totalBytes,
@@ -865,7 +880,7 @@ export function importVerifiedWorkspace({
   const importedWorkspaceId =
     report.collision.status === 'available'
       ? report.collision.workspaceId
-      : nextImportedWorkspaceId(report.collision.suggestedWorkspaceId, workspaceExists);
+      : nextImportedWorkspaceId(report.collision.workspaceId, workspaceExists);
   const snapshot = readWorkspaceImportSnapshot({
     verified,
     targetWorkspaceId: importedWorkspaceId,
@@ -961,7 +976,7 @@ export function importVerifiedWorkspace({
 /** Returns the only recovery export id owned by one Workspace deletion request. */
 export function workspaceDeletionRecoveryExportId(requestId: string): string {
   assertSafeWorkspacePathSegment(requestId, 'Deletion request id');
-  return `wsexp_delete_${requestId}`;
+  return deriveEntityId('wsexp', ['delete', requestId]);
 }
 
 /** Proves the narrow durable authority for one deletion recovery export. */
@@ -1002,7 +1017,7 @@ export function createVerifiedWorkspaceExport({
   coreDb,
   dataRoot,
   deletionRecoveryRequestId,
-  exportId = `wsexp_${randomUUID()}`,
+  exportId = allocateEntityId('wsexp'),
   repositoryWorkspaceDb,
   requestActor,
   store,
@@ -1022,6 +1037,8 @@ export function createVerifiedWorkspaceExport({
   readonly store: FsStore;
   readonly workspaceId: string;
 }) {
+  if (!isEntityId('wsexp', exportId))
+    throw new Error('Workspace export requires a canonical wsexp identity.');
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
   if (!administratorEligible && threads.some((thread) => thread.visibility === 'private')) {
@@ -1319,7 +1336,7 @@ export function createVerifiedWorkspaceExport({
       const call = startCapabilityCall({
         authorityActor: { kind: 'user', id: authorityUserId },
         workspaceDb,
-        callId: `cap_storage_export_${exportId}`,
+        callId: deriveEntityId('cap', ['storage_export', exportId]),
         workspaceId,
         family: 'storage',
         operation: 'workspace.export.write',
@@ -1335,7 +1352,6 @@ export function createVerifiedWorkspaceExport({
         call,
         records: [
           {
-            usageId: `use_storage_export_files_${exportId}`,
             category: 'storage',
             unit: 'files',
             quantity: fileCount,
@@ -1343,7 +1359,6 @@ export function createVerifiedWorkspaceExport({
             source: 'workspace-export-inventory',
           },
           {
-            usageId: `use_storage_export_bytes_${exportId}`,
             category: 'storage',
             unit: 'bytes',
             quantity: totalBytes,

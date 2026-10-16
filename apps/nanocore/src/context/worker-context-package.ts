@@ -17,8 +17,15 @@ import {
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   type ActorRef,
+  AgentSessionIdSchema,
+  ItemIdSchema,
+  MaterialIdSchema,
+  MaterialRevisionIdSchema,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -28,7 +35,7 @@ import {
   STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
   StructuredWorkerDelegationRequestSchema,
 } from '../internal-agents/delegation.js';
-import { chatTaskModeTurnId } from '../runtime/idempotent-command.js';
+import { conversationTaskThreadId, conversationTaskTurnId } from '../runtime/idempotent-command.js';
 import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-requests.js';
 import {
   assertCanonicalDirectory,
@@ -64,8 +71,8 @@ const PendingOutcomeInputSchema = z.object({
     .array(
       z.object({
         requestId: IdSchema,
-        requestItemId: IdSchema,
-        publicationTurnId: IdSchema,
+        requestItemId: ItemIdSchema,
+        publicationTurnId: TurnIdSchema,
         kind: z.enum(['approval', 'user-input']),
         resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
         ending: z.enum(['withdrawn', 'invalidated']).nullable(),
@@ -88,23 +95,23 @@ const MaterialSelectionSchema = z.object({
   bindingMutationRequestId: IdSchema.nullable(),
   contentDigest: Sha256Schema,
   inclusionReason: z.enum(['thread_binding', 'goal_steering']),
-  materialId: IdSchema,
+  materialId: MaterialIdSchema,
   mediaType: z.enum(['text/markdown', 'text/plain']),
   packagePath: IdSchema,
-  parentRevisionId: IdSchema.nullable(),
-  revisionId: IdSchema,
+  parentRevisionId: MaterialRevisionIdSchema.nullable(),
+  revisionId: MaterialRevisionIdSchema,
   sensitivity: z.enum(['public', 'internal']),
   sensitivityDecision: z.literal('included'),
 });
 const MaterialExclusionSchema = z.object({
-  materialId: IdSchema,
+  materialId: MaterialIdSchema,
   reason: z.enum([
     'explicit_scope_excluded',
     'policy_excluded',
     'sensitive_content',
     'budget_exceeded',
   ]),
-  revisionId: IdSchema,
+  revisionId: MaterialRevisionIdSchema,
   sensitivity: z.enum(['public', 'internal', 'restricted']),
 });
 const KnowledgeSelectionInputSchema = z.object({
@@ -126,23 +133,23 @@ export const WorkerContextPackageManifestSchema = z.object({
   contextBudgetTokens: z.number().int().positive().safe(),
   contextPackageId: IdSchema,
   fileInventory: z.array(FileInventoryEntrySchema),
-  includedItemIds: z.array(IdSchema).min(1),
+  includedItemIds: z.array(ItemIdSchema).min(1),
   knowledgeSelections: z.array(KnowledgeSelectionSchema),
   materialSelections: z.array(MaterialSelectionSchema),
   policyVersion: z.literal(WORKER_CONTEXT_PACKAGE_POLICY_VERSION),
   schemaVersion: z.literal(1),
-  threadId: IdSchema,
-  turnId: IdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
   workerRequestDigest: Sha256Schema,
-  workerRequestItemId: IdSchema,
-  workspaceId: IdSchema,
+  workerRequestItemId: ItemIdSchema,
+  workspaceId: WorkspaceIdSchema,
 });
 const WorkerContextPackageTraceSchema = WorkerContextPackageManifestSchema.omit({
   contextBudgetTokens: true,
 }).extend({
-  agentSessionId: IdSchema,
+  agentSessionId: AgentSessionIdSchema,
   contextPackageDigest: ContextPackageDigestSchema,
-  excludedItems: z.array(z.object({ itemId: IdSchema, reason: ExclusionReasonSchema })),
+  excludedItems: z.array(z.object({ itemId: ItemIdSchema, reason: ExclusionReasonSchema })),
   goalId: IdSchema.nullable(),
   knowledgeExclusions: z.array(KnowledgeExclusionSchema),
   knowledgeSelectionInput: KnowledgeSelectionInputSchema.nullable(),
@@ -359,6 +366,16 @@ export interface WorkerContextPackageTrace {
 
 /** Minimal durable authorities consumed by the shared trace verifier. */
 export interface WorkerContextPackageAuthorityReader {
+  /** Reads the existing confirmed Assistant source proof; absence never grants a null-selection exception. */
+  readonly readAssistantTaskHandoffSource?: (input: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly requestId: string;
+    readonly workerRequest: string;
+  }) => { readonly sourceInputHash: string; readonly sourceTurnId: string } | null;
+  /** Reads canonical causal Thread lineage without granting access through it. */
+  readonly readThreadParent: (workspaceId: string, threadId: string) => string | null;
   /** Reads the accepted scheduler admission for one Turn. */
   readonly readAdmission: (
     workspaceId: string,
@@ -518,6 +535,7 @@ export interface CreateWorkerContextPackageTraceInput {
  * @returns Whether the Turn is subordinate to that exact Chat command tuple.
  */
 export function isChatSubordinateTaskTurn(input: {
+  readonly originatingThreadId: string | null;
   readonly requestId: string;
   readonly turn: {
     readonly id: string;
@@ -526,11 +544,25 @@ export function isChatSubordinateTaskTurn(input: {
     readonly triggerActor: ActorRef;
   };
 }): boolean {
-  const { turn } = input;
+  const { turn, originatingThreadId } = input;
   return (
-    turn.triggerActor.kind === 'user' &&
+    originatingThreadId !== null &&
+    originatingThreadId !== turn.threadId &&
+    turn.threadId ===
+      conversationTaskThreadId(
+        turn.triggerActor,
+        turn.workspaceId,
+        originatingThreadId,
+        input.requestId
+      ) &&
     turn.id ===
-      chatTaskModeTurnId(turn.triggerActor.id, turn.workspaceId, turn.threadId, input.requestId)
+      conversationTaskTurnId(
+        turn.triggerActor,
+        turn.workspaceId,
+        originatingThreadId,
+        turn.threadId,
+        input.requestId
+      )
   );
 }
 
@@ -1110,13 +1142,32 @@ function verifyWorkerContextPackagePortableOwners(
     workerRequest.requestKind === 'structured-delegation' && trace.goalId === null;
   const isChatSubordinateTask =
     !importedHistory && isDirectTask
-      ? isChatSubordinateTaskTurn({ requestId: trace.requestId, turn })
+      ? isChatSubordinateTaskTurn({
+          originatingThreadId: authorities.readThreadParent(trace.workspaceId, trace.threadId),
+          requestId: trace.requestId,
+          turn,
+        })
       : false;
+  const isConfirmedAssistantTask =
+    !importedHistory &&
+    isDirectTask &&
+    !isChatSubordinateTask &&
+    trace.knowledgeSelectionInput === null &&
+    Boolean(
+      authorities.readAssistantTaskHandoffSource?.({
+        workspaceId: trace.workspaceId,
+        threadId: trace.threadId,
+        turnId: trace.turnId,
+        requestId: trace.requestId,
+        workerRequest: requestItem.text,
+      })
+    );
   if (
     (!importedHistory &&
       isDirectTask &&
-      ((isChatSubordinateTask && trace.knowledgeSelectionInput !== null) ||
-        (!isChatSubordinateTask && trace.knowledgeSelectionInput === null))) ||
+      !isChatSubordinateTask &&
+      !isConfirmedAssistantTask &&
+      trace.knowledgeSelectionInput === null) ||
     (!isDirectTask && trace.knowledgeSelectionInput !== null)
   ) {
     throw new Error('Worker Context Package Task Knowledge selection authority is contradictory.');

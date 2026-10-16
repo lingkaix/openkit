@@ -2,14 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import * as storage from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -41,7 +42,11 @@ function fixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const executionBackend = new SimulatedTurnExecutor({ coreDb });
   const cleanupBackendSession = vi.fn(async () => {
     throw new Error('exact physical cleanup fault');
@@ -58,19 +63,19 @@ function fixture() {
   const seed = (suffix: string, submitted = true, anchored = false) => {
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: `queue_${suffix}`,
       requestId: `request_${suffix}`,
-      workspaceId: 'ws_demo',
-      threadId: `thread_${suffix}`,
-      turnId: `turn_${suffix}`,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: testEntityId('th', `thread_${suffix}`),
+      turnId: testEntityId('tu', `turn_${suffix}`),
       turnInput: `Run ${suffix}`,
       requestedAgentId: 'agent_codex_host',
       now: () => '2026-07-05T00:00:01.000Z',
     });
-    const attemptId = `lease_${suffix}`;
-    const agentSessionId = `as_${suffix}`;
-    const inputRef = `aepsnap_turn_${suffix}_${agentSessionId}`;
+    const attemptId = testEntityId('attempt', `lease_${suffix}`);
+    const agentSessionId = testEntityId('as', `as_${suffix}`);
+    const inputRef = `aepsnap_${entry.turnId}_${agentSessionId}`;
     const bindingRef = `lease-binding:${attemptId}`;
     recordTestExecutionAttempt(coreDb, {
       entry,
@@ -91,7 +96,7 @@ function fixture() {
         const pkg = recordTestAgentEnvironmentPackage(workspaceDb, {
           coreDb,
           suffix,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceInputIds: [],
         });
         expect(pkg.snapshotId).toBe(inputRef);
@@ -474,8 +479,8 @@ describe('Native attempt liveness and recovery', () => {
       });
       expect(f.recovery.cleanupBackendSession).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
-          agentSessionId: 'as_anchored_startup',
-          backendSessionId: 'openkit-as_anchored_startup',
+          agentSessionId: binding.lineage.agentSessionId,
+          backendSessionId: `openkit-${binding.lineage.agentSessionId}`,
           packageSnapshotId: binding.lineage.packageSnapshotId,
         })
       );

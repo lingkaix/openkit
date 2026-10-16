@@ -12,12 +12,15 @@ import {
   readWorkObservationBody,
   stageWorkObservationChunk,
 } from '../evidence-bundles.js';
-import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import { digestLlmSystemPrompt } from '../llm/system-prompt-digest.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -42,24 +45,20 @@ describe('work observation portable closure', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-runtime-joins-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('user_local', 'Local user', 'local@example.com', false, 0, 0, 'human')"
-      )
-      .run();
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Runtime joins');
     const thread = store.createThread(workspace.id, 'Runtime joins');
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const turn = store.createTurn(
       workspace.id,
       thread.id,
       'Portable runtime recovery',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { captureCoverage: { scope: 'workspace', value: 'off' } }
     );
@@ -68,7 +67,7 @@ describe('work observation portable closure', () => {
     try {
       const agentSetup = createTestAgentSetup();
       const session = store.createAgentSession({
-        id: 'as_portable_runtime',
+        id: 'as_00000000-0000-73ad-ab4c-ebd551f7a576',
         agentId: agentSetup.manifest.id,
         workspaceId: workspace.id,
         threadId: thread.id,
@@ -150,18 +149,18 @@ describe('work observation portable closure', () => {
           ts: turn.startedAt,
         },
       ]);
-      createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+      const exported = createVerifiedWorkspaceExport({
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_runtime_joins',
+        exportId: testEntityId('wsexp', 'export_runtime_joins'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: workspace.id,
       });
       const app = createApp({ coreDb, dataRoot, store });
       const archive = await app.request(
-        `/api/app/workspaces/${workspace.id}/exports/export_runtime_joins/archive`
+        `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
       );
       expect(archive.status).toBe(200);
       const bytes = await archive.arrayBuffer();
@@ -216,17 +215,16 @@ describe('work observation portable closure', () => {
     }
   });
 
-  it.each([null, 'ws_foreign'])('validates env.bound source owner (%s)', async (foreignOwner) => {
+  it.each([
+    null,
+    'ws_00000000-0000-7f9c-aa14-53566c621405',
+  ])('validates env.bound source owner (%s)', async (foreignOwner) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-environment-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('user_local', 'Local user', 'local@example.com', false, 0, 0, 'human')"
-      )
-      .run();
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const demo = createDemoWorkspaceForUser('user_local');
+    const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
     store.importWorkspaceSnapshot({
       workspace: demo.workspace,
       threads: [demo.thread],
@@ -239,14 +237,14 @@ describe('work observation portable closure', () => {
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: demo.workspace.id,
     });
     const turn = store.createTurn(
       demo.workspace.id,
       demo.thread.id,
       'Portable environment',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { captureCoverage: { scope: 'workspace', value: 'off' } }
     );
@@ -309,10 +307,10 @@ describe('work observation portable closure', () => {
         bodies: [],
       });
       const exported = createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_environment',
+        exportId: testEntityId('wsexp', 'export_environment'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,
@@ -327,7 +325,7 @@ describe('work observation portable closure', () => {
       ).toEqual(environment.assistantSkillAdmission);
       const app = createApp({ coreDb, dataRoot, store });
       const archive = await app.request(
-        `/api/app/workspaces/${demo.workspace.id}/exports/export_environment/archive`
+        `/api/app/workspaces/${demo.workspace.id}/exports/${exported.verified.manifest.id}/archive`
       );
       expect(archive.status).toBe(200);
       const bytes = await archive.arrayBuffer();
@@ -346,14 +344,16 @@ describe('work observation portable closure', () => {
         expect(imported.status, result).toBe(400);
         expect(() =>
           importVerifiedWorkspace({
-            authorityUserId: 'user_local',
+            authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
             coreDb,
             dataRoot,
             requestId: null,
             store,
             verified: exported.verified,
           })
-        ).toThrow('Portable env.bound belongs to another workspace: ws_foreign');
+        ).toThrow(
+          'Portable env.bound belongs to another workspace: ws_00000000-0000-7f9c-aa14-53566c621405'
+        );
         expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual(workspaceIds);
         expect(
           readWorkObservations(db, { threadId: demo.thread.id, turnId: turn.id })[0]?.payload
@@ -392,10 +392,10 @@ describe('work observation portable closure', () => {
         importedDb.sqlite.close();
       }
       const reexported = createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_environment_again',
+        exportId: testEntityId('wsexp', 'export_environment_again'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: importedWorkspaceId,
@@ -408,7 +408,7 @@ describe('work observation portable closure', () => {
           .payload.assistantSkillAdmission
       ).toEqual(environment.assistantSkillAdmission);
       const secondImport = importVerifiedWorkspace({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         requestId: null,
@@ -458,13 +458,9 @@ describe('work observation portable closure', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-observations-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('user_local', 'Local user', 'local@example.com', false, 0, 0, 'human')"
-      )
-      .run();
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const demo = createDemoWorkspaceForUser('user_local');
+    const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
     store.importWorkspaceSnapshot({
       workspace: demo.workspace,
       threads: [demo.thread],
@@ -477,14 +473,14 @@ describe('work observation portable closure', () => {
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: demo.workspace.id,
     });
     const turn = store.createTurn(
       demo.workspace.id,
       demo.thread.id,
       'Observe work',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { captureCoverage: { scope: 'workspace', value: 'on' } }
     );
@@ -497,10 +493,17 @@ describe('work observation portable closure', () => {
     }).store({
       material: 'system_secret_export_canary',
       metadata: { ownerScope: 'server' },
-      referenceId: 'vault_export_canary',
+      referenceId: 'vault_00000000-0000-701e-8fe9-0839eee2173c',
     });
     const systemSecretFile = readFileSync(
-      join(dataRoot, 'server', 'vault', 'entries', 'vault_export_canary', '1.enc')
+      join(
+        dataRoot,
+        'server',
+        'vault',
+        'entries',
+        'vault_00000000-0000-701e-8fe9-0839eee2173c',
+        '1.enc'
+      )
     );
     try {
       appendWorkObservation(db, {
@@ -546,10 +549,10 @@ describe('work observation portable closure', () => {
         bytes: Buffer.from('x'),
       });
       const exported = createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_observations',
+        exportId: testEntityId('wsexp', 'export_observations'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,
@@ -564,7 +567,7 @@ describe('work observation portable closure', () => {
               'exports',
               'workspaces',
               demo.workspace.id,
-              'export_observations',
+              verified.manifest.id,
               entry.path
             )
           ).equals(systemSecretFile)
@@ -579,7 +582,7 @@ describe('work observation portable closure', () => {
               'exports',
               'workspaces',
               demo.workspace.id,
-              'export_observations',
+              verified.manifest.id,
               entry.path
             )
           ).equals(bytes)
@@ -589,7 +592,7 @@ describe('work observation portable closure', () => {
         'evb_unpublished'
       );
       const result = importVerifiedWorkspace({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         requestId: null,
@@ -689,16 +692,16 @@ describe('work observation portable closure', () => {
         )
         .run(sourceBundle.id);
       const heldExport = createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_held_observations',
+        exportId: testEntityId('wsexp', 'export_held_observations'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,
       });
       const heldImport = importVerifiedWorkspace({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         requestId: null,
@@ -737,10 +740,10 @@ describe('work observation portable closure', () => {
         }).expiredCount
       ).toBe(2);
       const expiredExport = createVerifiedWorkspaceExport({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
-        exportId: 'export_expired_observations',
+        exportId: testEntityId('wsexp', 'export_expired_observations'),
         repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
         store,
         workspaceId: demo.workspace.id,
@@ -754,14 +757,14 @@ describe('work observation portable closure', () => {
               'exports',
               'workspaces',
               demo.workspace.id,
-              'export_expired_observations',
+              expiredExport.verified.manifest.id,
               entry.path
             )
           ).equals(bytes)
         )
       ).toBe(false);
       const expiredImport = importVerifiedWorkspace({
-        authorityUserId: 'user_local',
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
         requestId: null,

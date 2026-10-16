@@ -7,12 +7,12 @@ import {
   GENERATIVE_UI_PROTOCOL_VERSION,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
-import { ensureLocalUser } from './auth/identity.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -48,18 +48,23 @@ describe('Generative UI App API', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Publish a generated view', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Publish a generated view',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const sourceItem = store.createItem({
-      id: `it_${turn.id}_source`,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      id: testEntityId('it', `it_${turn.id}_source`),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       type: 'assistant-message',
       status: 'completed',
@@ -73,7 +78,7 @@ describe('Generative UI App API', () => {
       const publishResponse = await app.request(
         ...operationRequest(
           'generative-ui.publish',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: {
@@ -81,7 +86,7 @@ describe('Generative UI App API', () => {
               'x-openkit-request-id': randomUUID(),
             },
             body: JSON.stringify({
-              threadId: 'th_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId: turn.id,
               title: 'Mapping view',
               fallbackText: 'Membership 1 maps to CRM 1.',
@@ -119,7 +124,7 @@ describe('Generative UI App API', () => {
       expect(published.publication).toBe('published');
       const getResponse = await app.request(
         ...operationRequest('generative-ui.get', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           presentationId: published.id,
         })
       );
@@ -127,7 +132,7 @@ describe('Generative UI App API', () => {
       const refreshResponse = await app.request(
         ...operationRequest(
           'generative-ui.refresh',
-          { workspaceId: 'ws_demo', presentationId: published.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', presentationId: published.id },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -156,8 +161,8 @@ describe('Generative UI App API', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
@@ -165,7 +170,7 @@ describe('Generative UI App API', () => {
     try {
       const response = await app.request(
         ...operationRequest('generative-ui.get', {
-          workspaceId: 'ws_other',
+          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
           presentationId: randomUUID(),
         })
       );

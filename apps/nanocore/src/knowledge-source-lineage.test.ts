@@ -2,18 +2,21 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Uses real disk, current authorization and operation dispatch without an HTTP replacement. */
@@ -23,7 +26,11 @@ function sourceFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: DEMO_WORKSPACE_ID,
+    ownerUserId: LOCAL_USER_ID,
+  });
   const app = createApp({ coreDb, dataRoot, store });
   const client = createCoreClient({
     baseUrl: 'http://test.invalid',
@@ -47,17 +54,17 @@ describe('direct Knowledge saved-source lineage', () => {
     const f = sourceFixture();
     try {
       const privateThread = f.store.createThread(
-        'ws_demo',
+        DEMO_WORKSPACE_ID,
         'Private source title',
         undefined,
         'conversation',
         {
           visibility: 'private',
-          privateOwnerUserId: crypto.randomUUID(),
+          privateOwnerUserId: allocateEntityId('usr'),
         }
       );
       const { source: privateSource } = await f.client.operations['knowledge.source.register']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'document',
         title: 'Private source identity',
@@ -65,16 +72,16 @@ describe('direct Knowledge saved-source lineage', () => {
         originatingThreadId: privateThread.id,
       });
       const { source: sharedSource } = await f.client.operations['knowledge.source.register']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'document',
         title: 'Shared source',
         content: 'Shared material.',
       });
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: LOCAL_USER_ID,
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const app = createApp({
@@ -88,14 +95,16 @@ describe('direct Knowledge saved-source lineage', () => {
         headers: { authorization: `Bearer ${issued.secret}` },
         fetch: (input, init) => app.fetch(new Request(input, init)),
       });
-      const listed = await client.operations['knowledge.source.list']({ workspaceId: 'ws_demo' });
+      const listed = await client.operations['knowledge.source.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
       expect(listed.items.map((source) => source.id)).toContain(sharedSource.id);
       expect.soft(listed.items.map((source) => source.id)).not.toContain(privateSource.id);
       const derivedReads = vi.spyOn(f.store, 'listKnowledgeSourceDerivedRepresentations');
       try {
         await expect(
           client.operations['knowledge.source.read']({
-            workspaceId: 'ws_demo',
+            workspaceId: DEMO_WORKSPACE_ID,
             sourceId: privateSource.id,
           })
         ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
@@ -112,16 +121,16 @@ describe('direct Knowledge saved-source lineage', () => {
     const f = sourceFixture();
     try {
       const { source } = await f.client.operations['knowledge.source.register']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'document',
         title: 'Readable source',
         content: 'Must be withheld after revocation.',
       });
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: LOCAL_USER_ID,
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const app = createApp({
@@ -146,7 +155,7 @@ describe('direct Knowledge saved-source lineage', () => {
       try {
         await expect(
           client.operations['knowledge.source.read']({
-            workspaceId: 'ws_demo',
+            workspaceId: DEMO_WORKSPACE_ID,
             sourceId: source.id,
           })
         ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
@@ -162,12 +171,18 @@ describe('direct Knowledge saved-source lineage', () => {
   it('requires current originating Thread audience for new registration and exact registration replay', async () => {
     const f = sourceFixture();
     try {
-      const thread = f.store.createThread('ws_demo', 'Private capture', undefined, 'conversation', {
-        visibility: 'private',
-        privateOwnerUserId: crypto.randomUUID(),
-      });
+      const thread = f.store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Private capture',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: allocateEntityId('usr'),
+        }
+      );
       const command = {
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'document' as const,
         title: 'Private capture',
@@ -179,7 +194,7 @@ describe('direct Knowledge saved-source lineage', () => {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: LOCAL_USER_ID,
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const app = createApp({
@@ -203,7 +218,7 @@ describe('direct Knowledge saved-source lineage', () => {
           requestId: crypto.randomUUID(),
         })
       ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
-      expect(f.store.listKnowledgeSources('ws_demo')).toEqual([registered.source]);
+      expect(f.store.listKnowledgeSources(DEMO_WORKSPACE_ID)).toEqual([registered.source]);
     } finally {
       f.close();
     }
@@ -213,7 +228,7 @@ describe('direct Knowledge saved-source lineage', () => {
     const f = sourceFixture();
     try {
       const thread = f.store.createThread(
-        'ws_demo',
+        DEMO_WORKSPACE_ID,
         'Own private capture',
         undefined,
         'conversation',
@@ -223,7 +238,7 @@ describe('direct Knowledge saved-source lineage', () => {
         }
       );
       const { source } = await f.client.operations['knowledge.source.register']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'document',
         title: 'Own private source',
@@ -236,17 +251,19 @@ describe('direct Knowledge saved-source lineage', () => {
         content: 'Private interpretation.',
         sourceReferences: [`source:${source.id}@${source.contentDigest}`],
       };
-      const before = await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' });
+      const before = await f.client.operations['knowledge.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
       await expect(
         f.client.operations['knowledge.create']({
           ...fields,
-          workspaceId: 'ws_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
           requestId: crypto.randomUUID(),
         })
       ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
-      expect(await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' })).toEqual(
-        before
-      );
+      expect(
+        await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+      ).toEqual(before);
       const personal = f.store.ensureQuickChatWorkspace(LOCAL_USER_ID);
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
@@ -289,7 +306,7 @@ describe('direct Knowledge saved-source lineage', () => {
     const { client, coreDb, dataRoot } = f;
     try {
       const { source } = await client.operations['knowledge.source.register']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'document',
         title: 'Reading room source',
@@ -298,7 +315,7 @@ describe('direct Knowledge saved-source lineage', () => {
       expect(source.contentDigest).toBeTruthy();
       const reference = `source:${source.id}@${source.contentDigest}`;
       const command = {
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'project-context' as const,
         title: 'Reading room hours',
@@ -307,7 +324,9 @@ describe('direct Knowledge saved-source lineage', () => {
       };
       const entry = await client.operations['knowledge.create'](command);
       expect(await client.operations['knowledge.create'](command)).toEqual(entry);
-      const indexes = await client.operations['knowledge.indexes']({ workspaceId: 'ws_demo' });
+      const indexes = await client.operations['knowledge.indexes']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
       expect(indexes.sourceReferences.references).toContainEqual(
         expect.objectContaining({ conceptId: entry.id, reference, resolved: true })
       );
@@ -318,13 +337,13 @@ describe('direct Knowledge saved-source lineage', () => {
         fetch: (input, init) => reopenedApp.fetch(new Request(input, init)),
       });
       const retained = await reopenedClient.operations['knowledge.list']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
       });
       expect(retained.items.find((item) => item.id === entry.id)?.sourceReferences).toEqual([
         reference,
       ]);
       const rebuilt = await reopenedClient.operations['knowledge.indexes']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
       });
       expect(rebuilt.sourceReferences.references).toContainEqual(
         expect.objectContaining({ conceptId: entry.id, reference, resolved: true })
@@ -332,7 +351,7 @@ describe('direct Knowledge saved-source lineage', () => {
       expect(await reopenedClient.operations['knowledge.create'](command)).toEqual(entry);
       expect(
         (
-          await reopenedClient.operations['knowledge.list']({ workspaceId: 'ws_demo' })
+          await reopenedClient.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
         ).items.filter((item) => item.id === entry.id)
       ).toHaveLength(1);
     } finally {
@@ -350,12 +369,14 @@ describe('direct Knowledge saved-source lineage', () => {
     const f = sourceFixture();
     try {
       const targetWorkspaceId =
-        condition === 'foreign' ? f.store.createWorkspace('Foreign source owner').id : 'ws_demo';
-      if (targetWorkspaceId !== 'ws_demo')
+        condition === 'foreign'
+          ? f.store.createWorkspace('Foreign source owner').id
+          : DEMO_WORKSPACE_ID;
+      if (targetWorkspaceId !== DEMO_WORKSPACE_ID)
         recordWorkspaceOwnerMembership({
           coreDb: f.coreDb,
           workspaceId: targetWorkspaceId,
-          ownerUserId: 'user_local',
+          ownerUserId: LOCAL_USER_ID,
         });
       const { source } = await f.client.operations['knowledge.source.register']({
         workspaceId: targetWorkspaceId,
@@ -366,7 +387,7 @@ describe('direct Knowledge saved-source lineage', () => {
       });
       const reference =
         condition === 'missing'
-          ? `source:ks_${crypto.randomUUID()}@${source.contentDigest}`
+          ? `source:${allocateEntityId('ks')}@${source.contentDigest}`
           : `source:${source.id}@${condition === 'stale-digest' ? `sha256:${'a'.repeat(64)}` : source.contentDigest}`;
       const materialPath = join(
         f.dataRoot,
@@ -379,10 +400,12 @@ describe('direct Knowledge saved-source lineage', () => {
       );
       if (condition === 'changed-bytes') writeFileSync(materialPath, 'Changed captured bytes.');
       if (condition === 'missing-bytes') rmSync(materialPath);
-      const before = await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' });
+      const before = await f.client.operations['knowledge.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
       await expect(
         f.client.operations['knowledge.create']({
-          workspaceId: 'ws_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
           requestId: crypto.randomUUID(),
           kind: 'project-context',
           title: 'Must not publish',
@@ -390,10 +413,12 @@ describe('direct Knowledge saved-source lineage', () => {
           sourceReferences: [reference],
         })
       ).rejects.toMatchObject({ status: 400, code: 'invalid_request' });
-      expect(await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' })).toEqual(
-        before
-      );
-      const indexes = await f.client.operations['knowledge.indexes']({ workspaceId: 'ws_demo' });
+      expect(
+        await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+      ).toEqual(before);
+      const indexes = await f.client.operations['knowledge.indexes']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
       expect(indexes.sourceReferences.references.some((row) => row.reference === reference)).toBe(
         false
       );
@@ -406,16 +431,16 @@ describe('direct Knowledge saved-source lineage', () => {
     const f = sourceFixture();
     try {
       const { source } = await f.client.operations['knowledge.source.register']({
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'document',
         title: 'Reading room',
         content: 'The room opens at eight.',
       });
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: LOCAL_USER_ID,
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const server = createApp({
@@ -430,7 +455,7 @@ describe('direct Knowledge saved-source lineage', () => {
         fetch: (input, init) => server.fetch(new Request(input, init)),
       });
       const command = {
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         kind: 'project-context' as const,
         title: 'Authorized source link',
@@ -444,12 +469,12 @@ describe('direct Knowledge saved-source lineage', () => {
         status: 401,
       });
       await expect(
-        client.operations['knowledge.source.list']({ workspaceId: 'ws_demo' })
+        client.operations['knowledge.source.list']({ workspaceId: DEMO_WORKSPACE_ID })
       ).rejects.toMatchObject({ status: 401 });
       expect(
-        (await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' })).items.filter(
-          (item) => item.id === entry.id
-        )
+        (
+          await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).items.filter((item) => item.id === entry.id)
       ).toHaveLength(1);
     } finally {
       f.close();

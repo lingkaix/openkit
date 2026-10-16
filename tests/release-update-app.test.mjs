@@ -91,7 +91,10 @@ function params() {
     retainedReads: [
       {
         operation: 'thread.read',
-        input: { workspaceId: 'example-workspace', threadId: 'example-retained-thread' },
+        input: {
+          workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+          threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
+        },
       },
     ],
     grant: {
