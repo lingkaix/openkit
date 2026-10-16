@@ -316,7 +316,10 @@ export function workerSourceOriginal(input: {
       signal.throwIfAborted();
       input.assertCurrent();
       const path = sourceSnapshotPath(input, source.originalSnapshotPath);
-      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const file = await open(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+      );
       try {
         const pinned = await file.stat({ bigint: true });
         if (!pinned.isFile() || pinned.nlink !== 1n || pinned.size !== BigInt(source.byteLength))
@@ -335,7 +338,10 @@ export function workerSourceOriginal(input: {
         }
         signal.throwIfAborted();
         input.assertCurrent();
-        if (!sameFile(pinned, await file.stat({ bigint: true })) || !sameFile(pinned, await lstat(path, { bigint: true })))
+        if (
+          !sameFile(pinned, await file.stat({ bigint: true })) ||
+          !sameFile(pinned, await lstat(path, { bigint: true }))
+        )
           throw new BoundedSourceError('stale');
         input.assertCurrent();
       } finally {
@@ -346,9 +352,19 @@ export function workerSourceOriginal(input: {
 }
 
 /** Resolves only one inventory-owned snapshot path through canonical no-link directories. */
-function sourceSnapshotPath(input: { workspaceRoot: string; threadId: string; turnId: string }, relative: string): string {
+function sourceSnapshotPath(
+  input: { workspaceRoot: string; threadId: string; turnId: string },
+  relative: string
+): string {
   if (Buffer.byteLength(relative, 'utf8') > 4096) throw new BoundedSourceError('resource_limited');
-  const parts = ['threads', input.threadId, 'turns', input.turnId, 'context-package', ...relative.split('/')];
+  const parts = [
+    'threads',
+    input.threadId,
+    'turns',
+    input.turnId,
+    'context-package',
+    ...relative.split('/'),
+  ];
   for (const part of parts) assertSafeWorkspacePathSegment(part, 'Context Package path');
   let path = input.workspaceRoot;
   assertCanonicalDirectory(path);

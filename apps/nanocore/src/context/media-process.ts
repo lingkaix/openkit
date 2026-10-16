@@ -27,7 +27,13 @@ export interface MediaProcessLimits {
   wallTimeMs: number;
 }
 /** Fixed release-authored native programs, never a user-selected executable. */
-export type MediaExecutable = '/usr/bin/pdfinfo' | '/usr/bin/pdftotext' | '/usr/bin/timeout' | '/usr/bin/identify' | '/usr/bin/convert' | '/usr/bin/pdftoppm';
+export type MediaExecutable =
+  | '/usr/bin/pdfinfo'
+  | '/usr/bin/pdftotext'
+  | '/usr/bin/timeout'
+  | '/usr/bin/identify'
+  | '/usr/bin/convert'
+  | '/usr/bin/pdftoppm';
 /** Closed infrastructure failures, without peer text, host paths or source bodies. */
 export class MediaProcessFailure extends Error {
   constructor(

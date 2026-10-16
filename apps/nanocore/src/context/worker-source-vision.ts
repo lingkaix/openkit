@@ -23,7 +23,12 @@ export async function viewWorkerSourceSnapshot(input: {
     const admission = input.fileAdmission;
     if (!admission) return { status: 'unavailable', reason: 'unavailable' };
     const temporaryRoot = join(dirname(input.workspaceRoot), '.staging');
-    const directory = admission.reserve({ stagingBytes: 65_536n, publicationBytes: 0n, extractionBytes: 0n, derivativeBytes: 0n });
+    const directory = admission.reserve({
+      stagingBytes: 65_536n,
+      publicationBytes: 0n,
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+    });
     try {
       await ensureCanonicalDirectoryAsync(temporaryRoot);
     } finally {
@@ -31,12 +36,23 @@ export async function viewWorkerSourceSnapshot(input: {
     }
     input.assertCurrent();
     const result = await processVisionView({
-      source: workerSourceOriginal(input), mediaType: input.source.mediaType, temporaryRoot,
-      ...(input.crop ? { crop: input.crop } : {}), ...(input.page !== undefined ? { page: input.page } : {}),
+      source: workerSourceOriginal(input),
+      mediaType: input.source.mediaType,
+      temporaryRoot,
+      ...(input.crop ? { crop: input.crop } : {}),
+      ...(input.page !== undefined ? { page: input.page } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
       reserveTemporaryBytes(bytes) {
-        const reservation = admission.reserve({ stagingBytes: BigInt(bytes) + 131_072n, publicationBytes: 0n, extractionBytes: 0n, derivativeBytes: 0n });
-        return { recordWritten: (count) => reservation.recordWritten(Number(count)), release: () => reservation.release() };
+        const reservation = admission.reserve({
+          stagingBytes: BigInt(bytes) + 131_072n,
+          publicationBytes: 0n,
+          extractionBytes: 0n,
+          derivativeBytes: 0n,
+        });
+        return {
+          recordWritten: (count) => reservation.recordWritten(Number(count)),
+          release: () => reservation.release(),
+        };
       },
     });
     input.signal?.throwIfAborted();

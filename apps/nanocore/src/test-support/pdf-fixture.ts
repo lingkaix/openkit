@@ -1,5 +1,9 @@
 /** Produce exact xref offsets rather than relying on Poppler's damaged-file repair. */
-export function createPdfFixture(pages: readonly string[], compressedContent?: Buffer, metadataTitle?: string): Buffer {
+export function createPdfFixture(
+  pages: readonly string[],
+  compressedContent?: Buffer,
+  metadataTitle?: string
+): Buffer {
   const objects: Buffer[] = [];
   objects.push(Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'));
   objects.push(

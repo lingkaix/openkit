@@ -67,8 +67,6 @@ function sha(bytes: Uint8Array | string): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
-
-
 async function fixture(bytes: Buffer, chunkBytes = 17) {
   const root = await mkdtemp(join(tmpdir(), 'pdf-layer-test-'));
   roots.push(root);

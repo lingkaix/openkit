@@ -832,12 +832,12 @@ pub(crate) fn validate_view(view: &ScopeView, require_text: bool) -> Result<()> 
                         || fragment.locator.len() > 1024
                 })
                 || fragments.windows(2).any(|pair| pair[0].end > pair[1].start))
-            {
-                return Err(error(
-                    "invalid-request",
-                    "source representation exceeds its declared bounds",
-                ));
-            }
+        {
+            return Err(error(
+                "invalid-request",
+                "source representation exceeds its declared bounds",
+            ));
+        }
         if let Content::Text { path, range } = &d.content
             && (Path::new(path)
                 .components()

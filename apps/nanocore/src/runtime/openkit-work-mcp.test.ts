@@ -2,16 +2,15 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
-import * as packageOwner from '../context/worker-context-package.js';
-import * as visionOwner from '../context/vision-view.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
-import { createPdfFixture } from '../test-support/pdf-fixture.js';
+import * as visionOwner from '../context/vision-view.js';
+import * as packageOwner from '../context/worker-context-package.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -22,6 +21,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { createPdfFixture } from '../test-support/pdf-fixture.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
@@ -738,36 +738,68 @@ it('dispatches bounded source reads and refuses a path outside the accepted Turn
 async function sourceToolFixture(bytes: Buffer, mediaType: string) {
   const fixture = submissionFixture();
   ensureLocalUser(fixture.coreDb);
-  recordWorkspaceOwnerMembership({ coreDb: fixture.coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  fixture.captureArtifact.mockResolvedValue({ bytes: Buffer.from(bytes), credentialCheckValues: fixture.credentialCheckValues });
+  recordWorkspaceOwnerMembership({
+    coreDb: fixture.coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: 'ws_demo',
+  });
+  fixture.captureArtifact.mockResolvedValue({
+    bytes: Buffer.from(bytes),
+    credentialCheckValues: fixture.credentialCheckValues,
+  });
   const artifactId = acknowledgedArtifactId(await fixture.submit('req_source_tool', { mediaType }));
   const artifact = fixture.store.getArtifact('ws_demo', artifactId);
   const workspaceRoot = join(fixture.dataRoot, 'workspaces', 'ws_demo');
   const sourceFiles = await prepareArtifactSourceInputs({
-    workspaceRoot, artifacts: [artifact], admission: fixture.fileAdmission,
-    assertCurrent: (selected) => { expect(selected).toEqual(fixture.store.getArtifact('ws_demo', artifactId)); },
+    workspaceRoot,
+    artifacts: [artifact],
+    admission: fixture.fileAdmission,
+    assertCurrent: (selected) => {
+      expect(selected).toEqual(fixture.store.getArtifact('ws_demo', artifactId));
+    },
   });
   const files = packageOwner.createWorkerContextPackageFiles({
-    workspaceId: 'ws_demo', threadId: 'th_demo', turnId: fixture.turn.id,
-    workerRequestItemId: 'it_source_tools', workerRequestBytes: 'Inspect selected sources',
-    includedItemIds: ['it_source_tools'], contextBudgetTokens: 4096, materialSelections: [], sourceFiles,
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    turnId: fixture.turn.id,
+    workerRequestItemId: 'it_source_tools',
+    workerRequestBytes: 'Inspect selected sources',
+    includedItemIds: ['it_source_tools'],
+    contextBudgetTokens: 4096,
+    materialSelections: [],
+    sourceFiles,
   });
-  await packageOwner.writeWorkerContextPackageFiles(workspaceRoot, files, { admission: fixture.fileAdmission });
+  await packageOwner.writeWorkerContextPackageFiles(workspaceRoot, files, {
+    admission: fixture.fileAdmission,
+  });
   const source = files.sourceFiles![0]!;
   const { scope } = fixture.environmentPackage;
   const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
-    backendId: 'nanohost', queueEntryId: 'queue_source_read', requestId: scope.requestId,
-    triggerActor: scope.triggerActor, workspaceId: scope.workspaceId, threadId: scope.threadId,
-    turnId: scope.turnId, turnInput: 'Read source', requestedAgentId: fixture.environmentPackage.agent.agentId,
+    backendId: 'nanohost',
+    queueEntryId: 'queue_source_read',
+    requestId: scope.requestId,
+    triggerActor: scope.triggerActor,
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    turnInput: 'Read source',
+    requestedAgentId: fixture.environmentPackage.agent.agentId,
   });
   recordTestExecutionAttempt(fixture.coreDb, {
-    entry, attemptId: 'attempt_source_read', agentSessionId: scope.agentSessionId,
-    inputRef: fixture.environmentPackage.snapshotId, bindingRef: 'binding_source_read',
-    sessionCompatibilityKey: 'fixture-compatibility', now: () => new Date().toISOString(),
+    entry,
+    attemptId: 'attempt_source_read',
+    agentSessionId: scope.agentSessionId,
+    inputRef: fixture.environmentPackage.snapshotId,
+    bindingRef: 'binding_source_read',
+    sessionCompatibilityKey: 'fixture-compatibility',
+    now: () => new Date().toISOString(),
   });
   const proof = vi.spyOn(packageOwner, 'readWorkerContextPackageTrace').mockReturnValue({
-    workspaceId: scope.workspaceId, threadId: scope.threadId, turnId: scope.turnId,
-    agentSessionId: scope.agentSessionId, packageSnapshotId: fixture.environmentPackage.snapshotId,
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    agentSessionId: scope.agentSessionId,
+    packageSnapshotId: fixture.environmentPackage.snapshotId,
     sourceFiles: [source],
   } as packageOwner.WorkerContextPackageTrace);
   onTestFinished(() => proof.mockRestore());
@@ -808,45 +840,80 @@ it('reads retained bytes through the real dispatcher and withholds them after cu
   expect(proof).toHaveBeenCalledTimes(2);
 });
 
+it.skipIf(process.platform !== 'linux')(
+  'searches only the selected retained PDF text through the real Worker Tool and kernel',
+  async () => {
+    const f = await sourceToolFixture(
+      createPdfFixture(['first page', 'second needle']),
+      'application/pdf'
+    );
+    expect(f.source.projection.pdfTextLayer).toBeDefined();
+    const result = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+      path: f.packagePath,
+      mode: 'exact',
+      query: 'needle',
+    });
+    expect(result.structuredContent).toMatchObject({
+      status: 'ready',
+      result: {
+        hits: [
+          {
+            digest: f.source.originalDigest.slice(7),
+            representation_digest: f.source.projection.representationDigest.slice(7),
+            locator: {
+              kind: 'text',
+              original: `${JSON.stringify(f.source.source.reference)}#page=2`,
+            },
+          },
+        ],
+      },
+    });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
+    const denied = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+      path: `${f.packagePath}/unselected`,
+      query: 'needle',
+    });
+    expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+    expect(JSON.stringify(denied)).not.toContain(f.artifactId);
+  },
+  30_000
+);
 
-it.skipIf(process.platform !== 'linux')('searches only the selected retained PDF text through the real Worker Tool and kernel', async () => {
-  const f = await sourceToolFixture(createPdfFixture(['first page', 'second needle']), 'application/pdf');
-  expect(f.source.projection.pdfTextLayer).toBeDefined();
-  const result = await dispatchOpenkitWorkTool(f.input, 'work_search_source', { path: f.packagePath, mode: 'exact', query: 'needle' });
-  expect(result.structuredContent).toMatchObject({ status: 'ready', result: { hits: [{
-    digest: f.source.originalDigest.slice(7), representation_digest: f.source.projection.representationDigest.slice(7),
-    locator: { kind: 'text', original: `${JSON.stringify(f.source.source.reference)}#page=2` },
-  }] } });
-  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
-  const denied = await dispatchOpenkitWorkTool(f.input, 'work_search_source', { path: `${f.packagePath}/unselected`, query: 'needle' });
-  expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
-  expect(JSON.stringify(denied)).not.toContain(f.artifactId);
-}, 30_000);
-
-it.skipIf(process.platform !== 'linux')('returns an actual bounded image Tool result and withholds it when access changes during processing', async () => {
-  const image = readFileSync(fileURLToPath(new URL('../context/fixtures/vision-view/static-rgb.png', import.meta.url)));
-  const f = await sourceToolFixture(image, 'image/png');
-  const args = { path: f.packagePath, crop: { left: 1, top: 1, width: 3, height: 2 } };
-  const result = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
-  expect(result.structuredContent).toMatchObject({ status: 'available',
-    source: { originalDigest: f.source.originalDigest }, delivered: { width: 3, height: 2, mediaType: 'image/jpeg' },
-  });
-  const content = result.content.find((entry) => entry.type === 'image');
-  expect(content).toBeDefined();
-  if (!content || content.type !== 'image') throw new Error('The explicit image view is unavailable.');
-  const bytes = Buffer.from(content.data, 'base64');
-  expect(bytes.subarray(0, 2)).toEqual(Buffer.from([255, 216]));
-  expect(bytes.length).toBeLessThanOrEqual(262_144);
-  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
-  const actual = visionOwner.processVisionView;
-  const changed = vi.spyOn(visionOwner, 'processVisionView').mockImplementationOnce(async (input) => {
-    const value = await actual(input);
-    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, 'user_local'))();
-    return value;
-  });
-  onTestFinished(() => changed.mockRestore());
-  const denied = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
-  expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
-  expect(denied.content.every((entry) => entry.type === 'text')).toBe(true);
-  expect(JSON.stringify(denied)).not.toContain(f.artifactId);
-}, 30_000);
+it.skipIf(process.platform !== 'linux')(
+  'returns an actual bounded image Tool result and withholds it when access changes during processing',
+  async () => {
+    const image = readFileSync(
+      fileURLToPath(new URL('../context/fixtures/vision-view/static-rgb.png', import.meta.url))
+    );
+    const f = await sourceToolFixture(image, 'image/png');
+    const args = { path: f.packagePath, crop: { left: 1, top: 1, width: 3, height: 2 } };
+    const result = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
+    expect(result.structuredContent).toMatchObject({
+      status: 'available',
+      source: { originalDigest: f.source.originalDigest },
+      delivered: { width: 3, height: 2, mediaType: 'image/jpeg' },
+    });
+    const content = result.content.find((entry) => entry.type === 'image');
+    expect(content).toBeDefined();
+    if (!content || content.type !== 'image')
+      throw new Error('The explicit image view is unavailable.');
+    const bytes = Buffer.from(content.data, 'base64');
+    expect(bytes.subarray(0, 2)).toEqual(Buffer.from([255, 216]));
+    expect(bytes.length).toBeLessThanOrEqual(262_144);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
+    const actual = visionOwner.processVisionView;
+    const changed = vi
+      .spyOn(visionOwner, 'processVisionView')
+      .mockImplementationOnce(async (input) => {
+        const value = await actual(input);
+        f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, 'user_local'))();
+        return value;
+      });
+    onTestFinished(() => changed.mockRestore());
+    const denied = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
+    expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+    expect(denied.content.every((entry) => entry.type === 'text')).toBe(true);
+    expect(JSON.stringify(denied)).not.toContain(f.artifactId);
+  },
+  30_000
+);
