@@ -11,7 +11,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDefaultWorkerControlGateway } from './app.js';
 import { listServerAuditEvents } from './audit-events.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+  setDefaultServerAdminTokenId,
+} from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import {
   composeWorkspaceMcpCatalog,
@@ -175,6 +179,7 @@ async function fixture() {
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
   cleanups.push(() => workerMcpGateway.close());
+  let sessionUserId: string | null = null;
   const app = createApp({
     coreDb,
     dataRoot,
@@ -185,22 +190,32 @@ async function fixture() {
     workerControlGateway,
     workerMcpGateway,
     auth: {
-      api: { getSession: async () => null },
+      api: {
+        getSession: async () => (sessionUserId ? { user: { id: sessionUserId } } : null),
+      },
       handler: async () => new Response(null, { status: 404 }),
     },
   });
   const outputs: unknown[] = [];
-  const send = (operation: string, input: Record<string, unknown> = {}, secret = admin.secret) => {
+  const send = (
+    operation: string,
+    input: Record<string, unknown> = {},
+    secret: string | null = admin.secret
+  ) => {
     const { requestId = randomUUID(), ...body } = input;
     return app.request(`/api/app/operations/${operation}`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${secret}`,
+        ...(secret ? { authorization: `Bearer ${secret}` } : {}),
         'content-type': 'application/json',
         'x-openkit-request-id': String(requestId),
       },
       body: JSON.stringify(body),
     });
+  };
+  const sessionSend = (userId: string, operation: string, input: Record<string, unknown>) => {
+    sessionUserId = userId;
+    return send(operation, input, null);
   };
   const call = async (
     operation: string,
@@ -342,6 +357,7 @@ async function fixture() {
     app,
     call,
     send,
+    sessionSend,
     coreDb,
     store,
     dataRoot,
@@ -786,6 +802,9 @@ describe('Server-shared MCP through governed Worker routes', () => {
   it.each([
     'current',
     'other-administrator',
+    'administrator-session',
+    'revoked-administrator-session',
+    'ordinary-session',
     'grant-revoked',
     'server-disabled',
   ] as const)('executes captured shared approval only with %s authority', async (authority) => {
@@ -833,7 +852,11 @@ describe('Server-shared MCP through governed Worker routes', () => {
     }
     let approvingUserId = 'user_local';
     let approvingCredential = f.admin.secret;
-    if (authority === 'other-administrator') {
+    const session =
+      authority === 'administrator-session' ||
+      authority === 'revoked-administrator-session' ||
+      authority === 'ordinary-session';
+    if (authority === 'other-administrator' || session) {
       approvingUserId = randomUUID();
       f.coreDb.db
         .insert(users)
@@ -843,31 +866,63 @@ describe('Server-shared MCP through governed Worker routes', () => {
           email: `${approvingUserId}@openkit.invalid`,
         })
         .run();
-      approvingCredential = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: approvingUserId,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2999-01-01T00:00:00.000Z',
-      }).secret;
+      if (authority !== 'ordinary-session') {
+        const token = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: approvingUserId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        });
+        approvingCredential = token.secret;
+        if (session)
+          expect(setDefaultServerAdminTokenId(f.coreDb, approvingUserId, token.tokenId)).toBe(true);
+        if (authority === 'revoked-administrator-session')
+          revokeOpenKitAccessTokenRecord(f.coreDb, token.tokenId);
+      }
     }
-    await f.call(
-      'approval.respond',
-      {
-        workspaceId: worker.workspaceId,
-        threadId: pending.threadId,
-        turnId: pending.raisingTurnId,
-        approvalRequestId: pending.requestId,
-        decision: 'granted',
-      },
-      approvingCredential
-    );
+    const membership = () =>
+      f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .all(worker.workspaceId, approvingUserId);
+    if (session) expect(membership()).toEqual([]);
+    const resolutions = f.materialResolution.mock.calls.length;
+    const contacts = f.upstream.methods.length;
+    const approval = {
+      workspaceId: worker.workspaceId,
+      threadId: pending.threadId,
+      turnId: pending.raisingTurnId,
+      approvalRequestId: pending.requestId,
+      decision: 'granted',
+    };
+    const response = session
+      ? await f.sessionSend(approvingUserId, 'approval.respond', approval)
+      : await f.send('approval.respond', approval, approvingCredential);
+    const responseBody = await response.json();
+    f.outputs.push(responseBody);
     const settled = readPendingRequest(db.sqlite, pending.requestId)!;
-    if (authority === 'current' || authority === 'other-administrator') {
+    if (authority === 'revoked-administrator-session' || authority === 'ordinary-session') {
+      expect(response.status).toBe(403);
+      expect(settled).toEqual(pending);
+      expect(f.materialResolution).toHaveBeenCalledTimes(resolutions);
+      expect(f.upstream.methods).toHaveLength(contacts);
+    } else {
+      expect(response.status, JSON.stringify(responseBody)).toBe(200);
+    }
+    if (
+      authority === 'current' ||
+      authority === 'other-administrator' ||
+      authority === 'administrator-session'
+    ) {
       expect(settled.disposition, settled.dispositionReason ?? 'No disposition reason.').toBe(
         'approved-executed'
       );
       expect(f.upstream.methods.filter((method) => method === 'tools/call')).toHaveLength(1);
       expect(settled.responsibleUserId).toBe('user_local');
+      if (session)
+        expect(settled.decidingActorContext).toMatchObject({
+          kind: 'session',
+          userId: approvingUserId,
+        });
       expect(listServerAuditEvents(f.coreDb)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -883,6 +938,7 @@ describe('Server-shared MCP through governed Worker routes', () => {
       expect(settled.disposition).not.toBe('approved-executed');
       expect(f.upstream.methods).not.toContain('tools/call');
     }
+    if (session) expect(membership()).toEqual([]);
     expect(JSON.stringify(f.outputs)).not.toContain(canary);
   });
 
