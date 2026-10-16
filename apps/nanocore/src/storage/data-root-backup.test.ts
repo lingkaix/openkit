@@ -275,7 +275,7 @@ describe('data-root backup manifest', () => {
     const workspaceId = 'ws_00000000-0000-743a-9259-d9081224a961';
     const sourceDb = openCoreDb(dataRoot);
     applyMigrations(sourceDb);
-    sourceDb.sqlite.pragma('usr_00000000-0000-77f0-baeb-06814897b29b = 7');
+    sourceDb.sqlite.pragma('user_version = 7');
     const createdAt = new Date(timestamp).getTime();
     sourceDb.sqlite
       .prepare(
@@ -394,7 +394,7 @@ describe('data-root backup manifest', () => {
       completedAt: '2026-07-06T00:00:01.000Z',
     });
 
-    sourceDb.sqlite.pragma('usr_00000000-0000-77f0-baeb-06814897b29b = 8');
+    sourceDb.sqlite.pragma('user_version = 8');
     sourceDb.sqlite.close();
     workspaceDb.sqlite.close();
 
@@ -407,7 +407,7 @@ describe('data-root backup manifest', () => {
       readonly: true,
     });
     try {
-      expect(backupDb.pragma('usr_00000000-0000-77f0-baeb-06814897b29b', { simple: true })).toBe(7);
+      expect(backupDb.pragma('user_version', { simple: true })).toBe(7);
     } finally {
       backupDb.close();
     }
