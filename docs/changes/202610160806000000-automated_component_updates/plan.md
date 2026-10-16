@@ -88,3 +88,6 @@ The next exact-head fullCI on7185fced observed four failures before cancellation
 
 
 Both CI-context corrections are merged from isolated helper branches. Operator tests retain unchanged runtime sources once beneath protected fixture ownership, keep only the dependency link outside custody, compare the privileged source bytes and require the original constructor to refuse an unsafe checkout ancestor before any adapter. The NanoHost package test command now selects one test thread by default; no startup bound, product deadline, TLS assertion or production admission changes. Controlled hostile-checkout red/green, integrated default-command Cargo verification, repository checks and final independent review are pending on this corrected source.
+
+
+The upstream supply failure cleared without a product change. A later anonymous registry read records publication of `schemastery@3.18.5` at13:49:43Z, after the smoke jobs failed around13:45Z. The unchanged runtime dependency selection then resolved successfully; no loader override or native version change is proposed. The operator fixture initially omitted its module-relative image catalog and stopped in setup; that output is not a deciding red or green. Its retained source tree now includes the unchanged catalog, and corrected controlled runs remain pending.
