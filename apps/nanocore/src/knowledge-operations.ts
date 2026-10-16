@@ -1570,11 +1570,7 @@ export function createKnowledgeOperationImplementations(
       const { workspaceId, ...commandInput } = input;
 
       try {
-        requireSourceReferenceAudience(
-          workspaceId,
-          store.getKnowledgeEntry(workspaceId, input.knowledgeEntryId).sourceReferences ?? [],
-          context
-        );
+        // The publisher rechecks the fixed candidate's Sources before replay; a later removal must not hide its completed result.
         const knowledge = await publishEntry({ ...input, operation: 'knowledge.update' }, context);
         requireSourceReferenceAudience(workspaceId, knowledge.sourceReferences ?? [], context);
         recordKnowledgeGatewayUsage({
