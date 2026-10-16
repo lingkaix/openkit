@@ -479,7 +479,7 @@ describe('Workspace directory publication durability', () => {
 });
 
 /** Creates a fresh Workspace through either public creation path. */
-function freshWorkspaceDatabaseFixture(kind: 'general' | 'quick-chat') {
+function freshWorkspaceDatabaseFixture(kind: 'general' | 'personal') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-fresh-workspace-db-'));
   roots.push(dataRoot);
   const store = new FsStore({ dataRoot });
@@ -505,7 +505,7 @@ function expectCompleteWorkspaceJournal(sqlite: Database.Database): void {
 describe('fresh Workspace database publication', () => {
   it.each([
     'general',
-    'quick-chat',
+    'personal',
   ] as const)('publishes %s with a migrated database ready for existing-only maintenance and reopen', (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     const workspace = f.create();
@@ -532,7 +532,7 @@ describe('fresh Workspace database publication', () => {
 
   it.each([
     'general',
-    'quick-chat',
+    'personal',
   ] as const)('completes the %s database in staging before the canonical rename', (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     let inspected = 0;
@@ -572,7 +572,7 @@ describe('fresh Workspace database publication', () => {
 
   it.each([
     'general',
-    'quick-chat',
+    'personal',
   ] as const)('does not publish %s when a staged Workspace migration fails', (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     const originalPrepare = Database.prototype.prepare;

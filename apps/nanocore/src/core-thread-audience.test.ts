@@ -729,7 +729,7 @@ describe('core Thread audience', () => {
       expect([200, 201]).toContain(replay.status);
       expect(await replay.json()).toMatchObject({
         id: createdThread.id,
-        name: 'Owner private create',
+        name: createdThread.name,
       });
       const crossed = await ((input: Record<string, unknown>) =>
         fixture.app.request('/api/app/operations/thread.create', {

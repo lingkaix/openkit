@@ -742,6 +742,79 @@ describe('Assistant semantic Task handoff', () => {
     expect(f.launches).not.toHaveBeenCalled();
   });
   it.each([
+    'missing',
+    'other-thread',
+  ] as const)('keeps an Assistant command with a %s receipt pointer in recovery without rerouting or redispatch', async (damage) => {
+    const f = fixture();
+    const submitted = await f.submit();
+    expect(submitted.status).toBe(202);
+    const accepted = SubmitConversationResponseSchema.parse(await submitted.json());
+    const original = f.store.getCommandRequest('conversation.submit', f.requestId, f.scope)!;
+    if (damage === 'missing') {
+      f.workspaceDb.sqlite
+        .prepare('DELETE FROM idempotency_requests WHERE request_key = ?')
+        .run(original.key);
+    } else {
+      const other = f.store.createThread(
+        f.workspace.id,
+        'Other retained conversation',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: LOCAL_USER_ID,
+        }
+      );
+      const unrelated = f.store.createTurn(f.workspace.id, other.id, 'Other input', {
+        kind: 'user',
+        id: LOCAL_USER_ID,
+      });
+      f.workspaceDb.sqlite
+        .prepare('UPDATE idempotency_requests SET response_id = ? WHERE request_key = ?')
+        .run(unrelated.id, original.key);
+    }
+    const before = f.store.listThreadTurns(f.workspace.id, f.thread.id);
+    const receipts = f.store.listCommandRequests();
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    const app = f.makeApp(reopened);
+    for (const input of [
+      conversationInput,
+      'What should I do?',
+      'Search the web for release notes.',
+    ]) {
+      const replay = await app.request(
+        ...operationRequest(
+          'conversation.submit',
+          {
+            workspaceId: f.workspace.id,
+            threadId: f.thread.id,
+          },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              input,
+              requestId: f.requestId,
+              targetRef: 'internal-role:assistant',
+              artifactRefs: [],
+            }),
+          }
+        )
+      );
+      expect(replay.status, await replay.clone().text()).toBe(409);
+      const body = await replay.json();
+      expect(['recovery_required', 'idempotency_key_conflict']).toContain(body.code);
+    }
+    expect(reopened.getTurnById(accepted.turn.id)).toEqual(f.store.getTurnById(accepted.turn.id));
+    expect(reopened.listThreadTurns(f.workspace.id, f.thread.id)).toEqual(before);
+    expect(reopened.listCommandRequests()).toEqual(receipts);
+    expect(f.admissions()).toEqual([]);
+    expect(f.requests).toHaveLength(2);
+    expect(f.preparation).not.toHaveBeenCalled();
+    expect(f.launches).not.toHaveBeenCalled();
+  });
+
+  it.each([
     'Do not start',
     'Yes, but change the work',
   ])('keeps a non-exact selection inert: %s', async (answer) => {

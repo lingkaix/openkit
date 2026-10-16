@@ -98,6 +98,8 @@ function predecessorRecord(value: Record<string, unknown>) {
   const predecessor = { ...value };
   delete predecessor.visibility;
   delete predecessor.privateOwnerUserId;
+  delete predecessor.threadSource;
+  delete predecessor.parentThreadId;
   predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
   const { id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
   predecessor.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify({ id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt })).digest('hex')}`;
@@ -140,7 +142,16 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-damaged-visibility-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.ensureQuickChatWorkspace('user_local');
-    const thread = store.createThread(workspace.id, 'Private conversation');
+    const thread = store.createThread(
+      workspace.id,
+      'Private conversation',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'user_local',
+      }
+    );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify({ ...persisted.value, ...damage }));
     expect(() => new FsStore({ dataRoot })).toThrow();

@@ -52,7 +52,7 @@ describe('storage layout report', () => {
           workspaceId: 'ws_1',
           workspaceDb: expect.objectContaining({
             exists: true,
-            appliedMigrations: ['workspace_0000_setup'],
+            appliedMigrations: ['workspace_0000_setup', 'workspace_0001_assistant_handoff'],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
         },
