@@ -7,7 +7,6 @@ import { responsibleUserIdForActor } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -33,7 +32,9 @@ import {
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
@@ -267,8 +268,8 @@ function createMigratedCoreDb() {
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   return coreDb;
 }
@@ -410,27 +411,27 @@ describe('route B durable intent before effects', () => {
         requestedAgentId: agentManifest().id,
 
         providerCredentialResolver: () => null,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         input: {
           requestId: '00000000-0000-4000-8000-00000000d301',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           input: 'Persist intent before preparation.',
         },
       });
       await vi.waitFor(() => expect(executor.calls).toHaveLength(1));
       const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['queued', 'admitted', 'denied', 'cancelled'],
       });
       expect(admission).toHaveLength(1);
       expect(admission[0]).toMatchObject({
         requestId: '00000000-0000-4000-8000-00000000d301',
         turnInput: 'Persist intent before preparation.',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
       });
       expect(executor.prepareCalls).toEqual([
-        { threadId: 'th_demo', turnId: admission[0]!.turnId },
+        { threadId: 'th_00000000-0000-7000-8000-000000000001', turnId: admission[0]!.turnId },
       ]);
       expect(executor.calls[0]!.turnId).toBe(admission[0]!.turnId);
     } finally {
@@ -461,17 +462,17 @@ describe('route B durable intent before effects', () => {
         requestedAgentId: agentManifest().id,
 
         providerCredentialResolver: () => null,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         input: {
           requestId: '00000000-0000-4000-8000-00000000d302',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           input: 'Observe lost acceptance without replay.',
         },
       }).catch(() => undefined);
       await vi.waitFor(() => expect(executor.calls).toHaveLength(1));
       const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['queued', 'admitted', 'denied', 'cancelled'],
       });
       expect(admission).toHaveLength(1);
@@ -970,7 +971,9 @@ describe('scheduler dispatch loop', () => {
       const prepared = await prepare(ownerStore, preparation);
       if (outcome === 'denied') {
         coreDb.sqlite
-          .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'user_local'")
+          .prepare(
+            "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
+          )
           .run(Date.now());
       }
       return prepared;
@@ -1047,13 +1050,13 @@ describe('scheduler dispatch loop', () => {
       onTurnCreated,
 
       providerCredentialResolver: () => null,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       input: {
         agentId: manifest.id,
         input: 'Shared admission',
         requestId: '00000000-0000-4000-8000-00000000f201',
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
     }).then(
       (handle) => ({ handle }),
@@ -1084,7 +1087,7 @@ describe('scheduler dispatch loop', () => {
       }
       await vi.waitFor(() => expect(preparations).toBe(1), { timeout: 1000 });
       const [admission] = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['admitted'],
       });
       expect(admission).toBeDefined();
@@ -1181,11 +1184,11 @@ describe('scheduler dispatch loop', () => {
     const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Thread');
     coreDb.sqlite
       .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-      VALUES ('user_claim_foreign', 'Foreign', 'claim-foreign@example.invalid', false, ?, ?, 'human')`)
+      VALUES ('usr_00000000-0000-7417-adb6-8c98a2b20e22', 'Foreign', 'claim-foreign@example.invalid', false, ?, ?, 'human')`)
       .run(Date.now(), Date.now());
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_claim_foreign',
+      ownerUserId: 'usr_00000000-0000-7417-adb6-8c98a2b20e22',
       workspaceId: foreignWorkspace.id,
     });
     seedLocalSchedulerTarget(coreDb);
@@ -1195,12 +1198,12 @@ describe('scheduler dispatch loop', () => {
         backendId: 'nanohost',
         queueEntryId: 'queue_claim_foreign',
         requestId: 'queue_claim_foreign',
-        turnId: 'turn_claim_foreign',
+        turnId: testEntityId('tu', 'turn_claim_foreign'),
         workspaceId: foreignWorkspace.id,
         threadId: foreignThread.id,
         turnInput: 'Private foreign work',
         requestedAgentId: manifest.id,
-        triggerActor: { kind: 'user', id: 'user_claim_foreign' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7417-adb6-8c98a2b20e22' },
         now: () => '2026-07-05T00:00:00.000Z',
       })
     );
@@ -1226,13 +1229,13 @@ describe('scheduler dispatch loop', () => {
       snapshot,
 
       providerCredentialResolver: () => null,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       input: {
         agentId: manifest.id,
         input: 'Own work',
         requestId: '00000000-0000-4000-8000-00000000f202',
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
     }).catch((error: unknown) => error);
     try {
@@ -1242,7 +1245,7 @@ describe('scheduler dispatch loop', () => {
       expect(JSON.stringify(error)).not.toContain('FOREIGN-PRIVATE');
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued', 'cancelled'],
         })
       ).toMatchObject([{ status: 'queued' }]);
@@ -1298,7 +1301,7 @@ describe('scheduler dispatch loop', () => {
     };
     const start = executor.startTurn.bind(executor);
     executor.startTurn = async (owner, turnId, input, context) => {
-      if (turnId === 'turn_image_first') {
+      if (turnId === testEntityId('tu', 'turn_image_first')) {
         const intent = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
           attemptId: context!.attemptId!,
           operationId: 'image:first',
@@ -1326,19 +1329,19 @@ describe('scheduler dispatch loop', () => {
       maxDispatches: 1,
     };
     for (const suffix of ['first', 'second']) {
-      const thread = store.createThread('ws_demo', suffix);
+      const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
       publishTestAdmission(
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue_image_${suffix}`,
           requestId: `request_image_${suffix}`,
-          turnId: `turn_image_${suffix}`,
-          workspaceId: 'ws_demo',
+          turnId: testEntityId('tu', `turn_image_${suffix}`),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
           turnInput: suffix,
           requestedAgentId: manifest.id,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         })
       );
     }
@@ -1351,13 +1354,15 @@ describe('scheduler dispatch loop', () => {
       const overlap = await runSchedulerDispatchLoop(dispatch);
       expect(overlap.startedTurns).toEqual([]);
       expect(executor.prepareCalls).toHaveLength(1);
-      expect(store.getTurnById('turn_image_second').status).toBe('pending');
-      expect(store.getTurnById('turn_image_second').agentSessionId).toBeUndefined();
+      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
+      expect(
+        store.getTurnById(testEntityId('tu', 'turn_image_second')).agentSessionId
+      ).toBeUndefined();
       expect(executionAttempts(coreDb)).toHaveLength(1);
       gate.resolve();
       const admitted = await first;
       expect((await runSchedulerDispatchLoop(dispatch)).startedTurns).toEqual([]);
-      expect(store.getTurnById('turn_image_second').status).toBe('pending');
+      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
       expect(executor.prepareCalls).toHaveLength(1);
       await closeOwnedExecutionAttempt(coreDb, store, {
         attemptId: admitted.startedTurns[0]!.dispatch.attempt.attemptId,
@@ -1367,8 +1372,8 @@ describe('scheduler dispatch loop', () => {
         (await runSchedulerDispatchLoop(dispatch)).startedTurns[0]?.dispatch.entry.queueEntryId
       ).toBe('queue_image_second');
       expect(executor.calls.map((call) => call.turnId)).toEqual([
-        'turn_image_first',
-        'turn_image_second',
+        testEntityId('tu', 'turn_image_first'),
+        testEntityId('tu', 'turn_image_second'),
       ]);
     } finally {
       gate.resolve();
@@ -1389,7 +1394,7 @@ describe('scheduler dispatch loop', () => {
     let preparations = 0;
     executor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
       preparations += 1;
-      if (preparation.turn.id === 'turn_claim_first') {
+      if (preparation.turn.id === testEntityId('tu', 'turn_claim_first')) {
         entered.resolve();
         await gate.promise;
       }
@@ -1420,19 +1425,19 @@ describe('scheduler dispatch loop', () => {
       clearInterval: () => {},
     });
     for (const [index, suffix] of ['first', 'second', 'third'].entries()) {
-      const thread = store.createThread('ws_demo', suffix);
+      const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
       publishTestAdmission(
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue_claim_${suffix}`,
           requestId: `queue_claim_${suffix}`,
-          turnId: `turn_claim_${suffix}`,
-          workspaceId: 'ws_demo',
+          turnId: testEntityId('tu', `turn_claim_${suffix}`),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
           turnInput: suffix,
           requestedAgentId: manifest.id,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           now: () => `2026-07-05T00:00:0${index}.000Z`,
         })
       );
@@ -1465,9 +1470,9 @@ describe('scheduler dispatch loop', () => {
       }
       expect(preparations).toBe(3);
       expect(executor.calls.map((call) => call.turnId)).toEqual([
-        'turn_claim_first',
-        'turn_claim_second',
-        'turn_claim_third',
+        testEntityId('tu', 'turn_claim_first'),
+        testEntityId('tu', 'turn_claim_second'),
+        testEntityId('tu', 'turn_claim_third'),
       ]);
       expect(errors).toEqual([]);
     } finally {
@@ -1503,12 +1508,12 @@ describe('scheduler dispatch loop', () => {
         .prepare(
           `INSERT INTO users
             (id, display_name, email, email_verified, created_at, updated_at, kind)
-           VALUES ('user_foreign', 'Foreign', 'foreign@example.invalid', false, ?, ?, 'human')`
+           VALUES ('usr_00000000-0000-7ed5-9b62-226e0a66887f', 'Foreign', 'foreign@example.invalid', false, ?, ?, 'human')`
         )
         .run(Date.now(), Date.now());
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_foreign',
+        ownerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
         workspaceId: workspace.id,
       });
       seedLocalSchedulerTarget(coreDb);
@@ -1521,9 +1526,9 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_foreign_race',
           requestedAgentId: manifest.id,
           threadId: thread.id,
-          turnId: 'turn_foreign_race',
+          turnId: testEntityId('tu', 'turn_foreign_race'),
           turnInput: 'Foreign private work',
-          triggerActor: { kind: 'user', id: 'user_foreign' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
           workspaceId: workspace.id,
           now: () => '2026-07-05T00:00:00.000Z',
         })
@@ -1531,7 +1536,7 @@ describe('scheduler dispatch loop', () => {
       if (failureStage === 'queue-race') {
         const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
         turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-          expect(preparation.turn.id).toBe('turn_foreign_race');
+          expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_foreign_race'));
           const prepared = await prepare(ownerStore, preparation);
           cancelSchedulerAdmissionEntry(coreDb, {
             queueEntryId: 'queue_foreign_race',
@@ -1553,8 +1558,8 @@ describe('scheduler dispatch loop', () => {
           agentId: manifest.id,
           input: 'Caller work',
           requestId,
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         providerCredentialResolver: () => null,
 
@@ -1565,7 +1570,7 @@ describe('scheduler dispatch loop', () => {
           providerRegistry: localProviderRegistry(),
         }),
         store,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         turnExecutor,
       }).catch((caught: unknown) => caught);
 
@@ -1585,13 +1590,13 @@ describe('scheduler dispatch loop', () => {
         status: failureStage === 'queue-race' ? 'admitted' : 'queued',
         actor:
           failureStage === 'queue-race'
-            ? JSON.stringify({ kind: 'user', id: 'user_foreign' })
+            ? JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' })
             : privateText,
       });
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['queued', 'cancelled'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject([{ requestId, status: 'queued' }]);
 
@@ -1613,13 +1618,13 @@ describe('scheduler dispatch loop', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
-    const thread = store.createThread('ws_demo', 'Later Thread');
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Later Thread');
     const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
     let ownQueueEntryId = '';
     turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
       const prepared = await prepare(ownerStore, preparation);
       const own = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['admitted'],
       })[0]!;
       expect(own.turnId).toBe(preparation.turn.id);
@@ -1633,16 +1638,16 @@ describe('scheduler dispatch loop', () => {
           requestId: 'queue_later_race',
           requestedAgentId: manifest.id,
           threadId: thread.id,
-          turnId: 'turn_later_race',
+          turnId: testEntityId('tu', 'turn_later_race'),
           turnInput: 'Later work',
-          triggerActor: { kind: 'user', id: 'user_local' },
-          workspaceId: 'ws_demo',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       );
 
       cancelSchedulerAdmissionEntry(coreDb, {
         queueEntryId: ownQueueEntryId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       return prepared;
     };
@@ -1654,8 +1659,8 @@ describe('scheduler dispatch loop', () => {
           agentId: manifest.id,
           input: 'Own work',
           requestId: '00000000-0000-4000-8000-00000000f125',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         providerCredentialResolver: () => null,
 
@@ -1666,7 +1671,7 @@ describe('scheduler dispatch loop', () => {
           providerRegistry: localProviderRegistry(),
         }),
         store,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         turnExecutor,
       }).catch((caught: unknown) => caught);
       expect(ownQueueEntryId).not.toBe('');
@@ -1677,7 +1682,7 @@ describe('scheduler dispatch loop', () => {
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject([{ queueEntryId: ownQueueEntryId }]);
       expect(executionAttempts(coreDb)).toMatchObject([
@@ -1706,19 +1711,19 @@ describe('scheduler dispatch loop', () => {
     const thread = store.createThread(workspace.id, 'Other User Thread');
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
-    const failureMessage = `Private diagnostics for ${workspace.id}, user_other: ${failureStage}`;
+    const failureMessage = `Private diagnostics for ${workspace.id}, usr_00000000-0000-73d4-904a-d4c4b905df7c: ${failureStage}`;
     const failure =
       failureStage === 'deterministic-preparation'
         ? new DeterministicAgentPreparationError(failureMessage, 'agent_not_ready', 409)
         : new TurnStartValidationError('recovery_required', failureMessage, 503);
     if (failureStage === 'turn-start') {
       turnExecutor.startTurn = async (_store, turnId) => {
-        expect(turnId).toBe('turn_other_failure');
+        expect(turnId).toBe(testEntityId('tu', 'turn_other_failure'));
         throw failure;
       };
     } else {
       turnExecutor.prepareAgentSessionForTurn = async (_store, preparation) => {
-        expect(preparation.turn.id).toBe('turn_other_failure');
+        expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_other_failure'));
         throw failure;
       };
     }
@@ -1736,12 +1741,12 @@ describe('scheduler dispatch loop', () => {
         .prepare(
           `INSERT INTO users
             (id, display_name, email, email_verified, created_at, updated_at, kind)
-           VALUES ('user_other', 'Other User', 'other@example.invalid', false, ?, ?, 'human')`
+           VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other User', 'other@example.invalid', false, ?, ?, 'human')`
         )
         .run(Date.now(), Date.now());
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_other',
+        ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
         workspaceId: workspace.id,
       });
       seedLocalSchedulerTarget(coreDb);
@@ -1754,9 +1759,9 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_other_failure',
           requestedAgentId: manifest.id,
           threadId: thread.id,
-          turnId: 'turn_other_failure',
+          turnId: testEntityId('tu', 'turn_other_failure'),
           turnInput: 'Other user private work',
-          triggerActor: { kind: 'user', id: 'user_other' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
           workspaceId: workspace.id,
           now: () => '2026-07-05T00:00:00.000Z',
         })
@@ -1767,21 +1772,21 @@ describe('scheduler dispatch loop', () => {
           agentId: manifest.id,
           input: 'New caller work',
           requestId,
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         providerCredentialResolver: () => null,
 
         snapshot,
         store,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         turnExecutor,
       }).catch((caught: unknown) => caught);
 
       expect(error).not.toBeInstanceOf(Error);
       expect(String(error)).not.toContain(failureMessage);
       expect(String(error)).not.toContain(workspace.id);
-      expect(String(error)).not.toContain('user_other');
+      expect(String(error)).not.toContain('usr_00000000-0000-73d4-904a-d4c4b905df7c');
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['queued', 'admitted', 'cancelled'],
@@ -1797,7 +1802,7 @@ describe('scheduler dispatch loop', () => {
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['queued', 'cancelled'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject([{ requestId, status: 'queued' }]);
 
@@ -1822,7 +1827,7 @@ describe('scheduler dispatch loop', () => {
     const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
     let ownPreparationRan = false;
     turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-      expect(preparation.turn.workspaceId).toBe('ws_demo');
+      expect(preparation.turn.workspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
       expect(preparation.requestId).toBe(requestId);
       ownPreparationRan = true;
       const prepared = await prepare(ownerStore, preparation);
@@ -1836,11 +1841,11 @@ describe('scheduler dispatch loop', () => {
     try {
       coreDb.sqlite
         .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-          VALUES ('user_later_foreign', 'Foreign', 'later-foreign@example.invalid', false, ?, ?, 'human')`)
+          VALUES ('usr_00000000-0000-766c-b011-9a833a1b0fa6', 'Foreign', 'later-foreign@example.invalid', false, ?, ?, 'human')`)
         .run(Date.now(), Date.now());
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_later_foreign',
+        ownerUserId: 'usr_00000000-0000-766c-b011-9a833a1b0fa6',
         workspaceId: workspace.id,
       });
       seedLocalSchedulerTarget(coreDb);
@@ -1855,9 +1860,9 @@ describe('scheduler dispatch loop', () => {
               requestId: 'req_later_foreign',
               requestedAgentId: manifest.id,
               threadId: thread.id,
-              turnId: 'turn_later_foreign',
+              turnId: testEntityId('tu', 'turn_later_foreign'),
               turnInput: 'Private foreign work',
-              triggerActor: { kind: 'user', id: 'user_later_foreign' },
+              triggerActor: { kind: 'user', id: 'usr_00000000-0000-766c-b011-9a833a1b0fa6' },
               workspaceId: workspace.id,
               now: () => '2099-01-01T00:00:00.000Z',
             })
@@ -1868,8 +1873,8 @@ describe('scheduler dispatch loop', () => {
           agentId: manifest.id,
           input: 'Caller work',
           requestId,
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         providerCredentialResolver: () => null,
 
@@ -1880,7 +1885,7 @@ describe('scheduler dispatch loop', () => {
           providerRegistry: localProviderRegistry(),
         }),
         store,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         turnExecutor,
       }).catch((caught: unknown) => caught);
       expect(ownPreparationRan).toBe(true);
@@ -1893,7 +1898,7 @@ describe('scheduler dispatch loop', () => {
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject([{ requestId, status: 'admitted' }]);
       expect(
@@ -1938,8 +1943,8 @@ describe('scheduler dispatch loop', () => {
             agentId: manifest.id,
             input: 'Own caller work',
             requestId: '00000000-0000-4000-8000-00000000f127',
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           providerCredentialResolver: () => null,
 
@@ -1950,14 +1955,14 @@ describe('scheduler dispatch loop', () => {
             providerRegistry: localProviderRegistry(),
           }),
           store,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
         })
       ).resolves.toMatchObject({ turn: { status: 'failed', error: { message: failure.message } } });
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toHaveLength(1);
 
@@ -2005,8 +2010,8 @@ describe('scheduler dispatch loop', () => {
             agentId: manifest.id,
             input: 'Own caller work',
             requestId: '00000000-0000-4000-8000-00000000f121',
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           providerCredentialResolver: () => null,
 
@@ -2018,14 +2023,14 @@ describe('scheduler dispatch loop', () => {
             providerRegistry: localProviderRegistry(),
           }),
           store,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
         })
       ).resolves.toMatchObject({ turn: { status: 'failed', error: { message: failure.message } } });
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted', 'cancelled'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject([{ status: 'admitted' }]);
       expect(cancel).not.toHaveBeenCalled();
@@ -2056,12 +2061,12 @@ describe('scheduler dispatch loop', () => {
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
-        ) VALUES ('user_admin_dispatch', 'Admin', 'admin-dispatch@example.com', false, ?, ?, 'human', 'active', NULL)`
+        ) VALUES ('usr_00000000-0000-7778-8adf-f988f1ec739e', 'Admin', 'admin-dispatch@example.com', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(now, now);
     createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'user_admin_dispatch',
+      ownerUserId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
       scope: 'server-admin',
       tokenId: 'token_admin_dispatch',
       workspaceIds: [],
@@ -2069,12 +2074,12 @@ describe('scheduler dispatch loop', () => {
     if (earlierDeniedQueue) {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_without_membership' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-782a-ba65-4f53b1392e0b' },
         queueEntryId: 'queue_earlier_denied',
         requestId: 'req_earlier_denied',
-        workspaceId: 'ws_demo',
-        threadId: 'th_other',
-        turnId: 'turn_other',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'th_other'),
+        turnId: testEntityId('tu', 'turn_other'),
         turnInput: 'A prior request',
         requestedAgentId: manifest.id,
         profileRef: null,
@@ -2097,8 +2102,8 @@ describe('scheduler dispatch loop', () => {
           modelId: 'openai/gpt-5.2',
           profileId: 'default',
           requestId,
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         providerCredentialResolver: () => null,
         requestActor: {
@@ -2106,12 +2111,12 @@ describe('scheduler dispatch loop', () => {
           tokenId: 'token_admin_dispatch',
           tokenScope: 'server-admin',
           tokenWorkspaceIds: [],
-          userId: 'user_admin_dispatch',
+          userId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
         },
 
         snapshot,
         store,
-        triggerActor: { kind: 'user', id: 'user_admin_dispatch' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7778-8adf-f988f1ec739e' },
         turnExecutor: new RecordingTurnExecutor(coreDb),
       });
       if (earlierDeniedQueue) {
@@ -2121,7 +2126,7 @@ describe('scheduler dispatch loop', () => {
       }
       const entries = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         statuses: ['queued', 'admitted', 'cancelled', 'denied'],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(entries.find((entry) => entry.requestId === requestId)).toMatchObject({
         serverAdminTokenId: 'token_admin_dispatch',
@@ -2178,21 +2183,21 @@ describe('scheduler dispatch loop', () => {
             modelId: 'openai/gpt-5.2',
             profileId: 'default',
             requestId,
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           providerCredentialResolver: () => null,
 
           snapshot,
           store,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
         })
       ).resolves.toMatchObject({ turn: { status: 'failed', error: { message: failure.message } } });
 
       const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         statuses: ['admitted'],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }).find((entry) => entry.requestId === requestId);
       expect(admission).toMatchObject({ requestId, status: 'admitted' });
       expect(executionAttempts(coreDb)).toMatchObject([
@@ -2204,8 +2209,8 @@ describe('scheduler dispatch loop', () => {
         runSchedulerDispatchLoop({
           agentManifests: [manifest],
           coreDb,
-          createAgentSessionId: () => 'as_cancelled_followup',
-          createAttemptId: () => 'lease_cancelled_followup',
+          createAgentSessionId: () => testEntityId('as', 'as_cancelled_followup'),
+          createAttemptId: () => 'attempt_00000000-0000-72af-8c2e-1e6ef35d16c4',
 
           gatewayConfig: createTestGatewayConfig(),
 
@@ -2241,7 +2246,9 @@ describe('scheduler dispatch loop', () => {
     turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
       const prepared = await prepare(ownerStore, preparation);
       coreDb.sqlite
-        .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'user_local'")
+        .prepare(
+          "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
+        )
         .run(Date.now());
       return prepared;
     };
@@ -2254,8 +2261,8 @@ describe('scheduler dispatch loop', () => {
             agentId: manifest.id,
             input: 'Own optional cancellation',
             requestId: '00000000-0000-4000-8000-00000000f128',
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           providerCredentialResolver: () => null,
 
@@ -2266,7 +2273,7 @@ describe('scheduler dispatch loop', () => {
             providerRegistry: localProviderRegistry(),
           }),
           store,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
         })
       ).resolves.toMatchObject({
@@ -2275,7 +2282,7 @@ describe('scheduler dispatch loop', () => {
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject([
         {
@@ -2312,8 +2319,8 @@ describe('scheduler dispatch loop', () => {
             agentId: manifest.id,
             input: 'Own cleanup race',
             requestId: '00000000-0000-4000-8000-00000000f129',
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           providerCredentialResolver: () => null,
 
@@ -2324,7 +2331,7 @@ describe('scheduler dispatch loop', () => {
             providerRegistry: localProviderRegistry(),
           }),
           store,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
         })
       ).resolves.toMatchObject({ turn: { status: 'failed', error: { message: failure.message } } });
@@ -2352,7 +2359,7 @@ describe('scheduler dispatch loop', () => {
     };
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: queuedWorkspace.id,
     });
     seedLocalSchedulerTarget(coreDb);
@@ -2365,9 +2372,9 @@ describe('scheduler dispatch loop', () => {
         requestId: 'queue_older_workspace',
         requestedAgentId: manifest.id,
         threadId: queuedThread.id,
-        turnId: 'turn_older_workspace',
+        turnId: testEntityId('tu', 'turn_older_workspace'),
         turnInput: 'Use the queued Workspace catalog',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceCwd: '/workspace/queued',
         workspaceId: queuedWorkspace.id,
         workspaceRoots: [
@@ -2396,8 +2403,8 @@ describe('scheduler dispatch loop', () => {
         },
         {
           catalog: dataSourceCatalog('https://git.example.test/initiating.git', initiatingCommit),
-          path: 'workspaces/ws_demo/config/data-sources.jsonc',
-          workspaceId: 'ws_demo',
+          path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
       workspaceMcpServerCatalogs: [
@@ -2408,8 +2415,8 @@ describe('scheduler dispatch loop', () => {
         },
         {
           catalog: mcpCatalog('initiating-tool'),
-          path: 'workspaces/ws_demo/catalog/catalog.json',
-          workspaceId: 'ws_demo',
+          path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/catalog/catalog.json',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
     });
@@ -2421,19 +2428,21 @@ describe('scheduler dispatch loop', () => {
           input: {
             input: 'Initiate another Workspace turn',
             requestId: '0190f4c8-0000-7000-8000-000000000215',
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           providerCredentialResolver: () => null,
 
           snapshot,
           store,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
         })
       ).resolves.toBeDefined();
 
-      expect(turnExecutor.calls[0]).toMatchObject({ turnId: 'turn_older_workspace' });
+      expect(turnExecutor.calls[0]).toMatchObject({
+        turnId: testEntityId('tu', 'turn_older_workspace'),
+      });
       expect(
         turnExecutor.calls[0]?.context?.workspaceMcpServerCatalog?.servers[0]?.allowedTools
       ).toEqual(['queued-tool']);
@@ -2472,7 +2481,7 @@ describe('scheduler dispatch loop', () => {
         .prepare(
           `INSERT INTO users (
             id, display_name, email, email_verified, created_at, updated_at, kind
-          ) VALUES ('user_revoked_dispatch', 'Revoked Dispatch', 'revoked-dispatch@example.com', false, ?, ?, 'human')`
+          ) VALUES ('usr_00000000-0000-7997-b89e-2b3070b94b62', 'Revoked Dispatch', 'revoked-dispatch@example.com', false, ?, ?, 'human')`
         )
         .run(now, now);
       if (authorityKind === 'membership') {
@@ -2481,13 +2490,13 @@ describe('scheduler dispatch loop', () => {
             `INSERT INTO workspace_members (
               workspace_id, user_id, status, access_level, invitation_id,
               joined_at, removed_at, revision, created_at, updated_at
-            ) VALUES ('ws_demo', 'user_revoked_dispatch', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7997-b89e-2b3070b94b62', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
           )
           .run(timestamp, timestamp, timestamp);
       } else {
         createOpenKitAccessTokenRecord(coreDb, {
           expiresAt: '2099-01-01T00:00:00.000Z',
-          ownerUserId: 'user_revoked_dispatch',
+          ownerUserId: 'usr_00000000-0000-7997-b89e-2b3070b94b62',
           scope: 'server-admin',
           tokenId: 'token_revoked_dispatch',
           workspaceIds: [],
@@ -2498,14 +2507,14 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_revoked_dispatch' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7997-b89e-2b3070b94b62' },
           queueEntryId: 'queue_revoked_dispatch',
           requestId: 'req_revoked_dispatch',
           serverAdminTokenId:
             authorityKind === 'server-admin-token' ? 'token_revoked_dispatch' : null,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_revoked_dispatch',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_revoked_dispatch'),
           turnInput: 'Do not launch this stale admission',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2516,7 +2525,7 @@ describe('scheduler dispatch loop', () => {
           .prepare(
             `UPDATE workspace_members
              SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
-             WHERE workspace_id = 'ws_demo' AND user_id = 'user_revoked_dispatch'`
+             WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001' AND user_id = 'usr_00000000-0000-7997-b89e-2b3070b94b62'`
           )
           .run(timestamp, timestamp);
       } else {
@@ -2531,8 +2540,8 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
-        createAgentSessionId: () => 'as_revoked_dispatch',
-        createAttemptId: () => 'lease_revoked_dispatch',
+        createAgentSessionId: () => testEntityId('as', 'as_revoked_dispatch'),
+        createAttemptId: () => 'attempt_00000000-0000-7123-9ea9-95893b159388',
 
         maxDispatches: 1,
         providerRegistry: localProviderRegistry(),
@@ -2551,7 +2560,7 @@ describe('scheduler dispatch loop', () => {
 
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['denied'],
         })
       ).toEqual([
@@ -2562,7 +2571,7 @@ describe('scheduler dispatch loop', () => {
           status: 'denied',
         }),
       ]);
-      expect(store.getTurnById('turn_revoked_dispatch').status).toBe('pending');
+      expect(store.getTurnById(testEntityId('tu', 'turn_revoked_dispatch')).status).toBe('pending');
       expect(executionAttempts(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -2581,12 +2590,12 @@ describe('scheduler dispatch loop', () => {
       .prepare(
         `INSERT INTO users (
             id, display_name, email, email_verified, created_at, updated_at, kind, status
-          ) VALUES ('user_admin_race', 'Admin Race', 'admin-race@example.com', false, ?, ?, 'human', 'active')`
+          ) VALUES ('usr_00000000-0000-7798-ae4d-0c9eeb75ec93', 'Admin Race', 'admin-race@example.com', false, ?, ?, 'human', 'active')`
       )
       .run(now, now);
     createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'user_admin_race',
+      ownerUserId: 'usr_00000000-0000-7798-ae4d-0c9eeb75ec93',
       scope: 'server-admin',
       tokenId: 'token_admin_race',
       workspaceIds: [],
@@ -2599,10 +2608,10 @@ describe('scheduler dispatch loop', () => {
         queueEntryId: 'queue_admin_race',
         requestId: 'req_admin_race',
         serverAdminTokenId: 'token_admin_race',
-        triggerActor: { kind: 'user', id: 'user_admin_race' },
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_admin_race',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7798-ae4d-0c9eeb75ec93' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: testEntityId('tu', 'turn_admin_race'),
         turnInput: 'Do not launch after revocation',
         requestedAgentId: 'agent_codex_host',
       })
@@ -2633,8 +2642,8 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
-        createAgentSessionId: () => 'as_admin_race',
-        createAttemptId: () => 'lease_admin_race',
+        createAgentSessionId: () => testEntityId('as', 'as_admin_race'),
+        createAttemptId: () => 'attempt_00000000-0000-7c1c-bfd4-b3a6b6a9345c',
 
         maxDispatches: 1,
         providerRegistry: localProviderRegistry(),
@@ -2652,7 +2661,7 @@ describe('scheduler dispatch loop', () => {
       expect(executionAttempts(coreDb)).toMatchObject([
         { phase: 'closed', disposition: 'not_accepted', operation_id: null },
       ]);
-      expect(store.getTurnById('turn_admin_race').status).toBe('failed');
+      expect(store.getTurnById(testEntityId('tu', 'turn_admin_race')).status).toBe('failed');
       expect(turnExecutor.calls).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -2669,12 +2678,12 @@ describe('scheduler dispatch loop', () => {
           store,
           createSchedulerAdmissionEntry(coreDb, {
             backendId: 'nanohost',
-            triggerActor: { kind: 'user', id: 'user_local' },
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             queueEntryId: 'queue_replacement_blocker',
             requestId: 'req_replacement_blocker',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_replacement_blocker',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: testEntityId('tu', 'turn_replacement_blocker'),
             turnInput: 'Hold the Thread scheduler lease',
             requestedAgentId: 'agent_codex_host',
             profileRef: null,
@@ -2685,8 +2694,8 @@ describe('scheduler dispatch loop', () => {
             coreDb,
             'queue_replacement_blocker'
           ),
-          attemptId: 'lease_replacement_blocker',
-          agentSessionId: 'as_replacement_blocker',
+          attemptId: 'attempt_00000000-0000-7a86-a6a6-2a2a8154b10b',
+          agentSessionId: testEntityId('as', 'as_replacement_blocker'),
           inputRef: 'aepsnap_lease_replacement_blocker',
           bindingRef: 'attempt-binding:lease_replacement_blocker',
           sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
@@ -2705,9 +2714,13 @@ describe('scheduler dispatch loop', () => {
     let replacementCloseEffects = 0;
     const prepareAgentSessionForTurn = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
     turnExecutor.prepareAgentSessionForTurn = async (ownerStore, input) => {
-      const predecessorBefore = ownerStore.getAgentSession('as_replacement_predecessor');
+      const predecessorBefore = ownerStore.getAgentSession(
+        testEntityId('as', 'as_replacement_predecessor')
+      );
       const prepared = await prepareAgentSessionForTurn(ownerStore, input);
-      const predecessorAfter = ownerStore.getAgentSession('as_replacement_predecessor');
+      const predecessorAfter = ownerStore.getAgentSession(
+        testEntityId('as', 'as_replacement_predecessor')
+      );
       if (
         isCurrentAgentSessionStatus(predecessorBefore.status) &&
         !isCurrentAgentSessionStatus(predecessorAfter.status)
@@ -2721,25 +2734,25 @@ describe('scheduler dispatch loop', () => {
       store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: '2026-07-05T00:00:00.000Z',
-        id: 'as_replacement_predecessor',
+        id: testEntityId('as', 'as_replacement_predecessor'),
         message: null,
         sessionCompatibilityKey: `sha256:${'a'.repeat(64)}`,
         status: 'idle',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         updatedAt: '2026-07-05T00:00:00.000Z',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       setup(coreDb, store);
       publishTestAdmission(
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_replacement_candidate',
           requestId: 'req_replacement_candidate',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_replacement_candidate',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_replacement_candidate'),
           turnInput: 'Use incompatible future static inputs',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2752,8 +2765,8 @@ describe('scheduler dispatch loop', () => {
           gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
-          createAgentSessionId: () => 'as_replacement_successor',
-          createAttemptId: () => 'lease_replacement_candidate',
+          createAgentSessionId: () => testEntityId('as', 'as_replacement_successor'),
+          createAttemptId: () => 'attempt_00000000-0000-7ff4-8557-71fde470b861',
 
           maxDispatches: 1,
           now: () => '2026-07-05T00:00:02.000Z',
@@ -2769,16 +2782,21 @@ describe('scheduler dispatch loop', () => {
 
       expect(observed).toMatchObject({ startedTurns: [], terminalResult: expected });
       expect(replacementCloseEffects).toBe(0);
-      expect(store.getAgentSession('as_replacement_predecessor')).toMatchObject({
-        stale: false,
-        status: 'idle',
-      });
+      expect(store.getAgentSession(testEntityId('as', 'as_replacement_predecessor'))).toMatchObject(
+        {
+          stale: false,
+          status: 'idle',
+        }
+      );
       expect(
         store
-          .listThreadAgentSessions('ws_demo', 'th_demo')
+          .listThreadAgentSessions(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter((candidate) => isCurrentAgentSessionStatus(candidate.status))
           .map((candidate) => candidate.id)
-      ).toEqual(['as_replacement_predecessor']);
+      ).toEqual([testEntityId('as', 'as_replacement_predecessor')]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -2795,12 +2813,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_00000000-0000-4000-8000-00000000d201_loop_1',
           requestId: '00000000-0000-4000-8000-00000000d201',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_loop_1',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_loop_1'),
           turnInput: 'Run the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2811,8 +2829,8 @@ describe('scheduler dispatch loop', () => {
       const result = await runSchedulerDispatchLoop({
         gatewayConfig: createTestGatewayConfig(),
         coreDb,
-        createAgentSessionId: () => 'as_loop_1',
-        createAttemptId: () => 'lease_loop_1',
+        createAgentSessionId: () => testEntityId('as', 'as_loop_1'),
+        createAttemptId: () => 'attempt_00000000-0000-7a8c-94ac-65fe1fadecf1',
 
         maxDispatches: 1,
         now: () => '2026-07-05T00:00:02.000Z',
@@ -2826,11 +2844,17 @@ describe('scheduler dispatch loop', () => {
 
       expect(result.startedTurns).toHaveLength(1);
       expect(result.terminalResult).toEqual({ status: 'queued', reason: 'max-dispatches' });
-      expect(result.startedTurns[0]?.handle.turn.id).toBe('turn_loop_1');
+      expect(result.startedTurns[0]?.handle.turn.id).toBe(testEntityId('tu', 'turn_loop_1'));
       expect(turnExecutor.calls[0]?.context?.sessionCompatibilityKey).toMatch(
         /^sha256:[a-f0-9]{64}$/
       );
-      expect(store.getTurn('ws_demo', 'th_demo', 'turn_loop_1').status).toBe('running');
+      expect(
+        store.getTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_loop_1')
+        ).status
+      ).toBe('running');
       const expectedSetup = createTestAgentSetup();
       // Dispatch resolves complete Provider metadata rather than forwarding an unresolved fixture.
       expectedSetup.logicalModels.allowed[0] = {
@@ -2853,18 +2877,18 @@ describe('scheduler dispatch loop', () => {
       expect(turnExecutor.calls).toEqual([
         {
           context: {
-            agentSessionId: 'as_loop_1',
+            agentSessionId: testEntityId('as', 'as_loop_1'),
             agentSetup: expectedSetup,
             requestId: '00000000-0000-4000-8000-00000000d201',
-            attemptId: 'lease_loop_1',
+            attemptId: 'attempt_00000000-0000-7a8c-94ac-65fe1fadecf1',
             onSubmissionSettled: expect.any(Function),
             sessionCompatibilityKey: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-            triggerActor: { kind: 'user', id: 'user_local' },
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             workspaceCwd: null,
             workspaceRoots: [],
           },
           input: 'Run the scheduled worker',
-          turnId: 'turn_loop_1',
+          turnId: testEntityId('tu', 'turn_loop_1'),
         },
       ]);
     } finally {
@@ -2876,7 +2900,10 @@ describe('scheduler dispatch loop', () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
-    const laterThread = store.createThread('ws_demo', 'Later dispatchable thread');
+    const laterThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Later dispatchable thread'
+    );
 
     try {
       seedLocalSchedulerTarget(coreDb);
@@ -2884,12 +2911,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_busy_active',
           requestId: 'req_busy_active',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_busy_active',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_busy_active'),
           turnInput: 'Hold the first Thread lease',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2898,8 +2925,8 @@ describe('scheduler dispatch loop', () => {
       );
       const blocker = recordTestExecutionAttempt(coreDb, {
         entry: schedulerRecords.requireSchedulerAdmissionEntry(coreDb, 'queue_busy_active'),
-        attemptId: 'lease_busy_active',
-        agentSessionId: 'as_busy_active',
+        attemptId: 'attempt_00000000-0000-706c-8647-6dad21690cd7',
+        agentSessionId: testEntityId('as', 'as_busy_active'),
         inputRef: 'aepsnap_lease_busy_active',
         bindingRef: 'attempt-binding:lease_busy_active',
         sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
@@ -2910,12 +2937,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_busy_followup',
           requestId: 'req_busy_followup',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_busy_followup',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_busy_followup'),
           turnInput: 'Stay queued while the Thread is busy',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2926,12 +2953,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_later_dispatchable',
           requestId: 'req_later_dispatchable',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: laterThread.id,
-          turnId: 'turn_later_dispatchable',
+          turnId: testEntityId('tu', 'turn_later_dispatchable'),
           turnInput: 'Start the later dispatchable Thread',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2946,8 +2973,8 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
-        createAgentSessionId: () => 'as_later_dispatchable',
-        createAttemptId: () => 'lease_later_dispatchable',
+        createAgentSessionId: () => testEntityId('as', 'as_later_dispatchable'),
+        createAttemptId: () => 'attempt_00000000-0000-7ac0-ad21-841055513cdc',
 
         maxDispatches: 1,
         now: () => '2026-07-05T00:00:04.000Z',
@@ -2959,38 +2986,44 @@ describe('scheduler dispatch loop', () => {
       });
 
       expect(result.startedTurns).toHaveLength(1);
-      expect(result.startedTurns[0]?.handle.turn.id).toBe('turn_later_dispatchable');
+      expect(result.startedTurns[0]?.handle.turn.id).toBe(
+        testEntityId('tu', 'turn_later_dispatchable')
+      );
       expect(result.startedTurns[0]?.dispatch.entry.queueEntryId).toBe('queue_later_dispatchable');
       expect(result.startedTurns[0]?.dispatch.entry.threadId).toBe(laterThread.id);
       expect(turnExecutor.prepareCalls).toEqual([
-        { threadId: laterThread.id, turnId: 'turn_later_dispatchable' },
+        { threadId: laterThread.id, turnId: testEntityId('tu', 'turn_later_dispatchable') },
       ]);
       expect(turnExecutor.calls).toEqual([
         expect.objectContaining({
           input: 'Start the later dispatchable Thread',
-          turnId: 'turn_later_dispatchable',
+          turnId: testEntityId('tu', 'turn_later_dispatchable'),
         }),
       ]);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['queued'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         }).map((entry) => entry.queueEntryId)
       ).toEqual(['queue_busy_followup']);
       expect(['open', 'closing']).toContain(
-        executionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_busy_active')
-          ?.phase
+        executionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-706c-8647-6dad21690cd7'
+        )?.phase
       );
       expect(['open', 'closing']).toContain(
         executionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_later_dispatchable'
+          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7ac0-ad21-841055513cdc'
         )?.phase
       );
       expect(
         executionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_later_dispatchable'
+          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7ac0-ad21-841055513cdc'
         )
-      ).toMatchObject({ thread_id: laterThread.id, turn_id: 'turn_later_dispatchable' });
+      ).toMatchObject({
+        thread_id: laterThread.id,
+        turn_id: testEntityId('tu', 'turn_later_dispatchable'),
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -3014,11 +3047,11 @@ describe('scheduler dispatch loop', () => {
           queueEntryId: 'queue_commit_failed',
           requestId: 'req_commit_failed',
           requestedAgentId: 'agent_codex_host',
-          threadId: 'th_demo',
-          turnId: 'turn_commit_failed',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_commit_failed'),
           turnInput: 'Reject after scheduler dispatch',
-          triggerActor: { kind: 'user', id: 'user_local' },
-          workspaceId: 'ws_demo',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       );
 
@@ -3027,8 +3060,8 @@ describe('scheduler dispatch loop', () => {
           gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
-          createAgentSessionId: () => 'as_commit_failed',
-          createAttemptId: () => 'lease_commit_failed',
+          createAgentSessionId: () => testEntityId('as', 'as_commit_failed'),
+          createAttemptId: () => 'attempt_00000000-0000-70d0-899e-247d127f901d',
 
           maxDispatches: 1,
           providerRegistry: localProviderRegistry(),
@@ -3040,11 +3073,12 @@ describe('scheduler dispatch loop', () => {
       ).rejects.toThrow('prepared AgentSession changed');
 
       expect(
-        executionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_commit_failed')
-          ?.phase
+        executionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-70d0-899e-247d127f901d'
+        )?.phase
       ).toBe('closed');
       expect(turnExecutor.calls).toEqual([]);
-      expect(store.getTurnById('turn_commit_failed')).toMatchObject({
+      expect(store.getTurnById(testEntityId('tu', 'turn_commit_failed'))).toMatchObject({
         status: 'failed',
         error: { message: 'prepared AgentSession changed' },
       });
@@ -3064,12 +3098,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_continuity_live',
           requestId: 'req_continuity_live',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_continuity_live',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_continuity_live'),
           turnInput: 'Run with continuity',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -3079,7 +3113,7 @@ describe('scheduler dispatch loop', () => {
 
       const setup = createTestAgentSetup();
       const sessionCompatibilityKey = resolveAgentSessionCompatibilityKey({
-        agentSessionId: 'as_live_continuity',
+        agentSessionId: testEntityId('as', 'as_live_continuity'),
         agentSetup: setup,
         backend: { kind: 'openshell' },
         requestId: 'req_continuity_live',
@@ -3088,37 +3122,37 @@ describe('scheduler dispatch loop', () => {
           configVersion: null,
           durationMs: null,
           error: null,
-          id: 'turn_continuity_live',
+          id: testEntityId('tu', 'turn_continuity_live'),
           items: [],
           startedAt: '2026-07-05T00:00:02.000Z',
           status: 'running',
-          threadId: 'th_demo',
-          triggerActor: { kind: 'user', id: 'user_local' },
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         turnInput: 'Run with continuity',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceCwd: null,
         workspaceRoots: [],
       });
       store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: '2026-07-05T00:00:00.000Z',
-        id: 'as_live_continuity',
+        id: testEntityId('as', 'as_live_continuity'),
         message: null,
         sessionCompatibilityKey,
         status: 'idle',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         updatedAt: '2026-07-05T00:00:00.000Z',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       const result = await runSchedulerDispatchLoop({
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [setup.manifest],
         coreDb,
-        createAgentSessionId: () => 'as_fresh_continuity',
-        createAttemptId: () => 'lease_continuity_live',
+        createAgentSessionId: () => testEntityId('as', 'as_fresh_continuity'),
+        createAttemptId: () => 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32',
 
         maxDispatches: 1,
         now: () => '2026-07-05T00:00:02.000Z',
@@ -3131,15 +3165,17 @@ describe('scheduler dispatch loop', () => {
 
       expect(result.startedTurns).toHaveLength(1);
       expect(
-        executionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_continuity_live')
-      ).toMatchObject({ agent_session_id: 'as_live_continuity' });
-      expect(store.getAgentSession('as_live_continuity').sessionCompatibilityKey).toBe(
-        sessionCompatibilityKey
-      );
+        executionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32'
+        )
+      ).toMatchObject({ agent_session_id: testEntityId('as', 'as_live_continuity') });
+      expect(
+        store.getAgentSession(testEntityId('as', 'as_live_continuity')).sessionCompatibilityKey
+      ).toBe(sessionCompatibilityKey);
       expect(turnExecutor.calls[0]?.context).toMatchObject({
-        agentSessionId: 'as_live_continuity',
+        agentSessionId: testEntityId('as', 'as_live_continuity'),
         agentSetup: setup,
-        attemptId: 'lease_continuity_live',
+        attemptId: 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32',
         sessionCompatibilityKey,
       });
     } finally {
@@ -3167,7 +3203,7 @@ describe('scheduler dispatch loop', () => {
     writeFileSync(join(repositoryPath, 'README.md'), '# Product continuity fixture\n');
     execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
     execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(workspaceDb);
     } finally {
@@ -3216,14 +3252,14 @@ describe('scheduler dispatch loop', () => {
           modelId: 'openai/gpt-5.2',
           profileId: 'default',
           requestId: '00000000-0000-4000-8000-00000000d211',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         providerCredentialResolver: () => null,
 
         snapshot,
         store,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         turnExecutor,
       });
       const firstLease = coreDb.sqlite
@@ -3240,14 +3276,14 @@ describe('scheduler dispatch loop', () => {
           agentId: 'agent_codex_host',
           input: 'Run the second sequential Turn',
           requestId: '00000000-0000-4000-8000-00000000d212',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         providerCredentialResolver: () => null,
 
         snapshot,
         store,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         turnExecutor,
       });
       const attempts = executionAttempts(coreDb).filter((attempt) =>
@@ -3258,7 +3294,7 @@ describe('scheduler dispatch loop', () => {
       expect(second.turn.agentSessionId).toBe(first.turn.agentSessionId);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued', 'admitted', 'denied'],
         }).find((entry) => entry.requestId === '00000000-0000-4000-8000-00000000d211')
       ).toMatchObject({
@@ -3292,12 +3328,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_setup_ledger',
           requestId: 'req_setup_ledger',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_setup_ledger',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_setup_ledger'),
           turnInput: 'Run the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -3308,8 +3344,8 @@ describe('scheduler dispatch loop', () => {
       const result = await runSchedulerDispatchLoop({
         gatewayConfig: createTestGatewayConfig(),
         coreDb,
-        createAgentSessionId: () => 'as_setup_ledger',
-        createAttemptId: () => 'lease_setup_ledger',
+        createAgentSessionId: () => testEntityId('as', 'as_setup_ledger'),
+        createAttemptId: () => 'attempt_00000000-0000-7884-9382-36d53997207b',
 
         dependencies: { providerCredentialResolver: () => 'test-key' },
 
@@ -3322,15 +3358,24 @@ describe('scheduler dispatch loop', () => {
         executionBackend: turnExecutor.executionBackend,
         agentManifests: [agentManifest()],
       });
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
 
       try {
         applyScopedMigrations(workspaceDb);
-        expect(result.startedTurns[0]?.handle.agentSetupRecordId).toBe('ras_turn_setup_ledger');
+        expect(result.startedTurns[0]?.handle.agentSetupRecordId).toBe(
+          `ras_${testEntityId('tu', 'turn_setup_ledger')}`
+        );
         expect(
-          requireResolvedAgentSetup(workspaceDb, 'ws_demo', 'ras_turn_setup_ledger')
+          requireResolvedAgentSetup(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            `ras_${testEntityId('tu', 'turn_setup_ledger')}`
+          )
         ).toMatchObject({
-          turnId: 'turn_setup_ledger',
+          turnId: testEntityId('tu', 'turn_setup_ledger'),
           requestId: 'req_setup_ledger',
           agentId: 'agent_codex_host',
           logicalModelId: 'openai/gpt-5.2',
@@ -3375,12 +3420,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_terminal_busy',
           requestId: 'request_terminal_busy',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_terminal_busy',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_terminal_busy'),
           turnInput: 'Refuse after terminal publication',
           requestedAgentId: 'agent_codex_host',
         })
@@ -3389,8 +3434,8 @@ describe('scheduler dispatch loop', () => {
         runSchedulerDispatchLoop({
           gatewayConfig: createTestGatewayConfig(),
           coreDb,
-          createAgentSessionId: () => 'as_terminal_busy',
-          createAttemptId: () => 'attempt_terminal_busy',
+          createAgentSessionId: () => testEntityId('as', 'as_terminal_busy'),
+          createAttemptId: () => 'attempt_00000000-0000-71f0-b376-c879918fc38e',
           maxDispatches: 1,
           providerRegistry: localProviderRegistry(),
           store,
@@ -3399,7 +3444,7 @@ describe('scheduler dispatch loop', () => {
           agentManifests: [agentManifest()],
         })
       ).rejects.toBe(refusal);
-      expect(store.getTurnById('turn_terminal_busy').status).toBe('failed');
+      expect(store.getTurnById(testEntityId('tu', 'turn_terminal_busy')).status).toBe('failed');
       expect(
         schedulerRecords.requireSchedulerAdmissionEntry(coreDb, 'queue_terminal_busy').status
       ).toBe('admitted');
@@ -3413,7 +3458,7 @@ describe('scheduler dispatch loop', () => {
       ]);
       expect(
         store
-          .getTurnEvents('turn_terminal_busy')
+          .getTurnEvents(testEntityId('tu', 'turn_terminal_busy'))
           .filter(
             (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
           )
@@ -3434,12 +3479,12 @@ describe('scheduler dispatch loop', () => {
         store,
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_loop_failed',
           requestId: 'queue_loop_failed',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_loop_failed',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_loop_failed'),
           turnInput: 'Fail the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -3451,8 +3496,8 @@ describe('scheduler dispatch loop', () => {
         runSchedulerDispatchLoop({
           gatewayConfig: createTestGatewayConfig(),
           coreDb,
-          createAgentSessionId: () => 'as_loop_failed',
-          createAttemptId: () => 'lease_loop_failed',
+          createAgentSessionId: () => testEntityId('as', 'as_loop_failed'),
+          createAttemptId: () => 'attempt_00000000-0000-7183-99eb-6319956c61b9',
 
           maxDispatches: 1,
           now: () => '2026-07-05T00:00:02.000Z',
@@ -3465,15 +3510,21 @@ describe('scheduler dispatch loop', () => {
         })
       ).rejects.toThrow('worker launch failed');
 
+      const closedAttempt = attemptRecords.requireSchedulerExecutionAttempt(
+        coreDb,
+        'attempt_00000000-0000-7183-99eb-6319956c61b9'
+      );
+      expect(closedAttempt.bindingRef).not.toBeNull();
+      expect(closedAttempt.inputRef).not.toBeNull();
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
-          sandboxBindingRef: 'attempt-binding:lease_loop_failed',
+          sandboxBindingRef: closedAttempt.bindingRef!,
           lineage: {
-            agentSessionId: 'as_loop_failed',
-            packageSnapshotId: 'aepsnap_turn_loop_failed_as_loop_failed',
-            threadId: 'th_demo',
-            turnId: 'turn_loop_failed',
-            workspaceId: 'ws_demo',
+            agentSessionId: testEntityId('as', 'as_loop_failed'),
+            packageSnapshotId: closedAttempt.inputRef!,
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: testEntityId('tu', 'turn_loop_failed'),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
@@ -3488,7 +3539,7 @@ describe('scheduler dispatch loop', () => {
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
       const lease = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: 'lease_cleanup_pending',
+        attemptId: 'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69',
         operationId: 'cleanup-pending:original',
         submission: true,
       });
@@ -3509,7 +3560,11 @@ describe('scheduler dispatch loop', () => {
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/cleanup-pending',
           transientProviderInstanceId: null,
         },
-        lineage: { threadId: 'th_demo', turnId, workspaceId: 'ws_demo' },
+        lineage: {
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
         sandboxBindingRef: lease.bindingRef,
       });
       for (const [fromState, toState] of [
@@ -3541,11 +3596,11 @@ describe('scheduler dispatch loop', () => {
           queueEntryId: 'queue_cleanup_pending',
           requestId: 'req_cleanup_pending',
           requestedAgentId: 'agent_codex_host',
-          threadId: 'th_demo',
-          turnId: 'turn_cleanup_pending',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_cleanup_pending'),
           turnInput: 'Fail with backend cleanup pending',
-          triggerActor: { kind: 'user', id: 'user_local' },
-          workspaceId: 'ws_demo',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       );
 
@@ -3554,8 +3609,8 @@ describe('scheduler dispatch loop', () => {
           gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
-          createAgentSessionId: () => 'as_cleanup_pending',
-          createAttemptId: () => 'lease_cleanup_pending',
+          createAgentSessionId: () => testEntityId('as', 'as_cleanup_pending'),
+          createAttemptId: () => 'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69',
 
           maxDispatches: 1,
           providerRegistry: localProviderRegistry(),
@@ -3567,14 +3622,15 @@ describe('scheduler dispatch loop', () => {
       ).rejects.toThrow('accepted effect is unknown');
 
       expect(['open', 'closing']).toContain(
-        executionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_cleanup_pending')
-          ?.phase
+        executionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69'
+        )?.phase
       );
       expect(
         (
           coreDb.sqlite
             .prepare('SELECT state FROM worker_backend_sessions WHERE attempt_id = ?')
-            .get('lease_cleanup_pending') as { state: string }
+            .get('attempt_00000000-0000-7b13-9b8b-0f01dab3ae69') as { state: string }
         ).state
       ).toBe('cleanup-pending');
     } finally {

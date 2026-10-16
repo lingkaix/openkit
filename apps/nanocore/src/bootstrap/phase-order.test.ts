@@ -153,7 +153,7 @@ describe('NanoCore boot phase order', () => {
     const source = readEntrypointSource();
     const migrationsPhase = source.indexOf("name: 'migrations'");
     const coreIntegrityCheck = source.indexOf(
-      'coreDb = openCoreDbWithIntegrityCheck(dataRoot)',
+      'coreDb = openCoreDbWithIntegrityCheck(dataRoot,',
       migrationsPhase
     );
     const scopedIntegrityCheck = source.indexOf(

@@ -1,3 +1,6 @@
+import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,7 +18,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -52,7 +55,7 @@ async function fixture(
   coreDb.db
     .insert(users)
     .values({
-      id: 'user_remote_mcp',
+      id: testEntityId('usr', 'user_remote_mcp'),
       kind: 'human',
       displayName: 'Remote User',
       email: 'remote@example.test',
@@ -66,14 +69,14 @@ async function fixture(
   const store = createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_remote_mcp',
-    workspaceId: 'ws_demo',
+    ownerUserId: testEntityId('usr', 'user_remote_mcp'),
+    workspaceId: DEMO_WORKSPACE_ID,
   });
   const command = {
     store,
     dataRoot,
-    workspaceId: 'ws_demo',
-    actor: { kind: 'user' as const, id: 'user_remote_mcp' },
+    workspaceId: DEMO_WORKSPACE_ID,
+    actor: { kind: 'user' as const, id: testEntityId('usr', 'user_remote_mcp') },
     requestId: randomUUID(),
     inflightCommands: new WeakMap(),
   };
@@ -94,9 +97,9 @@ async function fixture(
   });
   const token = (scope: 'workspace' | 'workspace-readonly' = 'workspace') =>
     createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_remote_mcp',
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope,
-      workspaceIds: ['ws_demo'],
+      workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
@@ -110,7 +113,7 @@ async function fixture(
     mode,
     ...(getBootReadiness ? { getBootReadiness } : {}),
   });
-  const selectors = { workspaceId: 'ws_demo', appId: appRecord.appId };
+  const selectors = { workspaceId: DEMO_WORKSPACE_ID, appId: appRecord.appId };
   const message = async (
     method: string,
     params: unknown,
@@ -167,7 +170,7 @@ describe('remote MCP App endpoint', () => {
   it('refuses all retained archive streams before processing and omits support discovery', async () => {
     const f = await fixture();
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -199,7 +202,7 @@ describe('remote MCP App endpoint', () => {
             {
               operation,
               ...(tool === 'call'
-                ? { input: { workspaceId: 'ws_demo', exportId: 'absent', requestId: randomUUID() } }
+                ? { input: { workspaceId: DEMO_WORKSPACE_ID, exportId: 'absent', requestId: randomUUID() } }
                 : {}),
             },
             admin.secret
@@ -244,7 +247,7 @@ describe('remote MCP App endpoint', () => {
   it('serves both named diagnostics only to current administrators through real MCP', async () => {
     const f = await fixture();
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -298,13 +301,13 @@ describe('remote MCP App endpoint', () => {
   ] as const)('preserves the known %s scheduler refusal through HTTP and MCP without changing queue rows', async (target) => {
     const f = await fixture();
     const bearer = f.token();
-    const thread = f.store.createThread('ws_demo', 'Private queue', undefined, 'conversation', {
+    const thread = f.store.createThread(DEMO_WORKSPACE_ID, 'Private queue', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_other',
+      privateOwnerUserId: testEntityId('usr', 'user_other'),
     });
     for (const [queueEntryId, workspaceId] of [
-      ['queue_private', 'ws_demo'],
-      ['queue_foreign', 'ws_foreign'],
+      ['queue_private', DEMO_WORKSPACE_ID],
+      ['queue_foreign', testEntityId('ws', 'ws_foreign')],
     ] as const) {
       createSchedulerAdmissionEntry(f.coreDb, {
         backendId: 'nanohost',
@@ -312,7 +315,7 @@ describe('remote MCP App endpoint', () => {
         workspaceId,
         threadId: thread.id,
         turnId: `turn_${queueEntryId}`,
-        triggerActor: { kind: 'user', id: 'user_remote_mcp' },
+        triggerActor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
         turnInput: 'Protected work',
         requestedAgentId: 'agent_codex_host',
       });
@@ -323,7 +326,7 @@ describe('remote MCP App endpoint', () => {
     );
     try {
       for (const operation of ['scheduler.retry', 'scheduler.cancel'] as const) {
-        const input = { workspaceId: 'ws_demo', queueEntryId: `queue_${target}` };
+        const input = { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: `queue_${target}` };
         const http = await f.app.request(`/api/app/operations/${operation}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer.secret}` },
@@ -372,7 +375,7 @@ describe('remote MCP App endpoint', () => {
         {
           operation: 'goal.create',
           input: {
-            workspaceId: 'ws_demo',
+            workspaceId: DEMO_WORKSPACE_ID,
             requestId: randomUUID(),
             intent: 'Prepare a reviewed design',
           },
@@ -382,12 +385,12 @@ describe('remote MCP App endpoint', () => {
       expect(result.isError).not.toBe(true);
       const created = JSON.parse(result.content[0].text);
       expect(created.goal).toMatchObject({
-        workspaceId: 'ws_demo',
-        responsibleUserId: 'user_remote_mcp',
+        workspaceId: DEMO_WORKSPACE_ID,
+        responsibleUserId: testEntityId('usr', 'user_remote_mcp'),
         intent: 'Prepare a reviewed design',
       });
-      expect(f.store.getThread('ws_demo', created.goal.threadId).visibility).toBe('workspace');
-      expect(wake).toHaveBeenCalledExactlyOnceWith('ws_demo', created.goal.goalId);
+      expect(f.store.getThread(DEMO_WORKSPACE_ID, created.goal.threadId).visibility).toBe('workspace');
+      expect(wake).toHaveBeenCalledExactlyOnceWith(DEMO_WORKSPACE_ID, created.goal.goalId);
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -412,16 +415,16 @@ describe('remote MCP App endpoint', () => {
         },
       },
     });
-    const threadCount = f.store.listThreads('ws_demo').length;
+    const threadCount = f.store.listThreads(DEMO_WORKSPACE_ID).length;
     const mutation = await f.call(
       'call',
       {
         operation: 'thread.create',
-        input: { workspaceId: 'ws_demo', name: 'Blocked MCP Thread', requestId: randomUUID() },
+        input: { workspaceId: DEMO_WORKSPACE_ID, name: 'Blocked MCP Thread', requestId: randomUUID() },
       },
       token.secret
     );
-    expect(f.store.listThreads('ws_demo')).toHaveLength(threadCount);
+    expect(f.store.listThreads(DEMO_WORKSPACE_ID)).toHaveLength(threadCount);
     expect(mutation.isError).toBe(true);
     expect(JSON.parse(mutation.content[0].text)).toEqual({
       code: 'product_work_unavailable',
@@ -431,7 +434,7 @@ describe('remote MCP App endpoint', () => {
     const read = await f.call('call', { operation: 'workspace.list', input: {} }, token.secret);
     expect(read.isError).not.toBe(true);
     expect(JSON.parse(read.content[0].text).items).toEqual([
-      expect.objectContaining({ workspace: expect.objectContaining({ id: 'ws_demo' }) }),
+      expect.objectContaining({ workspace: expect.objectContaining({ id: DEMO_WORKSPACE_ID }) }),
     ]);
   });
 
@@ -454,18 +457,18 @@ describe('remote MCP App endpoint', () => {
         ['vault.provider-api-key-set', { providerId: 'provider-b6', apiKey: 'synthetic-b6-key' }],
         [
           'vault.secret-create',
-          { workspaceId: 'ws_demo', secretKind: 'github-token', material: 'synthetic-b6-material' },
+          { workspaceId: DEMO_WORKSPACE_ID, secretKind: 'github-token', material: 'synthetic-b6-material' },
         ],
         [
           'vault.secret-rotate',
-          { workspaceId: 'ws_demo', referenceId: 'vault_b6', material: 'synthetic-b6-next' },
+          { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6', material: 'synthetic-b6-next' },
         ],
-        ['vault.secret-revoke', { workspaceId: 'ws_demo', referenceId: 'vault_b6' }],
-        ['vault.grant-create', { workspaceId: 'ws_demo', referenceId: 'vault_b6' }],
-        ['vault.grant-revoke', { workspaceId: 'ws_demo', grantId: 'grant_b6' }],
+        ['vault.secret-revoke', { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6' }],
+        ['vault.grant-create', { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6' }],
+        ['vault.grant-revoke', { workspaceId: DEMO_WORKSPACE_ID, grantId: 'grant_b6' }],
         [
           'vault.reference-rebind',
-          { workspaceId: 'ws_demo', referenceId: 'vault_b6', materialBase64: 'e30=' },
+          { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6', materialBase64: 'e30=' },
         ],
       ] as const) {
         expect(OPERATION_DEFINITIONS[operation].mutating).toBe(true);
@@ -492,26 +495,26 @@ describe('remote MCP App endpoint', () => {
     let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b9_admission' });
     const f = await fixture('server', () => readiness);
     const token = f.token();
-    const automation = f.automationStore.createAutomation('user_remote_mcp', {
-      workspaceId: 'ws_demo',
+    const automation = f.automationStore.createAutomation(testEntityId('usr', 'user_remote_mcp'), {
+      workspaceId: DEMO_WORKSPACE_ID,
       name: 'Existing',
       intervalSeconds: 60,
-      threadId: 'th_demo',
+      threadId: DEMO_THREAD_ID,
       prompt: 'Work',
     });
-    const thread = f.store.createThread('ws_demo', 'Recovery admission');
-    const turn = f.store.createTurn('ws_demo', thread.id, 'Interrupted work', {
+    const thread = f.store.createThread(DEMO_WORKSPACE_ID, 'Recovery admission');
+    const turn = f.store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Interrupted work', {
       kind: 'user',
-      id: 'user_remote_mcp',
+      id: testEntityId('usr', 'user_remote_mcp'),
     });
     f.store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
     for (const queueEntryId of ['queue_b9_retry', 'queue_b9_cancel'])
       createSchedulerAdmissionEntry(f.coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_remote_mcp' },
+        triggerActor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
         queueEntryId,
         requestId: `request_${queueEntryId}`,
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         threadId: thread.id,
         turnId: `turn_${queueEntryId}`,
         turnInput: 'Work',
@@ -521,7 +524,7 @@ describe('remote MCP App endpoint', () => {
       queueEntryId: 'queue_b9_retry',
       denialReason: 'authority-denied',
     });
-    const workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(workspaceDb);
     const beforeTurn = { ...f.store.getTurnById(turn.id) };
     const beforeRetry = requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry');
@@ -532,10 +535,10 @@ describe('remote MCP App endpoint', () => {
         [
           'automation.create',
           {
-            workspaceId: 'ws_demo',
+            workspaceId: DEMO_WORKSPACE_ID,
             name: 'Blocked',
             intervalSeconds: 60,
-            threadId: 'th_demo',
+            threadId: DEMO_THREAD_ID,
             prompt: 'Work',
           },
         ],
@@ -544,12 +547,12 @@ describe('remote MCP App endpoint', () => {
           { automationId: automation.id, expectedRevision: 1, name: 'Updated' },
         ],
         ['automation.delete', { automationId: automation.id }],
-        ['scheduler.retry', { workspaceId: 'ws_demo', queueEntryId: 'queue_b9_retry' }],
-        ['scheduler.cancel', { workspaceId: 'ws_demo', queueEntryId: 'queue_b9_cancel' }],
+        ['scheduler.retry', { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_b9_retry' }],
+        ['scheduler.cancel', { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_b9_cancel' }],
         [
           'recovery.checkpoint-retry',
           {
-            workspaceId: 'ws_demo',
+            workspaceId: DEMO_WORKSPACE_ID,
             threadId: thread.id,
             turnId: turn.id,
             requestId: 'req_b9_closed',
@@ -570,7 +573,7 @@ describe('remote MCP App endpoint', () => {
         const mcp = await f.call('call', { operation, input }, token.secret);
         expect(mcp.isError).toBe(true);
         expect(JSON.parse(mcp.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
-        expect(f.automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([automation]);
+        expect(f.automationStore.listAuthorizedAutomations([DEMO_WORKSPACE_ID])).toEqual([automation]);
         expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry')).toEqual(beforeRetry);
         expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_cancel')).toEqual(beforeCancel);
         expect(f.store.getTurnById(turn.id)).toEqual(beforeTurn);
@@ -578,7 +581,7 @@ describe('remote MCP App endpoint', () => {
           f.store.getCommandRequest(
             'worker.recovery.retry',
             'req_b9_closed',
-            { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id },
+            { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id, turnId: turn.id },
             workspaceDb
           )
         ).toBeNull();
@@ -593,11 +596,11 @@ describe('remote MCP App endpoint', () => {
     const f = await fixture();
     const token = f.token();
     const readonly = f.token('workspace-readonly');
-    const automation = f.automationStore.createAutomation('user_remote_mcp', {
-      workspaceId: 'ws_demo',
+    const automation = f.automationStore.createAutomation(testEntityId('usr', 'user_remote_mcp'), {
+      workspaceId: DEMO_WORKSPACE_ID,
       name: 'Existing',
       intervalSeconds: 60,
-      threadId: 'th_demo',
+      threadId: DEMO_THREAD_ID,
       prompt: 'Work',
     });
     try {
@@ -619,7 +622,7 @@ describe('remote MCP App endpoint', () => {
       );
       expect(deleted.isError).not.toBe(true);
       expect(JSON.parse(deleted.content[0].text)).toBeNull();
-      expect(f.automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([
+      expect(f.automationStore.listAuthorizedAutomations([DEMO_WORKSPACE_ID])).toEqual([
         f.automationStore.getAutomation(automation.id),
       ]);
       expect(f.automationStore.getAutomation(automation.id)).toMatchObject({
@@ -627,11 +630,11 @@ describe('remote MCP App endpoint', () => {
         actor: automation.actor,
         revision: 2,
       });
-      const retained = f.automationStore.createAutomation('user_remote_mcp', {
-        workspaceId: 'ws_demo',
+      const retained = f.automationStore.createAutomation(testEntityId('usr', 'user_remote_mcp'), {
+        workspaceId: DEMO_WORKSPACE_ID,
         name: 'Retained',
         intervalSeconds: 60,
-        threadId: 'th_demo',
+        threadId: DEMO_THREAD_ID,
         prompt: 'Work',
       });
       revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
@@ -654,17 +657,17 @@ describe('remote MCP App endpoint', () => {
     let readiness = computeBootReadinessSnapshot({ bootId: 'boot_core_command_mcp' });
     const f = await fixture('server', () => readiness);
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_remote_mcp',
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const turn = f.store.createTurn('ws_demo', 'th_demo', 'Preserve this Turn', {
+    const turn = f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Preserve this Turn', {
       kind: 'user',
-      id: 'user_remote_mcp',
+      id: testEntityId('usr', 'user_remote_mcp'),
     });
     const workspaces = f.store.listWorkspaces();
-    const threads = f.store.listThreads('ws_demo');
+    const threads = f.store.listThreads(DEMO_WORKSPACE_ID);
     const receipts = f.store.listCommandRequests();
     const feedbackPath = feedbackFilePath(f.store, turn);
     expect(existsSync(feedbackPath)).toBe(false);
@@ -679,11 +682,11 @@ describe('remote MCP App endpoint', () => {
     });
     for (const [operation, input] of [
       ['workspace.create', { name: 'Blocked' }],
-      ['workspace.update', { workspaceId: 'ws_demo', name: 'Blocked' }],
-      ['thread.update', { workspaceId: 'ws_demo', threadId: 'th_demo', name: 'Blocked' }],
-      ['thread.archive', { workspaceId: 'ws_demo', threadId: 'th_demo' }],
-      ['turn.start', { workspaceId: 'ws_demo', threadId: 'th_demo', input: 'Blocked' }],
-      ['turn.interrupt', { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }],
+      ['workspace.update', { workspaceId: DEMO_WORKSPACE_ID, name: 'Blocked' }],
+      ['thread.update', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, name: 'Blocked' }],
+      ['thread.archive', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID }],
+      ['turn.start', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, input: 'Blocked' }],
+      ['turn.interrupt', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, turnId: turn.id }],
       ['turn.feedback', { turnId: turn.id, rating: 'good', note: 'Blocked' }],
       ['chat.quick', { input: 'Blocked' }],
     ] as const) {
@@ -707,7 +710,7 @@ describe('remote MCP App endpoint', () => {
         status: 503,
       });
       expect(f.store.listWorkspaces()).toEqual(workspaces);
-      expect(f.store.listThreads('ws_demo')).toEqual(threads);
+      expect(f.store.listThreads(DEMO_WORKSPACE_ID)).toEqual(threads);
       expect(f.store.getTurnById(turn.id)).toEqual(turn);
       expect(existsSync(feedbackPath)).toBe(false);
       expect(f.store.listCommandRequests()).toEqual(receipts);
@@ -717,14 +720,14 @@ describe('remote MCP App endpoint', () => {
   it('preserves the native interrupt refusal through MCP without a receipt or Turn write', async () => {
     const f = await fixture();
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_remote_mcp',
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const turn = f.store.createTurn('ws_demo', 'th_demo', 'No assigned session', {
+    const turn = f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'No assigned session', {
       kind: 'user',
-      id: 'user_remote_mcp',
+      id: testEntityId('usr', 'user_remote_mcp'),
     });
     const receipts = f.store.listCommandRequests();
     const result = await f.call(
@@ -732,8 +735,8 @@ describe('remote MCP App endpoint', () => {
       {
         operation: 'turn.interrupt',
         input: {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: DEMO_THREAD_ID,
           turnId: turn.id,
           requestId: randomUUID(),
         },
@@ -749,12 +752,12 @@ describe('remote MCP App endpoint', () => {
   it('preserves a typed owner validation refusal through MCP without a Workspace or receipt write', async () => {
     const f = await fixture();
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_remote_mcp',
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const workspace = f.store.getWorkspace('ws_demo');
+    const workspace = f.store.getWorkspace(DEMO_WORKSPACE_ID);
     const receipts = f.store.listCommandRequests();
     vi.spyOn(f.store, 'updateWorkspace').mockImplementation(() => {
       throw new KnowledgePageValidationError();
@@ -763,7 +766,7 @@ describe('remote MCP App endpoint', () => {
       'call',
       {
         operation: 'workspace.update',
-        input: { workspaceId: 'ws_demo', name: 'Refused', requestId: randomUUID() },
+        input: { workspaceId: DEMO_WORKSPACE_ID, name: 'Refused', requestId: randomUUID() },
       },
       token.secret
     );
@@ -773,16 +776,16 @@ describe('remote MCP App endpoint', () => {
       message: 'Knowledge Page validation failed.',
       status: 400,
     });
-    expect(f.store.getWorkspace('ws_demo')).toEqual(workspace);
+    expect(f.store.getWorkspace(DEMO_WORKSPACE_ID)).toEqual(workspace);
     expect(f.store.listCommandRequests()).toEqual(receipts);
   });
 
   it('challenges missing, unknown, malformed, expired and revoked credentials uniformly before dispatch', async () => {
     const f = await fixture();
     const expired = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_remote_mcp',
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2000-01-01T00:00:00.000Z',
     });
     const revoked = f.token();
@@ -951,7 +954,7 @@ describe('remote MCP App endpoint', () => {
               kind: 'public',
               delivery: 'model',
               actor: expect.objectContaining({
-                userId: 'user_remote_mcp',
+                userId: testEntityId('usr', 'user_remote_mcp'),
                 tokenId: token.record.tokenId,
               }),
             })
@@ -1049,17 +1052,17 @@ describe('remote MCP App endpoint', () => {
     );
     expect(result.isError).not.toBe(true);
     expect(invoke).toHaveBeenCalled();
-    const records = listRecords(f.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', {
+    const records = listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', {
       schemaRevision: 1,
     });
     expect(records.items).toHaveLength(1);
-    const appDb = openExistingAppDb(f.dataRoot, 'ws_demo', f.appRecord.appId);
+    const appDb = openExistingAppDb(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId);
     try {
       expect(
         appDb.sqlite
           .prepare("SELECT actor_json FROM audit_events WHERE action = 'kernel.records.create'")
           .get()
-      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: 'user_remote_mcp' }) });
+      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_remote_mcp') }) });
     } finally {
       appDb.sqlite.close();
     }
@@ -1069,14 +1072,14 @@ describe('remote MCP App endpoint', () => {
       )
       .get(token.record.tokenId);
     expect(row).toEqual({
-      owner_user_id: 'user_remote_mcp',
+      owner_user_id: testEntityId('usr', 'user_remote_mcp'),
       last_used_channel: 'remote-mcp',
       last_used_source: 'remote-mcp',
     });
     const audit = listServerAuditEvents(f.coreDb).find(
       (event) => event.action === 'remote-mcp.request'
     );
-    expect(audit?.actor).toEqual({ kind: 'user', id: 'user_remote_mcp' });
+    expect(audit?.actor).toEqual({ kind: 'user', id: testEntityId('usr', 'user_remote_mcp') });
     expect(audit?.summary).toContain(token.record.tokenId);
     expect(audit?.summary).toContain('remote-mcp');
     expect(audit?.requestId).toBe(requestId);
@@ -1088,7 +1091,7 @@ describe('remote MCP App endpoint', () => {
       token.secret
     );
     expect(JSON.parse(read.content[0].text)).toEqual(
-      getLightApp(f.dataRoot, 'ws_demo', f.appRecord.appId)
+      getLightApp(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId)
     );
   });
 
@@ -1116,7 +1119,7 @@ describe('remote MCP App endpoint', () => {
     expect(refused.isError).toBe(true);
     expect(JSON.parse(refused.content[0].text).code).toBe('workspace_access_denied');
     expect(
-      listRecords(f.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', { schemaRevision: 1 }).items
+      listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', { schemaRevision: 1 }).items
     ).toHaveLength(0);
     revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
     expect((await f.message('tools/list', {}, token.secret)).status).toBe(401);
@@ -1127,10 +1130,10 @@ describe('remote MCP App endpoint', () => {
     const token = f.token();
     const actor = {
       kind: 'token' as const,
-      userId: 'user_remote_mcp',
+      userId: testEntityId('usr', 'user_remote_mcp'),
       tokenId: token.record.tokenId,
       tokenScope: 'workspace' as const,
-      tokenWorkspaceIds: ['ws_demo'],
+      tokenWorkspaceIds: [DEMO_WORKSPACE_ID],
     };
     const expected = await invocation
       .createOperationInvocation({ coreDb: f.coreDb })(
@@ -1159,7 +1162,7 @@ describe('remote MCP App endpoint', () => {
   ] as const)('omits and refuses %s over remote MCP before token writes', async (id) => {
     const f = await fixture();
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_remote_mcp',
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1171,7 +1174,7 @@ describe('remote MCP App endpoint', () => {
           ? { tokenId: token.record.tokenId }
           : {
               token: 'okt_bootstrap_fixture',
-              ownerUserId: 'user_bootstrap',
+              ownerUserId: testEntityId('usr', 'user_bootstrap'),
               displayName: 'Owner',
               email: 'owner@example.test',
               password: 'fixture-password',
@@ -1269,7 +1272,7 @@ describe('remote MCP App endpoint', () => {
     });
     expect((await malformed.json()).error).toBeDefined();
     expect(
-      listRecords(f.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', { schemaRevision: 1 }).items
+      listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', { schemaRevision: 1 }).items
     ).toHaveLength(0);
   });
 });
@@ -1280,20 +1283,20 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     const timestamp = new Date().toISOString();
     f.coreDb.sqlite
       .prepare(
-        "INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,revision,created_at,updated_at) VALUES ('ws_demo','user_local','active','editor',?,1,?,?)"
+        `INSERT INTO workspace_members (workspace_id,${testEntityId('usr', 'user_id')},status,access_level,joined_at,revision,created_at,updated_at) VALUES ('${DEMO_WORKSPACE_ID}','${FIXTURE_LOCAL_USER_ID}','active','editor',?,1,?,?)`
       )
       .run(timestamp, timestamp, timestamp);
     const token = f.token();
     const before = f.coreDb.sqlite
       .prepare(
-        "SELECT * FROM workspace_members WHERE workspace_id = 'ws_demo' AND user_id = 'user_local'"
+        `SELECT * FROM workspace_members WHERE workspace_id = '${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')} = '${FIXTURE_LOCAL_USER_ID}'`
       )
       .get();
     for (const transport of ['http', 'mcp']) {
       const requestId = randomUUID();
       const input = {
-        workspaceId: 'ws_demo',
-        targetUserId: 'user_local',
+        workspaceId: DEMO_WORKSPACE_ID,
+        targetUserId: FIXTURE_LOCAL_USER_ID,
         accessLevel: 'viewer',
         expectedRevision: 2,
         requestId,
@@ -1326,13 +1329,13 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
         code: 'revision_conflict',
         details: {
           resource: 'membership',
-          current: { userId: 'user_local', revision: 1, accessLevel: 'editor' },
+          current: { userId: FIXTURE_LOCAL_USER_ID, revision: 1, accessLevel: 'editor' },
         },
       });
       expect(
         f.coreDb.sqlite
           .prepare(
-            "SELECT * FROM workspace_members WHERE workspace_id = 'ws_demo' AND user_id = 'user_local'"
+            `SELECT * FROM workspace_members WHERE workspace_id = '${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')} = '${FIXTURE_LOCAL_USER_ID}'`
           )
           .get()
       ).toEqual(before);
@@ -1344,8 +1347,8 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     }
     const requestId = randomUUID();
     const input = {
-      workspaceId: 'ws_demo',
-      targetUserId: 'user_local',
+      workspaceId: DEMO_WORKSPACE_ID,
+      targetUserId: FIXTURE_LOCAL_USER_ID,
       accessLevel: 'viewer',
       expectedRevision: 1,
       requestId,
@@ -1358,7 +1361,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     expect(accepted.isError).not.toBe(true);
     const committedMember = f.coreDb.sqlite
       .prepare(
-        "SELECT * FROM workspace_members WHERE workspace_id='ws_demo' AND user_id='user_local'"
+        `SELECT * FROM workspace_members WHERE workspace_id='${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')}='${FIXTURE_LOCAL_USER_ID}'`
       )
       .get();
     const committedReceipt = f.coreDb.sqlite
@@ -1378,7 +1381,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     expect(
       f.coreDb.sqlite
         .prepare(
-          "SELECT * FROM workspace_members WHERE workspace_id='ws_demo' AND user_id='user_local'"
+          `SELECT * FROM workspace_members WHERE workspace_id='${DEMO_WORKSPACE_ID}' AND ${testEntityId('usr', 'user_id')}='${FIXTURE_LOCAL_USER_ID}'`
         )
         .get()
     ).toEqual(committedMember);
@@ -1397,7 +1400,7 @@ it('refuses user.disable through MCP closed product admission without changing t
   const f = await fixture('server', () => readiness);
   try {
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_remote_mcp',
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1411,16 +1414,16 @@ it('refuses user.disable through MCP closed product admission without changing t
         },
       },
     });
-    const before = f.coreDb.sqlite.prepare("SELECT * FROM users WHERE id = 'user_local'").get();
+    const before = f.coreDb.sqlite.prepare(`SELECT * FROM users WHERE id = '${FIXTURE_LOCAL_USER_ID}'`).get();
     const requestId = randomUUID();
     const result = await f.call(
       'call',
-      { operation: 'user.disable', input: { targetUserId: 'user_local', requestId } },
+      { operation: 'user.disable', input: { targetUserId: FIXTURE_LOCAL_USER_ID, requestId } },
       admin.secret
     );
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
-    expect(f.coreDb.sqlite.prepare("SELECT * FROM users WHERE id = 'user_local'").get()).toEqual(
+    expect(f.coreDb.sqlite.prepare(`SELECT * FROM users WHERE id = '${FIXTURE_LOCAL_USER_ID}'`).get()).toEqual(
       before
     );
     expect(
@@ -1438,13 +1441,13 @@ for (const projection of ['HTTP', 'MCP'] as const) {
     try {
       const foreignWorkspace = f.store.createWorkspace('Foreign');
       const foreignThread = f.store.createThread(foreignWorkspace.id, 'Foreign Thread');
-      const addressed = f.store.createTurn('ws_demo', 'th_demo', 'Addressed', {
+      const addressed = f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Addressed', {
         kind: 'user',
-        id: 'user_remote_mcp',
+        id: testEntityId('usr', 'user_remote_mcp'),
       });
       const foreign = f.store.createTurn(foreignWorkspace.id, foreignThread.id, 'Foreign', {
         kind: 'user',
-        id: 'user_remote_mcp',
+        id: testEntityId('usr', 'user_remote_mcp'),
       });
       const before = {
         addressed: f.store.getTurnById(addressed.id),
@@ -1452,8 +1455,8 @@ for (const projection of ['HTTP', 'MCP'] as const) {
         receipts: f.store.listCommandRequests(),
       };
       const input = {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: DEMO_THREAD_ID,
         turnId: foreign.id,
         requestId: randomUUID(),
       };
@@ -1493,7 +1496,7 @@ function materialDigest(content: string): string {
 for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
   it(`keeps ${sensitivity} Material content at its trusted delivery boundary with no refused writes`, async () => {
     const f = await fixture();
-    const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(db);
     try {
       const token = f.token();
@@ -1503,7 +1506,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         kind: 'text',
         sensitivity,
         requestId: randomUUID(),
-        actorId: 'user_remote_mcp',
+        actorId: testEntityId('usr', 'user_remote_mcp'),
         acceptedAt: new Date().toISOString(),
       });
       const { revisionId } = saveWorkspaceMaterialRevision(db, {
@@ -1512,10 +1515,10 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         contentDigest: materialDigest(content),
         expectedRevisionId: null,
         requestId: randomUUID(),
-        actorId: 'user_remote_mcp',
+        actorId: testEntityId('usr', 'user_remote_mcp'),
         acceptedAt: new Date().toISOString(),
       });
-      const selectors = { workspaceId: 'ws_demo', materialId };
+      const selectors = { workspaceId: DEMO_WORKSPACE_ID, materialId };
       const counts = () => ({
         materials: db.sqlite.prepare('SELECT count(*) AS n FROM workspace_materials').get(),
         revisions: db.sqlite
@@ -1550,7 +1553,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         {
           operation: 'material.create',
           input: {
-            workspaceId: 'ws_demo',
+            workspaceId: DEMO_WORKSPACE_ID,
             requestId: randomUUID(),
             title: 'MCP create',
             kind: 'text',
@@ -1581,7 +1584,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         expect(metadata.isError).not.toBe(true);
         expect(JSON.parse(metadata.content[0].text).material.sensitivity).toBe('restricted');
         const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-          ownerUserId: 'user_remote_mcp',
+          ownerUserId: testEntityId('usr', 'user_remote_mcp'),
           scope: 'server-admin',
           workspaceIds: [],
           expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1659,7 +1662,7 @@ for (const projection of ['HTTP', 'MCP'] as const) {
       },
     });
     const f = await fixture('server', () => readiness);
-    const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(db);
     try {
       const token = f.token();
@@ -1670,7 +1673,7 @@ for (const projection of ['HTTP', 'MCP'] as const) {
       });
       const before = rows();
       const input = {
-        workspaceId: 'ws_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
         requestId: randomUUID(),
         title: 'Closed',
         kind: 'text',

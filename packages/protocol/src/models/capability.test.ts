@@ -15,13 +15,13 @@ function runningCapabilityCall() {
     capabilityId: 'llm.chat_completions',
     completedAt: null,
     errorCode: null,
-    id: 'cap_digest_demo',
+    id: 'cap_00000000-0000-76f1-9c8b-8f96d4d06e57',
     startedAt: '2026-09-21T00:00:00.000Z',
     status: 'running' as const,
     summary: 'Public chat_completions LLM gateway call.',
     threadId: null,
     turnId: null,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 

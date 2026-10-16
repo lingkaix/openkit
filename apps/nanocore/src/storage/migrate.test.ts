@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
 import { coreDbPath, workspaceDbPath } from './fs-layout';
@@ -570,8 +571,8 @@ describe('database setup', () => {
 
   it('applies the User and Workspace setup sections idempotently', () => {
     const dataRoot = createDataRoot();
-    const userDb = openUserDb(dataRoot, 'user_1');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'workspace_1');
+    const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    const workspaceDb = openWorkspaceDb(dataRoot, testEntityId('ws', 'workspace_1'));
 
     try {
       applyScopedMigrations(userDb);
@@ -747,14 +748,14 @@ describe('database setup', () => {
           `INSERT INTO users (
             id, display_name, email, email_verified, created_at, updated_at, kind
           ) VALUES
-            ('user_owner', 'Owner', 'owner@example.com', false, ?, ?, 'human'),
-            ('user_invitee', 'Invitee', 'invitee@example.com', false, ?, ?, 'human')`
+            ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, ?, ?, 'human'),
+            ('usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'Invitee', 'invitee@example.com', false, ?, ?, 'human')`
         )
         .run(now, now, now, now);
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_owner',
-        workspaceId: 'ws_invitation_constraints',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        workspaceId: 'ws_00000000-0000-7c1f-9bfb-ef82611610b6',
       });
       const insertInvitation = coreDb.sqlite.prepare(
         `INSERT INTO workspace_invitations (
@@ -762,22 +763,42 @@ describe('database setup', () => {
           inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
           revision, created_at, updated_at
         ) VALUES (
-          ?, 'ws_invitation_constraints', 'user_invitee', 'editor', 'user_owner', ?,
+          ?, 'ws_00000000-0000-7c1f-9bfb-ef82611610b6', 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'editor', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', ?,
           '2026-07-26T00:00:00.000Z', ?, NULL, NULL, 1, ?, ?
         )`
       );
 
       expect(() =>
-        insertInvitation.run('inv_invalid', 'accepted', null, createdAt, createdAt)
+        insertInvitation.run(
+          'inv_00000000-0000-73d7-b2e3-893276fb5645',
+          'accepted',
+          null,
+          createdAt,
+          createdAt
+        )
       ).toThrow();
 
-      insertInvitation.run('inv_pending', 'pending', null, createdAt, createdAt);
+      insertInvitation.run(
+        'inv_00000000-0000-7193-8d2d-2af4371e1697',
+        'pending',
+        null,
+        createdAt,
+        createdAt
+      );
 
       expect(() =>
-        insertInvitation.run('inv_duplicate', 'pending', null, createdAt, createdAt)
+        insertInvitation.run(
+          'inv_00000000-0000-7ee2-bd01-709c0aef6e0e',
+          'pending',
+          null,
+          createdAt,
+          createdAt
+        )
       ).toThrow();
       expect(() =>
-        coreDb.sqlite.prepare('DELETE FROM users WHERE id = ?').run('user_invitee')
+        coreDb.sqlite
+          .prepare('DELETE FROM users WHERE id = ?')
+          .run('usr_00000000-0000-7a9e-8345-2bce44a3dce0')
       ).toThrow();
       expect(
         coreDb.sqlite
@@ -910,11 +931,11 @@ describe('native Drizzle migrate', () => {
       insert('agent_session_runtime_bindings', {
         agent_session_runtime_binding_id: 'retained-binding',
         harness_instance_id: 'retained-harness',
-        agent_session_id: 'retained-session',
-        workspace_id: 'retained-workspace',
-        thread_id: 'retained-thread',
-        current_turn_id: 'retained-turn',
-        current_attempt_id: 'retained-attempt',
+        agent_session_id: testEntityId('as', 'retained-session'),
+        workspace_id: testEntityId('ws', 'retained-workspace'),
+        thread_id: testEntityId('th', 'retained-thread'),
+        current_turn_id: testEntityId('tu', 'retained-turn'),
+        current_attempt_id: testEntityId('attempt', 'retained-attempt'),
         native_handle_digest: 'a'.repeat(64),
         next_turn_sequence: 3,
       });
@@ -926,10 +947,10 @@ describe('native Drizzle migrate', () => {
       const before = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
       const indices = names.map((name) => sqlite.pragma(`index_list(${name})`));
       const binding = readNanoHostThreadAgentSessionBinding(coreDb, {
-        workspaceId: 'retained-workspace',
-        threadId: 'retained-thread',
+        workspaceId: testEntityId('ws', 'retained-workspace'),
+        threadId: testEntityId('th', 'retained-thread'),
       });
-      expect(binding).toEqual({ agentSessionId: 'retained-session' });
+      expect(binding).toEqual({ agentSessionId: testEntityId('as', 'retained-session') });
       expect(() =>
         sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
       ).toThrow();
@@ -946,8 +967,8 @@ describe('native Drizzle migrate', () => {
       expect(names.map((name) => sqlite.pragma(`index_list(${name})`))).toEqual(indices);
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
-          workspaceId: 'retained-workspace',
-          threadId: 'retained-thread',
+          workspaceId: testEntityId('ws', 'retained-workspace'),
+          threadId: testEntityId('th', 'retained-thread'),
         })
       ).toEqual(binding);
       applyNativeScopeMigrations(sqlite, 'core', folder);

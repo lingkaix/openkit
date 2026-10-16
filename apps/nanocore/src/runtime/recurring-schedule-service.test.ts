@@ -1,8 +1,10 @@
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
@@ -38,20 +40,20 @@ function fixture() {
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
-    ownerUserId: 'user_local',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
   const gate = new WorkspaceMutationAdmission();
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
   const schedules = new AutomationStore(db, gate, clock);
-  const created = schedules.createAutomation('user_local', {
+  const created = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
     name: 'Poll',
     workspaceId: workspace.id,
     threadId: thread.id,
     intervalSeconds: 5,
     prompt: 'Inspect status',
   });
-  const schedule = schedules.updateAutomation('user_local', created.id, {
+  const schedule = schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: instant,
@@ -234,7 +236,7 @@ describe('serialized recurring scanner', () => {
         })
     );
     const scan = service.runOnce();
-    schedules.updateAutomation('user_local', schedule.id, {
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: schedule.revision,
       status: 'paused',
     });
@@ -340,7 +342,7 @@ it('does not accept into a private Thread owned by another responsible user', as
       ? {
           ...original(workspaceId, threadId),
           visibility: 'private',
-          privateOwnerUserId: 'user_other',
+          privateOwnerUserId: testEntityId('usr', 'user_other'),
         }
       : original(workspaceId, threadId)
   );

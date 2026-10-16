@@ -1,3 +1,6 @@
+import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,27 +37,27 @@ describe('execution operation authority', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: FIXTURE_LOCAL_USER_ID });
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
-    const automation = automationStore.createAutomation('user_other', {
-      workspaceId: 'ws_demo',
+    const automation = automationStore.createAutomation(testEntityId('usr', 'user_other'), {
+      workspaceId: DEMO_WORKSPACE_ID,
       name: 'Other owner',
       intervalSeconds: 60,
-      threadId: 'th_demo',
+      threadId: DEMO_THREAD_ID,
       prompt: 'Work',
     });
-    const thread = store.createThread('ws_demo', 'Private queue', undefined, 'conversation', {
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Private queue', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_other',
+      privateOwnerUserId: testEntityId('usr', 'user_other'),
     });
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_admin',
-      workspaceId: 'ws_demo',
+      workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
-      turnId: 'turn_admin',
-      triggerActor: { kind: 'user', id: 'user_other' },
+      turnId: testEntityId('tu', 'turn_admin'),
+      triggerActor: { kind: 'user', id: testEntityId('usr', 'user_other') },
       turnInput: 'Work',
       requestedAgentId: 'agent_codex_host',
     });
@@ -62,7 +65,7 @@ describe('execution operation authority', () => {
       queueEntryId: 'queue_admin',
       denialReason: 'authority-denied',
     });
-    let actor: Actor = { kind: 'session', userId: 'user_local' };
+    let actor: Actor = { kind: 'session', userId: FIXTURE_LOCAL_USER_ID };
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
       c.set('actor', actor);
@@ -94,18 +97,18 @@ describe('execution operation authority', () => {
       expect(edited).toMatchObject({
         name: 'Edited by Workspace owner',
         revision: 2,
-        responsibleUserId: 'user_other',
+        responsibleUserId: testEntityId('usr', 'user_other'),
         actor: automation.actor,
       });
       expect(
         coreDb.sqlite
           .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edited'")
           .get()
-      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: 'user_local' }) });
+      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: FIXTURE_LOCAL_USER_ID }) });
       const queueBefore = requireSchedulerAdmissionEntry(coreDb, 'queue_admin');
       const privateDenied = await app.request(
         ...operationRequest('scheduler.retry', {
-          workspaceId: 'ws_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
           queueEntryId: 'queue_admin',
         })
       );
@@ -113,17 +116,17 @@ describe('execution operation authority', () => {
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_admin')).toEqual(queueBefore);
       expect(automationStore.getAutomation(automation.id)).toEqual(edited);
       const token = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       actor =
         kind === 'session'
-          ? { kind, userId: 'user_local' }
+          ? { kind, userId: FIXTURE_LOCAL_USER_ID }
           : {
               kind,
-              userId: 'user_local',
+              userId: FIXTURE_LOCAL_USER_ID,
               tokenId: token.record.tokenId,
               tokenScope: 'server-admin',
               tokenWorkspaceIds: [],
@@ -131,7 +134,7 @@ describe('execution operation authority', () => {
       const listed = await app.request(...operationRequest('automation.list', {}));
       await expect(listed.json()).resolves.toEqual({ items: [edited] });
       const queueList = await app.request(
-        ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+        ...operationRequest('scheduler.list', { workspaceId: DEMO_WORKSPACE_ID })
       );
       expect(
         (await queueList.json()).items.map((row: { queueEntryId: string }) => row.queueEntryId)
@@ -147,7 +150,7 @@ describe('execution operation authority', () => {
       expect(update.status).toBe(200);
       const retried = await app.request(
         ...operationRequest('scheduler.retry', {
-          workspaceId: 'ws_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
           queueEntryId: 'queue_admin',
         })
       );
@@ -162,7 +165,7 @@ describe('execution operation authority', () => {
       if (kind === 'session') {
         expect(automationStore.getAutomation(automation.id)).toMatchObject({
           status: 'deleted',
-          responsibleUserId: 'user_other',
+          responsibleUserId: testEntityId('usr', 'user_other'),
           actor: automation.actor,
         });
         expect(
@@ -171,13 +174,13 @@ describe('execution operation authority', () => {
               "SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.deleted'"
             )
             .get()
-        ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: 'user_local' }) });
+        ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: FIXTURE_LOCAL_USER_ID }) });
       } else {
         expect(automationStore.getAutomation(automation.id)).toEqual(updated);
       }
       const cancelled = await app.request(
         ...operationRequest('scheduler.cancel', {
-          workspaceId: 'ws_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
           queueEntryId: 'queue_admin',
         })
       );

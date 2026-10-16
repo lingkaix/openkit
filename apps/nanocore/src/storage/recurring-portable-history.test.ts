@@ -9,7 +9,8 @@ import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type CoreDb, openCoreDb } from './db.js';
-import { LOCAL_USER_ID } from './fs-layout.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { deriveEntityId } from '@openkit/protocol';
 import { applyMigrations } from './migrate.js';
 import {
   exportRecurringPortableHistory,
@@ -24,6 +25,7 @@ import { readWorkspaceImportSnapshot } from './workspace-import.js';
 import { readWorkspacePortableFileState } from './workspace-portable-file-state.js';
 
 describe('recurring portable history', () => {
+  let localUserId: string;
   let dataRoot: string;
   let coreDb: CoreDb;
   let store: AutomationStore;
@@ -35,7 +37,7 @@ describe('recurring portable history', () => {
     dataRoot = mkdtempSync(join(tmpdir(), 'recurrence-portable-'));
     coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
+    localUserId = ensureLocalUser(coreDb);
     files = new FsStore({ dataRoot });
     workspace = files.createWorkspace('Portable history');
     thread = files.createThread(workspace.id, 'Existing target');
@@ -47,14 +49,14 @@ describe('recurring portable history', () => {
     rmSync(dataRoot, { recursive: true, force: true });
   });
   function acceptedHistory(publish = true) {
-    const schedule = store.createAutomation(LOCAL_USER_ID, {
+    const schedule = store.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,
       name: 'Inspect',
       prompt: 'Retained exact input',
       intervalSeconds: 5,
     });
-    store.updateAutomation(LOCAL_USER_ID, schedule.id, {
+    store.updateAutomation(localUserId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -153,7 +155,7 @@ describe('recurring portable history', () => {
     expect(graph.occurrences[0]).toMatchObject({ turnId: occurrence.turnId });
     expect(() =>
       exportRecurringPortableHistory(coreDb, workspace.id, null, [
-        { id: occurrence.turnId!, threadId: 'th_other' },
+        { id: occurrence.turnId!, threadId: testEntityId('th', 'th_other') },
       ])
     ).toThrow();
   });
@@ -164,34 +166,34 @@ describe('recurring portable history', () => {
       { id: occurrence.turnId!, threadId: thread.id },
     ]);
     const maps = {
-      workspaceId: 'ws_target',
-      scheduleIds: new Map([[schedule.id, 'auto_target']]),
-      occurrenceIds: new Map([[occurrence.id, 'occ_target']]),
+      workspaceId: testEntityId('ws', 'ws_target'),
+      scheduleIds: new Map([[schedule.id, testEntityId('auto', 'auto_target')]]),
+      occurrenceIds: new Map([[occurrence.id, deriveEntityId('occ', [testEntityId('auto', 'auto_target'), occurrence.scheduledAt])]]),
       rangeIds: new Map<string, string>(),
-      threadIds: new Map([[thread.id, 'th_target']]),
-      turnIds: new Map([[occurrence.turnId!, 'tu_target']]),
+      threadIds: new Map([[thread.id, testEntityId('th', 'th_target')]]),
+      turnIds: new Map([[occurrence.turnId!, testEntityId('tu', 'tu_target')]]),
     };
     const imported = remapRecurringPortableHistory(source, maps);
     expect(imported.schedules[0]).toMatchObject({
-      id: 'auto_target',
-      workspaceId: 'ws_target',
-      threadId: 'th_target',
+      id: testEntityId('auto', 'auto_target'),
+      workspaceId: testEntityId('ws', 'ws_target'),
+      threadId: testEntityId('th', 'th_target'),
       originScheduleId: schedule.id,
       originActor: schedule.actor,
       status: 'active',
     });
     expect(imported.occurrences[0]).toMatchObject({
-      id: 'occ_target',
-      scheduleId: 'auto_target',
-      workspaceId: 'ws_target',
-      turnId: 'tu_target',
+      id: deriveEntityId('occ', [testEntityId('auto', 'auto_target'), occurrence.scheduledAt]),
+      scheduleId: testEntityId('auto', 'auto_target'),
+      workspaceId: testEntityId('ws', 'ws_target'),
+      turnId: testEntityId('tu', 'tu_target'),
       originRequestId: occurrence.requestId,
       originQueueEntryId: occurrence.queueEntryId,
       originTurnId: occurrence.turnId,
-      snapshot: { threadId: 'th_target', originActor: schedule.actor },
+      snapshot: { threadId: testEntityId('th', 'th_target'), originActor: schedule.actor },
     });
     expect(
-      exportRecurringPortableHistory(undefined, 'ws_target', JSON.stringify(imported), [])
+      exportRecurringPortableHistory(undefined, testEntityId('ws', 'ws_target'), JSON.stringify(imported), [])
     ).toEqual(imported);
     expect(() => remapRecurringPortableHistory(source, { ...maps, turnIds: new Map() })).toThrow(
       'Turn import mapping'
@@ -205,7 +207,7 @@ describe('recurring portable history', () => {
       expect(
         coreDb.sqlite
           .prepare(`SELECT count(*) AS n FROM ${table} WHERE workspace_id = ?`)
-          .get('ws_target')
+          .get(testEntityId('ws', 'ws_target'))
       ).toEqual({ n: 0 });
   });
 
@@ -222,8 +224,8 @@ describe('recurring portable history', () => {
     const history = exportRecurringPortableHistory(coreDb, workspace.id, null, turns);
     const verified = writeWorkspaceExportTree({
       exportRoot: join(dataRoot, 'portable-export'),
-      exportId: 'wsexp_recurring',
-      sourceDeploymentId: 'dep_source',
+      exportId: testEntityId('wsexp', 'wsexp_recurring'),
+      sourceDeploymentId: testEntityId('dep', 'dep_source'),
       createdAt: instant,
       workspace: files.getWorkspace(workspace.id),
       threads: [files.getThread(workspace.id, thread.id)],
@@ -250,14 +252,14 @@ describe('recurring portable history', () => {
     });
     const imported = readWorkspaceImportSnapshot({
       verified,
-      targetWorkspaceId: 'ws_imported_recurring',
+      targetWorkspaceId: testEntityId('ws', 'ws_imported_recurring'),
     });
     const graph = JSON.parse(imported.portableFileState.recurringHistory!);
     expect(graph.schedules).toEqual([
       expect.objectContaining({
         id: expect.not.stringMatching(schedule.id),
         originScheduleId: schedule.id,
-        workspaceId: 'ws_imported_recurring',
+        workspaceId: testEntityId('ws', 'ws_imported_recurring'),
         originActor: schedule.actor,
         status: 'active',
       }),
@@ -283,7 +285,7 @@ describe('recurring portable history', () => {
       requestId: occurrence.requestId,
       threadId: imported.threads[0]!.id,
       turnId: null,
-      workspaceId: 'ws_imported_recurring',
+      workspaceId: testEntityId('ws', 'ws_imported_recurring'),
     });
     expect(
       imported.auditEvents
@@ -299,7 +301,7 @@ describe('recurring portable history', () => {
       expect(
         coreDb.sqlite
           .prepare(`SELECT count(*) AS n FROM ${table} WHERE workspace_id = ?`)
-          .get('ws_imported_recurring')
+          .get(testEntityId('ws', 'ws_imported_recurring'))
       ).toEqual({ n: 0 });
   });
 
@@ -379,14 +381,14 @@ describe('recurring portable history', () => {
   it('preserves exact monthly rules and compact ranges as inert portable history', () => {
     instant = '2026-01-01T00:00:00.000Z';
     const monthlyUtc = { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 } as const;
-    const schedule = store.createAutomation(LOCAL_USER_ID, {
+    const schedule = store.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,
       name: 'Monthly',
       prompt: 'Monthly input',
       monthlyUtc,
     });
-    store.updateAutomation(LOCAL_USER_ID, schedule.id, {
+    store.updateAutomation(localUserId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: '2026-01-28T09:30:00.000Z',

@@ -152,6 +152,8 @@ export function createWorkerContextPackageAuthorityReader(
           ? { ...revision, sensitivity: material.sensitivity }
           : null;
       }),
+    readThreadParent: (workspaceId, threadId) =>
+      readOrNull(() => store.getThread(workspaceId, threadId).parentThreadId ?? null),
     readThreadItems: (workspaceId, threadId) =>
       readOrNull(() => store.listThreadItems(workspaceId, threadId)) ?? [],
     readTurn: (workspaceId, threadId, turnId) =>

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import {
   AutomationCadenceSchema,
   type AutomationRecord,
@@ -100,7 +100,7 @@ export class AutomationStore {
   public createAutomation(userId: string, value: CreateAutomationRequest): AutomationRecord {
     const input = CreateAutomationRequestSchema.strict().parse(value);
     const timestamp = this.now();
-    const id = `auto_${randomUUID()}`;
+    const id = allocateEntityId('auto');
     const record: AutomationRecord = {
       ...input,
       id,
@@ -348,9 +348,9 @@ export class AutomationStore {
             .prepare(`SELECT queue_entry_id FROM scheduler_admission_entries
         WHERE queue_entry_id = ? OR request_id = ? OR turn_id = ? LIMIT 2`)
             .all(
-              `queue_recurring_${occurrence.requestId}`,
               occurrence.requestId,
-              `turn_recurring_${occurrence.requestId}`
+              occurrence.requestId,
+              deriveEntityId('tu', ['recurring', occurrence.scheduleId, occurrence.scheduledAt])
             ) as { queue_entry_id: string }[];
           if (ownQueues.length > 1) return this.finish(occurrence, 'recovery_required', timestamp);
           if (ownQueues[0]) {
@@ -511,7 +511,7 @@ export class AutomationStore {
     if (!coverage) return schedule;
     const { count, last } = coverage;
     const record: ExpiredOccurrenceRange = {
-      id: `range_${recurringRequestId(schedule.id, schedule.nextScheduledAt)}`,
+      id: allocateEntityId('range'),
       scheduleId: schedule.id,
       workspaceId: schedule.workspaceId,
       definitionRevision: schedule.revision,
@@ -572,7 +572,7 @@ export class AutomationStore {
     const scheduledAt = new Date(at).toISOString();
     const requestId = recurringRequestId(schedule.id, scheduledAt);
     return {
-      id: `occ_${requestId}`,
+      id: deriveEntityId('occ', [schedule.id, scheduledAt]),
       requestId,
       scheduleId: schedule.id,
       workspaceId: schedule.workspaceId,

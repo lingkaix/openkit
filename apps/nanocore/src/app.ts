@@ -13,7 +13,7 @@ import {
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
 import type { ActorRef, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { isEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -175,7 +175,6 @@ import {
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -377,6 +376,8 @@ function workerCoordinatorCandidates(
  * Construction options for the Hono app.
  */
 export interface CreateAppOptions {
+  /** Explicit canonical identity for an embedded fixture without Core storage; production resolves the recorded local User. */
+  localUserId?: string;
   mode?: CoreMode;
   auth?: BetterAuthServer;
   coreDb?: CoreDb;
@@ -622,16 +623,23 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     });
   }
+  let localUserId: string | undefined;
   if (mode === 'local') {
+    localUserId = options.coreDb ? ensureLocalUser(options.coreDb) : options.localUserId;
+    if (
+      !isEntityId('usr', localUserId) ||
+      (options.coreDb && options.localUserId !== undefined && options.localUserId !== localUserId)
+    ) {
+      throw new Error('App construction requires the unique canonical local User authority.');
+    }
     if (options.coreDb) {
-      ensureLocalUser(options.coreDb);
       ensureUserQuickChatWorkspace({
         coreDb: options.coreDb,
         store: sharedStore,
-        userId: LOCAL_USER_ID,
+        userId: localUserId,
       });
     } else {
-      sharedStore.ensureQuickChatWorkspace(LOCAL_USER_ID);
+      sharedStore.ensureQuickChatWorkspace(localUserId);
     }
   }
   const startupOpenKitConfig =
@@ -692,6 +700,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       }
     : undefined;
   const authMiddlewareOptions = {
+    ...(localUserId === undefined ? {} : { localUserId }),
     ...(accessTokenVerifier ? { accessTokenVerifier } : {}),
     ...(options.coreDb
       ? {
@@ -1227,10 +1236,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     get: (key: 'actor') => AuthVariables['actor'] | undefined;
   }): RuntimeConfigFileService {
     const store = requestStore(c);
-
+    const actor = c.get('actor');
+    if (!actor) throw new Error('Runtime configuration requires an authenticated canonical User.');
     return new RuntimeConfigFileService({
       dataRoot,
-      userId: c.get('actor')?.userId ?? LOCAL_USER_ID,
+      userId: actor.userId,
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       runtimeConfigManager,
       readRuntimeConfigStatus: () => runtimeConfigManager.status(),

@@ -104,6 +104,7 @@ import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js'
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
 import {
   type CoreDb,
+  isFreshCoreInitializationScope,
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
   openCoreDbWithIntegrityCheck,
@@ -146,6 +147,7 @@ let appTlsListen: NativeTlsListenOptions | null | undefined;
 let nanoHostListener: NanoHostTransportListener | null | undefined;
 let nanoHostTlsListen: NativeTlsListenOptions | null | undefined;
 let coreDb: CoreDb | undefined;
+let freshCoreInitialization = false;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
 let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
@@ -222,6 +224,7 @@ const bootResult = await runBootPhases({
       subsystem: 'storage',
       critical: true,
       run: () => {
+        freshCoreInitialization = isFreshCoreInitializationScope(dataRoot);
         ensureLayout(dataRoot);
         return { status: 'ok' };
       },
@@ -241,7 +244,9 @@ const bootResult = await runBootPhases({
       subsystem: 'storage',
       critical: true,
       run: () => {
-        coreDb = openCoreDbWithIntegrityCheck(dataRoot);
+        coreDb = openCoreDbWithIntegrityCheck(dataRoot, {
+          freshInitialization: freshCoreInitialization,
+        });
         applyMigrations(coreDb);
         verifyAndMigrateExistingScopedDatabases(dataRoot);
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);

@@ -1,4 +1,12 @@
-import { ArtifactIdSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
+import {
+  ArtifactIdSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  UserIdSchema,
+  WorkerStorageTargetIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 const Sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -10,15 +18,15 @@ const BuildArgumentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SecretShapedBuildArgumentPattern =
   /(api.?key|authorization|client.?secret|credential|password|secret|token)/i;
 
-/** Opaque Core-owned retained Worker storage association reference. */
-export const WorkerEnvironmentStorageRefSchema = z.string().regex(/^wst_[a-f0-9]{32}$/);
+/** Canonical Core-owned retained Worker storage target identity. */
+export const WorkerEnvironmentStorageRefSchema = WorkerStorageTargetIdSchema;
 
 /** Explicit retained-storage choice carried by ordinary Task or Goal admission. */
 export const WorkerEnvironmentStorageChoiceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('fresh') }).strict(),
   z
     .object({
-      adjudicatedThreadIds: z.array(z.string().min(1)).max(1_000).optional(),
+      adjudicatedThreadIds: z.array(ThreadIdSchema).max(1_000).optional(),
       expectedRevision: z.number().int().positive(),
       kind: z.literal('selected'),
       purpose: z.enum(['work', 'independent-review']),
@@ -76,9 +84,9 @@ export const WorkerEnvironmentContributorSummarySchema = z
     createdAt: TimestampSchema,
     goalId: z.string().min(1).nullable(),
     purpose: z.enum(['work', 'independent-review']),
-    responsibleUserId: z.string().min(1),
+    responsibleUserId: UserIdSchema,
     taskId: z.string().min(1).nullable(),
-    threadId: z.string().min(1),
+    threadId: ThreadIdSchema,
   })
   .strict();
 
@@ -94,7 +102,7 @@ export const WorkerEnvironmentSummarySchema = z
     state: z.enum(['idle', 'reserved', 'attached', 'unknown', 'purge-pending']),
     storageRef: WorkerEnvironmentStorageRefSchema,
     updatedAt: TimestampSchema,
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strict();
 
@@ -117,14 +125,14 @@ export const ListWorkerEnvironmentsResponseSchema = z
 /** Exact new-work context used to recheck one explicit retained-environment selection. */
 export const SelectWorkerEnvironmentRequestSchema = z
   .object({
-    adjudicatedThreadIds: z.array(z.string().min(1)).max(1_000).default([]),
+    adjudicatedThreadIds: z.array(ThreadIdSchema).max(1_000).default([]),
     expectedRevision: z.number().int().positive(),
     goalId: z.string().min(1).nullable().default(null),
     layoutDigest: Sha256DigestSchema,
     purpose: z.enum(['work', 'independent-review']),
     storageRef: WorkerEnvironmentStorageRefSchema,
     taskId: z.string().min(1).nullable().default(null),
-    threadId: z.string().min(1),
+    threadId: ThreadIdSchema,
   })
   .strict();
 
@@ -322,8 +330,8 @@ export const WorkerEnvironmentReplaceNowSchema = z
       .string()
       .min(1)
       .refine((value) => value.trim().length > 0),
-    threadId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    threadId: ThreadIdSchema,
+    workspaceId: WorkspaceIdSchema,
   })
   .strict();
 
@@ -372,7 +380,7 @@ export const WorkerEnvironmentResolvedCandidateArtifactSchema = z
 export const PrepareWorkerEnvironmentRequestSchema = z.discriminatedUnion('mode', [
   z
     .object({
-      administrationThreadId: z.string().min(1),
+      administrationThreadId: ThreadIdSchema,
       configuration: WorkerEnvironmentConfigurationSchema,
       declaration: WorkerEnvironmentImageDeclarationSchema,
       mode: z.literal('prepare'),
@@ -383,7 +391,7 @@ export const PrepareWorkerEnvironmentRequestSchema = z.discriminatedUnion('mode'
     .strict(),
   z
     .object({
-      administrationThreadId: z.string().min(1),
+      administrationThreadId: ThreadIdSchema,
       mode: z.literal('recover'),
       recoverFrom: WorkerEnvironmentCandidateRefSchema,
       requestId: RequestIdSchema,

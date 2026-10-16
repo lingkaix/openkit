@@ -1,9 +1,10 @@
+import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
@@ -20,7 +21,7 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   const store = new FsStore({ dataRoot: root });
   const workspace = store.createWorkspace('Recurring');
   const thread = store.createThread(workspace.id, 'Target');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: FIXTURE_LOCAL_USER_ID });
   const automationStore = new AutomationStore(coreDb, new WorkspaceMutationAdmission());
   const app = createApp({ store, coreDb, dataRoot: root, automationStore });
   const responses: Response[] = [];

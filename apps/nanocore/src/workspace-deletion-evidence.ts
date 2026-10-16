@@ -13,9 +13,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
-
 import { EvidenceBundleRecordSchema } from '@openkit/app-api-schemas';
-import { RequestIdSchema, TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  DeploymentIdSchema,
+  RequestIdSchema,
+  TimestampSchema,
+  UserIdSchema,
+  WorkspaceExportIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 import { listSqliteAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
@@ -81,15 +87,15 @@ export const WorkspaceDeletionClosureSchema = z
     requiredFeatures: z.array(z.string().min(1)),
     extensions: z.record(z.string(), z.unknown()),
     closureVersion: z.literal(1),
-    sourceDeploymentId: z.string().min(1),
+    sourceDeploymentId: DeploymentIdSchema,
     sourceWorkspaceId: WorkspaceIdSchema,
     deletionRequestId: RequestIdSchema,
-    originalOwnerUserId: z.string().min(1),
+    originalOwnerUserId: UserIdSchema,
     sourceRegistryRevision: z.number().int().positive(),
     closureId: z.string().min(1),
     cutoffTimestamp: TimestampSchema,
     cutoff: z.literal('pre-terminal-deletion'),
-    recoveryExportId: z.string().min(1),
+    recoveryExportId: WorkspaceExportIdSchema,
     recoveryExportManifestDigest: DigestSchema,
     contentInventory: z.array(ClosureInventoryEntrySchema),
   })

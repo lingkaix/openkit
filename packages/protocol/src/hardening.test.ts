@@ -54,7 +54,7 @@ describe('protocol hardening boundary', () => {
       /^Dashboard/,
       /^AppDiagnostics/,
       /^AppSearch/,
-      /^Automation/,
+      /^Automation(?!IdSchema$)/,
       /^QuickChat/,
       /^TurnFeedback/,
       /^ActionCenter/,
@@ -87,50 +87,50 @@ describe('protocol hardening boundary', () => {
   it('requires request ids on mutating command requests', () => {
     expect(() =>
       protocol.SubmitTurnInputRequestSchema.parse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         input: 'Summarize progress',
       })
     ).toThrow();
 
     expect(() =>
       protocol.InterruptTurnRequestSchema.parse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       })
     ).toThrow();
 
     expect(() =>
       protocol.RespondToApprovalRequestSchema.parse({
         approvalRequestId: 'ap_demo',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         decision: 'granted',
       })
     ).toThrow();
 
     expect(() =>
       protocol.UpdateThreadRequestSchema.parse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         name: 'Updated thread',
       })
     ).toThrow();
 
     expect(() =>
       protocol.ArchiveThreadRequestSchema.parse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
       })
     ).toThrow();
 
     expect(() =>
       protocol.CancelTurnRequestSchema.parse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       })
     ).toThrow();
 
@@ -139,13 +139,13 @@ describe('protocol hardening boundary', () => {
 
   it('accepts turn assignment and trigger source without runtime-native payloads', () => {
     const turn = protocol.TurnSchema.parse({
-      id: 'tu_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       agentId: 'agent_codex',
-      agentSessionId: 'as_demo',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
       agentProfileId: 'coder',
-      triggerActor: { kind: 'user', id: 'user_demo' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       triggerSource: { kind: 'user-input', summary: 'User started a worker turn.' },
       items: [],
       status: 'running',
@@ -156,18 +156,18 @@ describe('protocol hardening boundary', () => {
       durationMs: null,
     });
 
-    expect(turn.agentSessionId).toBe('as_demo');
+    expect(turn.agentSessionId).toBe('as_00000000-0000-7860-9e37-d1a60b30c856');
     expect(turn.triggerSource?.kind).toBe('user-input');
   });
 
   it('accepts item lineage and the stable status, plan, and knowledge-injection item types', () => {
     const status = protocol.ItemSchema.parse({
-      id: 'it_status',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
+      id: 'it_00000000-0000-7b1d-a7c8-f4b99f722af0',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       parentItemId: null,
-      causationId: 'it_user',
+      causationId: 'it_00000000-0000-753c-a631-e56fa20828b1',
       status: 'completed',
       createdAt: '2026-05-27T00:00:00Z',
       completedAt: '2026-05-27T00:00:01Z',
@@ -178,12 +178,12 @@ describe('protocol hardening boundary', () => {
     });
 
     const plan = protocol.ItemSchema.parse({
-      id: 'it_plan',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      parentItemId: 'it_status',
-      causationId: 'it_user',
+      id: 'it_00000000-0000-7176-aaff-c7d9630f5424',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      parentItemId: 'it_00000000-0000-7b1d-a7c8-f4b99f722af0',
+      causationId: 'it_00000000-0000-753c-a631-e56fa20828b1',
       status: 'completed',
       createdAt: '2026-05-27T00:00:00Z',
       completedAt: '2026-05-27T00:00:01Z',
@@ -197,12 +197,12 @@ describe('protocol hardening boundary', () => {
     });
 
     const knowledgeInjection = protocol.ItemSchema.parse({
-      id: 'it_knowledge',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
+      id: 'it_00000000-0000-7f8b-94e7-63fea6aa4468',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       parentItemId: null,
-      causationId: 'cap_knowledge_search',
+      causationId: 'cap_00000000-0000-74be-93bb-642684f197bc',
       status: 'completed',
       createdAt: '2026-05-27T00:00:00Z',
       completedAt: '2026-05-27T00:00:01Z',
@@ -217,17 +217,17 @@ describe('protocol hardening boundary', () => {
     expect(knowledgeInjection.type).toBe('knowledge-injection');
 
     const generativeUi = protocol.ItemSchema.parse({
-      id: 'it_generative',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
+      id: 'it_00000000-0000-7bb6-8066-ce7052fdf58e',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       parentItemId: null,
       causationId: 'req_publish',
       status: 'completed',
       createdAt: '2026-05-27T00:00:00Z',
       completedAt: '2026-05-27T00:00:01Z',
       type: 'generative-ui-reference',
-      presentationId: '11111111-1111-4111-8111-111111111111',
+      presentationId: 'pres_00000000-0000-7bec-9842-6a2ad434c0ef',
       title: 'Mapping view',
       fallbackText: 'Membership 1 maps to CRM 1.',
     });
@@ -241,10 +241,14 @@ describe('protocol hardening boundary', () => {
         event: 'turn.started',
         sequence: 1,
         timestamp: '2026-05-27T00:00:00Z',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
-        data: { type: 'turn-started', turnId: 'tu_demo', status: 'running' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+        data: {
+          type: 'turn-started',
+          turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+          status: 'running',
+        },
       })
     ).toThrow();
 
@@ -253,11 +257,15 @@ describe('protocol hardening boundary', () => {
       event: 'turn.started',
       sequence: 1,
       timestamp: '2026-05-27T00:00:00Z',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       requestId: '0190f4c8-0000-7000-8000-000000000123',
-      data: { type: 'turn-started', turnId: 'tu_demo', status: 'running' },
+      data: {
+        type: 'turn-started',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+        status: 'running',
+      },
     });
 
     expect(parsed.requestId).toBe('0190f4c8-0000-7000-8000-000000000123');
@@ -269,10 +277,14 @@ describe('protocol hardening boundary', () => {
       sequence: 1,
       requestId: '0190f4c8-0000-7000-8000-000000000126',
       timestamp: '2026-05-27T00:00:00Z',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      data: { type: 'turn-started', turnId: 'tu_demo', status: 'running' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      data: {
+        type: 'turn-started',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+        status: 'running',
+      },
     };
 
     expect(() => protocol.SseEventEnvelopeSchema.parse(envelopeWithoutProtocolVersion)).toThrow();
@@ -305,12 +317,12 @@ describe('protocol hardening boundary', () => {
       sequence: 1,
       requestId: '0190f4c8-0000-7000-8000-000000000125',
       timestamp: '2026-05-27T00:00:00Z',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       data: {
         type: 'item-delta',
-        itemId: 'it_future',
+        itemId: 'it_00000000-0000-7141-8463-0f19478227d7',
         itemType: 'future-item',
         deltaKind: 'future-delta',
         payload: { summary: 'Future delta payload.' },
@@ -340,7 +352,7 @@ describe('protocol hardening boundary', () => {
       event: 'item.delta',
       data: {
         type: 'item-delta',
-        itemId: 'it_future_text',
+        itemId: 'it_00000000-0000-7b8a-8e44-ccdb62d30b4f',
         itemType: 'future-item',
         deltaKind: 'text-delta',
       },
@@ -377,7 +389,7 @@ describe('protocol hardening boundary', () => {
       event: 'item.delta',
       data: {
         type: 'item-delta',
-        itemId: 'it_artifact',
+        itemId: 'it_00000000-0000-7f8f-b32e-caed70ed31c3',
         itemType: 'artifact-reference',
         deltaKind: 'text-delta',
         delta: 'Artifact references cannot stream text deltas.',
@@ -394,7 +406,7 @@ describe('protocol hardening boundary', () => {
     expect(() =>
       protocol.ItemDeltaEventSchema.parse({
         type: 'item-delta',
-        itemId: 'it_reasoning',
+        itemId: 'it_00000000-0000-7d87-8f35-2446e6059701',
         itemType: 'reasoning',
         deltaKind: 'indexed-text-delta',
         delta: 'missing part id',
@@ -404,7 +416,7 @@ describe('protocol hardening boundary', () => {
     expect(() =>
       protocol.ItemDeltaEventSchema.parse({
         type: 'item-delta',
-        itemId: 'it_tool',
+        itemId: 'it_00000000-0000-7a69-87ca-d5f2de3388d4',
         itemType: 'tool-call',
         deltaKind: 'request-resolved',
         request: { status: 'resolved' },
@@ -413,7 +425,7 @@ describe('protocol hardening boundary', () => {
 
     const textDelta = protocol.ItemDeltaEventSchema.parse({
       type: 'item-delta',
-      itemId: 'it_assistant',
+      itemId: 'it_00000000-0000-78de-a2fa-49aad7f27c08',
       itemType: 'assistant-message',
       deltaKind: 'text-delta',
       delta: 'hello',
@@ -421,7 +433,7 @@ describe('protocol hardening boundary', () => {
 
     const requestDelta = protocol.ItemDeltaEventSchema.parse({
       type: 'item-delta',
-      itemId: 'it_tool',
+      itemId: 'it_00000000-0000-7a69-87ca-d5f2de3388d4',
       itemType: 'tool-call',
       deltaKind: 'request-started',
       requestRefId: 'req_tool_1',
@@ -435,11 +447,11 @@ describe('protocol hardening boundary', () => {
   it('exposes thin capability call, usage, and audit records', () => {
     expect(
       protocol.CapabilityCallSchema.parse({
-        id: 'cap_demo',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
-        agentSessionId: 'as_demo',
+        id: 'cap_00000000-0000-7b43-b8ca-b360c4c6c4f4',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         packageSnapshotId: 'aepsnap_demo',
         runtimeOriginRef: `rto_${'a'.repeat(24)}`,
         runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
@@ -462,11 +474,11 @@ describe('protocol hardening boundary', () => {
 
     expect(() =>
       protocol.CapabilityCallSchema.parse({
-        id: 'cap_raw_runtime',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
-        agentSessionId: 'as_demo',
+        id: 'cap_00000000-0000-7162-afa6-f2a3e6f9dd42',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         packageSnapshotId: 'aepsnap_demo',
         runtimeOriginRef: '019f0000-0000-7000-8000-000000000001',
         runtimeCacheLineageRef: 'raw-cache-lineage',
@@ -481,13 +493,13 @@ describe('protocol hardening boundary', () => {
 
     expect(
       protocol.UsageRecordSchema.parse({
-        id: 'usage_demo',
-        workspaceId: 'ws_demo',
-        responsibleUserId: 'user_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
-        itemId: 'it_assistant',
-        capabilityCallId: 'cap_demo',
+        id: 'use_00000000-0000-739f-a23e-a4a84e09caca',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        responsibleUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+        itemId: 'it_00000000-0000-78de-a2fa-49aad7f27c08',
+        capabilityCallId: 'cap_00000000-0000-7b43-b8ca-b360c4c6c4f4',
         sourceIds: ['repo_default'],
         unit: 'usd',
         quantity: 0.042,
@@ -498,8 +510,8 @@ describe('protocol hardening boundary', () => {
 
     expect(
       protocol.AuditEventSchema.parse({
-        id: 'audit_demo',
-        workspaceId: 'ws_demo',
+        id: 'aud_00000000-0000-75b1-81ed-3ca7bd402515',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         action: 'capability.call',
         resource: 'llm.gateway.responses',
         outcome: 'succeeded',
@@ -511,9 +523,9 @@ describe('protocol hardening boundary', () => {
 
     expect(
       protocol.AuditEventSchema.parse({
-        id: 'audit_server_demo',
+        id: 'aud_00000000-0000-72b1-ba40-d912bbfe56e7',
         action: 'vault.resolve',
-        resource: 'vault:vault_github',
+        resource: 'vault:vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         outcome: 'succeeded',
         summary: 'Server vault reference resolved.',
         occurredAt: '2026-05-27T00:00:01Z',
@@ -523,11 +535,11 @@ describe('protocol hardening boundary', () => {
 
   it('orders capability terminal timestamps by their parsed instants', () => {
     const call = {
-      id: 'cap_ordered_time',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      agentSessionId: 'as_demo',
+      id: 'cap_00000000-0000-7671-b0c5-f1dcbc995386',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
       capabilityId: 'runtime.worker_turn',
       status: 'succeeded',
       summary: null,

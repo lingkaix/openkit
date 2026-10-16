@@ -21,16 +21,16 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
   const root = mkdtempSync(join(tmpdir(), 'goal-discovery-'));
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
   const workspace = store.createWorkspace('Discovery');
   const other = store.createWorkspace('Other authorized Workspace');
   for (const entry of [workspace, other])
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: entry.id, ownerUserId: 'user_local' });
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: entry.id, ownerUserId: userId });
   store.setWorkspaceAgentCatalogProjection(() =>
     projectAgentCatalogEntries([createTestAgentSetup({ agentId: 'selected-worker' }).manifest])
   );
-  const actor = { kind: actorKind, userId: 'user_local' };
+  const actor = { kind: actorKind, userId };
   const db = openWorkspaceDb(root, workspace.id);
   applyScopedMigrations(db);
   const created = await executeGoalOperation(
@@ -81,6 +81,7 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
     store,
     db,
     workspace,
+    userId,
     goal,
     turn,
     tool,
@@ -119,7 +120,7 @@ it.each([
       ],
     });
     expect(resources.mock.calls.map(([id]) => id)).toEqual([f.workspace.id]);
-    expect(f.resolver).toHaveBeenCalledWith(f.workspace.id, 'user_local');
+    expect(f.resolver).toHaveBeenCalledWith(f.workspace.id, f.userId);
     expect(f.store.listThreads(f.workspace.id)).toHaveLength(1);
     expect(f.store.listThreadAgentSessions(f.workspace.id, f.goal.threadId)).toEqual([]);
     expect(f.db.sqlite.prepare('SELECT * FROM goal_card_tasks').all()).toEqual([]);
@@ -181,7 +182,7 @@ it('rechecks actor authority before publishing discovery', async () => {
   const f = await fixture();
   try {
     f.resolver.mockImplementation(() => {
-      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, 'user_local'))();
+      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
       return [{ agentId: 'selected-worker', runtime: 'codex', readiness: 'ready', reasons: [] }];
     });
     const result = await f.tool.execute({});

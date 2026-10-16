@@ -1,3 +1,4 @@
+import { AutomationIdSchema, WorkspaceIdSchema, ThreadIdSchema, TurnIdSchema, UserIdSchema, RecurringOccurrenceIdSchema, RecurringExpiredRangeIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 const selections = {
@@ -37,7 +38,7 @@ export type AutomationCadence = z.infer<typeof AutomationCadenceSchema>;
 
 const editable = {
   name: z.string().min(1),
-  threadId: z.string().min(1),
+  threadId: ThreadIdSchema,
   ...timing,
   prompt: z.string().min(1),
   ...selections,
@@ -45,14 +46,14 @@ const editable = {
 
 /** Shared retained fields before complete-cadence validation. */
 const AutomationRecordFieldsSchema = z.object({
-  id: z.string().min(1),
-  workspaceId: z.string().min(1),
+  id: AutomationIdSchema,
+  workspaceId: WorkspaceIdSchema,
   ...editable,
-  responsibleUserId: z.string().min(1),
+  responsibleUserId: UserIdSchema,
   actor: z.object({
     kind: z.literal('automation'),
-    id: z.string().min(1),
-    responsibleUserId: z.string().min(1),
+    id: AutomationIdSchema,
+    responsibleUserId: UserIdSchema,
   }),
   status: z.enum(['paused', 'active', 'deleted']),
   revision: z.number().int().positive(),
@@ -72,7 +73,7 @@ export const ListAutomationsResponseSchema = z.object({ items: z.array(Automatio
 /** A new schedule is always paused and targets an existing Thread. */
 export const CreateAutomationRequestSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     ...editable,
     monthlyUtc: MonthlyUtcScheduleSchema.strict().optional(),
   })
@@ -137,9 +138,9 @@ export const AutomationAttemptCodeSchema = z.enum([
 ]);
 /** Individual trigger history, with public selections and a current scheduler-status join. */
 export const AutomationOccurrenceSchema = z.object({
-  id: z.string().min(1),
-  scheduleId: z.string().min(1),
-  workspaceId: z.string().min(1),
+  id: RecurringOccurrenceIdSchema,
+  scheduleId: AutomationIdSchema,
+  workspaceId: WorkspaceIdSchema,
   definitionRevision: z.number().int().positive(),
   scheduledAt: z.iso.datetime(),
   deadline: z.iso.datetime(),
@@ -164,7 +165,7 @@ export const AutomationOccurrenceSchema = z.object({
     .max(3),
   requestId: z.string().uuid(),
   queueEntryId: z.string().min(1).nullable(),
-  turnId: z.string().min(1).nullable(),
+  turnId: TurnIdSchema.nullable(),
   createdAt: z.iso.datetime(),
   terminalAt: z.iso.datetime().nullable(),
   resolvedSelection: z
@@ -180,9 +181,9 @@ export const AutomationOccurrenceSchema = z.object({
 /** Exact missed nominal coverage; reads return a range without expanding its occurrences. */
 export const AutomationExpiredRangeSchema = z
   .object({
-    id: z.string().min(1),
-    scheduleId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    id: RecurringExpiredRangeIdSchema,
+    scheduleId: AutomationIdSchema,
+    workspaceId: WorkspaceIdSchema,
     definitionRevision: z.number().int().positive(),
     ...timing,
     firstScheduledAt: z.iso.datetime(),
@@ -196,7 +197,7 @@ export const AutomationExpiredRangeSchema = z
   .superRefine(requireOneTiming);
 /** Bounded newest-first history cursor uses the last returned nominal instant. */
 export const AutomationHistoryRequestSchema = z.object({
-  automationId: z.string().min(1),
+  automationId: AutomationIdSchema,
   limit: z.number().int().min(1).max(128).optional(),
   before: z.iso.datetime().optional(),
 });

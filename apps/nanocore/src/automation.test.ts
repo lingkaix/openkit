@@ -1,8 +1,10 @@
+import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
@@ -24,7 +26,7 @@ function fixture() {
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
-    ownerUserId: 'user_local',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
   let instant = '2026-10-16T00:00:00.000Z';
   const automationStore = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
@@ -73,7 +75,7 @@ describe('fixed-interval automation operations', () => {
     expect(schedule).toMatchObject({
       status: 'paused',
       revision: 1,
-      responsibleUserId: 'user_local',
+      responsibleUserId: FIXTURE_LOCAL_USER_ID,
     });
     const active = await request('update', {
       automationId: schedule.id,
@@ -107,10 +109,10 @@ describe('fixed-interval automation operations', () => {
     for (const invalid of [
       { ...input, cron: '* * * * *' },
       { ...input, intervalSeconds: 4 },
-      { ...input, responsibleUserId: 'user_substitute' },
+      { ...input, responsibleUserId: testEntityId('usr', 'user_substitute') },
     ])
       expect((await request('create', invalid)).status).toBe(400);
-    expect((await request('create', { ...input, threadId: 'th_missing' })).status).toBe(404);
+    expect((await request('create', { ...input, threadId: testEntityId('th', 'th_missing') })).status).toBe(404);
     const schedule = await (await request('create', input)).json();
     expect(
       (
@@ -134,7 +136,7 @@ describe('fixed-interval automation operations', () => {
 
   it('lists admitted Workspace definitions without treating the responsible user as a privilege tier', async () => {
     const { db, store, input, automationStore } = fixture();
-    const created = automationStore.createAutomation('user_creator', input);
+    const created = automationStore.createAutomation(testEntityId('usr', 'user_creator'), input);
     const operations = createAutomationOperationImplementations({
       coreDb: db,
       store,
@@ -142,8 +144,8 @@ describe('fixed-interval automation operations', () => {
     });
     const context = {
       kind: 'public',
-      actor: { kind: 'session', userId: 'user_member' },
-      actorRef: { kind: 'user', id: 'user_member' },
+      actor: { kind: 'session', userId: testEntityId('usr', 'user_member') },
+      actorRef: { kind: 'user', id: testEntityId('usr', 'user_member') },
       scope: { kind: 'authorized-workspace-set', workspaceIds: [input.workspaceId] },
     } as const;
     expect(await operations['automation.list']({}, context)).toEqual({ items: [created] });
@@ -156,7 +158,7 @@ describe('fixed-interval automation operations', () => {
     expect(created.actor).toEqual({
       kind: 'automation',
       id: created.id,
-      responsibleUserId: 'user_creator',
+      responsibleUserId: testEntityId('usr', 'user_creator'),
     });
   });
 });
@@ -225,7 +227,7 @@ it('paginates lossless ranges directly and joins accepted-but-queued truth witho
 
 it('attributes a member edit to the actual caller while preserving the responsible actor', async () => {
   const { db, store, input, automationStore } = fixture();
-  const schedule = automationStore.createAutomation('user_creator', input);
+  const schedule = automationStore.createAutomation(testEntityId('usr', 'user_creator'), input);
   const operations = createAutomationOperationImplementations({
     coreDb: db,
     store,
@@ -233,15 +235,15 @@ it('attributes a member edit to the actual caller while preserving the responsib
   });
   const context = {
     kind: 'public',
-    actor: { kind: 'session', userId: 'user_member' },
-    actorRef: { kind: 'user', id: 'user_member' },
+    actor: { kind: 'session', userId: testEntityId('usr', 'user_member') },
+    actorRef: { kind: 'user', id: testEntityId('usr', 'user_member') },
     scope: {
       kind: 'workspace',
       workspaceId: input.workspaceId,
       effectiveRole: 'editor',
       policyOperation: 'workspace.configure',
     },
-    resolvedLineage: { workspaceId: input.workspaceId, ownerUserId: 'user_creator' },
+    resolvedLineage: { workspaceId: input.workspaceId, ownerUserId: testEntityId('usr', 'user_creator') },
   } as const;
   const edited = await operations['automation.update'](
     { automationId: schedule.id, expectedRevision: 1, name: 'Updated by member' },
@@ -252,5 +254,5 @@ it('attributes a member edit to the actual caller while preserving the responsib
     db.sqlite
       .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edited'")
       .get()
-  ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: 'user_member' }) });
+  ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_member') }) });
 });

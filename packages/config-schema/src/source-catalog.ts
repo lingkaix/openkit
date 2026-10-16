@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { VaultGrantIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { isRegisteredRequiredFeature } from './schema-evolution.js';
@@ -70,7 +71,7 @@ export const WorkspaceDataSourceSchema = z
     locator: WorkspaceDataSourceLocatorSchema,
     access: WorkspaceDataSourceAccessSchema,
     sensitivity: WorkspaceDataSourceSensitivitySchema,
-    vaultGrantRef: z.string().min(1).optional(),
+    vaultGrantRef: VaultGrantIdSchema.optional(),
     allowedSlotKinds: z.array(WorkspaceSlotKindSchema).min(1),
     syncHints: z.record(z.string().min(1), z.unknown()).default({}),
     status: z.enum(['active', 'disabled']),

@@ -16,7 +16,7 @@ const timestamp = '2026-07-08T00:00:00.000Z';
 describe('workspace quarantine records', () => {
   it('records durable quarantine decisions for workspace synchronization recovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-quarantine-'));
-    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -30,16 +30,19 @@ describe('workspace quarantine records', () => {
       });
 
       workspaceDb.sqlite.close();
-      workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
       expect(
         ListWorkspaceQuarantineRecordsResponseSchema.parse({
-          items: listWorkspaceQuarantineRecords(workspaceDb, 'ws_demo'),
+          items: listWorkspaceQuarantineRecords(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001'
+          ),
         }).items
       ).toMatchObject([
         {
           id: 'wqr_1',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           lifecycleRecordIds: ['wrr_1', 'wom_1'],
           failureKind: 'digest_mismatch',
           storageRef: 'quarantine/workspace-sync/ghp_publicFixture',
@@ -59,7 +62,7 @@ describe('workspace quarantine records', () => {
 function workspaceQuarantineRecord() {
   return {
     id: 'wqr_1',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     lifecycleRecordIds: ['wrr_1', 'wom_1'],
     failureKind: 'digest_mismatch',
     storageRef: 'quarantine/workspace-sync/ghp_publicFixture',

@@ -1,8 +1,10 @@
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { startRecurringScheduleService } from '../runtime/recurring-schedule-service.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -46,8 +48,8 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 const definition = {
-  workspaceId: 'ws_test',
-  threadId: 'th_test',
+  workspaceId: testEntityId('ws', 'ws_test'),
+  threadId: testEntityId('th', 'th_test'),
   name: 'Poll',
   intervalSeconds: 5,
   prompt: 'Inspect status',
@@ -64,10 +66,10 @@ const payload = {
 describe('durable fixed-interval recurrence', () => {
   it('starts paused and preserves identity across a database reopen', () => {
     const { db, root, clock, store } = fixture();
-    const schedule = store.createAutomation('user_creator', definition);
+    const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
     expect(schedule).toMatchObject({
       status: 'paused',
-      actor: { kind: 'automation', id: schedule.id, responsibleUserId: 'user_creator' },
+      actor: { kind: 'automation', id: schedule.id, responsibleUserId: testEntityId('usr', 'user_creator') },
     });
     db.sqlite.close();
     const reopened = openCoreDb(root);
@@ -80,8 +82,8 @@ describe('durable fixed-interval recurrence', () => {
   });
   it('atomically accepts one deterministic queue row and never retries accepted work', () => {
     const { db, store } = fixture();
-    const created = store.createAutomation('user_creator', definition);
-    const active = store.updateAutomation('user_creator', created.id, {
+    const created = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+    const active = store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -106,8 +108,8 @@ describe('durable fixed-interval recurrence', () => {
 
 it('limits committed outcomes to three and keeps admission-failed terminal at expiry', () => {
   const { store, setTime } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -125,8 +127,8 @@ it('limits committed outcomes to three and keeps admission-failed terminal at ex
 
 it('expires at the exact deadline and leaves a backward-clock candidate pending without an outcome', () => {
   const { db, store, setTime } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -147,8 +149,8 @@ it('expires at the exact deadline and leaves a backward-clock candidate pending 
 
 it('rolls back the queue, attempt, frozen payload and acceptance together', () => {
   const { db, store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -175,8 +177,8 @@ it('rolls back the queue, attempt, frozen payload and acceptance together', () =
 
 it('bounds each schedule to one queued occurrence while allowing a running predecessor', () => {
   const { db, store, setTime } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -201,8 +203,8 @@ it('bounds each schedule to one queued occurrence while allowing a running prede
 
 it('freezes the complete first resolved payload on failure and fences substitution', () => {
   const { db, store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -233,8 +235,8 @@ it.each([
   'expired',
 ])('reconciles exact deterministic queue replay in %s without resubmission', (status) => {
   const { db, store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -263,8 +265,8 @@ it.each([
 
 it('fences a conflicting deterministic queue row without overwriting it', () => {
   const { db, store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -289,15 +291,15 @@ it('fences a conflicting deterministic queue row without overwriting it', () => 
 
 it('seals pause history with the old snapshot, cancels pending work, and rejects a stale scan', () => {
   const { store, setTime } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [pending] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   setTime('2026-10-16T01:00:00.000Z');
-  const paused = store.updateAutomation('user_other', schedule.id, {
+  const paused = store.updateAutomation(testEntityId('usr', 'user_other'), schedule.id, {
     expectedRevision: 2,
     status: 'paused',
   });
@@ -320,30 +322,30 @@ it('seals pause history with the old snapshot, cancels pending work, and rejects
     history.filter((entry) => entry.kind === 'occurrence' && entry.record.state === 'cancelled')
   ).toHaveLength(121);
   expect(store.commitAttempt(pending!.id, 2, { kind: 'ready', payload })?.state).toBe('cancelled');
-  const edited = store.updateAutomation('user_other', schedule.id, {
+  const edited = store.updateAutomation(testEntityId('usr', 'user_other'), schedule.id, {
     expectedRevision: paused.revision,
     prompt: 'New input',
     intervalSeconds: 10,
   });
   expect(() =>
-    store.updateAutomation('user_other', schedule.id, {
+    store.updateAutomation(testEntityId('usr', 'user_other'), schedule.id, {
       expectedRevision: edited.revision,
       status: 'active',
       scheduledAt: '2026-10-16T01:00:00.000Z',
     })
   ).toThrow('new current-or-future');
-  const resumed = store.updateAutomation('user_other', schedule.id, {
+  const resumed = store.updateAutomation(testEntityId('usr', 'user_other'), schedule.id, {
     expectedRevision: edited.revision,
     status: 'active',
     scheduledAt: '2026-10-16T01:00:10.000Z',
   });
-  expect(resumed.responsibleUserId).toBe('user_creator');
+  expect(resumed.responsibleUserId).toBe(testEntityId('usr', 'user_creator'));
 });
 
 it('records a huge outage as a lossless range and serves live work without unbounded replay', () => {
   const { store, setTime } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -365,18 +367,18 @@ it('records a huge outage as a lossless range and serves live work without unbou
 
 it('retains accepted admissions on delete and cannot resume the identity tombstone', () => {
   const { store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   const accepted = store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload });
-  store.deleteAutomation('user_other', schedule.id);
+  store.deleteAutomation(testEntityId('usr', 'user_other'), schedule.id);
   expect(store.getAutomation(schedule.id)).toMatchObject({
     status: 'deleted',
-    responsibleUserId: 'user_creator',
+    responsibleUserId: testEntityId('usr', 'user_creator'),
   });
   expect(store.getOccurrence(occurrence!.id)).toEqual(accepted);
   expect(store.listAuthorizedAutomations([definition.workspaceId])).toEqual([
@@ -384,7 +386,7 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
   ]);
   expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
   expect(() =>
-    store.updateAutomation('user_creator', schedule.id, {
+    store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
       expectedRevision: 3,
       status: 'active',
       scheduledAt: '2026-10-16T00:01:00.000Z',
@@ -394,15 +396,15 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
 
 it('commits every definition and terminal transition with its Workspace AuditEvent and rolls back audit failure', () => {
   const { db, store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   expect(
     db.sqlite.prepare('SELECT action, actor_json, workspace_id FROM audit_events').get()
   ).toMatchObject({
     action: 'recurring.schedule.create',
-    actor_json: JSON.stringify({ kind: 'user', id: 'user_creator' }),
+    actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_creator') }),
     workspace_id: definition.workspaceId,
   });
-  store.updateAutomation('user_creator', schedule.id, {
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -422,7 +424,7 @@ it('commits every definition and terminal transition with its Workspace AuditEve
   expect(
     db.sqlite
       .prepare(
-        "SELECT action, actor_json, turn_id FROM audit_events WHERE action = 'recurring.occurrence.terminal'"
+        `SELECT action, actor_json, ${testEntityId('tu', 'turn_id')} FROM audit_events WHERE action = 'recurring.occurrence.terminal'`
       )
       .get()
   ).toEqual({
@@ -434,8 +436,8 @@ it('commits every definition and terminal transition with its Workspace AuditEve
 
 it('does not advance the definition cursor when materialization rolls back', () => {
   const { db, store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  const active = store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  const active = store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -450,8 +452,8 @@ it('does not advance the definition cursor when materialization rolls back', () 
 
 it('uses the shared Workspace fence for definition changes and admission', async () => {
   const { store, gate } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -462,16 +464,16 @@ it('uses the shared Workspace fence for definition changes and admission', async
     'fenced'
   );
   expect(() =>
-    store.updateAutomation('user_creator', schedule.id, { expectedRevision: 2, status: 'paused' })
+    store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, { expectedRevision: 2, status: 'paused' })
   ).toThrow('fenced');
-  expect(() => store.deleteAutomation('user_creator', schedule.id)).toThrow('fenced');
+  expect(() => store.deleteAutomation(testEntityId('usr', 'user_creator'), schedule.id)).toThrow('fenced');
   expect(store.getOccurrence(occurrence!.id)).toMatchObject({ state: 'pending', attempts: [] });
 });
 
 it('reopens pending work with its attempt count, immutable payload, and original deadline', () => {
   const { db, root, store, clock } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -499,11 +501,11 @@ it('caps live selection at 128 globally in nominal deadline order', () => {
   // One transaction amortizes fixture setup; the real owner still performs each mutation and Audit write.
   const schedules = db.sqlite.transaction(() =>
     Array.from({ length: 140 }, (_, index) => {
-      const schedule = store.createAutomation('user_creator', {
+      const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), {
         ...definition,
         intervalSeconds: 3600,
       });
-      store.updateAutomation('user_creator', schedule.id, {
+      store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
         expectedRevision: 1,
         status: 'active',
         scheduledAt: new Date(Date.parse('2026-10-16T00:00:00.000Z') + index * 1000).toISOString(),
@@ -522,8 +524,8 @@ it('caps live selection at 128 globally in nominal deadline order', () => {
 
 it('verifies the retained queue bytes as well as its stored hash before publishing acceptance', () => {
   const { db, store } = fixture();
-  const schedule = store.createAutomation('user_creator', definition);
-  store.updateAutomation('user_creator', schedule.id, {
+  const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -533,7 +535,7 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
   expect(findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toEqual(accepted);
   db.sqlite
     .prepare(
-      "UPDATE scheduler_admission_entries SET turn_input = 'changed bytes' WHERE queue_entry_id = ?"
+      `UPDATE scheduler_admission_entries SET ${testEntityId('tu', 'turn_input')} = 'changed bytes' WHERE queue_entry_id = ?`
     )
     .run(accepted.queueEntryId);
   expect(() => findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toThrow(
@@ -548,8 +550,8 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
 });
 
 const monthlyDefinition = {
-  workspaceId: 'ws_test',
-  threadId: 'th_test',
+  workspaceId: testEntityId('ws', 'ws_test'),
+  threadId: testEntityId('th', 'th_test'),
   name: 'Monthly',
   prompt: 'Inspect status',
   monthlyUtc: { zone: 'UTC' as const, dayOfMonth: 28, hour: 9, minute: 0, second: 0 },
@@ -559,10 +561,10 @@ describe('monthly UTC recurrence lifecycle', () => {
   it('materializes the monthly nominal instant and advances its exact cursor', () => {
     const { db, store, gate, clock, setTime } = fixture();
     setTime('2027-01-28T09:00:00.000Z');
-    const paused = store.createAutomation('user_creator', monthlyDefinition);
+    const paused = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
     expect(paused.status).toBe('paused');
     expect(store.collectScanCandidates(clock())).toEqual([]);
-    const active = store.updateAutomation('user_creator', paused.id, {
+    const active = store.updateAutomation(testEntityId('usr', 'user_creator'), paused.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: clock(),
@@ -588,7 +590,7 @@ describe('monthly UTC recurrence lifecycle', () => {
 it('rejects off-rule monthly resume without mutation and replaces complete paused timing', () => {
   const { store, setTime } = fixture();
   setTime('2027-01-01T00:00:00.000Z');
-  const original = store.createAutomation('user_creator', monthlyDefinition);
+  const original = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
   for (const scheduledAt of [
     '2027-01-29T09:00:00.000Z',
     '2027-01-28T09:01:00.000Z',
@@ -596,7 +598,7 @@ it('rejects off-rule monthly resume without mutation and replaces complete pause
     '2027-01-28T09:00:00.0001Z',
   ]) {
     expect(() =>
-      store.updateAutomation('user_creator', original.id, {
+      store.updateAutomation(testEntityId('usr', 'user_creator'), original.id, {
         expectedRevision: 1,
         status: 'active',
         scheduledAt,
@@ -604,13 +606,13 @@ it('rejects off-rule monthly resume without mutation and replaces complete pause
     ).toThrow(AutomationMutationError);
     expect(store.getAutomation(original.id)).toEqual(original);
   }
-  const fixed = store.updateAutomation('user_creator', original.id, {
+  const fixed = store.updateAutomation(testEntityId('usr', 'user_creator'), original.id, {
     expectedRevision: 1,
     intervalSeconds: 7,
   });
   expect(fixed.intervalSeconds).toBe(7);
   expect(fixed).not.toHaveProperty('monthlyUtc');
-  const monthly = store.updateAutomation('user_creator', original.id, {
+  const monthly = store.updateAutomation(testEntityId('usr', 'user_creator'), original.id, {
     expectedRevision: 2,
     monthlyUtc: monthlyDefinition.monthlyUtc,
   });
@@ -621,14 +623,14 @@ it('rejects off-rule monthly resume without mutation and replaces complete pause
 it('seals a monthly outage with an exact immutable range and cancels the live instant before editing', () => {
   const { store, setTime } = fixture();
   setTime('2020-01-28T09:00:00.000Z');
-  const created = store.createAutomation('user_creator', monthlyDefinition);
-  store.updateAutomation('user_creator', created.id, {
+  const created = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2020-01-28T09:00:00.000Z',
   });
   setTime('2027-01-28T09:00:00.000Z');
-  const paused = store.updateAutomation('user_creator', created.id, {
+  const paused = store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
     expectedRevision: 2,
     status: 'paused',
   });
@@ -657,20 +659,20 @@ it('seals a monthly outage with an exact immutable range and cancels the live in
       definitionRevision: 2,
     },
   });
-  store.updateAutomation('user_creator', created.id, {
+  store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
     expectedRevision: 3,
     monthlyUtc: { ...monthlyDefinition.monthlyUtc, dayOfMonth: 27 },
     prompt: 'New request',
   });
   expect(store.listHistory(created.id).items).toEqual(history);
   expect(() =>
-    store.updateAutomation('user_creator', created.id, {
+    store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
       expectedRevision: 4,
       status: 'active',
       scheduledAt: '2027-01-27T09:00:00.000Z',
     })
   ).toThrow(AutomationMutationError);
-  store.deleteAutomation('user_creator', created.id);
+  store.deleteAutomation(testEntityId('usr', 'user_creator'), created.id);
   expect(store.getAutomation(created.id).status).toBe('deleted');
   expect(store.listHistory(created.id).items).toEqual(history);
 });
@@ -679,15 +681,15 @@ it('orders actual fixed and monthly live frontiers before the shared 128 schedul
   const { store, setTime } = fixture();
   setTime('2020-01-28T09:00:00.000Z');
   for (let index = 0; index < 129; index++) {
-    const created = store.createAutomation('user_creator', monthlyDefinition);
-    store.updateAutomation('user_creator', created.id, {
+    const created = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
+    store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: '2020-01-28T09:00:00.000Z',
     });
   }
-  const fixed = store.createAutomation('user_creator', { ...definition, intervalSeconds: 3600 });
-  store.updateAutomation('user_creator', fixed.id, {
+  const fixed = store.createAutomation(testEntityId('usr', 'user_creator'), { ...definition, intervalSeconds: 3600 });
+  store.updateAutomation(testEntityId('usr', 'user_creator'), fixed.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2027-01-28T08:59:59.000Z',
@@ -715,11 +717,11 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
-    ownerUserId: 'user_local',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
   state.setTime('2027-01-28T09:00:00.000Z');
   let schedules = state.store;
-  const created = schedules.createAutomation('user_local', {
+  const created = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
     ...monthlyDefinition,
     workspaceId: workspace.id,
     threadId: thread.id,
@@ -740,7 +742,7 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
   try {
     await service.runOnce();
     expect(prepare).not.toHaveBeenCalled();
-    schedules.updateAutomation('user_local', created.id, {
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, created.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: state.clock(),
@@ -865,8 +867,8 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
 it('rolls back monthly range, cursor and Audit together before retrying the same exact prefix', () => {
   const { db, store, setTime } = fixture();
   setTime('2020-01-28T09:00:00.000Z');
-  const created = store.createAutomation('user_creator', monthlyDefinition);
-  const active = store.updateAutomation('user_creator', created.id, {
+  const created = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
+  const active = store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2020-01-28T09:00:00.000Z',
@@ -889,8 +891,8 @@ it('rolls back monthly range, cursor and Audit together before retrying the same
 it('fails the SQL frontier closed on contradictory retained core timing', () => {
   const { db, store, setTime } = fixture();
   setTime('2027-01-28T09:00:00.000Z');
-  const created = store.createAutomation('user_creator', monthlyDefinition);
-  const active = store.updateAutomation('user_creator', created.id, {
+  const created = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
+  const active = store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2027-01-28T09:00:00.000Z',
@@ -909,16 +911,16 @@ it('selects a live monthly instant ahead of more than 128 expired-only fixed pre
   setTime('2020-01-28T09:00:00.000Z');
   db.sqlite.transaction(() => {
     for (let index = 0; index < 129; index++) {
-      const old = store.createAutomation('user_creator', { ...definition, intervalSeconds: 86400 });
-      store.updateAutomation('user_creator', old.id, {
+      const old = store.createAutomation(testEntityId('usr', 'user_creator'), { ...definition, intervalSeconds: 86400 });
+      store.updateAutomation(testEntityId('usr', 'user_creator'), old.id, {
         expectedRevision: 1,
         status: 'active',
         scheduledAt: '2020-01-28T09:01:00.000Z',
       });
     }
   })();
-  const monthly = store.createAutomation('user_creator', monthlyDefinition);
-  store.updateAutomation('user_creator', monthly.id, {
+  const monthly = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
+  store.updateAutomation(testEntityId('usr', 'user_creator'), monthly.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2027-01-28T09:00:00.000Z',
@@ -937,8 +939,8 @@ it('selects a live monthly instant ahead of more than 128 expired-only fixed pre
 
 it('preserves one series waiting slot during explicit retry, including after restart', () => {
   const { root, db, clock, store, setTime } = fixture();
-  const created = store.createAutomation('user_creator', definition);
-  const active = store.updateAutomation('user_creator', created.id, {
+  const created = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+  const active = store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: clock(),
@@ -956,11 +958,11 @@ it('preserves one series waiting slot during explicit retry, including after res
     kind: 'ready',
     payload,
   })!;
-  const other = store.createAutomation('user_creator', {
+  const other = store.createAutomation(testEntityId('usr', 'user_creator'), {
     ...definition,
     name: 'Independent series',
   });
-  const otherActive = store.updateAutomation('user_creator', other.id, {
+  const otherActive = store.updateAutomation(testEntityId('usr', 'user_creator'), other.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: clock(),

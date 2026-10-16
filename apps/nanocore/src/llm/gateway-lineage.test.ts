@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
@@ -16,6 +15,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { GatewayAttemptFailure } from './gateway-execution.js';
@@ -31,7 +31,11 @@ function fixture(missingKey = false) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId,
+  });
   const primary = fauxProvider({ provider: 'openai', models: [{ id: 'gpt-5.1' }] });
   const backup = fauxProvider({ provider: 'anthropic', models: [{ id: 'claude-sonnet-4-5' }] });
   const models = createModels();
@@ -56,7 +60,7 @@ function fixture(missingKey = false) {
         models: ['gpt-5.1'],
         ...(missingKey
           ? {
-              secretRef: 'vault://absent_key',
+              secretRef: 'vault://vault_00000000-0000-78f9-b548-bb61f3474278',
               modelMetadata: {
                 'gpt-5.1': {
                   reasoning: true,
@@ -283,14 +287,14 @@ describe('public durable logical Gateway lineage', () => {
       mode: 'server',
     });
     const memberToken = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
       workspaceIds: [f.workspaceId],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const thread = f.store.createThread(f.workspaceId, 'Private', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_other',
+      privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     });
     const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
@@ -368,7 +372,7 @@ describe('public durable logical Gateway lineage', () => {
       startCapabilityCall({
         workspaceDb: db,
         workspaceId: f.workspaceId,
-        authorityActor: { kind: 'user', id: 'user_local' },
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses',

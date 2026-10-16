@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual, TextDecoder, toUSVString } from 'node:util';
-
 import {
   type AuthResult,
   type CredentialStore,
@@ -18,6 +17,7 @@ import {
   type SubscriptionProviderId,
   SubscriptionProviderIdSchema,
 } from '@openkit/config-schema';
+import { allocateEntityId, isEntityId } from '@openkit/protocol';
 
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreDb } from '../storage/db.js';
@@ -420,7 +420,7 @@ export class ProviderSubscriptionAccountManager {
     this.coreDb = input.coreDb;
     this.vaultBackend = input.vaultBackend;
     this.now = input.now ?? (() => new Date().toISOString());
-    this.createReferenceId = input.createReferenceId ?? randomUUID;
+    this.createReferenceId = input.createReferenceId ?? (() => allocateEntityId('vault'));
   }
 
   /**
@@ -1088,6 +1088,10 @@ export class ProviderSubscriptionAccountManager {
             pair,
             async () => {
               const referenceId = this.createReferenceId();
+              if (!isEntityId('vault', referenceId))
+                throw new Error(
+                  'Provider subscription requires a canonical Vault reference identity.'
+                );
               if (!VAULT_REFERENCE_ID_PATTERN.test(referenceId)) {
                 throw persistenceError();
               }

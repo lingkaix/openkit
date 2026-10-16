@@ -52,7 +52,7 @@ Capability usage read models extend the canonical protocol `CapabilityCall` whil
 
 Runtime configuration file metadata includes the deployment-admin-only Workspace MCP catalog kind; the App API carries its source text and JSON Schema but does not project server topology into worker or ordinary product read models.
 
-Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views expose immutable revision identity without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
+Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views admit canonical `mrev` revisions and `arev` Review identities, including nested revision links and operation inputs, without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
 
 Knowledge Proposal page ids and page-source references reserve the final `index` and `log` segments at every hierarchy level, matching OKF reserved filenames.
 
@@ -165,5 +165,7 @@ Knowledge derived-index inspection exposes only link, validation and source-refe
 
 
 `automation.ts` keeps existing fixed `intervalSeconds` shapes and adds mutually exclusive bounded `monthlyUtc` rules. Create and retained definitions/ranges require exactly one timing shape; paused updates replace one complete shape atomically. `MonthlyUtcScheduleSchema` is the shared day-1-through-28, literal-UTC rule validator, and monthly occurrence snapshots retain that immutable rule. Definition-derived model and public projections retain the same cross-field checks.
+
+Named entity fields reuse Protocol kind schemas, including User and automation ActorRef identity, Material and Vault lineage, Light App collection/field identity and prefixed presentation ids. Bare Light App app/record UUIDs and authored/native selectors remain with their existing owners. Workspace grant projections require explicit immutable issuance; they never default imported history to target authority.
 
 `administration.ts` admits a closed Agent Git-read proposal branch beside the existing catalog branch. It carries exact registered identity/base, a failed-Turn reference and only existing-grant rules. Immutable Agent candidates additionally retain server-derived AEP and explanation digests. The private delegated apply input contains only request identity and exact candidate reference; human apply retains its digest-bound confirmation. NanoCore owns audience, provenance, current finite Policy and file effects; schema acceptance supplies none of them.

@@ -7,7 +7,7 @@ import {
   AutomationRecordSchema,
   MaterializedWorkspaceRootSchema,
 } from '@openkit/app-api-schemas';
-import { ReasoningEffortSchema } from '@openkit/protocol';
+import { deriveEntityId, ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
@@ -90,7 +90,7 @@ export function recurringRequestId(scheduleId: string, scheduledAt: string): str
 export function readRecurringOccurrence(json: string): RecurringOccurrence {
   const record = RecurringOccurrenceSchema.parse(JSON.parse(json));
   if (
-    record.id !== `occ_${recurringRequestId(record.scheduleId, record.scheduledAt)}` ||
+    record.id !== deriveEntityId('occ', [record.scheduleId, record.scheduledAt]) ||
     record.requestId !== recurringRequestId(record.scheduleId, record.scheduledAt) ||
     record.snapshot.actor.id !== record.scheduleId ||
     (record.snapshot.monthlyUtc !== undefined &&
@@ -115,11 +115,11 @@ export function recurringSchedulerAdmissionInput(
   return {
     ...resolved,
     ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    queueEntryId: `queue_recurring_${occurrence.requestId}`,
+    queueEntryId: occurrence.requestId,
     requestId: occurrence.requestId,
     workspaceId: occurrence.workspaceId,
     threadId: occurrence.snapshot.threadId,
-    turnId: `turn_recurring_${occurrence.requestId}`,
+    turnId: deriveEntityId('tu', ['recurring', occurrence.scheduleId, occurrence.scheduledAt]),
     turnInput: occurrence.snapshot.prompt,
     triggerActor: occurrence.snapshot.actor,
     now: () => timestamp,

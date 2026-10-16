@@ -7,6 +7,7 @@ import {
   GENERATIVE_UI_PROTOCOL_VERSION,
   type LightAppSchemaInput,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -19,6 +20,7 @@ import { KernelCommandError } from '../generative-kernel/errors.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   type GenerativeUiCommandContext,
   getGenerativePresentation,
@@ -79,14 +81,14 @@ function createContext(requestId = randomUUID()): GenerativeUiCommandContext & {
 } {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-ui-'));
   const store = createDemoStore({ dataRoot });
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   return {
     store,
     inflightCommands: new WeakMap(),
     dataRoot,
-    workspaceId: 'ws_demo',
-    actor: { kind: 'user', id: 'user_local' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     requestId,
     workspaceDb,
     close: () => {
@@ -125,16 +127,16 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Show the observation',
         context.actor
       );
       const text = 'The external source reported 3 matches.';
       const sourceItem = context.store.createItem({
-        id: `it_${randomUUID()}`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'tool-call',
         status: 'completed',
@@ -148,7 +150,7 @@ describe('Generative UI commands', () => {
         completedAt: new Date().toISOString(),
       });
       const published = await publishGenerativePresentation(context, {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Observation',
         fallbackText: text,
@@ -165,6 +167,16 @@ describe('Generative UI commands', () => {
       expect(listLightApps(context.dataRoot, context.workspaceId).totalItems).toBe(0);
       expect(published.source).toMatchObject({ kind: 'item', itemId: sourceItem.id });
       expect(published.messages[2]).toMatchObject({ updateDataModel: { value: { text } } });
+      for (const changedSource of [
+        { status: 'failed' as const },
+        { result: null },
+        { result: 'Changed retained observation' },
+      ]) {
+        context.store.updateItem(sourceItem.id, changedSource);
+        expect(() => getGenerativePresentation(context, published.id)).toThrow(KernelCommandError);
+        context.store.updateItem(sourceItem.id, sourceItem);
+      }
+      expect(getGenerativePresentation(context, published.id).id).toBe(published.id);
       expect(
         context.workspaceDb.sqlite
           .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
@@ -179,13 +191,13 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
         context.actor
       );
       const input = {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Answer',
         fallbackText: 'A generated answer.',
@@ -208,7 +220,13 @@ describe('Generative UI commands', () => {
         status: 'completed',
         turnId: turn.id,
       });
-      expect(context.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe(turn.status);
+      expect(
+        context.store.getTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          turn.id
+        ).status
+      ).toBe(turn.status);
       expect(await publishGenerativePresentation(context, input)).toEqual(published);
       expect(
         context.store
@@ -239,15 +257,15 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Show the observation',
         context.actor
       );
       const source = context.store.createItem({
-        id: `it_${randomUUID()}`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'tool-call',
         status,
@@ -262,7 +280,7 @@ describe('Generative UI commands', () => {
       });
       await expect(
         publishGenerativePresentation(context, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           title: 'Observation',
           fallbackText: 'Observation',
@@ -296,13 +314,13 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
         context.actor
       );
       const input = {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Answer',
         fallbackText: 'Retained answer.',
@@ -350,14 +368,14 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
         context.actor
       );
       await expect(
         publishGenerativePresentation(context, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           title: 'Answer',
           fallbackText: 'Answer',
@@ -380,28 +398,28 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const privateThread = context.store.createThread(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'Private Tool observation',
         undefined,
         'conversation',
-        { visibility: 'private', privateOwnerUserId: 'user_local' }
+        { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
       );
       const sourceTurn = context.store.createTurn(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         privateThread.id,
         'Read a private source',
         context.actor
       );
       const destination = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Show the result publicly',
         context.actor
       );
       const text = 'Private Tool result';
       const source = context.store.createItem({
-        id: `it_${randomUUID()}`,
-        workspaceId: 'ws_demo',
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: privateThread.id,
         turnId: sourceTurn.id,
         type: 'tool-call',
@@ -419,7 +437,7 @@ describe('Generative UI commands', () => {
         publishGenerativePresentation(
           { ...context, administratorEligible: true },
           {
-            threadId: 'th_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: destination.id,
             title: 'Observation',
             fallbackText: 'Observation',
@@ -449,15 +467,15 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Publish a generated view',
         context.actor
       );
       const sourceItem = context.store.createItem({
-        id: `it_${turn.id}_source`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: testEntityId('it', `it_${turn.id}_source`),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
         status: 'completed',
@@ -466,7 +484,7 @@ describe('Generative UI commands', () => {
         completedAt: turn.startedAt ?? new Date().toISOString(),
       });
       const published = await publishGenerativePresentation(context, {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Mapping view',
         fallbackText: 'Membership 1 maps to CRM 1.',
@@ -517,8 +535,8 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Edit a mapping annotation',
         context.actor
       );
@@ -539,7 +557,7 @@ describe('Generative UI commands', () => {
         }
       );
       const published = await publishGenerativePresentation(context, {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Edit annotation',
         fallbackText: 'Edit the local mapping annotation.',
@@ -616,8 +634,8 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Edit a mapping annotation',
         context.actor
       );
@@ -638,7 +656,7 @@ describe('Generative UI commands', () => {
         }
       );
       const published = await publishGenerativePresentation(context, {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Edit annotation',
         fallbackText: 'Edit the local mapping annotation.',
@@ -727,15 +745,15 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Publish a generated view',
         context.actor
       );
       const sourceItem = context.store.createItem({
-        id: `it_${turn.id}_source`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: testEntityId('it', `it_${turn.id}_source`),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
         status: 'completed',
@@ -749,7 +767,7 @@ describe('Generative UI commands', () => {
       );
       await expect(
         publishGenerativePresentation(context, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           title: 'Mapping view',
           fallbackText: 'Membership 1 maps to CRM 1.',
@@ -779,15 +797,15 @@ describe('Generative UI commands', () => {
     const context = createContext(requestId);
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Replay publication',
         context.actor
       );
       const sourceItem = context.store.createItem({
-        id: `it_${turn.id}_source`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: testEntityId('it', `it_${turn.id}_source`),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
         status: 'completed',
@@ -796,7 +814,7 @@ describe('Generative UI commands', () => {
         completedAt: turn.startedAt ?? new Date().toISOString(),
       });
       const input = {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Stable view',
         fallbackText: 'Stable source text.',
@@ -824,7 +842,12 @@ describe('Generative UI commands', () => {
   it('rejects publication onto a completed turn', async () => {
     const context = createContext();
     try {
-      const turn = context.store.createTurn('ws_demo', 'th_demo', 'Completed turn', context.actor);
+      const turn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Completed turn',
+        context.actor
+      );
       context.store.updateTurn(turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
@@ -832,7 +855,7 @@ describe('Generative UI commands', () => {
       });
       await expect(
         publishGenerativePresentation(context, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           title: 'Too late',
           fallbackText: 'Turn already completed.',
@@ -841,7 +864,7 @@ describe('Generative UI commands', () => {
           ]),
           source: {
             kind: 'item',
-            itemId: 'it_missing',
+            itemId: 'it_00000000-0000-7cd6-8d25-15aa6e49eadb',
             contentDigest: `sha256:${'0'.repeat(64)}`,
           },
           actions: [],

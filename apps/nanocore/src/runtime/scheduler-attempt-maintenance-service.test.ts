@@ -34,7 +34,9 @@ describe('scheduler attempt maintenance service', () => {
           JSON.stringify({
             severityText: 'WARN',
             body: 'Scheduler attempt maintenance failed.',
-            attributes: { 'openkit.error.code': 'scheduler.attempt_maintenance_failed' },
+            attributes: {
+              'openkit.error.code': 'scheduler.attempt_maintenance_failed',
+            },
           }),
         ],
       ]);

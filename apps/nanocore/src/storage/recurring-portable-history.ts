@@ -5,7 +5,7 @@ import {
   AutomationOccurrenceSchema,
   AutomationRecordSchema,
 } from '@openkit/app-api-schemas';
-import { ReasoningEffortSchema } from '@openkit/protocol';
+import { deriveEntityId, ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   recurringNominalMatches,
@@ -166,6 +166,7 @@ export function readRecurringPortableHistory(
     const accepted = occurrence.state === 'admission-accepted';
     const acceptedAttempts = occurrence.attempts.filter((attempt) => attempt.code === 'accepted');
     if (
+      occurrence.id !== deriveEntityId('occ', [occurrence.scheduleId, occurrence.scheduledAt]) ||
       occurrence.originRequestId !==
         recurringRequestId(schedule.originScheduleId, occurrence.scheduledAt) ||
       Date.parse(occurrence.deadline) !== at + RECURRING_DEADLINE_MS ||

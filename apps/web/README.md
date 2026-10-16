@@ -293,7 +293,7 @@ Settings **App update** projects deployment-admin `app-update.prepare`, `app-upd
 
 New Chat opens its accepted originating Thread as soon as Thread creation completes, while the synchronous first `conversation.submit` remains pending. Thread progress and Stop follow the authoritative dashboard. The existing submission mutation cache carries the full draft and request identity across this route transition; pending submission blocks duplicate Send, failure retains that same request for explicit retry without creating another Thread, and success clears sent text, attachments, and Worker environment choice and creates a fresh request identity. The chosen agent and logical model remain selected for the next message. A route-local request marker permits the eventual receiving-Thread handoff only while the user is still viewing the submitting conversation; switching conversations or Workspaces cannot be overridden by a late completion. Drafts remain in memory and do not survive reload.
 
-Chat and Task Composer target availability follows changes to the current Thread's latest observed Turn identity or status, including SSE completion and the existing foreground dashboard refresh. Only that Thread's target catalog is refreshed; NanoCore still decides whether a Worker is available.
+Chat and Task Composer target availability follows changes to the current Thread's latest observed Turn identity or status, including SSE completion and the existing foreground dashboard refresh. Only that Thread's target catalog is refreshed; NanoCore still decides whether a Worker is available. Send and Enter require an exact available catalog target and an admitted selected model; catalog loading or lost eligibility retains the draft and request identity.
 
 The existing `+` chooser exposes Advanced settings for new Task Worker work: default new environment or explicit retained-environment reuse, with readable source provenance, labeled local creation time to distinguish same-source environments, and eligibility. Selection previews use the existing administrator-scoped environment reads; structured submission forwards the exact choice for send-time revalidation by actual receiving-Thread admission, preserving idempotent replay after transport uncertainty; errors retain the draft and choice rather than silently creating fresh storage.
 
@@ -444,3 +444,9 @@ Gateway account rows clear cached quota while pending or logged out, including l
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
+
+New API-key Provider profiles allocate one canonical Vault reference through the browser-safe Protocol codec. The form retains that candidate across a failed create retry and stores it in the authored Provider file; reads and key rotation use the recorded reference.
+
+The Web end-to-end suite runs with one worker to keep the shared development machine within its test resource bound. The root test:e2e:web command builds and runs the complete suite.
+
+The local Web E2E simulator image fixture reuses its recorded Artifact identity for the same request and allocates canonical ar UUIDv7 only for a new settlement.

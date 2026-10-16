@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { hashPassword } from 'better-auth/crypto';
 import type { CoreDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
@@ -204,7 +204,7 @@ export async function consumeServerBootstrapToken(
          VALUES (?, ?, 'credential', ?, ?, ?, ?)`
       )
       .run(
-        randomUUID(),
+        allocateEntityId('acct'),
         input.ownerUserId,
         input.ownerUserId,
         passwordHash,

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import { openCoreDb } from '../storage/db.js';
@@ -17,12 +18,12 @@ describe('Vault administration Audit attribution', () => {
         applyMigrations(db);
         const actor: Actor = {
           kind,
-          userId: randomUUID(),
+          userId: allocateEntityId('usr'),
           ...(kind === 'token'
             ? { tokenId: randomUUID(), tokenScope: 'server-admin' as const }
             : {}),
         };
-        const auditEventId = randomUUID();
+        const auditEventId = allocateEntityId('aud');
         recordVaultAdminAuditEvent({
           coreDb: db,
           actor,

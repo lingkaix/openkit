@@ -183,6 +183,7 @@ This table names prefixes for independent generation paths. Workspace, Thread, a
 | Turn | `tu` |
 | AgentSession | `as` |
 | AutomationIdentity | `auto` |
+| Recurring expired range | `range` |
 | AuthSession | `auth` |
 | Authentication account | `acct` |
 | Authentication verification record | `verif` |
@@ -211,12 +212,15 @@ This table names prefixes for independent generation paths. Workspace, Thread, a
 | Workspace export | `wsexp` |
 | Data-root backup | `drb` |
 
+The [Recurring Trigger owner](../specs/20260711-scheduler_recurring_event_triggers.md#identifier-producers) declares occurrence `occ` name `[scheduleId, scheduledAt]` and fixed Turn `tu` name `["recurring", scheduleId, scheduledAt]`, using the canonical recorded UTC millisecond instant. Independent `auto` and `range` allocation and inert import maps retain that owner's lifecycle.
+
 ### Derived Entity Kinds And Namespaces
 
 These kinds retain their owning derivations and use the same text form as any independent UUIDv7 allocation of that kind. Only a kind with an owning derivation admits UUIDv5. These constants encode existing identities; they add no independent allocation requirement.
 
 | Entity kind | Prefix | Fixed namespace UUID |
 | --- | --- | --- |
+| Recurring occurrence | `occ` | `fc01b827-9017-53dc-b41b-387a2110d905` |
 | Workspace | `ws` | `41710f31-94f8-5e51-9589-1744ce75680d` |
 | Thread | `th` | `1ea1147f-0d1a-5ae4-ba03-7ba2cd6a0eea` |
 | Turn | `tu` | `946f39c9-520d-5df2-985f-afaf05790c9d` |
@@ -227,9 +231,11 @@ These kinds retain their owning derivations and use the same text form as any in
 | Artifact Review | `arev` | `59bffd58-b464-5c91-917f-a066bc9ce605` |
 | Knowledge Review | `kr` | `5e78300b-9458-5519-b104-d47e32923804` |
 | CapabilityCall | `cap` | `b447467a-3e9c-5e36-b988-7b4961a0d817` |
+| Stopped-server recovery Token, only the producer declared by the remote-auth owner | `tok` | `e87fb49e-00c1-53f3-adbd-a5cf0de72bcc` |
 | AuditEvent | `aud` | `c3d8713d-557b-5bf8-aa9c-a28bf50775d4` |
 | PermissionDecision | `pd` | `bcf1702a-4e6a-59c6-86ac-75352a8fc41d` |
 | Knowledge retrieval trace | `krt` | `32a06e66-912c-53a4-b9d2-85b0a9edfe0b` |
+| Workspace deletion recovery export, only the producer declared by Workspace Deletion | `wsexp` | `d8e266d0-77a0-5e91-b599-de82740626ff` |
 
 Core MUST assign the IDs of Core-owned durable records according to their owning schema and accepted specification.
 

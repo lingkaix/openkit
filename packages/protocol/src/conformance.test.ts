@@ -67,18 +67,18 @@ describe('conformance fixtures round-trip via @openkit/protocol schemas', () => 
 
 describe('audit event actor attribution', () => {
   const auditEvent = {
-    id: 'audit_actor_demo',
+    id: 'aud_00000000-0000-7afe-8fe3-939a560f98cf',
     action: 'workspace.member.add',
     outcome: 'succeeded',
     summary: 'Workspace member added.',
   } as const;
 
   it('accepts strict nullable actor and subject references', () => {
-    const actor = { kind: 'user', id: 'user_owner' } as const;
+    const actor = { kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' } as const;
     const subject = {
       kind: 'automation',
-      id: 'automation_invitation',
-      responsibleUserId: 'user_owner',
+      id: 'auto_00000000-0000-7af9-8497-e7a8bda470e0',
+      responsibleUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     } as const;
 
     expect(AuditEventSchema.parse({ ...auditEvent, actor, subject })).toMatchObject({
@@ -98,13 +98,16 @@ describe('audit event actor attribution', () => {
   });
 
   it('rejects legacy, malformed, and secret-bearing attribution fields', () => {
-    expect(AuditEventSchema.safeParse({ ...auditEvent, actorId: 'user_owner' }).success).toBe(
-      false
-    );
     expect(
       AuditEventSchema.safeParse({
         ...auditEvent,
-        actor: { kind: 'automation', id: 'automation_invitation' },
+        actorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      }).success
+    ).toBe(false);
+    expect(
+      AuditEventSchema.safeParse({
+        ...auditEvent,
+        actor: { kind: 'automation', id: 'auto_00000000-0000-7af9-8497-e7a8bda470e0' },
       }).success
     ).toBe(false);
     expect(

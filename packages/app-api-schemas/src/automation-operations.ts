@@ -1,3 +1,4 @@
+import { AutomationIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   AutomationHistoryRequestSchema,
@@ -68,7 +69,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     ...child,
     description: 'Update one automation definition.',
     inputSchema: UpdateAutomationRequestSchema.safeExtend({
-      automationId: z.string().min(1),
+      automationId: AutomationIdSchema,
     }).strict(),
     outputSchema: AutomationRecordSchema,
   },
@@ -77,7 +78,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     ...child,
     description: 'Delete one automation definition.',
-    inputSchema: z.object({ automationId: z.string().min(1) }).strict(),
+    inputSchema: z.object({ automationId: AutomationIdSchema }).strict(),
     outputSchema: z.null(),
     successStatus: 204,
   },

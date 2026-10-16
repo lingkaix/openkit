@@ -47,7 +47,7 @@ describe('NanoHost transport token store', () => {
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: 'integration_nanohost_primary',
-        responsibleServerAdminActorId: 'user_admin',
+        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       const rows = coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all() as Array<{
         scope: string;
@@ -91,7 +91,7 @@ describe('NanoHost transport token store', () => {
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: 'integration_nanohost_primary',
-        responsibleServerAdminActorId: 'user_admin',
+        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       const rotated = rotateNanoHostTransportTokenRecord(coreDb, issued.tokenId, {
         now: new Date('2026-08-08T01:00:00.000Z'),

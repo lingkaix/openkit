@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-
 import type {
   BindThreadMaterialRequest,
   BindThreadMaterialResponse,
@@ -18,6 +17,7 @@ import type {
   WorkspaceMaterialRevisionView,
   WorkspaceMaterialView,
 } from '@openkit/app-api-schemas';
+import { type ActorRef, deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 
 import type { WorkspaceDb } from './storage/db.js';
 
@@ -82,13 +82,13 @@ type BindingCommand<T> = AcceptedCommand<T> & {
 
 /** Accepted create command with authenticated scope. */
 export type CreateWorkspaceMaterialInput = AcceptedCommand<CreateWorkspaceMaterialRequest> & {
-  readonly actorId: string;
+  readonly actor: ActorRef;
 };
 
 /** Accepted save command with authenticated scope. */
 export type SaveWorkspaceMaterialRevisionInput =
   AcceptedCommand<SaveWorkspaceMaterialRevisionRequest> & {
-    readonly actorId: string;
+    readonly actor: ActorRef;
     readonly materialId: string;
   };
 
@@ -350,9 +350,9 @@ export function createWorkspaceMaterial(
   workspaceDb: WorkspaceDb,
   input: CreateWorkspaceMaterialInput
 ): CreateWorkspaceMaterialResponse {
-  const materialId = deterministicId('mat', [
+  const materialId = deriveEntityId('mat', [
     'material.create',
-    input.actorId,
+    input.actor,
     workspaceDb.workspaceId,
     input.requestId,
   ]);
@@ -384,9 +384,9 @@ export function saveWorkspaceMaterialRevision(
   workspaceDb: WorkspaceDb,
   input: SaveWorkspaceMaterialRevisionInput
 ): SaveWorkspaceMaterialRevisionResponse {
-  const revisionId = deterministicId('mrev', [
+  const revisionId = deriveEntityId('mrev', [
     'material.save',
-    input.actorId,
+    input.actor,
     workspaceDb.workspaceId,
     input.materialId,
     input.requestId,
@@ -427,7 +427,7 @@ export function saveWorkspaceMaterialRevision(
         material.kind === 'markdown' ? 'text/markdown' : 'text/plain',
         input.contentDigest,
         input.content,
-        input.actorId,
+        responsibleUserIdForActor(input.actor),
         input.requestId,
         input.acceptedAt
       );
@@ -743,11 +743,6 @@ function toRevisionView(row: RevisionRow): WorkspaceMaterialRevisionView {
 /** Computes the exact UTF-8 digest. @param content Canonical content. @returns SHA-256 digest. */
 function contentDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
-}
-
-/** Derives a stable local owner id. @param prefix Identity prefix. @param scope Immutable scope. @returns Stable id. */
-function deterministicId(prefix: 'mat' | 'mrev', scope: readonly string[]): string {
-  return `${prefix}_${createHash('sha256').update(JSON.stringify(scope)).digest('hex').slice(0, 24)}`;
 }
 
 /** Creates one structural S16 error. @param code Stable code. @param message Failure summary. @returns Typed error. */

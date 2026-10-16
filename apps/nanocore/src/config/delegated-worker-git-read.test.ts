@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
 
@@ -10,7 +10,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -22,6 +22,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
@@ -47,7 +48,7 @@ const correctedRules = [
   unrelatedRule,
 ];
 const assignment = {
-  responsibleUserId: 'user_local',
+  responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
   agentId: 'agent_repair',
   networkGrantId: 'git-read',
   host: 'git.example.test',
@@ -69,21 +70,25 @@ function fixture(repositoryCount = 1) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const actor: Actor = {
     kind: 'token',
-    userId: 'user_local',
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     tokenId: token.tokenId,
     tokenScope: 'server-admin',
     tokenWorkspaceIds: [],
   };
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.userId, workspaceId: 'ws_demo' });
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: actor.userId,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   cleanup.push(() => workspaceDb.sqlite.close());
   applyScopedMigrations(workspaceDb);
   const setup = createTestAgentSetup({
@@ -133,10 +138,14 @@ function fixture(repositoryCount = 1) {
     JSON.stringify(createTestGatewayConfig({ logicalModelId: 'reasoning' }))
   );
 
-  const failedThread = store.createThread('ws_demo', 'Failed materialization', randomUUID());
-  const sessionId = randomUUID();
+  const failedThread = store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Failed materialization',
+    allocateEntityId('th')
+  );
+  const sessionId = allocateEntityId('as');
   const failedTurn = store.createTurn(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     failedThread.id,
     'Read the project',
     { kind: 'user', id: actor.userId },
@@ -193,7 +202,7 @@ function fixture(repositoryCount = 1) {
   store.createAgentSession({
     id: sessionId,
     agentId: assignment.agentId,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: failedThread.id,
     status: 'failed',
     message: 'Synthetic Git fetch refusal',
@@ -227,8 +236,9 @@ function fixture(repositoryCount = 1) {
   const thread = store.createThread(
     workspaceId,
     'Repair the Git-read rule',
-    randomUUID(),
-    'administration'
+    allocateEntityId('th'),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: actor.userId }
   );
   const turn = store.createTurn(workspaceId, thread.id, 'Repair the assigned rule', {
     kind: 'user',
@@ -239,7 +249,7 @@ function fixture(repositoryCount = 1) {
   const files = new RuntimeConfigFileService({
     dataRoot,
     userId: actor.userId,
-    workspaceIds: ['ws_demo', workspaceId],
+    workspaceIds: ['ws_00000000-0000-7000-8000-000000000001', workspaceId],
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
@@ -252,7 +262,8 @@ function fixture(repositoryCount = 1) {
     files,
     reload,
     runtimeConfig: () => manager.current(),
-    repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, 'ws_demo'),
+    repositoryWorkspaceDb: () =>
+      openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
     inflightCommands: new WeakMap(),
   };
   const service = createAdministrationConfiguration(options);
@@ -260,7 +271,11 @@ function fixture(repositoryCount = 1) {
     targetFamily: 'agent' as const,
     targetId: assignment.agentId,
     expectedRevision: files.readFile('agents/registered.agent.jsonc').file.revision!,
-    failure: { workspaceId: 'ws_demo', threadId: failedThread.id, turnId: failedTurn.id },
+    failure: {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: failedThread.id,
+      turnId: failedTurn.id,
+    },
     changes: { networkGrantId: 'git-read', rules: correctedRules },
   };
   return {
@@ -372,7 +387,13 @@ describe('finite delegated Worker Git-read application', () => {
     expect(f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId).content.body).toBe(
       candidateBytes
     );
-    expect(f.store.getTurn('ws_demo', f.request.failure.threadId, f.failedTurn.id)).toMatchObject({
+    expect(
+      f.store.getTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.request.failure.threadId,
+        f.failedTurn.id
+      )
+    ).toMatchObject({
       status: 'failed',
     });
   });

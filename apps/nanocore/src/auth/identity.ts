@@ -1,6 +1,7 @@
+import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import type { CoreMode } from '../config/mode.js';
 import type { CoreDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
+import { ensureUserLayout } from '../storage/fs-layout.js';
 import { users } from '../storage/schema/index.js';
 import type { OpenKitAccessTokenScope } from './access-token.js';
 
@@ -51,12 +52,11 @@ export function isDeploymentAdminActor(actor: Actor | undefined): boolean {
  * @param mode Resolved NanoCore runtime mode.
  * @returns Local actor in local mode.
  */
-export function actorFromRequest(_request: Request, mode: CoreMode): Actor {
-  if (mode === 'local') {
-    return { userId: LOCAL_USER_ID, kind: 'local' };
+export function actorFromRequest(_request: Request, mode: CoreMode, localUserId: string): Actor {
+  if (mode !== 'local' || !isEntityId('usr', localUserId)) {
+    throw new Error('Canonical local User authority is unavailable.');
   }
-
-  return { userId: LOCAL_USER_ID, kind: 'session' };
+  return { userId: localUserId, kind: 'local' };
 }
 
 /**
@@ -77,42 +77,55 @@ export interface AuthSessionIdentity {
  * @returns Session actor used by product code.
  */
 export function actorFromSession(session: AuthSessionIdentity): Actor {
+  if (!isEntityId('usr', session.user.id))
+    throw new Error('Canonical session User authority is unavailable.');
   return { userId: session.user.id, kind: 'session' };
 }
 
-/**
- * Upserts the implicit local user into the server-scope Core SQLite database.
- *
- * @param coreDb Open Core database handles.
- */
-export function ensureLocalUser(coreDb: CoreDb): void {
-  const now = new Date();
-  const nowIso = now.toISOString();
+/** Reads the unique recorded local User without creating or changing its lifecycle. */
+export function getLocalUserId(coreDb: CoreDb): string {
+  const users = coreDb.sqlite.prepare("SELECT id FROM users WHERE kind = 'local'").all() as Array<{
+    id: string;
+  }>;
+  if (users.length !== 1 || !isEntityId('usr', users[0]?.id)) {
+    throw new Error('Canonical local User authority is missing or ambiguous.');
+  }
+  return users[0]!.id;
+}
 
-  coreDb.db
-    .insert(users)
-    .values({
-      id: LOCAL_USER_ID,
-      kind: 'local',
-      displayName: 'Local User',
-      email: 'user_local@local.openkit.invalid',
-      emailVerified: false,
-      image: null,
-      createdAt: now,
-      updatedAt: now,
-      lastSeenAt: nowIso,
-    })
-    .onConflictDoUpdate({
-      target: users.id,
-      set: {
+/**
+ * Initializes one canonical local User only within the proved fresh deployment transaction.
+ * Reopen, updates and disabled state retain the recorded identity; an empty used lookup never remints.
+ */
+export function ensureLocalUser(coreDb: CoreDb): string {
+  const id = coreDb.sqlite.transaction(() => {
+    const existing = coreDb.sqlite.prepare("SELECT id FROM users WHERE kind = 'local'").all();
+    if (existing.length > 0) return getLocalUserId(coreDb);
+    const count = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+      count: number;
+    };
+    if (!coreDb.canInitializeLocalUser || count.count !== 0) {
+      throw new Error('Missing local User on an initialized deployment requires inspection.');
+    }
+    const now = new Date();
+    const id = allocateEntityId('usr');
+    coreDb.db
+      .insert(users)
+      .values({
+        id,
         kind: 'local',
         displayName: 'Local User',
-        email: 'user_local@local.openkit.invalid',
+        email: 'local@local.openkit.invalid',
         emailVerified: false,
         image: null,
+        createdAt: now,
         updatedAt: now,
-        lastSeenAt: nowIso,
-      },
-    })
-    .run();
+        lastSeenAt: now.toISOString(),
+      })
+      .run();
+    return id;
+  })();
+  coreDb.canInitializeLocalUser = false;
+  ensureUserLayout(coreDb.dataRoot, id);
+  return id;
 }
