@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -102,6 +102,55 @@ beforeEach(() => {
 });
 
 describe('Configuration settings', () => {
+  it('preserves edits made after a save without replacing them from a background file read', async () => {
+    const client = makeClient(vi.fn().mockResolvedValue(FILES));
+    const { queryClient } = renderScreen(client);
+    const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
+    fireEvent.change(editor, { target: { value: '{"mode":"local"}' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Save file' }));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(client.operations['runtime.file-read']).toHaveBeenCalledTimes(1);
+    fireEvent.change(editor, { target: { value: '{"mode":"local","futureOption":true}' } });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(editor).toHaveValue('{"mode":"local","futureOption":true}');
+    expect(screen.getByText('Unsaved')).toBeInTheDocument();
+  });
+
+  it('does not publish a late save into a replacement account file cache', async () => {
+    const client = makeClient(vi.fn().mockResolvedValue(FILES));
+    let finish!: (
+      value: Awaited<ReturnType<CoreClient['operations']['runtime.file-update']>>
+    ) => void;
+    vi.mocked(client.operations['runtime.file-update']).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    const { unmount, queryClient } = renderScreen(client);
+    const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
+    fireEvent.change(editor, { target: { value: '{"mode":"local"}' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Save file' }));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    const pending = queryClient
+      .getMutationCache()
+      .getAll()
+      .find((item) => item.state.status === 'pending');
+    unmount();
+    queryClient.removeQueries({ queryKey: ['settings'] });
+    const key = ['settings', 'configuration', 'file', 'server.jsonc'];
+    const current = { file: { ...FILES.files[0], revision: 'current-account' }, content: '{}' };
+    queryClient.setQueryData(key, current);
+    await act(async () => {
+      finish({ file: { ...FILES.files[0]!, revision: 'old-account-save' }, diagnostics: [] });
+    });
+    await waitFor(() => expect(pending?.state.status).toBe('success'));
+    expect(queryClient.getQueryData(key)).toEqual(current);
+    expect(queryClient.getMutationCache().getAll()).toContain(pending);
+  });
+
   it('shows located warnings after applying otherwise valid configuration', async () => {
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
     const message = 'DATA_ROOT/config/server.jsonc: Unknown key futureOption is ignored.';

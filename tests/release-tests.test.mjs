@@ -5,7 +5,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { compareInventory, coveredSuite, testOwners } from '../scripts/release-tests.mjs';
+import {
+  compareInventory,
+  coveredSuite,
+  mergeCoveredSuite,
+  testOwners,
+  verifyCoveragePartitions,
+} from '../scripts/release-tests.mjs';
 import { runTestSuite } from '../scripts/validate-test-governance.mjs';
 
 const inventory = [{ name: 'case', file: '/example/case.test.ts' }];
@@ -25,7 +31,7 @@ function runAdmissionFixture(call) {
     [
       '--input-type=module',
       '--eval',
-      `import { coveredSuite, packageSuite, releaseTests } from ${JSON.stringify(moduleUrl)};\n${call}`,
+      `import { coveredSuite, mergeCoveredSuite, packageSuite, releaseTests } from ${JSON.stringify(moduleUrl)};\n${call}`,
     ],
     { encoding: 'utf8', env }
   );
@@ -212,4 +218,195 @@ test('actual single coverage execution refuses a deliberate undeclared Vitest sk
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /subject.test.js > undeclared # SKIP/);
   assert.match(result.stderr, /Test suite reported undeclared skip: subject.test.js > undeclared/);
+});
+
+/** A partition receipt preserves repeated case names while files remain disjoint. */
+function partitionReceipt(index, file, names = ['case', 'case']) {
+  return {
+    partition: { index, count: 2 },
+    expected: names.map((name) => ({ file, name })),
+    report: {
+      success: true,
+      testResults: [
+        {
+          name: file,
+          status: 'passed',
+          assertionResults: names.map((title) => ({ ancestorTitles: [], title, status: 'passed' })),
+        },
+      ],
+    },
+  };
+}
+test('coverage partition union rejects every missing, overlapping, extra and non-passing member', () => {
+  const a = partitionReceipt(1, '/one.test.js'),
+    b = partitionReceipt(2, '/two.test.js');
+  const files = [{ file: '/one.test.js' }, { file: '/two.test.js' }];
+  assert.equal(verifyCoveragePartitions([a, b], files, 2).length, 4);
+  for (const members of [
+    [a],
+    [a, b, b],
+    [a, a],
+    [a, { ...b, partition: { index: 2, count: 3 } }],
+    [a, partitionReceipt(2, '/one.test.js')],
+    [a, partitionReceipt(2, '/extra.test.js')],
+    [a, { ...b, expected: b.expected.slice(1) }],
+    [a, { ...b, expected: [] }],
+    [a, { ...b, report: { ...b.report, success: false } }],
+    [
+      a,
+      {
+        ...b,
+        report: {
+          success: true,
+          testResults: [
+            {
+              ...b.report.testResults[0],
+              assertionResults: [
+                { ancestorTitles: [], title: 'case', status: 'pending' },
+                { ancestorTitles: [], title: 'case', status: 'passed' },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  ])
+    assert.throws(() => verifyCoveragePartitions(members, files, 2));
+});
+test('partition admission collects cases with both recipes and defers only partial coverage thresholds', (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-partition-command-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const reportFile = path.join(dir, 'one-execution.report'),
+    blobFile = path.join(dir, 'blobs/one.json');
+  const calls = [];
+  const expected = [{ file: '/subject.test.js', name: 'case' }];
+  const result = coveredSuite(
+    { name: 'fixture', cwd: dir },
+    {
+      partition: { index: 1, count: 2 },
+      reportFile,
+      blobFile,
+      spawn: (_exe, args) => {
+        calls.push(args);
+        return { status: 0, stdout: JSON.stringify(expected) };
+      },
+      run: ({ command }) => {
+        calls.push(command);
+        writeFileSync(
+          reportFile,
+          JSON.stringify({
+            success: true,
+            testResults: [
+              { name: expected[0].file, assertionResults: [{ ancestorTitles: [], title: 'case' }] },
+            ],
+          })
+        );
+        return [];
+      },
+    }
+  );
+  assert.equal(result.cases, 1);
+  assert.equal(calls.length, 3);
+  for (const args of calls) assert(args.includes('--shard=1/2'));
+  for (const args of calls.slice(0, 2)) assert(!args.includes('--filesOnly'));
+  assert(!calls[0].includes('--coverage'));
+  assert(calls[1].includes('--coverage'));
+  assert(calls[2].includes('--reporter=blob'));
+  assert(calls[2].includes('--coverage.thresholds.lines=0'));
+  assert.deepEqual(JSON.parse(readFileSync(`${reportFile}.inventory`)), {
+    partition: { index: 1, count: 2 },
+    expected,
+  });
+  assert.throws(
+    () =>
+      coveredSuite(
+        { name: 'fixture', cwd: dir },
+        { partition: { index: 0, count: 2 }, reportFile, blobFile }
+      ),
+    /invalid coverage partition/
+  );
+});
+test('merged coverage preserves original thresholds and propagates the deciding command failure', (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-merge-command-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(path.join(dir, 'blobs'));
+  for (const [index, name] of [
+    [1, 'one'],
+    [2, 'two'],
+  ]) {
+    const entry = partitionReceipt(index, `/${name}.test.js`);
+    writeFileSync(
+      path.join(dir, `${name}-execution.report.inventory`),
+      JSON.stringify({ partition: entry.partition, expected: entry.expected })
+    );
+    writeFileSync(path.join(dir, `${name}-execution.report`), JSON.stringify(entry.report));
+    writeFileSync(path.join(dir, 'blobs', `${name}.json`), '{}');
+  }
+  let command;
+  assert.throws(
+    () =>
+      mergeCoveredSuite(
+        { name: 'fixture', cwd: dir },
+        {
+          directory: dir,
+          count: 2,
+          reportFile: path.join(dir, 'merged.report'),
+          spawn: () => ({
+            status: 0,
+            stdout: JSON.stringify([{ file: '/one.test.js' }, { file: '/two.test.js' }]),
+          }),
+          run: ({ command: args }) => {
+            command = args;
+            return ['original threshold failed'];
+          },
+        }
+      ),
+    /original threshold failed/
+  );
+  assert(command.includes('--coverage'));
+  assert(command.some((arg) => arg.startsWith('--merge-reports=')));
+  assert(!command.some((arg) => arg.startsWith('--coverage.thresholds')));
+});
+test('actual partition blobs merge to original coverage and a stricter original threshold refuses', (t) => {
+  const owner = vitestFixture(t, 'test("true branch",()=>expect(value(true)).toBe(1));');
+  const directory = path.join(owner.cwd, 'receipts');
+  mkdirSync(directory);
+  writeFileSync(
+    path.join(owner.cwd, 'subject.js'),
+    'export function value(input) { if (input) return 1; return 2; }'
+  );
+  writeFileSync(
+    path.join(owner.cwd, 'other.test.js'),
+    'import {value} from "./subject.js"; test("false branch",()=>expect(value(false)).toBe(2));'
+  );
+  const config = (threshold) =>
+    `export default {test:{globals:true,maxWorkers:1,pool:"threads",include:["*.test.js"],coverage:{provider:"v8",reporter:["text"],include:["subject.js"],thresholds:{lines:${threshold},branches:${threshold},functions:${threshold},statements:${threshold}}}}};`;
+  writeFileSync(path.join(owner.cwd, 'vitest.config.js'), config(100));
+  for (const index of [1, 2]) {
+    const prefix = `part-${index}`;
+    const result = runAdmissionFixture(
+      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 2 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+  const call = `mergeCoveredSuite(${JSON.stringify(owner)},${JSON.stringify({ directory, count: 2, reportFile: path.join(directory, 'merged.report') })});`;
+  const complete = runAdmissionFixture(call);
+  assert.equal(complete.status, 0, complete.stdout + complete.stderr);
+  const report = JSON.parse(readFileSync(path.join(directory, 'merged.report')));
+  assert.equal(report.numPassedTests, 2);
+  // Keep the original 100% threshold. Both successful tests now cover the same branch.
+  writeFileSync(
+    path.join(owner.cwd, 'other.test.js'),
+    'import {value} from "./subject.js"; test("false branch",()=>expect(value(true)).toBe(1));'
+  );
+  for (const index of [1, 2]) {
+    const prefix = `part-${index}`;
+    const result = runAdmissionFixture(
+      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 2 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+  const belowThreshold = runAdmissionFixture(call);
+  assert.equal(belowThreshold.status, 1, belowThreshold.stdout + belowThreshold.stderr);
+  assert.match(belowThreshold.stderr, /merged coverage failed/);
 });

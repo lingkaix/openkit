@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,37 +31,46 @@ describe('createDiagnosticsSnapshot', () => {
   it('aggregates mode, storage, migrations, providers, agents, and auth without secrets', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
     const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const snapshot = createDiagnosticsSnapshot({
-      actor: { kind: 'local', userId: 'user_local' },
-      coreDb,
-      dataRoot,
-      mode: 'local',
-      providerRegistry: new ProviderRegistry([
-        {
-          baseUrl: 'https://user:password@example.com/v1',
-          displayName: 'Provider',
-          id: 'provider',
-          kind: 'direct',
-          models: ['model'],
-          secretRef: 'env:SECRET_TOKEN',
+    try {
+      applyMigrations(coreDb);
+      const snapshot = createDiagnosticsSnapshot({
+        actor: { kind: 'local', userId: 'user_local' },
+        coreDb,
+        dataRoot,
+        mode: 'local',
+        providerRegistry: new ProviderRegistry([
+          {
+            baseUrl: 'https://user:password@example.com/v1',
+            displayName: 'Provider',
+            id: 'provider',
+            kind: 'direct',
+            models: ['model'],
+            secretRef: 'env:SECRET_TOKEN',
+          },
+        ]),
+        agentManifests: [agentManifest()],
+      });
+
+      expect(snapshot).toMatchObject({
+        auth: { mode: 'local' },
+        dataRoot: 'configured',
+        migrations: {
+          applied: [
+            'core_0000_setup',
+            'core_0001_concurrent_turn_capacity',
+            'core_0002_channel_notifications',
+          ],
         },
-      ]),
-      agentManifests: [agentManifest()],
-    });
-
-    expect(snapshot).toMatchObject({
-      auth: { mode: 'local' },
-      dataRoot: 'configured',
-      migrations: { applied: ['core_0000_setup', 'core_0001_concurrent_turn_capacity'] },
-      mode: 'local',
-      providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
-      agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],
-    });
-    expect(JSON.stringify(snapshot)).not.toContain(dataRoot);
-    expect(JSON.stringify(snapshot)).not.toContain('SECRET_TOKEN');
-    expect(JSON.stringify(snapshot)).not.toContain('user:password');
-
-    coreDb.sqlite.close();
+        mode: 'local',
+        providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
+        agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],
+      });
+      expect(JSON.stringify(snapshot)).not.toContain(dataRoot);
+      expect(JSON.stringify(snapshot)).not.toContain('SECRET_TOKEN');
+      expect(JSON.stringify(snapshot)).not.toContain('user:password');
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 });
