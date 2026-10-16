@@ -88,7 +88,13 @@ async function call(
     },
     body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
   });
-  return { status: response.status, body: await response.json() };
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: response.headers.get('content-type')?.includes('application/json')
+      ? JSON.parse(text)
+      : text,
+  };
 }
 afterEach(() => {
   for (const f of fixtures.splice(0)) {
@@ -101,15 +107,23 @@ afterEach(() => {
 /** Seed through current native source admission and fixed-base publication. */
 async function seed(f: ReturnType<typeof fixture>) {
   const source = await call(f, 'knowledge.source.register', {
-    requestId: randomUUID(), kind: 'document', title: 'Synthetic source', content: 'Independent evidence.',
+    requestId: randomUUID(),
+    kind: 'document',
+    title: 'Synthetic source',
+    content: 'Independent evidence.',
   });
   expect(source.status, JSON.stringify(source.body)).toBe(200);
   const reference = `source:${source.body.source.id}@${source.body.source.contentDigest}`;
-  const original = page('alpha', 'Original exact bytes.\n', reference).replace('review_state: accepted', 'review_state: user-authored');
+  const original = page('alpha', 'Original exact bytes.\n', reference).replace(
+    'review_state: accepted',
+    'review_state: user-authored'
+  );
   const initial = git(f, 'rev-parse', 'refs/heads/published');
   const first = await call(f, 'knowledge.notebook.update', {
-    requestId: randomUUID(), baseRevision: initial,
-    changes: [{path: 'alpha.md', content: original}], summary: 'Original human text',
+    requestId: randomUUID(),
+    baseRevision: initial,
+    changes: [{ path: 'alpha.md', content: original }],
+    summary: 'Original human text',
   });
   expect(first.status, JSON.stringify(first.body)).toBe(200);
   return { original, reference, initial, revision: first.body.notebookRevision };
@@ -121,40 +135,92 @@ describe('native Workspace Notebook history and restore', () => {
     const s = await seed(f);
     const updated = s.original.replace('Original exact bytes.', 'Later exact bytes.');
     const edit = await call(f, 'knowledge.notebook.update', {
-      requestId: randomUUID(), baseRevision: s.revision,
-      changes: [{path: 'alpha.md', content: updated}], summary: 'Later human text',
+      requestId: randomUUID(),
+      baseRevision: s.revision,
+      changes: [{ path: 'alpha.md', content: updated }],
+      summary: 'Later human text',
     });
     expect(edit.status, JSON.stringify(edit.body)).toBe(200);
     const baseRevision = edit.body.notebookRevision;
-    const history = await call(f, 'knowledge.notebook.history', {limit: 2});
+    const history = await call(f, 'knowledge.notebook.history', { limit: 2 });
     expect(history.status, JSON.stringify(history.body)).toBe(200);
     expect(history.body.revisions).toEqual([
-      {revision: baseRevision, parentRevision: s.revision, availability: 'available', summary:'Later human text', producer:{kind:'user',id:'user_local'}, changedPaths:['alpha.md']},
-      {revision: s.revision, parentRevision: s.initial, availability: 'available', summary:'Original human text', producer:{kind:'user',id:'user_local'}, changedPaths:['alpha.md']},
+      {
+        revision: baseRevision,
+        parentRevision: s.revision,
+        availability: 'available',
+        summary: 'Later human text',
+        producer: { kind: 'user', id: 'user_local' },
+        changedPaths: ['alpha.md'],
+      },
+      {
+        revision: s.revision,
+        parentRevision: s.initial,
+        availability: 'available',
+        summary: 'Original human text',
+        producer: { kind: 'user', id: 'user_local' },
+        changedPaths: ['alpha.md'],
+      },
     ]);
-    const diff = await call(f, 'knowledge.notebook.diff', {baseRevision, targetRevision:s.revision, paths:['alpha.md']});
+    const diff = await call(f, 'knowledge.notebook.diff', {
+      baseRevision,
+      targetRevision: s.revision,
+      paths: ['alpha.md'],
+    });
     expect(diff.status, JSON.stringify(diff.body)).toBe(200);
-    expect(diff.body.changes).toEqual([{path:'alpha.md', before:updated, after:s.original}]);
-    const input = {requestId:randomUUID(),baseRevision,targetRevision:s.revision,paths:['alpha.md'],summary:'Restore original text'};
+    expect(diff.body.changes).toEqual([{ path: 'alpha.md', before: updated, after: s.original }]);
+    const input = {
+      requestId: randomUUID(),
+      baseRevision,
+      targetRevision: s.revision,
+      paths: ['alpha.md'],
+      summary: 'Restore original text',
+    };
     const restore = await call(f, 'knowledge.notebook.restore', input);
     expect(restore.status, JSON.stringify(restore.body)).toBe(200);
     const winner = restore.body.notebookRevision;
     expect(winner).not.toBe(s.revision);
     expect(git(f, 'rev-parse', `${winner}^`)).toBe(baseRevision);
-    expect(execFileSync('git',['--git-dir',f.repositoryPath,'show',`${winner}:pages/alpha.md`],{encoding:'utf8'})).toBe(s.original);
+    expect(
+      execFileSync('git', ['--git-dir', f.repositoryPath, 'show', `${winner}:pages/alpha.md`], {
+        encoding: 'utf8',
+      })
+    ).toBe(s.original);
     expect(restore.body.receiptRef.operation).toBe('knowledge.notebook.restore');
-    expect((await call(f, 'knowledge.notebook.restore', input))).toEqual(restore);
-    const stale = await call(f, 'knowledge.notebook.restore', {...input, requestId:randomUUID()});
+    expect(await call(f, 'knowledge.notebook.restore', input)).toEqual(restore);
+    const stale = await call(f, 'knowledge.notebook.restore', {
+      ...input,
+      requestId: randomUUID(),
+    });
     expect(stale.status, JSON.stringify(stale.body)).toBe(409);
-    expect(git(f,'rev-parse','refs/heads/published')).toBe(winner);
-    const removal = {requestId:randomUUID(),baseRevision:winner,targetRevision:s.initial,paths:['alpha.md'],summary:'Explicit removal through restore'};
-    expect((await call(f,'knowledge.notebook.restore',removal)).status).toBe(400);
-    expect(git(f,'rev-parse','refs/heads/published')).toBe(winner);
-    const removed = await call(f,'knowledge.notebook.restore',{...removal,confirmRemoval:true});
-    expect(removed.status,JSON.stringify(removed.body)).toBe(200);
-    expect(git(f,'ls-tree','--name-only',`${removed.body.notebookRevision}:pages`)).not.toContain('alpha.md');
-    expect(execFileSync('git',['--git-dir',f.repositoryPath,'show',`${s.revision}:pages/alpha.md`],{encoding:'utf8'})).toBe(s.original);
-    const admissions = f.workspaceDb.sqlite.prepare("SELECT notebook_admission_json AS admission FROM audit_events WHERE request_id = ? AND action = 'knowledge.notebook.published'").all(input.requestId);
+    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
+    const removal = {
+      requestId: randomUUID(),
+      baseRevision: winner,
+      targetRevision: s.initial,
+      paths: ['alpha.md'],
+      summary: 'Explicit removal through restore',
+    };
+    expect((await call(f, 'knowledge.notebook.restore', removal)).status).toBe(400);
+    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
+    const removed = await call(f, 'knowledge.notebook.restore', {
+      ...removal,
+      confirmRemoval: true,
+    });
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(
+      git(f, 'ls-tree', '--name-only', `${removed.body.notebookRevision}:pages`)
+    ).not.toContain('alpha.md');
+    expect(
+      execFileSync('git', ['--git-dir', f.repositoryPath, 'show', `${s.revision}:pages/alpha.md`], {
+        encoding: 'utf8',
+      })
+    ).toBe(s.original);
+    const admissions = f.workspaceDb.sqlite
+      .prepare(
+        "SELECT notebook_admission_json AS admission FROM audit_events WHERE request_id = ? AND action = 'knowledge.notebook.published'"
+      )
+      .all(input.requestId);
     expect(admissions).toHaveLength(1);
   });
 });
