@@ -189,6 +189,7 @@ const WEB_OPERATION_GROUPS = {
     'artifact.review-list': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.reverse': { disposition: 'roadmap', roadmap: 'R072' },
     'artifact.review.decide': { disposition: 'live', surface: 'Artifact review' },
+    'artifact.review.select': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.decide': { disposition: 'live', surface: 'Knowledge' },
   },
   Portability: {

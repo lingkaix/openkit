@@ -423,19 +423,21 @@ const STREAMING_ITEM = {
  * @param path Initial application route.
  * @param client Core Client fake used by the rendered application.
  * @param prepareQueryClient Optional cache setup applied before the route mounts.
+ * @param initialState Optional explicit router handoff for this entry.
  * @returns The isolated TanStack Query client used by the render.
  */
 function renderApp(
   path: string,
   client: CoreClient,
-  prepareQueryClient?: (queryClient: QueryClient) => void
+  prepareQueryClient?: (queryClient: QueryClient) => void,
+  initialState?: unknown
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   prepareQueryClient?.(queryClient);
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter initialEntries={[path]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={initialState === undefined ? [path] : [{ pathname: path, state: initialState }]}>{children}</MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -7023,5 +7025,65 @@ describe('Worker environment Advanced choice', () => {
     });
     expect(screen.queryByLabelText(/token/i)).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('deployment_admin_required');
+  });
+});
+
+
+describe('exact Review candidate draft handoff', () => {
+  const path = `/chat/${THREAD.workspaceId}/${THREAD.id}`;
+  const candidate = {
+    workspaceId: THREAD.workspaceId,
+    threadId: THREAD.id,
+    artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+    artifactVersion: 2,
+    contentDigest: `sha256:${'a'.repeat(64)}`,
+  };
+  const artifact = {
+    id: candidate.artifactId,
+    workspaceId: THREAD.workspaceId,
+    version: candidate.artifactVersion,
+    contentDigest: candidate.contentDigest,
+    status: 'ready',
+    title: 'Reviewed candidate',
+  };
+
+  it('adds only the chosen exact candidate to an explicit next Send and retains uncertain retry', async () => {
+    const user = userEvent.setup();
+    const read = vi.fn().mockResolvedValue(artifact);
+    const submit = vi.fn().mockRejectedValue(new Error('Response unavailable'));
+    renderApp(path, makeClient({
+      'artifact.read': read,
+      'artifact.list': vi.fn().mockResolvedValue({ items: [artifact] }),
+      'conversation.submit': submit,
+    }), undefined, { candidateInput: candidate });
+    await screen.findByRole('button', { name: 'Remove Reviewed candidate' });
+    expect(read).toHaveBeenCalledWith({ workspaceId: candidate.workspaceId, artifactId: candidate.artifactId });
+    expect(submit).not.toHaveBeenCalled();
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Use this candidate.');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByText("Couldn't send that message. Try again.");
+    const first = submit.mock.calls[0]?.[0];
+    expect(first).toMatchObject({
+      workspaceId: candidate.workspaceId,
+      threadId: candidate.threadId,
+      artifactRefs: [{ artifactId: candidate.artifactId, artifactVersion: candidate.artifactVersion }],
+      input: 'Use this candidate.',
+    });
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    expect(submit.mock.calls[1]?.[0]).toEqual(first);
+  });
+
+  it('refuses a newer candidate instead of silently adding its version', async () => {
+    const submit = vi.fn();
+    renderApp(path, makeClient({
+      'artifact.read': vi.fn().mockResolvedValue({ ...artifact, version: 3 }),
+      'artifact.list': vi.fn().mockResolvedValue({ items: [{ ...artifact, version: 3 }] }),
+      'conversation.submit': submit,
+    }), undefined, { candidateInput: candidate });
+    await screen.findByText('The selected candidate is unavailable or has changed. Return to its review and select an available candidate.');
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    expect(submit).not.toHaveBeenCalled();
   });
 });
