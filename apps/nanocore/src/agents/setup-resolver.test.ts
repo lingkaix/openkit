@@ -568,6 +568,30 @@ describe('resolveAgentSetup', () => {
     );
   });
 
+  it('refuses conflicting exact Skill versions in the composed setup', () => {
+    const result = resolveAgentSetup(
+      agentConfig({
+        skills: [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }],
+        profiles: [
+          {
+            id: 'selected',
+            skills: [{ id: 'review-skill', digest: `sha256:${'b'.repeat(64)}` }],
+            mcp: [],
+          },
+        ],
+      }),
+      {
+        selectedProfileId: 'selected',
+        gatewayConfig: gatewayConfig(),
+        providerRegistry: providerRegistry(),
+      }
+    );
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'agent_setup.conflicting_skill_versions' })
+    );
+  });
+
   it('fails closed for unsupported required features', () => {
     const result = resolveAgentSetup(agentConfig({ requiredFeatures: ['workspace.mount.fuse'] }), {
       gatewayConfig: gatewayConfig(),
