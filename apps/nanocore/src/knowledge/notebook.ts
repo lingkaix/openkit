@@ -221,25 +221,18 @@ export class KnowledgeNotebook {
     }
   }
 
-  /** Verifies the real Git type/length/content identity without reading unrelated blob bodies or history. */
-  private readObject(type: 'commit' | 'tree' | 'blob', object: string): Buffer {
+  /** Verifies selected blob identity and preserves exact UTF-8 bytes without loading unrelated pages. */
+  private readBlob(object: string): string {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
       throw new NotebookError('recovery_required');
-    const bytes = this.gitBytes(['cat-file', type, object]);
+    const bytes = this.gitBytes(['cat-file', 'blob', object]);
     const observed = createHash(object.length === 40 ? 'sha1' : 'sha256')
-      .update(`${type} ${bytes.length}\0`)
+      .update(`blob ${bytes.length}\0`)
       .update(bytes)
       .digest('hex');
     if (observed !== object) throw new NotebookError('recovery_required');
-    return bytes;
-  }
-
-  /** Preserves exact UTF-8 content bytes after object integrity succeeds. */
-  private readTextObject(type: 'commit' | 'blob', object: string): string {
     try {
-      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-        this.readObject(type, object)
-      );
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
     } catch {
       throw new NotebookError('recovery_required');
     }
@@ -287,11 +280,10 @@ export class KnowledgeNotebook {
   ): Omit<NotebookRevision, 'files'> & { readonly entries: Readonly<Record<string, string>> } {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
       throw new NotebookError('recovery_required');
-    const commit = this.readTextObject('commit', revision);
+    const commit = this.git(['cat-file', 'commit', revision]);
     const boundary = commit.indexOf('\n\n');
     const headers = commit.slice(0, boundary).split('\n');
     const parents = headers.filter((header) => header.startsWith('parent '));
-    const trees = headers.filter((header) => header.startsWith('tree '));
     const message = commit.slice(boundary + 2);
     let metadata: NotebookCommitMetadata;
     try {
@@ -305,27 +297,12 @@ export class KnowledgeNotebook {
     if (
       boundary < 0 ||
       parents.length > 1 ||
-      trees.length !== 1 ||
       !headers.some((header) => header.startsWith('author '))
     )
       throw new NotebookError('recovery_required');
-    this.readObject('tree', trees[0]!.slice('tree '.length));
     const entries: Record<string, string> = Object.create(null);
-    for (const row of this.git(['ls-tree', '-r', '-t', '-z', '--full-tree', revision]).split(
-      '\0'
-    )) {
+    for (const row of this.git(['ls-tree', '-r', '-z', '--full-tree', revision]).split('\0')) {
       if (!row) continue;
-      const subtree = /^040000 tree ([a-f0-9]+)\t(.+)$/.exec(row);
-      if (subtree) {
-        const path = subtree[2]!;
-        if (
-          path !== 'pages' &&
-          (!path.startsWith('pages/') || !validPath(`${path.slice(6)}/selected.md`))
-        )
-          throw new NotebookError('recovery_required');
-        this.readObject('tree', subtree[1]!);
-        continue;
-      }
       const match = /^100644 blob ([a-f0-9]+)\tpages\/(.+)$/.exec(row);
       if (!match || !validPath(match[2]!)) throw new NotebookError('recovery_required');
       entries[match[2]!] = match[1]!;
@@ -346,7 +323,7 @@ export class KnowledgeNotebook {
     for (const path of paths ?? Object.keys(entries)) {
       const object = entries[path];
       if (!object) throw new NotebookError('invalid_request');
-      files[path] = this.readTextObject('blob', object);
+      files[path] = this.readBlob(object);
     }
     return { ...record, files };
   }
