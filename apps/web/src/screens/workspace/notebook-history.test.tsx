@@ -194,7 +194,9 @@ function renderNotebook({ deferDiff = false } = {}) {
     restores,
     diffs,
     queryClient,
-    denyHistory: () => { historyDenied = true; },
+    denyHistory: () => {
+      historyDenied = true;
+    },
     hasDeferredDiff: () => Boolean(resolveOldDiff),
     resolveOldDiff: () => resolveOldDiff?.(),
   };
@@ -218,7 +220,9 @@ describe('Notebook history and restore', () => {
     f.denyHistory();
     await user.click(screen.getByRole('button', { name: 'Refresh history' }));
     await waitFor(() => expect(screen.getAllByText('Unavailable revision')).toHaveLength(2));
-    expect(screen.queryByRole('region', { name: 'Historical notes/one.md' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Historical notes/one.md' })
+    ).not.toBeInTheDocument();
     expect(screen.queryByText('Current exact text.')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare restore' })).not.toBeInTheDocument();
     await waitFor(() => expect(f.diffs).toHaveLength(2));
