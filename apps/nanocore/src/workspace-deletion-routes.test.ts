@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
@@ -703,7 +704,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
         phase: 'closed',
-        fenceRef: `self-check:lease_${suffix}`,
+        fenceRef: `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
       }))
     );
     expect(
@@ -801,7 +802,10 @@ it('keeps deletion fenced when one of five failed attempts remains closing witho
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
         phase: suffix === 'sibling_unproved' ? 'closing' : 'closed',
-        fenceRef: suffix === 'sibling_unproved' ? null : `self-check:lease_${suffix}`,
+        fenceRef:
+          suffix === 'sibling_unproved'
+            ? null
+            : `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
       }))
     );
   } finally {
@@ -891,7 +895,7 @@ it.each([
           .get(testEntityId('attempt', `lease_${fixture.suffix}`))
       ).toEqual({
         phase: 'closed',
-        fenceRef: `self-check:lease_${fixture.suffix}`,
+        fenceRef: `self-check:${testEntityId('attempt', `lease_${fixture.suffix}`)}`,
         disposition: 'unknown',
         cause: 'turn-failed',
       });
@@ -1231,10 +1235,10 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       closureId: `wsclose_delete_${requestId}`,
       commandReceiptKey: 'workspace-delete-receipt',
       phase: 'cleaned',
-      recoveryExportId: `wsexp_delete_${requestId}`,
+      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
       recoveryExportManifestDigest: 'export-digest',
       stagingRelativePath: workspaceDeletionStagingRelativePath(deletedWorkspace.id, requestId),
-      terminalAuditEventId: 'workspace-delete-audit',
+      terminalAuditEventId: testEntityId('aud', 'workspace-delete-audit'),
     });
     const mutationAdmission = new WorkspaceMutationAdmission();
 
@@ -1523,7 +1527,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     const deletion = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
     expect(deletion).toMatchObject({
       phase: 'cleaned',
-      recoveryExportId: `wsexp_delete_${requestId}`,
+      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
       recoveryExportManifestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
     const exportRoot = join(
@@ -1650,7 +1654,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       },
     });
     const completedRequest = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
-    expect(completedRequest.recoveryExportId).toBe(`wsexp_delete_${requestId}`);
+    expect(completedRequest.recoveryExportId).toBe(deriveEntityId('wsexp', ['delete', requestId]));
     expect(completedRequest.closureId).toBe(`wsclose_delete_${requestId}`);
     const workspaceExportsRoot = join(dataRoot, 'server', 'exports', 'workspaces', workspace.id);
     expect(existsSync(join(workspaceExportsRoot, priorExport.exportId))).toBe(false);

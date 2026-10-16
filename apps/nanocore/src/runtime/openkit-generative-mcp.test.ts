@@ -163,7 +163,7 @@ describe('openkit-generative MCP', () => {
     );
     const coreDb = workerAuthority(dataRoot, turn.id);
     const sourceItem = store.createItem({
-      id: `it_${turn.id}_source`,
+      id: testEntityId('it', `it_${turn.id}_source`),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
