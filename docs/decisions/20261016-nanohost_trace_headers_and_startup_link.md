@@ -1,7 +1,7 @@
 ---
 status: Accepted
 date: "2026-10-16"
-decider: Engineer
+decider: Coordinator
 ---
 # NanoHost Trace Headers And Startup Link
 
@@ -11,7 +11,7 @@ Carry optional W3C `traceparent` and `tracestate` in native NanoHost transport h
 
 ## Reason
 
-The engineer accepted this interpretation on2026-10-16 after independent Codex Astra scrutiny. The required Pi advisor could not start because authentication refresh failed; the engineer explicitly authorized Codex Astra instead. Issue #220 proposed body-field carriage and one trace reaching Epoch and member spans. The issue is a proposal, not owner authority. Transport headers preserve exact effect identity and work for JSON and file bodies. Startup normally precedes a Turn, so a link describes that relation without inventing parentage.
+The coordinator accepted this interpretation on2026-10-16 after independent Codex Astra scrutiny. The required Pi advisor could not start because authentication refresh failed; the coordinator explicitly authorized Codex Astra instead. Issue #220 proposed body-field carriage and one trace reaching Epoch and member spans. The issue is a proposal, not owner authority. Transport headers preserve exact effect identity and work for JSON and file bodies. Startup normally precedes a Turn, so a link describes that relation without inventing parentage.
 
 ## Rejected Alternatives
 
