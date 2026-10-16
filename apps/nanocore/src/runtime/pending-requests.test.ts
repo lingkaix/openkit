@@ -1598,7 +1598,7 @@ describe('pending requests', () => {
       { agentId: 'agent_demo' }
     );
     store.createItem({
-      id: 'it_00000000-0000-7ee0-bb5c-599918e0151c',
+      id: testEntityId('it', 'it_ap_supply'),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
@@ -1927,7 +1927,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       store.createItem({
-        id: 'it_00000000-0000-7f98-abec-1cbad84927b3',
+        id: testEntityId('it', 'it_ap_archive'),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
@@ -2037,7 +2037,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       store.createItem({
-        id: 'it_00000000-0000-7a95-bd5f-fb0fd4193911',
+        id: testEntityId('it', 'it_ap_good'),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: goodTurn.id,
