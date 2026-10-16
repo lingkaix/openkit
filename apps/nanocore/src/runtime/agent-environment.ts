@@ -1050,7 +1050,7 @@ function workspaceInputSource(
  * @throws CatalogNotFoundError or CatalogIntegrityError when selected retained supply is unavailable or changed.
  */
 function resolveWorkerSkillSupply(
-  skills: readonly { readonly id: string; readonly digest?: string }[],
+  skills: readonly { readonly id: string; readonly digest?: string | undefined }[],
   adapter: string,
   workspaceId: string,
   dataRoot: string | undefined,
