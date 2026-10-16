@@ -243,8 +243,6 @@ export const StatusItemSchema = BaseItemSchema.extend({
   level: z.enum(['info', 'warning', 'error']),
   title: z.string().min(1),
   summary: z.string().min(1).nullable(),
-  /** Immutable Goal reference owned only by a retained Task-to-Goal handoff. */
-  goalId: z.string().min(1).optional(),
 });
 
 /**

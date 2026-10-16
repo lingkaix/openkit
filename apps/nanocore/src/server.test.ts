@@ -115,7 +115,6 @@ import {
   createFilesystemSnapshotManifest,
   stageFilesystemWorkspaceChanges,
 } from './runtime/filesystem-workspace-sync.js';
-import { executeGoalOperation } from './runtime/goal-owner.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
@@ -8376,83 +8375,20 @@ describe('nanocore server', () => {
     }
   });
 
-  it.each([
-    'retained',
-    'retained-null-session',
-    'bound-session',
-    'deleted-goal',
-    'missing-goal',
-    'wrong-goal',
-    'duplicate-reference',
-  ] as const)('replays only an exact canonical Task-to-Goal receipt without new work: %s', async (mutation) => {
+  it('refuses a Task receipt outside the current direct command lineage without new work', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const requestId = '0190f4c8-0000-7000-8000-000000000604';
     const input = 'Plan a multi-step release goal for NanoCore.';
-    const goalDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(goalDb);
-    const createdGoal = await executeGoalOperation(
-      'goal.create',
-      {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        requestId: '0190f4c8-0000-7000-8000-000000000605',
-        intent: input,
-      },
-      { actor: { kind: 'local', userId: LOCAL_USER_ID } },
-      store,
-      goalDb
-    );
-    const goalId = createdGoal.goal!.goalId;
-    if (mutation === 'deleted-goal') {
-      expect(goalDb.sqlite.prepare('DELETE FROM goals WHERE goal_id = ?').run(goalId).changes).toBe(
-        1
-      );
-    }
-    const retainedGoals = goalDb.sqlite.prepare('SELECT * FROM goals ORDER BY goal_id').all();
-    // Retained escalation keeps its Goal reference outside the opaque Item identity.
     const turn = store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       input,
-      { kind: 'user', id: LOCAL_USER_ID },
-      null,
-      {
-        ...(mutation === 'retained-null-session'
-          ? { agentSessionId: null }
-          : mutation === 'bound-session'
-            ? { agentSessionId: testEntityId('as', 'contradictory-task-goal-session') }
-            : {}),
-        turnId: deriveEntityId('tu', {
-          command: 'task.start.goal',
-          actorId: LOCAL_USER_ID,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          requestId,
-        }),
-      }
+      { kind: 'user', id: LOCAL_USER_ID }
     );
     const at = new Date().toISOString();
-    store.createItem({
-      id: deriveEntityId('it', ['task-goal', turn.id, goalId]),
-      goalId:
-        mutation === 'missing-goal' ? undefined : mutation === 'wrong-goal' ? 'goal_other' : goalId,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: turn.id,
-      type: 'status',
-      status: 'completed',
-      level: 'info',
-      title: 'Goal created',
-      summary: 'The request needs explicit Goal Mode planning before worker execution.',
-      createdAt: at,
-      completedAt: at,
-    });
-    if (mutation === 'duplicate-reference') {
-      const handoff = store.getTurnById(turn.id).items[0]!;
-      store.createItem({ ...handoff, id: testEntityId('it', 'duplicate-task-goal-reference') });
-    }
     store.updateTurn(turn.id, { status: 'completed', completedAt: at });
     store.recordCommandRequest({
       command: 'task.start',
@@ -8465,11 +8401,13 @@ describe('nanocore server', () => {
       inputHash: commandInputHash({ input }),
       response: { kind: 'turn', id: turn.id },
     });
-    const retainedTurns = store.listThreadTurns(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001'
+    const retainedTurns = structuredClone(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
     );
-    const retainedCommands = store.listCommandRequests();
+    const retainedCommands = structuredClone(store.listCommandRequests());
     try {
       const response = await app.request(
         ...operationRequest(
@@ -8485,24 +8423,8 @@ describe('nanocore server', () => {
           }
         )
       );
-      if (
-        mutation === 'retained' ||
-        mutation === 'retained-null-session' ||
-        mutation === 'deleted-goal'
-      ) {
-        expect(response.status, await response.clone().text()).toBe(202);
-        expect(StartTaskModeResponseSchema.parse(await response.json())).toMatchObject({
-          state: 'escalated-to-goal',
-          turn: { id: turn.id },
-          escalation: mutation === 'deleted-goal' ? null : { targetMode: 'goal', goalId },
-        });
-      } else {
-        expect(response.status, await response.clone().text()).toBe(409);
-        expect(await response.json()).toMatchObject({ code: 'recovery_required' });
-      }
-      expect(goalDb.sqlite.prepare('SELECT * FROM goals ORDER BY goal_id').all()).toEqual(
-        retainedGoals
-      );
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'recovery_required' });
       expect(executor.startContexts).toHaveLength(0);
       expect(
         store.listThreadTurns(
@@ -8518,7 +8440,6 @@ describe('nanocore server', () => {
         )
       ).toEqual(retainedTurns);
     } finally {
-      goalDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });

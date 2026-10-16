@@ -923,55 +923,7 @@ function replayTaskModeCommand(
       }
     }
 
-    const escalationTurnId = deriveEntityId('tu', {
-      command: 'task.start.goal',
-      actorId,
-      workspaceId,
-      threadId,
-      requestId: record.requestId,
-    });
-    const handoffs = currentTurn.items.filter(
-      (item) => item.type === 'status' && item.goalId !== undefined
-    );
-    const handoff = handoffs[0];
-    if (
-      currentTurn.id !== escalationTurnId ||
-      currentTurn.status !== 'completed' ||
-      !currentTurn.completedAt ||
-      (currentTurn.agentSessionId !== null && currentTurn.agentSessionId !== undefined) ||
-      currentTurn.triggerActor.kind !== 'user' ||
-      currentTurn.triggerActor.id !== actorId ||
-      handoffs.length !== 1 ||
-      handoff?.type !== 'status' ||
-      !handoff.goalId ||
-      handoff.id !== deriveEntityId('it', ['task-goal', currentTurn.id, handoff.goalId]) ||
-      handoff.workspaceId !== workspaceId ||
-      handoff.threadId !== threadId ||
-      handoff.turnId !== currentTurn.id ||
-      handoff.status !== 'completed' ||
-      !handoff.completedAt ||
-      !handoff.summary ||
-      !coreDb
-    ) {
-      throw new Error('Task escalation owner contradiction.');
-    }
-    const workspaceDb = repositoryWorkspaceDb(workspaceId);
-    try {
-      const goal = readGoalView(store, workspaceDb, handoff.goalId).goal;
-      if (goal && goal.workspaceId !== workspaceId) {
-        throw new Error('Task escalation Goal contradicts its Workspace.');
-      }
-      return StartTaskModeResponseSchema.parse({
-        state: 'escalated-to-goal',
-        turn: currentTurn,
-        evidence: taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, currentTurn),
-        escalation: goal
-          ? { targetMode: 'goal', goalId: goal.goalId, reason: handoff.summary }
-          : null,
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
+    throw new Error('Task command does not name a current direct Task Turn.');
   } catch {
     throw new TurnStartValidationError(
       'recovery_required',
