@@ -13,15 +13,17 @@ import {
 import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { ResolvedWorkspaceMcpServer } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
-const MCP_RESULT_MAX_BYTES = 512 * 1024;
+/** Maximum complete MCP result or explicit discovery observation, including metadata. */
+export const MCP_RESULT_MAX_BYTES = 512 * 1024;
 /** Worker-facing oversized-result refusal shared by upstream and built-in MCP tools. */
 export const MCP_RESULT_TOO_LARGE_MESSAGE =
   'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.';
@@ -117,14 +119,32 @@ export interface WorkerMcpGatewayServerInput {
   /** Cancellation signal for this operation only. */
   readonly signal?: AbortSignal;
   /** Current strict catalog entry. */
-  readonly server: ResolvedWorkspaceMcpServer;
-  /** Workspace that owns the selected catalog entry. */
+  readonly server: Pick<
+    ResolvedWorkspaceMcpServer,
+    'id' | 'scope' | 'transport' | 'timeoutMs' | 'packageRootDigest' | 'catalogDigest'
+  >;
+  /** Trusted one-off preview paths; never accepted from a Worker or public operation payload. */
+  readonly temporaryContext?: { readonly dataDirectory: string; readonly packageRoot?: string };
+  /** Consuming Workspace, or the isolated invocation partition for a Server preview. */
   readonly workspaceId: string;
 }
 
-/** Creates the default MCP SDK client supervisor. */
-export function createDefaultWorkerMcpGateway(coreDb?: CoreDb): WorkerMcpGateway {
-  return new DefaultWorkerMcpGateway(coreDb);
+/** Trusted administrator preview attribution, supplied only by its admitted native owner. */
+export interface McpPreviewAuditContext {
+  /** Actual admitted human actor; never a fabricated Worker. */
+  readonly actor: ActorRef;
+  /** Real affected Workspace, or null for Server-owned configuration. */
+  readonly workspaceId: string | null;
+  /** Current explicit preview invocation identity. */
+  readonly requestId: string;
+}
+
+/** Creates the existing MCP SDK supervisor, optionally attributing one isolated administrator preview. */
+export function createDefaultWorkerMcpGateway(
+  coreDb?: CoreDb,
+  previewAudit?: McpPreviewAuditContext
+): WorkerMcpGateway {
+  return new DefaultWorkerMcpGateway(coreDb, previewAudit);
 }
 
 /** Process-local MCP SDK client supervisor keyed by Workspace catalog identity. */
@@ -140,7 +160,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   private readonly teardowns = new Map<string, Promise<void>>();
   private readonly teardownRequired = new Set<string>();
 
-  public constructor(private readonly coreDb?: CoreDb) {}
+  public constructor(
+    private readonly coreDb?: CoreDb,
+    private readonly previewAudit?: McpPreviewAuditContext
+  ) {}
 
   /** Lists live tools, following pagination up to the page cap and the result byte bound. */
   public async listTools(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpLiveTools> {
@@ -514,7 +537,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       if (pluginEnvironment.PLUGIN_DATA) {
         mkdirSync(pluginEnvironment.PLUGIN_DATA, { recursive: true });
       }
-      const cwdSource = input.server.transport.cwd ?? pluginEnvironment.PLUGIN_ROOT;
+      const cwdSource =
+        input.server.transport.cwd ??
+        pluginEnvironment.PLUGIN_ROOT ??
+        input.temporaryContext?.dataDirectory;
       const child = spawn(
         process.execPath,
         [
@@ -728,7 +754,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     this.idleTimers.set(key, timer);
   }
 
-  /** Records one changed process-local health projection as a redacted Workspace AuditEvent. */
+  /** Records changed health under the consuming Workspace or the actual administrator preview actor. */
   private transition(input: WorkerMcpGatewayServerInput, state: WorkerMcpServerHealth): void {
     const key = workerMcpSessionPrefix(input);
     if (this.health.get(key) === state) return;
@@ -744,22 +770,37 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       return;
     }
     try {
-      const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, input.workspaceId);
-      try {
-        applyScopedMigrations(workspaceDb);
-        recordWorkspaceAuditEvent({
+      if (this.previewAudit) {
+        // Preview is a Core-owned administration effect; it must not open a synthetic Workspace.
+        recordServerAuditEvent({
+          coreDb: this.coreDb,
+          ...this.previewAudit,
           action: `mcp.server.lifecycle.${state}`,
           category: 'capability',
           errorCode: state === 'degraded' || state === 'failed' ? 'mcp-server-unavailable' : null,
           outcome: state === 'degraded' || state === 'failed' ? 'failed' : 'succeeded',
           resource: `mcp-server:${input.server.id}`,
           severity: state === 'degraded' || state === 'failed' ? 'warning' : 'info',
-          summary: `MCP server ${input.server.id} entered ${state}${hasCredentials(input) && state === 'starting' ? ' with gateway-only credentials' : ''}.`,
-          workspaceDb,
-          workspaceId: input.workspaceId,
+          summary: `Temporary MCP preview server entered ${state}${hasCredentials(input) && state === 'starting' ? ' with gateway-only credentials' : ''}.`,
         });
-      } finally {
-        workspaceDb.sqlite.close();
+      } else {
+        const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, input.workspaceId);
+        try {
+          applyScopedMigrations(workspaceDb);
+          recordWorkspaceAuditEvent({
+            action: `mcp.server.lifecycle.${state}`,
+            category: 'capability',
+            errorCode: state === 'degraded' || state === 'failed' ? 'mcp-server-unavailable' : null,
+            outcome: state === 'degraded' || state === 'failed' ? 'failed' : 'succeeded',
+            resource: `mcp-server:${input.server.id}`,
+            severity: state === 'degraded' || state === 'failed' ? 'warning' : 'info',
+            summary: `MCP server ${input.server.id} entered ${state}${hasCredentials(input) && state === 'starting' ? ' with gateway-only credentials' : ''}.`,
+            workspaceDb,
+            workspaceId: input.workspaceId,
+          });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
       }
     } catch {
       if (state === 'starting' && hasCredentials(input)) {
@@ -1010,6 +1051,13 @@ function pluginOwnedEnvironment(
   coreDb: CoreDb | undefined,
   input: WorkerMcpGatewayServerInput
 ): Record<string, string> {
+  if (input.temporaryContext)
+    return {
+      PLUGIN_DATA: input.temporaryContext.dataDirectory,
+      ...(input.temporaryContext.packageRoot
+        ? { PLUGIN_ROOT: input.temporaryContext.packageRoot }
+        : {}),
+    };
   if (!coreDb) return {};
   const catalog = loadResourceCatalog(
     coreDb.dataRoot,

@@ -48,6 +48,7 @@ import {
   revokeVaultReference,
   type VaultReferenceRecord,
 } from '../vault/vault-references.js';
+import { previewMcpDiscovery } from './mcp-discovery-preview.js';
 
 /** Server-shared MCP administration uses the existing catalog CAS, Core Vault records, receipts and Audit. */
 export function createServerMcpOperationImplementations(
@@ -238,6 +239,8 @@ export function createServerMcpOperationImplementations(
     );
 
   return {
+    'administration.mcp-discovery-preview': (input, context) =>
+      previewMcpDiscovery(dependencies, input, context),
     'administration.server-mcp-list': () => ({
       entries: mcpEntries(server()),
       revision: server().revision,

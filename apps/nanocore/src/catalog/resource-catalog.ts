@@ -1096,6 +1096,26 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
   });
 }
 
+/** Project one canonical declaration at the shared Gateway connection seam without asserting Worker admission. */
+export function mcpTransportFromDeclaration(
+  declaration: McpValidatedDeclaration
+): WorkspaceMcpServer['transport'] {
+  return declaration.kind === 'stdio'
+    ? {
+        args: [...declaration.args],
+        command: declaration.command,
+        cwd: declaration.cwd,
+        environment: { ...declaration.environmentSlots },
+        environmentValues: { ...declaration.environment },
+        kind: 'stdio' as const,
+      }
+    : {
+        endpoint: declaration.endpoint,
+        headers: { ...declaration.headers },
+        kind: 'http' as const,
+      };
+}
+
 /**
  * Builds the Gateway-facing MCP server from one version and binding.
  *
@@ -1107,21 +1127,7 @@ function effectiveMcpServer(
   binding: McpBindingRecord,
   version: McpConfigVersionRecord
 ): WorkspaceMcpServer {
-  const transport =
-    version.declaration.kind === 'stdio'
-      ? {
-          args: [...version.declaration.args],
-          command: version.declaration.command,
-          cwd: version.declaration.cwd,
-          environment: { ...version.declaration.environmentSlots },
-          environmentValues: { ...version.declaration.environment },
-          kind: 'stdio' as const,
-        }
-      : {
-          endpoint: version.declaration.endpoint,
-          headers: { ...version.declaration.headers },
-          kind: 'http' as const,
-        };
+  const transport = mcpTransportFromDeclaration(version.declaration);
   return {
     allowedTools: [...binding.allowedTools],
     approvalRequiredTools: [...binding.approvalRequiredTools],

@@ -96,6 +96,44 @@ function serverOperation<const I extends z.ZodObject, const O extends z.ZodType>
 
 /** Server MCP administration extends the existing catalog, Vault and command owners. */
 export const SERVER_MCP_OPERATION_DEFINITIONS = {
+  'administration.mcp-discovery-preview': serverOperation(
+    'Explicitly observe bounded live MCP tools without activation, binding publication or tool execution. A new invocation contacts upstream again.',
+    z
+      .object({
+        catalogScope: z.discriminatedUnion('kind', [
+          z.object({ kind: z.literal('server') }).strict(),
+          z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }).strict(),
+        ]),
+        mcpId,
+        versionDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        expectedRevision: z.number().int().nonnegative(),
+        expectedBindingRevision: z.number().int().positive().nullable(),
+        credentialBindings: UpdateMcpBindingRequestSchema.shape.credentialBindings
+          .unwrap()
+          .max(16)
+          .default([]),
+        timeoutMs: z.number().int().min(100).max(30_000).default(10_000),
+      })
+      .strict(),
+    z
+      .object({
+        mcpId,
+        versionDigest: z.string().min(1),
+        observedAt: z.string().min(1),
+        serverVersion: z.string().nullable(),
+        tools: z.array(
+          z
+            .object({
+              name: z.string().min(1).max(128),
+              description: z.string().max(4096).optional(),
+              inputSchema: z.record(z.string(), z.unknown()),
+            })
+            .strip()
+        ),
+      })
+      .strip(),
+    false
+  ),
   'administration.server-mcp-list': serverOperation(
     'List redacted Server MCP supply.',
     z.object({}).strict(),
