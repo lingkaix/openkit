@@ -7,6 +7,55 @@
   },
   "x-openkit-protocol-version": "0.5.0",
   "paths": {
+    "/api/app/operations/caller.read": {
+      "post": {
+        "operationId": "caller.read",
+        "tags": [
+          "caller"
+        ],
+        "summary": "Read current caller identity and optional owned Workspace retained-work counts.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/caller.read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read current caller identity and optional owned Workspace retained-work counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/caller.read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/runtime.agent-environment-read": {
       "post": {
         "operationId": "runtime.agent-environment-read",
@@ -11078,6 +11127,55 @@
         }
       }
     },
+    "/api/app/operations/administration.cleanup-read": {
+      "post": {
+        "operationId": "administration.cleanup-read",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Read bounded cleanup observations from current canonical records.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.cleanup-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read bounded cleanup observations from current canonical records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.cleanup-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/app-update.preflight": {
       "post": {
         "operationId": "app-update.preflight",
@@ -12437,6 +12535,173 @@
       }
     },
     "schemas": {
+      "caller.read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "caller.read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "credential": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "local"
+                  },
+                  "scope": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "scope"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "session"
+                  },
+                  "scope": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "scope"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "token"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "server-admin",
+                      "workspace",
+                      "workspace-readonly"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "scope"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "workspace": {
+            "type": "object",
+            "properties": {
+              "ownerUserId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "membershipStatus": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "active",
+                      "removed"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "accessCause": {
+                "type": "string",
+                "enum": [
+                  "membership",
+                  "administrator"
+                ]
+              },
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observedAt": {
+                "type": "string",
+                "minLength": 1,
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "counts": {
+                "type": "object",
+                "properties": {
+                  "threads": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "turns": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "artifacts": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "threads",
+                  "turns",
+                  "items",
+                  "artifacts"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "ownerUserId",
+              "membershipStatus",
+              "accessCause",
+              "workspaceId",
+              "observedAt",
+              "counts"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "userId",
+          "credential"
+        ],
+        "additionalProperties": false
+      },
       "runtime.agent-environment-read.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -25147,6 +25412,31 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "ownerUserId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "membershipStatus": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "removed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accessCause": {
+            "type": "string",
+            "enum": [
+              "membership",
+              "administrator"
+            ]
+          },
           "id": {
             "type": "string",
             "minLength": 1
@@ -25238,6 +25528,9 @@
           }
         },
         "required": [
+          "ownerUserId",
+          "membershipStatus",
+          "accessCause",
           "id",
           "name",
           "kind",
@@ -25866,6 +26159,31 @@
             "items": {
               "type": "object",
               "properties": {
+                "ownerUserId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "membershipStatus": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "removed"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "accessCause": {
+                  "type": "string",
+                  "enum": [
+                    "membership",
+                    "administrator"
+                  ]
+                },
                 "workspace": {
                   "type": "object",
                   "properties": {
@@ -25970,16 +26288,19 @@
                   ],
                   "additionalProperties": false
                 },
-                "ownerUserId": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "effectiveRole": {
-                  "type": "string",
-                  "enum": [
-                    "owner",
-                    "editor",
-                    "viewer"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "owner",
+                        "editor",
+                        "viewer"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "registryRevision": {
@@ -25988,14 +26309,23 @@
                   "maximum": 9007199254740991
                 },
                 "membershipRevision": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
-                "workspace",
                 "ownerUserId",
+                "membershipStatus",
+                "accessCause",
+                "workspace",
                 "effectiveRole",
                 "registryRevision",
                 "membershipRevision"
@@ -31023,6 +31353,31 @@
           "workspace": {
             "type": "object",
             "properties": {
+              "ownerUserId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "membershipStatus": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "active",
+                      "removed"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "accessCause": {
+                "type": "string",
+                "enum": [
+                  "membership",
+                  "administrator"
+                ]
+              },
               "workspace": {
                 "type": "object",
                 "properties": {
@@ -31127,16 +31482,19 @@
                 ],
                 "additionalProperties": false
               },
-              "ownerUserId": {
-                "type": "string",
-                "minLength": 1
-              },
               "effectiveRole": {
-                "type": "string",
-                "enum": [
-                  "owner",
-                  "editor",
-                  "viewer"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "owner",
+                      "editor",
+                      "viewer"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "registryRevision": {
@@ -31145,14 +31503,23 @@
                 "maximum": 9007199254740991
               },
               "membershipRevision": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "workspace",
               "ownerUserId",
+              "membershipStatus",
+              "accessCause",
+              "workspace",
               "effectiveRole",
               "registryRevision",
               "membershipRevision"
@@ -81238,6 +81605,1560 @@
         ],
         "additionalProperties": false
       },
+      "administration.cleanup-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "administration.cleanup-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "observedAt": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "items": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "workspace-deletion"
+                    },
+                    "sourceOwner": {
+                      "type": "string",
+                      "const": "docs/specs/20260715-multi_user_workspace_system.md"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "workspace-deletion"
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "workspaceId",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "phase": {
+                          "type": "string",
+                          "enum": [
+                            "requested",
+                            "fenced",
+                            "blocked",
+                            "deleting",
+                            "exported",
+                            "closure-sealed",
+                            "staged",
+                            "deleted",
+                            "cleaned"
+                          ]
+                        },
+                        "retainedStaging": {
+                          "type": "boolean"
+                        },
+                        "cleanedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "phase",
+                        "retainedStaging",
+                        "cleanedAt"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "sourceUpdatedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "evidence": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unknown"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "missing",
+                                "stale",
+                                "contradictory",
+                                "unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "recorded"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "reference": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "workspace-deletion"
+                                },
+                                "workspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "workspaceId",
+                                "requestId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "recordedAt",
+                            "reference"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "nextInspection": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "source-record"
+                        },
+                        "sourceOwner": {
+                          "type": "string",
+                          "const": "docs/specs/20260715-multi_user_workspace_system.md"
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "workspace-deletion"
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "requestId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "workspaceId",
+                            "requestId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceOwner",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceOwner",
+                    "target",
+                    "state",
+                    "sourceUpdatedAt",
+                    "observedAt",
+                    "evidence",
+                    "nextInspection"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "execution-attempt"
+                    },
+                    "sourceOwner": {
+                      "type": "string",
+                      "const": "docs/specs/20260703-durable_scheduler_design.md"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "execution-attempt"
+                        },
+                        "attemptId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "agentSessionId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "attemptId",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "agentSessionId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "phase": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "closing",
+                            "closed"
+                          ]
+                        },
+                        "disposition": {
+                          "type": "string",
+                          "enum": [
+                            "not_accepted",
+                            "accepted",
+                            "unknown"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "phase",
+                        "disposition"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "sourceUpdatedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "evidence": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unknown"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "missing",
+                                "stale",
+                                "contradictory",
+                                "unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "recorded"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "reference": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "execution-attempt"
+                                },
+                                "attemptId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "workspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "agentSessionId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "attemptId",
+                                "workspaceId",
+                                "threadId",
+                                "turnId",
+                                "agentSessionId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "recordedAt",
+                            "reference"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "nextInspection": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "source-record"
+                        },
+                        "sourceOwner": {
+                          "type": "string",
+                          "const": "docs/specs/20260703-durable_scheduler_design.md"
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "execution-attempt"
+                            },
+                            "attemptId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "threadId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "turnId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "agentSessionId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "attemptId",
+                            "workspaceId",
+                            "threadId",
+                            "turnId",
+                            "agentSessionId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceOwner",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceOwner",
+                    "target",
+                    "state",
+                    "sourceUpdatedAt",
+                    "observedAt",
+                    "evidence",
+                    "nextInspection"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "backend-session"
+                    },
+                    "sourceOwner": {
+                      "type": "string",
+                      "const": "docs/specs/20260802-nanohost_runtime_and_transport.md"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "backend-session"
+                        },
+                        "attemptId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "agentSessionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "attemptId",
+                        "workspaceId",
+                        "threadId",
+                        "turnId",
+                        "agentSessionId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "materializing",
+                            "materialized",
+                            "launching",
+                            "cleanup-pending",
+                            "cleanup-failed",
+                            "physical-cleaned",
+                            "cleaned"
+                          ]
+                        },
+                        "workspaceHandoffState": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "complete"
+                          ]
+                        },
+                        "physicalCleanedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "physicalEpochRelation": {
+                          "type": "string",
+                          "enum": [
+                            "same",
+                            "different",
+                            "unknown"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "workspaceHandoffState",
+                        "physicalCleanedAt",
+                        "physicalEpochRelation"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "sourceUpdatedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "evidence": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unknown"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "missing",
+                                "stale",
+                                "contradictory",
+                                "unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "recorded"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "reference": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "backend-session"
+                                },
+                                "attemptId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "workspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "agentSessionId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "attemptId",
+                                "workspaceId",
+                                "threadId",
+                                "turnId",
+                                "agentSessionId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "recordedAt",
+                            "reference"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "nextInspection": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "source-record"
+                        },
+                        "sourceOwner": {
+                          "type": "string",
+                          "const": "docs/specs/20260802-nanohost_runtime_and_transport.md"
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "backend-session"
+                            },
+                            "attemptId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "threadId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "turnId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "agentSessionId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "attemptId",
+                            "workspaceId",
+                            "threadId",
+                            "turnId",
+                            "agentSessionId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceOwner",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceOwner",
+                    "target",
+                    "state",
+                    "sourceUpdatedAt",
+                    "observedAt",
+                    "evidence",
+                    "nextInspection"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "agent-session-binding"
+                    },
+                    "sourceOwner": {
+                      "type": "string",
+                      "const": "docs/specs/20260802-nanohost_runtime_and_transport.md"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "agent-session-binding"
+                        },
+                        "agentSessionRuntimeBindingId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "agentSessionId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "agentSessionRuntimeBindingId",
+                        "agentSessionId",
+                        "workspaceId",
+                        "threadId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "lifecycleState": {
+                          "type": "string",
+                          "enum": [
+                            "opening",
+                            "open",
+                            "active",
+                            "closing",
+                            "closed",
+                            "failed"
+                          ]
+                        },
+                        "cleanupState": {
+                          "type": "string",
+                          "enum": [
+                            "clean",
+                            "pending",
+                            "unknown"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "lifecycleState",
+                        "cleanupState"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "sourceUpdatedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "evidence": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unknown"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "missing",
+                                "stale",
+                                "contradictory",
+                                "unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "recorded"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "reference": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "agent-session-binding"
+                                },
+                                "agentSessionRuntimeBindingId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "agentSessionId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "workspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "agentSessionRuntimeBindingId",
+                                "agentSessionId",
+                                "workspaceId",
+                                "threadId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "recordedAt",
+                            "reference"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "nextInspection": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "source-record"
+                        },
+                        "sourceOwner": {
+                          "type": "string",
+                          "const": "docs/specs/20260802-nanohost_runtime_and_transport.md"
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "agent-session-binding"
+                            },
+                            "agentSessionRuntimeBindingId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "agentSessionId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "threadId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "agentSessionRuntimeBindingId",
+                            "agentSessionId",
+                            "workspaceId",
+                            "threadId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceOwner",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceOwner",
+                    "target",
+                    "state",
+                    "sourceUpdatedAt",
+                    "observedAt",
+                    "evidence",
+                    "nextInspection"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "sandbox-runtime"
+                    },
+                    "sourceOwner": {
+                      "type": "string",
+                      "const": "docs/specs/20260802-nanohost_runtime_and_transport.md"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "sandbox-runtime"
+                        },
+                        "sandboxRuntimeId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "runtimeTargetId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sandboxRuntimeId",
+                        "runtimeTargetId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "lifecycleState": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "failed"
+                          ]
+                        },
+                        "healthState": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "unknown"
+                          ]
+                        },
+                        "drainState": {
+                          "type": "string",
+                          "enum": [
+                            "accepting",
+                            "draining"
+                          ]
+                        },
+                        "cleanupState": {
+                          "type": "string",
+                          "enum": [
+                            "clean",
+                            "unknown"
+                          ]
+                        },
+                        "physicalEpochRelation": {
+                          "type": "string",
+                          "enum": [
+                            "same",
+                            "different",
+                            "unknown"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "lifecycleState",
+                        "healthState",
+                        "drainState",
+                        "cleanupState",
+                        "physicalEpochRelation"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "sourceUpdatedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "evidence": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unknown"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "missing",
+                                "stale",
+                                "contradictory",
+                                "unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "recorded"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "reference": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "sandbox-runtime"
+                                },
+                                "sandboxRuntimeId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "runtimeTargetId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "sandboxRuntimeId",
+                                "runtimeTargetId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "recordedAt",
+                            "reference"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "nextInspection": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "source-record"
+                        },
+                        "sourceOwner": {
+                          "type": "string",
+                          "const": "docs/specs/20260802-nanohost_runtime_and_transport.md"
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "sandbox-runtime"
+                            },
+                            "sandboxRuntimeId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "runtimeTargetId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "sandboxRuntimeId",
+                            "runtimeTargetId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceOwner",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceOwner",
+                    "target",
+                    "state",
+                    "sourceUpdatedAt",
+                    "observedAt",
+                    "evidence",
+                    "nextInspection"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "worker-storage"
+                    },
+                    "sourceOwner": {
+                      "type": "string",
+                      "const": "docs/specs/20260910-persistent_worker_volumes.md"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "worker-storage"
+                        },
+                        "storageRef": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "runtimeTargetId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "storageRef",
+                        "workspaceId",
+                        "runtimeTargetId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "idle",
+                            "reserved",
+                            "attached",
+                            "unknown",
+                            "purge-pending",
+                            "purged"
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "purgedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "revision",
+                        "purgedAt"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "sourceUpdatedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "evidence": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unknown"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "missing",
+                                "stale",
+                                "contradictory",
+                                "unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "recorded"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "reference": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "worker-storage"
+                                },
+                                "storageRef": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "workspaceId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "runtimeTargetId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "storageRef",
+                                "workspaceId",
+                                "runtimeTargetId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "recordedAt",
+                            "reference"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "nextInspection": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "source-record"
+                        },
+                        "sourceOwner": {
+                          "type": "string",
+                          "const": "docs/specs/20260910-persistent_worker_volumes.md"
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "worker-storage"
+                            },
+                            "storageRef": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "runtimeTargetId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "storageRef",
+                            "workspaceId",
+                            "runtimeTargetId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceOwner",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceOwner",
+                    "target",
+                    "state",
+                    "sourceUpdatedAt",
+                    "observedAt",
+                    "evidence",
+                    "nextInspection"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "sources": {
+            "minItems": 6,
+            "maxItems": 6,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "workspace-deletion",
+                    "execution-attempt",
+                    "backend-session",
+                    "agent-session-binding",
+                    "sandbox-runtime",
+                    "worker-storage"
+                  ]
+                },
+                "availability": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "unavailable"
+                  ]
+                },
+                "incomplete": {
+                  "type": "boolean"
+                },
+                "reasons": {
+                  "maxItems": 4,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "count_limit",
+                      "byte_limit",
+                      "source_unavailable",
+                      "source_changed"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "source",
+                "availability",
+                "incomplete",
+                "reasons"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "incomplete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "observedAt",
+          "items",
+          "sources",
+          "incomplete"
+        ],
+        "additionalProperties": false
+      },
       "app-update.preflight.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -85068,6 +86989,17 @@
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
+          "physicalEpoch": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "predecessorFenced": {
             "type": "boolean"
           },
@@ -85087,6 +87019,7 @@
           "identityId",
           "deploymentId",
           "connectionGeneration",
+          "physicalEpoch",
           "predecessorFenced",
           "ready",
           "freshEmpty",
@@ -90622,6 +92555,31 @@
           "workspace": {
             "type": "object",
             "properties": {
+              "ownerUserId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "membershipStatus": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "active",
+                      "removed"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "accessCause": {
+                "type": "string",
+                "enum": [
+                  "membership",
+                  "administrator"
+                ]
+              },
               "workspace": {
                 "type": "object",
                 "properties": {
@@ -90726,16 +92684,19 @@
                 ],
                 "additionalProperties": false
               },
-              "ownerUserId": {
-                "type": "string",
-                "minLength": 1
-              },
               "effectiveRole": {
-                "type": "string",
-                "enum": [
-                  "owner",
-                  "editor",
-                  "viewer"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "owner",
+                      "editor",
+                      "viewer"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "registryRevision": {
@@ -90744,14 +92705,23 @@
                 "maximum": 9007199254740991
               },
               "membershipRevision": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "workspace",
               "ownerUserId",
+              "membershipStatus",
+              "accessCause",
+              "workspace",
               "effectiveRole",
               "registryRevision",
               "membershipRevision"
@@ -92403,5 +94373,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:9d11e9a19c144d008749a429c92ee33dc1b0771661e9ffc4a66f073fc4c13aa9"
+  "x-openkit-source-digest": "sha256:f9a077dd242c1fe6d43d443ccce97a162c20bfc657963bca8417645a6c327542"
 }
