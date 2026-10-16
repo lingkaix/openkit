@@ -5,6 +5,7 @@ This directory owns the existing scoped catalog records and immutable installed 
 ## Boundaries
 
 - `resource-catalog.ts` validates retained catalog authority, admits complete bounded trees and publishes one revision-protected catalog document. Exact version digests identify installed bytes; producer and source provenance explain their origin without granting current access.
+- `validateCatalogTree` normalizes physical ancestor directories and applies the existing bounded tree validator and hash without filesystem effects. Direct Skill admission and Artifact admission use this same boundary.
 - New Skill admission requires a UTF-8 root `SKILL.md` with valid Agent Skills metadata. Package imports also require its authored name to match the source directory. Metadata validation changes no bytes and grants no tool authority. Historical content inspection continues to use retained exact bytes.
 - Skill admission records the original package digest, member key and source subpath, or the exact base digest for an independent candidate. Reusing identical content in one entry returns its existing immutable version facts; later imports do not rewrite those facts or the original PluginVersion membership. Retained descriptive annotations remain in storage and do not enter public results.
 - `catalog-operations.ts` joins the shared Operation Definitions to these native owners. Current read, write and configuration authority, command receipts and Audit retain their existing owners.

@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -9,7 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { digestOpenKitTree } from '@openkit/config-schema';
+import { digestOpenKitTree, hashOpenKitTreeEntries } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import {
   projectWorkspaceCatalogExport,
@@ -34,6 +35,7 @@ import {
   setWorkspaceSkillPin,
   skillSnapshotPath,
   submitWorkspaceSkillCandidate,
+  validateCatalogTree,
 } from './resource-catalog.js';
 import {
   diffWorkspaceSkillVersions,
@@ -74,6 +76,25 @@ function tree(text: string) {
 }
 
 describe('Skill catalog lifecycle', () => {
+  it('validates transport trees through the shared bounded hash without filesystem effects', () => {
+    const source = [
+      { kind: 'file' as const, path: 'references/source.bin', contentBase64: 'AAEC' },
+      { kind: 'directory' as const, path: 'empty' },
+    ];
+    const result = validateCatalogTree(source);
+    expect(result.entries).toEqual([
+      { kind: 1, path: 'references/source.bin', content: Buffer.from([0, 1, 2]) },
+      { kind: 0, path: 'empty' },
+      { kind: 0, path: 'references' },
+    ]);
+    expect(result.digest).toBe(hashOpenKitTreeEntries(result.entries));
+    expect(source).toHaveLength(2);
+    expect(() => validateCatalogTree([...source, source[0]!])).toThrow(/duplicate path/);
+    expect(() => validateCatalogTree([{ kind: 'file', path: '.git/config' }])).toThrow(
+      /must not contain a .git path segment/
+    );
+  });
+
   it('gives implicit and explicit ancestors the exact installed tree identity', () => {
     const f = fixture();
     try {
@@ -744,6 +765,29 @@ describe('Skill catalog lifecycle', () => {
       const retained = join(outside, f.imported.version.digest.slice('sha256:'.length), 'SKILL.md');
       expect(existsSync(retained)).toBe(true);
       expect(readFileSync(retained).toString('base64')).toBe(tree('# Original')[0]!.contentBase64);
+      const proposed = tree('# Another version');
+      const proposedDigest = hashOpenKitTreeEntries(
+        proposed.map((entry) => ({
+          content: Buffer.from(entry.contentBase64, 'base64'),
+          kind: 1 as const,
+          path: entry.path,
+        }))
+      );
+      const outsideStaging = join(outside, `${proposedDigest.slice('sha256:'.length)}.staging`);
+      mkdirSync(outsideStaging);
+      writeFileSync(join(outsideStaging, 'sentinel'), 'Outside staging bytes.');
+      expect(() =>
+        importWorkspaceSkill({
+          ...f,
+          activate: false,
+          displayName: 'Alpha',
+          expectedRevision: second.catalog.revision,
+          id: f.imported.version.entryId,
+          tree: proposed,
+        })
+      ).toThrow();
+      expect(existsSync(join(outsideStaging, 'sentinel'))).toBe(true);
+      expect(readFileSync(join(outsideStaging, 'sentinel'), 'utf8')).toBe('Outside staging bytes.');
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(second.catalog);
     } finally {
       rmSync(f.dataRoot, { recursive: true, force: true });

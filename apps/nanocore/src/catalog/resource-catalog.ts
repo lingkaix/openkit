@@ -216,8 +216,7 @@ export function importWorkspaceSkill(input: {
     input.baseCatalog ?? readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
   SkillEntryRecordSchema.shape.displayName.parse(input.displayName);
-  const entries = treeFilesToEntries(input.tree);
-  const digest = hashOpenKitTreeEntries(entries);
+  const { entries, digest } = validateCatalogTree(input.tree);
   validateSkillTree(
     entries,
     input.pluginMemberKey?.startsWith('skills/')
@@ -1486,6 +1485,15 @@ function validateSkillTree(entries: readonly OpenKitTreeEntry[], expectedName?: 
     throw new CatalogInputError('Skill SKILL.md allowed-tools must be a string.');
 }
 
+/** Validates one bounded transport tree and derives its physical-tree identity without filesystem effects. */
+export function validateCatalogTree(tree: readonly CatalogTreeFile[]): {
+  readonly entries: readonly OpenKitTreeEntry[];
+  readonly digest: string;
+} {
+  const entries = treeFilesToEntries(tree);
+  return { digest: hashOpenKitTreeEntries(entries), entries };
+}
+
 /** Forms the actual tree, including ancestors that materialization must create, before shared validation. */
 function treeFilesToEntries(tree: readonly CatalogTreeFile[]): OpenKitTreeEntry[] {
   const entries: OpenKitTreeEntry[] = tree.map((entry) => {
@@ -1539,8 +1547,9 @@ function materializeSnapshot(target: string, entries: readonly OpenKitTreeEntry[
     return;
   }
   const staged = `${target}.staging`;
-  rmSync(staged, { force: true, recursive: true });
+  // Validate the parent before cleanup can touch any path beneath it.
   ensureCanonicalDirectory(dirname(target), 0o777);
+  rmSync(staged, { force: true, recursive: true });
   mkdirSync(staged, { recursive: true });
   try {
     for (const entry of entries) {
