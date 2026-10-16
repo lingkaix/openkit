@@ -2602,6 +2602,7 @@ function readWorkResourceImportState(
       content: requiredExportFile(context.files, `${sourcePackageRoot}/${selection.packagePath}`),
       contentDigest: selection.contentDigest,
       knowledgePageId: selection.knowledgePageId,
+      notebookRevision: selection.notebookRevision,
       sourceRefs: selection.sourceRefs,
     }));
     const targetKnowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => {
