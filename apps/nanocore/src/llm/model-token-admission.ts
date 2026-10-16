@@ -207,6 +207,10 @@ function capture(value: unknown): { value: ModelRequestJson; json: string } {
       const descriptor = Object.getOwnPropertyDescriptor(item, key);
       if (!descriptor || !Object.hasOwn(descriptor, 'value'))
         throw new AdmissionFailure('invalid-request');
+      // Stock pi-ai includes optional undefined object members. They have no
+      // wire representation; omit them exactly as JSON.stringify does. Array
+      // undefined remains unsupported rather than silently acquiring null.
+      if (!array && descriptor.value === undefined) continue;
       if (index++) append(',');
       if (!array) {
         string(key);

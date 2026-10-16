@@ -218,6 +218,45 @@ describe('complete model token admission', () => {
     });
   });
 
+  it('captures stock Codex optional undefined members as the exact immutable wire JSON', async () => {
+    // pi-ai 0.99.2 api/openai-codex-responses.js buildRequestBody includes this
+    // own undefined field when cache retention/session identity is absent.
+    const stock = {
+      model: model.modelId,
+      store: false,
+      stream: true,
+      instructions: 'You are a helpful assistant.',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+      text: { verbosity: 'low' },
+      include: ['reasoning.encrypted_content'],
+      prompt_cache_key: undefined,
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
+      max_output_tokens: 32,
+    };
+    const wire = JSON.parse(JSON.stringify(stock));
+    const result = await admitModelRequest(
+      admission({
+        model: { ...model, api: 'codex-responses' },
+        request: stock,
+        continuity: null,
+        counter: async (input) => {
+          expect(input.request).toEqual(wire);
+          expect(input.request).not.toHaveProperty('prompt_cache_key');
+          return receipt(input);
+        },
+      })
+    );
+    expect(result).toMatchObject({ kind: 'admitted', request: wire });
+    if (result.kind === 'admitted') expect(Object.isFrozen(result.request)).toBe(true);
+    expect(Object.hasOwn(stock, 'prompt_cache_key')).toBe(true);
+    expect(
+      await admitModelRequest(
+        admission({ request: { model: model.modelId, input: [undefined], max_output_tokens: 32 } })
+      )
+    ).toEqual({ kind: 'unavailable', reason: 'invalid-request' });
+  });
+
   it('binds exact Unicode, ordered history, tools, state, media facts and physical model into the digest', async () => {
     const seen: string[] = [];
     const counter = async (input: ModelTokenCountInput) => {
