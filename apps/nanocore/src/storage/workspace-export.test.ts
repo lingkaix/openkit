@@ -14,6 +14,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
@@ -1029,6 +1030,7 @@ describe('workspace export verifier', () => {
     const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
     const store = new FsStore({ dataRoot });
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: fixture.workspace.id, knowledge: fixture.knowledge }),
       workspace: fixture.workspace,
       threads: [fixture.thread],
       turns: [],
@@ -1102,6 +1104,7 @@ describe('workspace export verifier', () => {
     const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
     const store = new FsStore({ dataRoot });
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: fixture.workspace.id, knowledge: [] }),
       workspace: fixture.workspace,
       threads: [fixture.thread],
       turns: [],

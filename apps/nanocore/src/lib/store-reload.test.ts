@@ -24,6 +24,7 @@ import {
 import { describe, expect, it } from 'vitest';
 import { parseOkfDocument } from '../knowledge/okf.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { FsStore } from './store.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
@@ -91,8 +92,19 @@ function workspaceImportPayload(
     createdAt: timestamp,
     completedAt: timestamp,
   });
+  const knowledge = [
+    KnowledgeEntrySchema.parse({
+      id: `kn_${workspaceId}`,
+      kind: 'project-context',
+      title: 'Imported context',
+      content: 'This entry belongs to the imported workspace.',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }),
+  ];
 
   return {
+    ...notebookImportFixture({ workspaceId, knowledge, userId: localActor.id }),
     workspace: WorkspaceRecordSchema.parse({
       id: workspaceId,
       name: 'Imported workspace',
@@ -119,16 +131,7 @@ function workspaceImportPayload(
         updatedAt: timestamp,
       }),
     ],
-    knowledge: [
-      KnowledgeEntrySchema.parse({
-        id: `kn_${workspaceId}`,
-        kind: 'project-context',
-        title: 'Imported context',
-        content: 'This entry belongs to the imported workspace.',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      }),
-    ],
+    knowledge,
     turns: [
       TurnSchema.parse({
         id: item.turnId,

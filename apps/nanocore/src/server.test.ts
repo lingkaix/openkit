@@ -189,6 +189,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -413,6 +414,7 @@ function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
     return;
   } catch {
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
       workspace: demo.workspace,
       threads: [demo.thread],
       knowledge: demo.knowledge,

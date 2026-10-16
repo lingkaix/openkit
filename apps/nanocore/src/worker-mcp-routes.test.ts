@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
@@ -107,6 +108,7 @@ import { recordTestExecutionAttempt } from './test-support/execution-attempt.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import {
@@ -910,6 +912,10 @@ describe('worker MCP routes', () => {
         seeded.listThreadTurns(workspace.id, thread.id)
       );
       store.importWorkspaceSnapshot({
+        ...notebookImportFixture({
+          workspaceId: workspace.id,
+          knowledge: seeded.getWorkspaceResources(workspace.id).knowledge,
+        }),
         workspace,
         threads: workspaceThreads,
         turns: workspaceTurns,

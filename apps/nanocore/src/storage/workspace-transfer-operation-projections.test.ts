@@ -19,6 +19,7 @@ import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -40,6 +41,7 @@ function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   const store = new FsStore({ dataRoot: root });
   const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   store.importWorkspaceSnapshot({
+    ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: [] }),
     workspace: demo.workspace,
     threads: [demo.thread],
     knowledge: [],
