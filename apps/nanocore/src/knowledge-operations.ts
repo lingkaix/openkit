@@ -38,6 +38,7 @@ import {
   type NotebookEntryEdit,
   publishWorkspaceNotebookEntry,
 } from './knowledge/notebook-entry-publication.js';
+import { createNotebookHistoryOperations } from './knowledge/notebook-history.js';
 import {
   type NotebookPublicationDependencies,
   type NotebookUpdate,
@@ -459,6 +460,7 @@ export function createKnowledgeOperationImplementations(
   };
 
   return {
+    ...createNotebookHistoryOperations(dependencies, notebookCommandFailure),
     'knowledge.notebook.update': async (input, context) => {
       const dataRoot = store.getDataRoot();
       const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;

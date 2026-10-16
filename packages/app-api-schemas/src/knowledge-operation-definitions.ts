@@ -47,6 +47,14 @@ import {
   UpdateKnowledgeNotebookRequestSchema,
   UpdateKnowledgeNotebookResponseSchema,
 } from './knowledge-notebook.js';
+import {
+  KnowledgeNotebookDiffRequestSchema,
+  KnowledgeNotebookDiffResponseSchema,
+  KnowledgeNotebookHistoryRequestSchema,
+  KnowledgeNotebookHistoryResponseSchema,
+  RestoreKnowledgeNotebookRequestSchema,
+  RestoreKnowledgeNotebookResponseSchema,
+} from './knowledge-notebook-history.js';
 import type { OperationDefinition } from './operation-contract.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
@@ -329,6 +337,48 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
 
 /** Sole public contracts for the retained minimal Knowledge Entry family; records stay with the protocol owner. */
 export const KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS = {
+  'knowledge.notebook.history': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Read currently authorized Workspace notebook history.',
+    inputSchema: KnowledgeNotebookHistoryRequestSchema.extend({ ...workspaceSelector }).strict(),
+    outputSchema: KnowledgeNotebookHistoryResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.read',
+    mutating: false,
+  },
+  'knowledge.notebook.diff': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Compare exact published Workspace notebook revisions or preview a selected restore.',
+    inputSchema: KnowledgeNotebookDiffRequestSchema.extend({ ...workspaceSelector }).strict(),
+    outputSchema: KnowledgeNotebookDiffResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.read',
+    mutating: false,
+  },
+  'knowledge.notebook.restore': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Restore selected historical pages through a new fixed-base Workspace publication.',
+    inputSchema: RestoreKnowledgeNotebookRequestSchema.extend({ ...workspaceSelector }).strict(),
+    outputSchema: RestoreKnowledgeNotebookResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.write',
+    mutating: true,
+  },
+
   'knowledge.notebook.update': {
     binding: 'json',
     returnsOneTimeSecret: false,
