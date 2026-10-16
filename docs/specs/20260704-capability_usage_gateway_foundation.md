@@ -122,6 +122,11 @@ Rules:
 - Missing optional lineage is allowed for server diagnostics and manual gateway calls, but workspace id and a non-null authority actor are required for worker-agent execution and workspace-owned usage.
 - Before a Workspace-attributed producer starts a CapabilityCall or contacts an upstream, it must apply the current-authority predicate from `docs/specs/20260715-multi_user_workspace_system.md` to that actor and the concrete `llm.gateway.use`, `tool.use`, or `network.egress` operation. A null, stale, or denied actor records no Workspace effect; an unattributed server diagnostic cannot be promoted into Workspace usage or authority.
 - Internal Assistant MCP uses authenticated user/Workspace/Thread/Turn and request lineage without an Agent, AgentSession or AEP. `20260909-internal_agent_resource_integration.md` owns its admission and private connection partition; the existing recorder, responsible-user usage derivation and no-contact listing/denial rules remain common.
+
+For the #144 selected-Skills family on command-initiated Assistant Turns admitted by conversation.submit, each logical inference invocation has a null per-invocation request ID and a fresh CapabilityCall under the existing allocation rules. The original command request ID remains command lineage through the admitted Turn and command receipt authority. Trusted command context carries that ID separately to audit; it is not the CapabilityCall start idempotency key. CapabilityCall and UsageRecord retain their existing Workspace, Thread, Turn and call links. This rule does not change internal Assistant MCP request lineage.
+
+The reason is recorded in [Assistant Inference Request Lineage](../decisions/20261015-assistant_inference_request_lineage.md).
+
 - The context actor is transient enforcement input. Durable CapabilityCall and RuntimeEvidence records retain their existing AEP, Turn, AgentSession, request, and audit links instead of copying another `ActorRef`; the linked UsageRecord stores only the exact derived responsible-user id required by the audit and usage specification.
 - The context MUST NOT carry prompt text, tool arguments, tool results, secrets, bearer tokens, or raw prompt cache keys.
 - Producer adapters may add feature-local diagnostic ids, but the recorder stores only stable OpenKit ids and redacted summaries.
@@ -143,6 +148,11 @@ Rules:
 - Except for caller-supplied request IDs on public Gateway LLM calls, which [Gateway](20260526-llm_gateway_responses_api.md#authentication-authorization-and-attribution) refuses before dispatch whether running or terminal, when that lookup finds an existing row, exact-match replay is allowed only when the incoming `capabilityId`, `threadId`, `turnId`, `itemId`, `agentId`, `agentSessionId`, `packageSnapshotId`, `runtimeOriginRef`, `runtimeCacheLineageRef`, `sourceIds`, `providerRef`, `serviceRef`, and `redactionClass` equal the persisted immutable effect attribution. `sourceIds` are compared only after canonical sorting and deduplication.
 - Replay comparison MUST NOT include `callId`, `summary`, status, error code, timestamps, or the transient `authorityActor`.
 - Any immutable-attribution contradiction on an existing key MUST fail closed before upstream contact, create no new record, change no durable state, and use the existing public failure vocabulary rather than adding a record type, lifecycle state, or public error code.
+
+A null per-invocation request ID supplies no request-key replay protection. The command owner must reject duplicate or uncertain execution before invocation. Exact command replay returns the original result without Provider contact; retained environment evidence does not authorize another invocation. A closed call is never reopened.
+
+The reason is recorded in [Assistant Inference Request Lineage](../decisions/20261015-assistant_inference_request_lineage.md).
+
 - Usage recording MUST also be retry-safe for equivalent measurements linked to the same capability call.
 - If usage recording fails after upstream success, the call MUST finish with a diagnostic status that surfaces ledger-write failure; the system MUST NOT silently report a fully accounted success.
 - Public response bodies MUST NOT depend on usage write timing except where fail-closed policy explicitly requires ledger durability before returning success.
