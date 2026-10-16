@@ -159,7 +159,9 @@ it('distinguishes a granted request from consumption and shows the actual decidi
     await screen.findByText('Granted; waiting for the Goal owner to apply this exact decision.')
   ).toBeVisible();
   expect(screen.getByText('Decision by administrator')).toBeVisible();
-  expect(screen.getByText('Responsible person: usr_00000000-0000-7000-8000-000000000001')).toBeVisible();
+  expect(
+    screen.getByText('Responsible person: usr_00000000-0000-7000-8000-000000000001')
+  ).toBeVisible();
   expect(screen.getByText('Open')).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Approve Plan' })).not.toBeInTheDocument();
 });
