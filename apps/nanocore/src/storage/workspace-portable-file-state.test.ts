@@ -1,4 +1,3 @@
-import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
@@ -18,7 +17,6 @@ import {
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook-workspace-portability.js';
 import {
@@ -30,7 +28,10 @@ import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';

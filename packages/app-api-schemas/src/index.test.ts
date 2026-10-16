@@ -1493,7 +1493,10 @@ describe('app api schemas', () => {
         id: 'kp_demo',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         operation: 'notebook-change' as const,
-        ownerScope: { kind: 'workspace' as const, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        ownerScope: {
+          kind: 'workspace' as const,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
         baseRevision: request.baseRevision,
         candidateRevision: knowledgeCandidateRevision,
         knowledgePageId: request.knowledgePageId,
@@ -5606,7 +5609,10 @@ describe('app api schemas', () => {
         reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
         proposalId: 'kp_demo',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        ownerScope: { kind: 'workspace' as const, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        ownerScope: {
+          kind: 'workspace' as const,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
         baseRevision: knowledgeBaseRevision,
         candidateRevision: knowledgeCandidateRevision,
         requestId: requestIds.accepted,

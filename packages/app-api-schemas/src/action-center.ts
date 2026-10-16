@@ -1,10 +1,10 @@
 import {
   ActorRefSchema,
-  KnowledgeOwnerScopeSchema,
   ArtifactIdSchema,
   ArtifactReviewIdSchema,
   ExecutionAttemptIdSchema,
   ItemIdSchema,
+  KnowledgeOwnerScopeSchema,
   KnowledgeReviewIdSchema,
   RequestIdSchema,
   ThreadIdSchema,

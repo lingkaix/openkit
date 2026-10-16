@@ -9,7 +9,6 @@ import {
 import { describe, expect, it } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';

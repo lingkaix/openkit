@@ -65,8 +65,9 @@ describe('direct Knowledge saved-source lineage', () => {
       const created = await f.client.operations['knowledge.create']({
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
-        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID }))
-          .notebookRevision,
+        baseRevision: (
+          await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).notebookRevision,
         knowledgePageId: 'protected-meeting-marker',
         kind: 'project-context',
         title: 'PROTECTED-TITLE-MARKER',
@@ -379,8 +380,9 @@ describe('direct Knowledge saved-source lineage', () => {
       const command = {
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
-        baseRevision: (await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID }))
-          .notebookRevision,
+        baseRevision: (
+          await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).notebookRevision,
         knowledgePageId: 'reading-room-hours',
         kind: 'project-context' as const,
         title: 'Reading room hours',
@@ -465,7 +467,9 @@ describe('direct Knowledge saved-source lineage', () => {
       );
       if (condition === 'changed-bytes') writeFileSync(materialPath, 'Changed captured bytes.');
       if (condition === 'missing-bytes') rmSync(materialPath);
-      const before = await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID });
+      const before = await f.client.operations['knowledge.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
       await expect(
         f.client.operations['knowledge.create']({
           workspaceId: DEMO_WORKSPACE_ID,
@@ -522,8 +526,9 @@ describe('direct Knowledge saved-source lineage', () => {
       const command = {
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
-        baseRevision: (await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID }))
-          .notebookRevision,
+        baseRevision: (
+          await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).notebookRevision,
         knowledgePageId: 'authorized-source-link',
         kind: 'project-context' as const,
         title: 'Authorized source link',

@@ -1,12 +1,10 @@
-import { allocateEntityId } from '@openkit/protocol';
-import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../test-support/local-user.js';
 import { FsStore } from '../lib/store.js';
 import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -20,6 +18,10 @@ import {
   createVerifiedWorkspaceExport,
   importVerifiedWorkspace,
 } from '../storage/workspace-transfer-routes.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { remintPortableWorkspaceNotebookPages } from './notebook-workspace-portability.js';

@@ -1570,7 +1570,11 @@ export function createKnowledgeOperationImplementations(
       const { workspaceId, ...commandInput } = input;
 
       try {
-        requireSourceReferenceAudience(workspaceId, store.getKnowledgeEntry(workspaceId, input.knowledgeEntryId).sourceReferences ?? [], context);
+        requireSourceReferenceAudience(
+          workspaceId,
+          store.getKnowledgeEntry(workspaceId, input.knowledgeEntryId).sourceReferences ?? [],
+          context
+        );
         const knowledge = await publishEntry({ ...input, operation: 'knowledge.update' }, context);
         requireSourceReferenceAudience(workspaceId, knowledge.sourceReferences ?? [], context);
         recordKnowledgeGatewayUsage({

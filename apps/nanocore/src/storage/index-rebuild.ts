@@ -1017,7 +1017,9 @@ function currentKnowledgeReferenceContent(
   const current = readWorkspaceNotebookIndexSource(workspaceRoot, undefined, [reference.objectId]);
   const pinned =
     input.notebookRevision !== undefined && input.notebookRevision !== current.notebookRevision
-      ? readWorkspaceNotebookIndexSource(workspaceRoot, input.notebookRevision, [reference.objectId])
+      ? readWorkspaceNotebookIndexSource(workspaceRoot, input.notebookRevision, [
+          reference.objectId,
+        ])
       : current;
   if (!pinned.pages.has(reference.objectId)) return null;
   // Retained bytes prove selection; current sensitivity still controls trace disclosure.

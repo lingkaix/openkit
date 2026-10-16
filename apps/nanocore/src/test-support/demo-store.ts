@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import type { z } from 'zod';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 
 type Thread = z.infer<typeof ThreadSchema>;
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;

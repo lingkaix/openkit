@@ -25,9 +25,7 @@ export function readWorkspaceNotebookIndexSource(
   if (revision !== undefined) notebook.history({ revision, limit: 1 });
   const paths = pageIds?.map((id) => `${id}.md`);
   const entries = paths ? notebook.inspectRevision(notebookRevision).entries : undefined;
-  const present = paths
-    ? paths.filter((path) => Object.hasOwn(entries!, path))
-    : undefined;
+  const present = paths ? paths.filter((path) => Object.hasOwn(entries!, path)) : undefined;
   const { files } = notebook.readRevision(notebookRevision, present);
   return {
     notebookRevision,
