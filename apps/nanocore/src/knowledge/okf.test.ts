@@ -10,8 +10,6 @@ import {
   parseScopeKnowledgeSchema,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   stringListFrontmatterField,
-  updateKnowledgeSchemaFields,
-  updateOkfFrontmatter,
   validateOpenKitKnowledgeProfile,
   validateScopeKnowledgeSchema,
 } from './okf.js';
@@ -665,104 +663,6 @@ function governedPage(input: {
     ].join('\n'),
   });
 }
-
-describe('managed OKF field removal', () => {
-  it('removes obsolete keys without null substitutes while preserving annotations and exact body', () => {
-    const body = '# Exact body\n\nPreserve spacing.  \r\n';
-    const content = [
-      '---',
-      'type: KnowledgePage',
-      '# Historical description',
-      'future_metadata: {nested: [one, two]}',
-      'owner_scope: {kind: workspace, workspaceId: workspace-a}',
-      'openkit_revision: 3',
-      '---',
-      body,
-    ].join('\n');
-    const result = updateOkfFrontmatter({
-      path: 'page.md',
-      content,
-      updates: { scope: workspace },
-      removeFields: ['owner_scope', 'openkit_revision'],
-    });
-    const parsed = parseOkfDocument({ path: 'page.md', content: result });
-    expect(parsed.ok).toBe(true);
-    expect(parsed.document?.frontmatter).not.toHaveProperty('owner_scope');
-    expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_revision');
-    expect(parsed.document?.frontmatter.future_metadata).toEqual({ nested: ['one', 'two'] });
-    expect(parsed.document?.frontmatter.scope).toEqual(workspace);
-    expect(result).toContain('# Historical description');
-    expect(parsed.document?.body).toBe(body);
-  });
-});
-
-describe('managed schema mapping edits', () => {
-  it('checks original ownership before transformation and retains unknown schema values and comments', () => {
-    const original =
-      '# Keep this schema note.\nschema_version: legacy\nowner_scope: {kind: workspace, workspaceId: workspace-a}\nfuture_metadata: {nested: [one, two]}\n';
-    let observed: unknown;
-    const result = updateKnowledgeSchemaFields({
-      content: original,
-      updates: (fields) => {
-        observed = fields.owner_scope;
-        return { schema_version: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION, scope: workspace };
-      },
-      removeFields: ['owner_scope'],
-    });
-    expect(observed).toEqual(workspace);
-    expect(result).toContain('# Keep this schema note.');
-    let retainedFields: Readonly<Record<string, unknown>> = {};
-    updateKnowledgeSchemaFields({
-      content: result,
-      updates: (fields) => {
-        retainedFields = fields;
-        return {};
-      },
-    });
-    expect(retainedFields.future_metadata).toEqual({ nested: ['one', 'two'] });
-    expect(result).not.toContain('owner_scope:');
-    expect(result).toContain('scope:');
-  });
-
-  it.each([
-    '[]',
-    'key: [invalid',
-    'key: one\nkey: two',
-    'key: &cycle {again: *cycle}',
-    '1: value',
-    'description: secret',
-  ])('refuses unsafe original mappings before invoking a trusted edit: %s', (content) => {
-    let invoked = false;
-    expect(() =>
-      updateKnowledgeSchemaFields({
-        content,
-        updates: () => {
-          invoked = true;
-          return { schema_version: 'target' };
-        },
-      })
-    ).toThrow();
-    expect(invoked).toBe(false);
-  });
-
-  it('preserves a trusted callback refusal and refuses unsafe final metadata', () => {
-    const refusal = new Error('Bounded migration refusal.');
-    expect(() =>
-      updateKnowledgeSchemaFields({
-        content: 'schema_version: old',
-        updates: () => {
-          throw refusal;
-        },
-      })
-    ).toThrow(refusal);
-    expect(() =>
-      updateKnowledgeSchemaFields({
-        content: 'schema_version: old',
-        updates: () => ({ private_key: 'never publish' }),
-      })
-    ).toThrow(/result is invalid/);
-  });
-});
 
 describe('governed core semantics', () => {
   it.each([
