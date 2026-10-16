@@ -7,6 +7,7 @@ export const ADMINISTRATION_TOOL_NAMES = [
   'administration.configuration.read',
   'administration.schema.read',
   'administration.configuration.propose',
+  'administration.configuration.apply',
   'worker_environment.list',
   'worker_environment.status',
   'worker_environment.prepare',
@@ -33,12 +34,12 @@ export interface AdministrationToolAssemblyOptions {
  * Assembles the complete fixed private administration Tool set.
  *
  * @param options Current authority recheck and existing owner closures.
- * @returns Eight Tools in the order owned by the Assistant administration contract.
+ * @returns Nine Tools in the order owned by the Assistant administration contract.
  */
 export function createAdministrationTools(
   options: AdministrationToolAssemblyOptions
 ): readonly AgentTool[] {
-  const expectedEnvironmentNames = ADMINISTRATION_TOOL_NAMES.slice(3, 7);
+  const expectedEnvironmentNames = ADMINISTRATION_TOOL_NAMES.slice(4, 8);
   if (
     options.environmentTools.some((tool, index) => tool.name !== expectedEnvironmentNames[index])
   ) {
@@ -50,7 +51,7 @@ export function createAdministrationTools(
   ) {
     throw new Error('Administration configuration Tool assembly is invalid.');
   }
-  if (options.runtimeTargetTool.name !== ADMINISTRATION_TOOL_NAMES[7]) {
+  if (options.runtimeTargetTool.name !== ADMINISTRATION_TOOL_NAMES[8]) {
     throw new Error('Administration NanoHost RuntimeTarget Tool assembly is invalid.');
   }
   return [
