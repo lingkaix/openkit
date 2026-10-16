@@ -791,6 +791,7 @@ function importWorkspaceDatabaseRows({
  * @param ownerUserId Importing user or verified deleted-resource tombstone owner.
  * @param snapshot Verified and reminted import snapshot.
  * @param stageWorkspace Staged file and workspace-database writer.
+ * @param initialization Actual current importer and command attribution for the new Notebook.
  * @returns Imported workspace record.
  * @throws Error when staged publication or transactional Core replay fails.
  */

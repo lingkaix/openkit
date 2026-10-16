@@ -1414,6 +1414,7 @@ export class FsStore {
    * @param stageWorkspace Optional side-effect writer that runs under the staging root.
    * @param notebookInitialization Actual native creation attribution, required for file-backed publication.
    * @param initialNotebookFiles Exact admitted root tree; retained imports must not be regenerated from entry projections.
+   * @param initialNotebookSchemaText Exact imported scope schema; fresh creation uses the default schema.
    */
   private persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
