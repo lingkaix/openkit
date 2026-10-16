@@ -8,17 +8,18 @@ import {
   UpdateAutomationRequestSchema,
 } from '@openkit/app-api-schemas';
 import { recordServerAuditEvent } from '../audit-events.js';
-import { uuidv5 } from '../generative-kernel/uuid.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
   schedulerAdmissionInputHash,
   SchedulerAdmissionTransitionError,
-  type CreateSchedulerAdmissionEntryInput,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  recurringRequestId,
+  readRecurringOccurrence,
+  recurringSchedulerAdmissionInput,
   type ExpiredOccurrenceRange,
   ExpiredOccurrenceRangeSchema,
   RecurringAdmissionPayloadSchema,
@@ -34,11 +35,6 @@ const SCAN_LIMIT = 128;
 export class AutomationRecordNotFoundError extends Error {}
 /** A stale revision or invalid lifecycle request has no effect. */
 export class AutomationMutationError extends Error {}
-
-/** Stable occurrence identity derived only from the schedule and exact nominal UTC instant. */
-export function recurringRequestId(scheduleId: string, scheduledAt: string): string {
-  return uuidv5(JSON.stringify([scheduleId, scheduledAt]));
-}
 
 /** Durable Workspace schedule authority sharing the scheduler's Core SQLite connection. */
 export class AutomationStore {
@@ -212,7 +208,7 @@ export class AutomationStore {
           AND schedule.status = 'active' ORDER BY occurrence.deadline, occurrence.id LIMIT ?`)
             .all(now, now, SCAN_LIMIT) as JsonRow[];
           for (const row of pending) {
-            const occurrence = readOccurrence(row.record_json);
+            const occurrence = readRecurringOccurrence(row.record_json);
             if (!admit(occurrence.workspaceId)) continue;
             candidates.push({
               schedule: this.getAutomation(occurrence.scheduleId),
@@ -258,7 +254,7 @@ export class AutomationStore {
         WHERE state = 'pending' AND deadline <= ? ORDER BY deadline, id LIMIT ?`)
             .all(now, SCAN_LIMIT) as JsonRow[];
           for (const row of stale) {
-            const occurrence = readOccurrence(row.record_json);
+            const occurrence = readRecurringOccurrence(row.record_json);
             if (admit(occurrence.workspaceId)) this.finish(occurrence, 'expired', timestamp);
           }
           for (const row of this.coreDb.sqlite
@@ -314,7 +310,9 @@ export class AutomationStore {
               JSON.stringify(occurrence.resolvedPayload)
           )
             return this.finish(occurrence, 'recovery_required', timestamp);
-          const request = resolved ? this.admissionInput(occurrence, resolved, timestamp) : null;
+          const request = resolved
+            ? recurringSchedulerAdmissionInput(occurrence, resolved, timestamp)
+            : null;
           const ownQueues = this.coreDb.sqlite
             .prepare(`SELECT queue_entry_id FROM scheduler_admission_entries
         WHERE queue_entry_id = ? OR request_id = ? OR turn_id = ? LIMIT 2`)
@@ -403,35 +401,7 @@ export class AutomationStore {
       .prepare('SELECT record_json FROM recurring_occurrences WHERE id = ?')
       .get(id) as JsonRow | undefined;
     if (!row) throw new AutomationRecordNotFoundError(`Recurring occurrence not found: ${id}`);
-    return readOccurrence(row.record_json);
-  }
-
-  /** Reads the exact accepted producer tuple used by scheduler publication/restart recovery. */
-  public findAcceptedOccurrenceForQueue(queueEntryId: string): RecurringOccurrence | null {
-    const row = this.coreDb.sqlite
-      .prepare(`SELECT record_json FROM recurring_occurrences
-      WHERE queue_entry_id = ? AND state = 'admission-accepted'`)
-      .get(queueEntryId) as JsonRow | undefined;
-    if (!row) return null;
-    const occurrence = readOccurrence(row.record_json);
-    if (!occurrence.resolvedPayload)
-      throw new Error('Accepted RecurringOccurrence has no exact admission payload.');
-    const request = this.admissionInput(
-      occurrence,
-      occurrence.resolvedPayload,
-      occurrence.createdAt
-    );
-    const entry = requireSchedulerAdmissionEntry(this.coreDb, queueEntryId);
-    const expectedHash = schedulerAdmissionInputHash(request);
-    if (
-      queueEntryId !== request.queueEntryId ||
-      occurrence.queueEntryId !== queueEntryId ||
-      occurrence.turnId !== request.turnId ||
-      entry.inputHash !== expectedHash ||
-      schedulerAdmissionInputHash(entry) !== expectedHash
-    )
-      throw new Error('Accepted RecurringOccurrence contradicts its scheduler admission.');
-    return occurrence;
+    return readRecurringOccurrence(row.record_json);
   }
 
   /** Returns bounded history directly as individual occurrences or lossless ranges, newest first. */
@@ -463,7 +433,7 @@ export class AutomationStore {
     return {
       items: selected.map((row) =>
         row.kind === 'occurrence'
-          ? { kind: 'occurrence' as const, record: readOccurrence(row.record_json) }
+          ? { kind: 'occurrence' as const, record: readRecurringOccurrence(row.record_json) }
           : {
               kind: 'expired-range' as const,
               record: ExpiredOccurrenceRangeSchema.parse(JSON.parse(row.record_json)),
@@ -489,7 +459,7 @@ export class AutomationStore {
       .prepare(`SELECT record_json FROM recurring_occurrences
       WHERE schedule_id = ? AND state = 'pending'`)
       .all(schedule.id) as JsonRow[])
-      this.finish(readOccurrence(row.record_json), 'cancelled', timestamp);
+      this.finish(readRecurringOccurrence(row.record_json), 'cancelled', timestamp);
     return { ...schedule, status: 'paused', nextScheduledAt: null };
   }
 
@@ -585,25 +555,6 @@ export class AutomationStore {
     };
   }
 
-  /** Builds the existing queue primitive's immutable payload, with no Task/Goal or dispatch call. */
-  private admissionInput(
-    occurrence: RecurringOccurrence,
-    payload: NonNullable<RecurringOccurrence['resolvedPayload']>,
-    timestamp: string
-  ): CreateSchedulerAdmissionEntryInput {
-    return {
-      ...payload,
-      queueEntryId: `queue_recurring_${occurrence.requestId}`,
-      requestId: occurrence.requestId,
-      workspaceId: occurrence.workspaceId,
-      threadId: occurrence.snapshot.threadId,
-      turnId: `turn_recurring_${occurrence.requestId}`,
-      turnInput: occurrence.snapshot.prompt,
-      triggerActor: occurrence.snapshot.actor,
-      now: () => timestamp,
-    };
-  }
-
   /** Commits a terminal trigger outcome without rewriting prior terminal history. */
   private finish(
     occurrence: RecurringOccurrence,
@@ -666,7 +617,7 @@ export class AutomationStore {
 
   /** Writes both indexed selectors and the validated known-core payload in one owner mutation. */
   private writeOccurrence(record: RecurringOccurrence, insert = false): void {
-    readOccurrence(JSON.stringify(record));
+    readRecurringOccurrence(JSON.stringify(record));
     if (insert)
       this.coreDb.sqlite
         .prepare(`INSERT INTO recurring_occurrences
@@ -754,18 +705,5 @@ function readSchedule(json: string): AutomationRecord {
   const record = AutomationRecordSchema.parse(value);
   if (record.actor.id !== record.id || record.actor.responsibleUserId !== record.responsibleUserId)
     throw new Error('RecurringSchedule has contradictory automation identity.');
-  return record;
-}
-/** Enforces identity, deadline and attempt bounds before trigger history can authorize effects. */
-function readOccurrence(json: string): RecurringOccurrence {
-  const record = RecurringOccurrenceSchema.parse(JSON.parse(json));
-  if (
-    record.id !== `occ_${recurringRequestId(record.scheduleId, record.scheduledAt)}` ||
-    record.requestId !== recurringRequestId(record.scheduleId, record.scheduledAt) ||
-    record.snapshot.actor.id !== record.scheduleId ||
-    Date.parse(record.deadline) !== Date.parse(record.scheduledAt) + DEADLINE_MS ||
-    record.attempts.some((attempt, index) => attempt.number !== index + 1)
-  )
-    throw new Error('RecurringOccurrence violates its durable identity or attempt contract.');
   return record;
 }

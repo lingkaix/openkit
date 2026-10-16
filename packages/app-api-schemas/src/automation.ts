@@ -8,7 +8,7 @@ const selections = {
 const editable = {
   name: z.string().min(1),
   threadId: z.string().min(1),
-  intervalSeconds: z.number().int().min(5).max(2_147_483_647),
+  intervalSeconds: z.number().int().min(5),
   prompt: z.string().min(1),
   ...selections,
 };
