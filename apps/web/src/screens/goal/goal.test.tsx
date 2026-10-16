@@ -959,14 +959,15 @@ describe('Exact decision retry', () => {
   it('retains the range and request identity while an unknown result blocks a different decision', async () => {
     const user = userEvent.setup();
     const decide = vi.fn().mockRejectedValue(new Error('unknown result'));
+    const reviews = vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] });
     const client = makeClient({
       operations: {
         'artifact.review.decide': decide,
         'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
-        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+        'artifact.review-list': reviews,
       },
     });
-    renderApp(
+    const cache = renderApp(
       `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
       client
     );
@@ -986,6 +987,28 @@ describe('Exact decision retry', () => {
     );
     expect(screen.getByRole('button', { name: 'Clear feedback range' })).toBeDisabled();
     expect(decide.mock.calls[0][0]).toEqual(decide.mock.calls[1][0]);
+    reviews.mockResolvedValue({
+      reviews: [
+        {
+          ...PROPOSAL_REVIEW,
+          decision: 'accepted',
+          decisionActorId: 'user1',
+          decidedAt: TIMESTAMP,
+          rangeFeedback: decide.mock.calls[0][0].rangeFeedback,
+          appliedMaterialRevisionId: 'mrev_00000000-0000-73b6-951f-12d3bf78a1d3',
+        },
+      ],
+    });
+    await cache.refetchQueries({
+      queryKey: ['artifact-reviews', ARTIFACT.workspaceId, ARTIFACT.id],
+    });
+    expect(await screen.findByRole('status', { name: 'Artifact review' })).toHaveTextContent(
+      'Approved'
+    );
+    expect(
+      screen.queryByRole('alert'),
+      'Confirmed Review must clear the unconfirmed-decision banner'
+    ).toBeNull();
   });
 
   it('displays recorded range evidence on the decided Review', async () => {
