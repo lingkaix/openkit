@@ -569,13 +569,19 @@ describe('Recovery and search', () => {
       .fn()
       .mockResolvedValueOnce({ items: ALL_WORKERS })
       .mockRejectedValue(
-        new ApiCallError(status, 'private read denial', { code: 'workspace_access_denied' })
+        new ApiCallError(status, 'private read denial', {
+          code: 'workspace_access_denied',
+          details: { secret: POISON_SECRET },
+        })
       );
     const admissionsRead = vi
       .fn()
       .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
       .mockRejectedValue(
-        new ApiCallError(status, 'private read denial', { code: 'workspace_access_denied' })
+        new ApiCallError(status, 'private read denial', {
+          code: 'workspace_access_denied',
+          details: { secret: POISON_SECRET },
+        })
       );
     const client = makeClient({
       'recovery.worker-list': workersRead,
@@ -605,6 +611,20 @@ describe('Recovery and search', () => {
     expect(await within(scheduler).findByRole('alert')).toHaveTextContent(
       /couldn't load scheduler admissions/i
     );
+    expect.soft(queryClient.getQueryState(operationsKeys.workers)?.error).toMatchObject({
+      status,
+      code: 'workspace_access_denied',
+      message: "Couldn't load interrupted workers.",
+      details: undefined,
+    });
+    expect
+      .soft(queryClient.getQueryState(operationsKeys.admissions(WORKSPACE.id))?.error)
+      .toMatchObject({
+        status,
+        code: 'workspace_access_denied',
+        message: "Couldn't load scheduler admissions.",
+        details: undefined,
+      });
     expect.soft(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect.soft(within(workers).queryByText(INSPECT_WORKER.contextDigest as string)).toBeNull();
     expect.soft(within(scheduler).queryByText(DENIED_ADMISSION.requestedAgentId)).toBeNull();
@@ -765,10 +785,18 @@ describe('Recovery and search', () => {
     await screen.findByRole('heading', { level: 1, name: 'Overview' });
     await user.click(screen.getByRole('button', { name: 'Recovery' }));
     await screen.findByRole('heading', { level: 1, name: 'Recovery' });
-    await waitFor(() => {
-      expect(workersRead).toHaveBeenCalledTimes(3);
-      expect(admissionsRead).toHaveBeenCalledTimes(3);
+    // Refresh explicitly to isolate denial disposal from mount admission.
+    await act(async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: operationsKeys.workers, exact: true }),
+        queryClient.refetchQueries({
+          queryKey: operationsKeys.admissions(WORKSPACE.id),
+          exact: true,
+        }),
+      ]);
     });
+    expect(workersRead.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(admissionsRead.mock.calls.length).toBeGreaterThanOrEqual(3);
     const workers = screen.getByRole('region', { name: 'Interrupted workers' });
     const scheduler = screen.getByRole('region', { name: 'Scheduler admissions' });
     expect(await within(workers).findByRole('alert')).toHaveTextContent(

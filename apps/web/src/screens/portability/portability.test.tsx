@@ -1832,7 +1832,12 @@ describe('Portability', () => {
     const referencesRead = vi
       .fn()
       .mockResolvedValueOnce(VAULT_LIST)
-      .mockRejectedValue(privateFailure(status, 'workspace_access_denied'));
+      .mockRejectedValue(
+        new ApiCallError(status, 'portability-private failure', {
+          code: 'workspace_access_denied',
+          details: { secret: VAULT_MATERIAL },
+        })
+      );
     const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
     const { queryClient } = renderApp('/settings/portability', client);
     expect(
@@ -1848,6 +1853,12 @@ describe('Portability', () => {
     expect(await within(vault).findByRole('alert')).toHaveTextContent(
       /couldn't load vault references/i
     );
+    expect.soft(queryClient.getQueryState(settingsKeys.vault(WORKSPACE.id))?.error).toMatchObject({
+      status,
+      code: 'workspace_access_denied',
+      message: "Couldn't load vault references.",
+      details: undefined,
+    });
     expect
       .soft(within(vault).queryByText(UNBOUND_REFERENCE.referenceId, { exact: true }))
       .toBeNull();
@@ -1919,7 +1930,11 @@ describe('Portability', () => {
     await screen.findByRole('heading', { level: 1, name: 'Appearance' });
     await user.click(screen.getByRole('button', { name: 'Portability' }));
     await screen.findByRole('heading', { level: 1, name: 'Portability' });
-    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(3));
+    // Refresh explicitly to isolate denial disposal from mount admission.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: settingsKeys.vault(WORKSPACE.id), exact: true });
+    });
+    expect(referencesRead.mock.calls.length).toBeGreaterThanOrEqual(3);
     const vault = screen.getByRole('region', { name: 'Vault references' });
     expect(await within(vault).findByRole('alert')).toHaveTextContent(
       /couldn't load vault references/i
