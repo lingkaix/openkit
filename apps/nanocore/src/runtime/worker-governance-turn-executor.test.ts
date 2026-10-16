@@ -4441,7 +4441,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const inspect = vi.fn(async () => 'absent' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: inspect });
-    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     const turn = createAssignedTurn(
       restarted,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4582,7 +4586,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         return update(id, input);
       });
     }
-    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -5051,7 +5059,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       throw new Error('reference import failed');
     });
-    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -5177,7 +5189,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
     }
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb,
+    });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -8443,8 +8459,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           updatedAt: recordedAt,
         })
       );
-    const selected = makeArtifact('ar_context_selected', original);
-    makeArtifact('ar_context_unselected', 'UNSELECTED PRIVATE MARKER');
+    const selected = makeArtifact('ar_00000000-0000-7000-8000-0000000007d0', original);
+    makeArtifact('ar_00000000-0000-7000-8000-0000000007d1', 'UNSELECTED PRIVATE MARKER');
     const request = JSON.parse(fixture.workerRequest);
     request.contextRefs.push({
       kind: 'artifact',
@@ -8690,7 +8706,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
-    const fixture = await createWorkerContextExecutorFixture('task-knowledge', { maxContextTokens: 240_000 });
+    const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
+      maxContextTokens: 240_000,
+    });
     const knowledge = fixture.store.createKnowledgeEntry(
       'ws_00000000-0000-7000-8000-000000000001',
       {

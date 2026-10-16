@@ -100,11 +100,15 @@ describe('structured worker delegation requests', () => {
   it('allows positive Artifact versions only on Artifact context references', () => {
     const refs = StructuredWorkerDelegationRequestSchema.shape.contextRefs;
     expect(
-      refs.safeParse([{ kind: 'artifact', id: 'ar_selected', artifactVersion: 0 }]).success
+      refs.safeParse([
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-0000000003ea', artifactVersion: 0 },
+      ]).success
     ).toBe(false);
-    expect(refs.safeParse([{ kind: 'item', id: 'it_selected', artifactVersion: 7 }]).success).toBe(
-      false
-    );
+    expect(
+      refs.safeParse([
+        { kind: 'item', id: 'it_00000000-0000-7000-8000-0000000003ee', artifactVersion: 7 },
+      ]).success
+    ).toBe(false);
   });
 
   it('rejects malformed or oversized structured worker delegation requests', () => {

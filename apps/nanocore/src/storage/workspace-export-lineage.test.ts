@@ -2370,8 +2370,10 @@ describe('workspace auxiliary lineage reminting', () => {
           objectId: '0',
         },
       });
-      expect(material.originalSnapshotPath).not.toContain('mat_source');
-      expect(material.packagePath).not.toContain('mat_source');
+      expect(material.originalSnapshotPath).not.toContain(
+        'mat_00000000-0000-7000-8000-0000000007d3'
+      );
+      expect(material.packagePath).not.toContain('mat_00000000-0000-7000-8000-0000000007d3');
       const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
       if (retainRepresentation) {
         const retainedPath = binary.projection.representationSnapshotPath!;

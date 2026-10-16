@@ -27,18 +27,18 @@ import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   type ActorRef,
   AgentSessionIdSchema,
+  ArtifactReferenceSchema,
   ItemIdSchema,
   MaterialIdSchema,
+  MaterialReferenceSchema,
   MaterialRevisionIdSchema,
+  parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
   ThreadIdSchema,
   TurnIdSchema,
-  WorkspaceIdSchema,
-  ArtifactReferenceSchema,
-  MaterialReferenceSchema,
-  parseReferenceScope,
   TurnInputReferenceSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';

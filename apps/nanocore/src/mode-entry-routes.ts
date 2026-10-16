@@ -3394,8 +3394,9 @@ export function createConversationService({
           };
         }
 
-        const objective =
-          StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(chatInput.input);
+        const objective = StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(
+          chatInput.input
+        );
         if (!objective.success) {
           throw new TurnStartValidationError(
             'invalid_request',

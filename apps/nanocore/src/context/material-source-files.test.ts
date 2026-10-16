@@ -18,7 +18,7 @@ function fixture(content: string) {
   };
   let allowed = true;
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     selection,
     assertCurrent: () => {
       if (!allowed) throw new Error('Source access revoked.');
@@ -40,7 +40,7 @@ it('delivers one bounded excerpt while retaining and streaming every original by
   expect(prepared.source.source).toEqual({
     kind: 'material',
     reference: {
-      scopeId: 'material/workspace/ws_demo',
+      scopeId: 'material/workspace/ws_00000000-0000-7000-8000-000000000001',
       objectId: state.selection.materialId,
     },
     revisionId: state.selection.revisionId,
