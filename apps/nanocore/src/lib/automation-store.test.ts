@@ -1,10 +1,9 @@
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { ensureLocalUser } from '../auth/identity.js';
 import { startRecurringScheduleService } from '../runtime/recurring-schedule-service.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -717,11 +716,11 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
-    ownerUserId: FIXTURE_LOCAL_USER_ID,
+    ownerUserId: ensureLocalUser(db),
   });
   state.setTime('2027-01-28T09:00:00.000Z');
   let schedules = state.store;
-  const created = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+  const created = schedules.createAutomation(ensureLocalUser(db), {
     ...monthlyDefinition,
     workspaceId: workspace.id,
     threadId: thread.id,
@@ -742,7 +741,7 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
   try {
     await service.runOnce();
     expect(prepare).not.toHaveBeenCalled();
-    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, created.id, {
+    schedules.updateAutomation(ensureLocalUser(db), created.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: state.clock(),

@@ -1,3 +1,6 @@
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -372,7 +375,7 @@ async function admitTestProductTurn(input: Parameters<typeof executeProductTurn>
         (
           input.coreDb.sqlite
             .prepare(
-              'SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?'
+              `SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE ${testEntityId('tu', 'turn_id')} = ?`
             )
             .get(turn.id) as { id: string }
         ).id
@@ -502,17 +505,17 @@ describe('scheduler dispatch loop', () => {
     const store = createDemoStore({ dataRoot: root });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb);
-    const thread = store.createThread('ws_demo', 'Monthly existing target');
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
     const instant = '2026-10-28T09:30:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = schedules.createAutomation('user_local', {
-      workspaceId: 'ws_demo',
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       name: 'Monthly instruction',
       prompt: 'Exact monthly input',
       monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 },
     });
-    schedules.updateAutomation('user_local', schedule.id, {
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -577,7 +580,7 @@ describe('scheduler dispatch loop', () => {
       expect(executor.calls).toEqual([
         expect.objectContaining({ input: 'Exact monthly input', turnId: accepted.turnId }),
       ]);
-      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+      expect(store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toHaveLength(1);
       expect(store.getTurnById(entry.turnId).threadId).toBe(thread.id);
       expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
     } finally {
@@ -596,17 +599,17 @@ describe('scheduler dispatch loop', () => {
     const store = createDemoStore({ dataRoot: root });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb);
-    const thread = store.createThread('ws_demo', 'Retain canonical recurring Turn');
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
     const instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = schedules.createAutomation('user_local', {
-      workspaceId: 'ws_demo',
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       name: 'Inspect cache disagreement',
       prompt: 'Exact recurring input',
       intervalSeconds: 5,
     });
-    schedules.updateAutomation('user_local', schedule.id, {
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -639,12 +642,12 @@ describe('scheduler dispatch loop', () => {
       const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
       // Assemble HTTP before the fault: no later ordinary Workspace write may publish the stale cache.
       const app = createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
-      const published = readPublishedTurnFileRecords(root, 'ws_demo', thread.id, entry.turnId);
+      const published = readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId);
       expect(published?.turn).toMatchObject({ agentId: manifest.id, status: 'pending' });
       const turnRoot = join(
         root,
         'workspaces',
-        'ws_demo',
+        DEMO_WORKSPACE_ID,
         'threads',
         thread.id,
         'turns',
@@ -669,7 +672,7 @@ describe('scheduler dispatch loop', () => {
         agentId: 'other-worker',
         status: 'pending',
       });
-      expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, entry.turnId)).toEqual(
+      expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)).toEqual(
         published
       );
       const update = vi.spyOn(store, 'updateTurn');
@@ -693,14 +696,14 @@ describe('scheduler dispatch loop', () => {
       const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws_demo', queueEntryId: entry.queueEntryId }),
+        body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, queueEntryId: entry.queueEntryId }),
       });
       expect(cancelled.status, await cancelled.clone().text()).toBe(200);
       expect(update).not.toHaveBeenCalled();
       expect(executor.prepareCalls).toEqual([]);
       expect(executor.calls).toEqual([]);
-      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
-      expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, entry.turnId)).toEqual(
+      expect(recurringTurnPublicationIssue(store, entry)).toBe(testEntityId('tu', 'turn_contradictory'));
+      expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)).toEqual(
         published
       );
       expect(
@@ -734,18 +737,18 @@ describe('scheduler dispatch loop', () => {
     const store = createDemoStore({ dataRoot: root });
     const manifest = agentManifest();
     const initialExecutor = new RecordingTurnExecutor(coreDb);
-    const thread = store.createThread('ws_demo', 'Recurring worker');
+    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
     const mutationAdmission = new WorkspaceMutationAdmission();
     let instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
-    const schedule = schedules.createAutomation('user_local', {
-      workspaceId: 'ws_demo',
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       name: 'Inspect',
       prompt: 'Exact recurring input',
       intervalSeconds: 5,
     });
-    schedules.updateAutomation('user_local', schedule.id, {
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -754,7 +757,7 @@ describe('scheduler dispatch loop', () => {
     const initialCreate = vi.spyOn(store, 'createTurn').mockImplementationOnce((...args) => {
       if (fault === 'before-publication') throw new Error('Interrupted initial publication');
       const turn = originalCreate(...args);
-      const path = join(root, 'workspaces', 'ws_demo', 'threads', thread.id, 'turns', turn.id);
+      const path = join(root, 'workspaces', DEMO_WORKSPACE_ID, 'threads', thread.id, 'turns', turn.id);
       if (fault === 'cached-only') rmSync(path, { recursive: true, force: true });
       if (fault === 'contradictory') {
         const metadata = JSON.parse(readFileSync(join(path, 'turn.json'), 'utf8'));
@@ -798,8 +801,8 @@ describe('scheduler dispatch loop', () => {
         fault === 'after-publication'
           ? null
           : fault === 'contradictory'
-            ? 'turn_contradictory'
-            : 'turn_missing';
+            ? testEntityId('tu', 'turn_contradictory')
+            : testEntityId('tu', 'turn_missing');
       // A cache entry created before a failed file write is not durable publication proof.
       expect(recurringTurnPublicationIssue(store, entry)).toBe(expectedIssue);
       service.stop();
@@ -872,23 +875,23 @@ describe('scheduler dispatch loop', () => {
           ])
         );
         const cancelled = await invoke('scheduler.cancel', {
-          workspaceId: 'ws_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
           queueEntryId: entry.queueEntryId,
         });
         expect(cancelled.status, await cancelled.clone().text()).toBe(200);
         // Use an authorized paused target edit after cancellation; contradictory old history cannot authorize a repair.
         if (fault === 'contradictory') {
-          const nextThread = reopened.createThread('ws_demo', 'Next target');
-          restored.updateAutomation('user_local', schedule.id, {
+          const nextThread = reopened.createThread(DEMO_WORKSPACE_ID, 'Next target');
+          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
             expectedRevision: 2,
             status: 'paused',
           });
-          restored.updateAutomation('user_local', schedule.id, {
+          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
             expectedRevision: 3,
             threadId: nextThread.id,
           });
           instant = '2026-10-16T00:00:10.000Z';
-          restored.updateAutomation('user_local', schedule.id, {
+          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
             expectedRevision: 4,
             status: 'active',
             scheduledAt: instant,
@@ -1198,7 +1201,7 @@ describe('scheduler dispatch loop', () => {
         backendId: 'nanohost',
         queueEntryId: 'queue_claim_foreign',
         requestId: 'queue_claim_foreign',
-        turnId: testEntityId('tu', 'turn_claim_foreign'),
+        turnId: testEntityId('tu', testEntityId('tu', 'turn_claim_foreign')),
         workspaceId: foreignWorkspace.id,
         threadId: foreignThread.id,
         turnInput: 'Private foreign work',
@@ -1301,7 +1304,7 @@ describe('scheduler dispatch loop', () => {
     };
     const start = executor.startTurn.bind(executor);
     executor.startTurn = async (owner, turnId, input, context) => {
-      if (turnId === testEntityId('tu', 'turn_image_first')) {
+      if (turnId === testEntityId('tu', testEntityId('tu', 'turn_image_first'))) {
         const intent = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
           attemptId: context!.attemptId!,
           operationId: 'image:first',
@@ -1354,15 +1357,15 @@ describe('scheduler dispatch loop', () => {
       const overlap = await runSchedulerDispatchLoop(dispatch);
       expect(overlap.startedTurns).toEqual([]);
       expect(executor.prepareCalls).toHaveLength(1);
-      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
+      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).status).toBe('pending');
       expect(
-        store.getTurnById(testEntityId('tu', 'turn_image_second')).agentSessionId
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).agentSessionId
       ).toBeUndefined();
       expect(executionAttempts(coreDb)).toHaveLength(1);
       gate.resolve();
       const admitted = await first;
       expect((await runSchedulerDispatchLoop(dispatch)).startedTurns).toEqual([]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
+      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).status).toBe('pending');
       expect(executor.prepareCalls).toHaveLength(1);
       await closeOwnedExecutionAttempt(coreDb, store, {
         attemptId: admitted.startedTurns[0]!.dispatch.attempt.attemptId,
@@ -1372,8 +1375,8 @@ describe('scheduler dispatch loop', () => {
         (await runSchedulerDispatchLoop(dispatch)).startedTurns[0]?.dispatch.entry.queueEntryId
       ).toBe('queue_image_second');
       expect(executor.calls.map((call) => call.turnId)).toEqual([
-        testEntityId('tu', 'turn_image_first'),
-        testEntityId('tu', 'turn_image_second'),
+        testEntityId('tu', testEntityId('tu', 'turn_image_first')),
+        testEntityId('tu', testEntityId('tu', 'turn_image_second')),
       ]);
     } finally {
       gate.resolve();
@@ -1394,7 +1397,7 @@ describe('scheduler dispatch loop', () => {
     let preparations = 0;
     executor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
       preparations += 1;
-      if (preparation.turn.id === testEntityId('tu', 'turn_claim_first')) {
+      if (preparation.turn.id === testEntityId('tu', testEntityId('tu', 'turn_claim_first'))) {
         entered.resolve();
         await gate.promise;
       }
@@ -1470,9 +1473,9 @@ describe('scheduler dispatch loop', () => {
       }
       expect(preparations).toBe(3);
       expect(executor.calls.map((call) => call.turnId)).toEqual([
-        testEntityId('tu', 'turn_claim_first'),
-        testEntityId('tu', 'turn_claim_second'),
-        testEntityId('tu', 'turn_claim_third'),
+        testEntityId('tu', testEntityId('tu', 'turn_claim_first')),
+        testEntityId('tu', testEntityId('tu', 'turn_claim_second')),
+        testEntityId('tu', testEntityId('tu', 'turn_claim_third')),
       ]);
       expect(errors).toEqual([]);
     } finally {
@@ -1526,7 +1529,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_foreign_race',
           requestedAgentId: manifest.id,
           threadId: thread.id,
-          turnId: testEntityId('tu', 'turn_foreign_race'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_foreign_race')),
           turnInput: 'Foreign private work',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
           workspaceId: workspace.id,
@@ -1536,7 +1539,7 @@ describe('scheduler dispatch loop', () => {
       if (failureStage === 'queue-race') {
         const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
         turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-          expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_foreign_race'));
+          expect(preparation.turn.id).toBe(testEntityId('tu', testEntityId('tu', 'turn_foreign_race')));
           const prepared = await prepare(ownerStore, preparation);
           cancelSchedulerAdmissionEntry(coreDb, {
             queueEntryId: 'queue_foreign_race',
@@ -1638,7 +1641,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'queue_later_race',
           requestedAgentId: manifest.id,
           threadId: thread.id,
-          turnId: testEntityId('tu', 'turn_later_race'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_later_race')),
           turnInput: 'Later work',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1718,12 +1721,12 @@ describe('scheduler dispatch loop', () => {
         : new TurnStartValidationError('recovery_required', failureMessage, 503);
     if (failureStage === 'turn-start') {
       turnExecutor.startTurn = async (_store, turnId) => {
-        expect(turnId).toBe(testEntityId('tu', 'turn_other_failure'));
+        expect(turnId).toBe(testEntityId('tu', testEntityId('tu', 'turn_other_failure')));
         throw failure;
       };
     } else {
       turnExecutor.prepareAgentSessionForTurn = async (_store, preparation) => {
-        expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_other_failure'));
+        expect(preparation.turn.id).toBe(testEntityId('tu', testEntityId('tu', 'turn_other_failure')));
         throw failure;
       };
     }
@@ -1759,7 +1762,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_other_failure',
           requestedAgentId: manifest.id,
           threadId: thread.id,
-          turnId: testEntityId('tu', 'turn_other_failure'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_other_failure')),
           turnInput: 'Other user private work',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
           workspaceId: workspace.id,
@@ -1860,7 +1863,7 @@ describe('scheduler dispatch loop', () => {
               requestId: 'req_later_foreign',
               requestedAgentId: manifest.id,
               threadId: thread.id,
-              turnId: testEntityId('tu', 'turn_later_foreign'),
+              turnId: testEntityId('tu', testEntityId('tu', 'turn_later_foreign')),
               turnInput: 'Private foreign work',
               triggerActor: { kind: 'user', id: 'usr_00000000-0000-766c-b011-9a833a1b0fa6' },
               workspaceId: workspace.id,
@@ -2078,8 +2081,8 @@ describe('scheduler dispatch loop', () => {
         queueEntryId: 'queue_earlier_denied',
         requestId: 'req_earlier_denied',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: testEntityId('th', 'th_other'),
-        turnId: testEntityId('tu', 'turn_other'),
+        threadId: testEntityId('th', testEntityId('th', 'th_other')),
+        turnId: testEntityId('tu', testEntityId('tu', 'turn_other')),
         turnInput: 'A prior request',
         requestedAgentId: manifest.id,
         profileRef: null,
@@ -2209,7 +2212,7 @@ describe('scheduler dispatch loop', () => {
         runSchedulerDispatchLoop({
           agentManifests: [manifest],
           coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_cancelled_followup'),
+          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_cancelled_followup')),
           createAttemptId: () => 'attempt_00000000-0000-72af-8c2e-1e6ef35d16c4',
 
           gatewayConfig: createTestGatewayConfig(),
@@ -2372,7 +2375,7 @@ describe('scheduler dispatch loop', () => {
         requestId: 'queue_older_workspace',
         requestedAgentId: manifest.id,
         threadId: queuedThread.id,
-        turnId: testEntityId('tu', 'turn_older_workspace'),
+        turnId: testEntityId('tu', testEntityId('tu', 'turn_older_workspace')),
         turnInput: 'Use the queued Workspace catalog',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceCwd: '/workspace/queued',
@@ -2441,7 +2444,7 @@ describe('scheduler dispatch loop', () => {
       ).resolves.toBeDefined();
 
       expect(turnExecutor.calls[0]).toMatchObject({
-        turnId: testEntityId('tu', 'turn_older_workspace'),
+        turnId: testEntityId('tu', testEntityId('tu', 'turn_older_workspace')),
       });
       expect(
         turnExecutor.calls[0]?.context?.workspaceMcpServerCatalog?.servers[0]?.allowedTools
@@ -2514,7 +2517,7 @@ describe('scheduler dispatch loop', () => {
             authorityKind === 'server-admin-token' ? 'token_revoked_dispatch' : null,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_revoked_dispatch'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_revoked_dispatch')),
           turnInput: 'Do not launch this stale admission',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2540,7 +2543,7 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_revoked_dispatch'),
+        createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_revoked_dispatch')),
         createAttemptId: () => 'attempt_00000000-0000-7123-9ea9-95893b159388',
 
         maxDispatches: 1,
@@ -2571,7 +2574,7 @@ describe('scheduler dispatch loop', () => {
           status: 'denied',
         }),
       ]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_revoked_dispatch')).status).toBe('pending');
+      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_revoked_dispatch'))).status).toBe('pending');
       expect(executionAttempts(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -2611,7 +2614,7 @@ describe('scheduler dispatch loop', () => {
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7798-ae4d-0c9eeb75ec93' },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
-        turnId: testEntityId('tu', 'turn_admin_race'),
+        turnId: testEntityId('tu', testEntityId('tu', 'turn_admin_race')),
         turnInput: 'Do not launch after revocation',
         requestedAgentId: 'agent_codex_host',
       })
@@ -2642,7 +2645,7 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_admin_race'),
+        createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_admin_race')),
         createAttemptId: () => 'attempt_00000000-0000-7c1c-bfd4-b3a6b6a9345c',
 
         maxDispatches: 1,
@@ -2661,7 +2664,7 @@ describe('scheduler dispatch loop', () => {
       expect(executionAttempts(coreDb)).toMatchObject([
         { phase: 'closed', disposition: 'not_accepted', operation_id: null },
       ]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_admin_race')).status).toBe('failed');
+      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_admin_race'))).status).toBe('failed');
       expect(turnExecutor.calls).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -2683,7 +2686,7 @@ describe('scheduler dispatch loop', () => {
             requestId: 'req_replacement_blocker',
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: testEntityId('tu', 'turn_replacement_blocker'),
+            turnId: testEntityId('tu', testEntityId('tu', 'turn_replacement_blocker')),
             turnInput: 'Hold the Thread scheduler lease',
             requestedAgentId: 'agent_codex_host',
             profileRef: null,
@@ -2695,7 +2698,7 @@ describe('scheduler dispatch loop', () => {
             'queue_replacement_blocker'
           ),
           attemptId: 'attempt_00000000-0000-7a86-a6a6-2a2a8154b10b',
-          agentSessionId: testEntityId('as', 'as_replacement_blocker'),
+          agentSessionId: testEntityId('as', testEntityId('as', 'as_replacement_blocker')),
           inputRef: 'aepsnap_lease_replacement_blocker',
           bindingRef: 'attempt-binding:lease_replacement_blocker',
           sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
@@ -2715,11 +2718,11 @@ describe('scheduler dispatch loop', () => {
     const prepareAgentSessionForTurn = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
     turnExecutor.prepareAgentSessionForTurn = async (ownerStore, input) => {
       const predecessorBefore = ownerStore.getAgentSession(
-        testEntityId('as', 'as_replacement_predecessor')
+        testEntityId('as', testEntityId('as', 'as_replacement_predecessor'))
       );
       const prepared = await prepareAgentSessionForTurn(ownerStore, input);
       const predecessorAfter = ownerStore.getAgentSession(
-        testEntityId('as', 'as_replacement_predecessor')
+        testEntityId('as', testEntityId('as', 'as_replacement_predecessor'))
       );
       if (
         isCurrentAgentSessionStatus(predecessorBefore.status) &&
@@ -2734,7 +2737,7 @@ describe('scheduler dispatch loop', () => {
       store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: '2026-07-05T00:00:00.000Z',
-        id: testEntityId('as', 'as_replacement_predecessor'),
+        id: testEntityId('as', testEntityId('as', 'as_replacement_predecessor')),
         message: null,
         sessionCompatibilityKey: `sha256:${'a'.repeat(64)}`,
         status: 'idle',
@@ -2752,7 +2755,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_replacement_candidate',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_replacement_candidate'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_replacement_candidate')),
           turnInput: 'Use incompatible future static inputs',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2765,7 +2768,7 @@ describe('scheduler dispatch loop', () => {
           gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_replacement_successor'),
+          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_replacement_successor')),
           createAttemptId: () => 'attempt_00000000-0000-7ff4-8557-71fde470b861',
 
           maxDispatches: 1,
@@ -2782,7 +2785,7 @@ describe('scheduler dispatch loop', () => {
 
       expect(observed).toMatchObject({ startedTurns: [], terminalResult: expected });
       expect(replacementCloseEffects).toBe(0);
-      expect(store.getAgentSession(testEntityId('as', 'as_replacement_predecessor'))).toMatchObject(
+      expect(store.getAgentSession(testEntityId('as', testEntityId('as', 'as_replacement_predecessor')))).toMatchObject(
         {
           stale: false,
           status: 'idle',
@@ -2796,7 +2799,7 @@ describe('scheduler dispatch loop', () => {
           )
           .filter((candidate) => isCurrentAgentSessionStatus(candidate.status))
           .map((candidate) => candidate.id)
-      ).toEqual([testEntityId('as', 'as_replacement_predecessor')]);
+      ).toEqual([testEntityId('as', testEntityId('as', 'as_replacement_predecessor'))]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -2818,7 +2821,7 @@ describe('scheduler dispatch loop', () => {
           requestId: '00000000-0000-4000-8000-00000000d201',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_loop_1'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_loop_1')),
           turnInput: 'Run the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2829,7 +2832,7 @@ describe('scheduler dispatch loop', () => {
       const result = await runSchedulerDispatchLoop({
         gatewayConfig: createTestGatewayConfig(),
         coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_loop_1'),
+        createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_loop_1')),
         createAttemptId: () => 'attempt_00000000-0000-7a8c-94ac-65fe1fadecf1',
 
         maxDispatches: 1,
@@ -2844,7 +2847,7 @@ describe('scheduler dispatch loop', () => {
 
       expect(result.startedTurns).toHaveLength(1);
       expect(result.terminalResult).toEqual({ status: 'queued', reason: 'max-dispatches' });
-      expect(result.startedTurns[0]?.handle.turn.id).toBe(testEntityId('tu', 'turn_loop_1'));
+      expect(result.startedTurns[0]?.handle.turn.id).toBe(testEntityId('tu', testEntityId('tu', 'turn_loop_1')));
       expect(turnExecutor.calls[0]?.context?.sessionCompatibilityKey).toMatch(
         /^sha256:[a-f0-9]{64}$/
       );
@@ -2852,7 +2855,7 @@ describe('scheduler dispatch loop', () => {
         store.getTurn(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001',
-          testEntityId('tu', 'turn_loop_1')
+          testEntityId('tu', testEntityId('tu', 'turn_loop_1'))
         ).status
       ).toBe('running');
       const expectedSetup = createTestAgentSetup();
@@ -2877,7 +2880,7 @@ describe('scheduler dispatch loop', () => {
       expect(turnExecutor.calls).toEqual([
         {
           context: {
-            agentSessionId: testEntityId('as', 'as_loop_1'),
+            agentSessionId: testEntityId('as', testEntityId('as', 'as_loop_1')),
             agentSetup: expectedSetup,
             requestId: '00000000-0000-4000-8000-00000000d201',
             attemptId: 'attempt_00000000-0000-7a8c-94ac-65fe1fadecf1',
@@ -2888,7 +2891,7 @@ describe('scheduler dispatch loop', () => {
             workspaceRoots: [],
           },
           input: 'Run the scheduled worker',
-          turnId: testEntityId('tu', 'turn_loop_1'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_loop_1')),
         },
       ]);
     } finally {
@@ -2916,7 +2919,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_busy_active',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_busy_active'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_busy_active')),
           turnInput: 'Hold the first Thread lease',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2926,7 +2929,7 @@ describe('scheduler dispatch loop', () => {
       const blocker = recordTestExecutionAttempt(coreDb, {
         entry: schedulerRecords.requireSchedulerAdmissionEntry(coreDb, 'queue_busy_active'),
         attemptId: 'attempt_00000000-0000-706c-8647-6dad21690cd7',
-        agentSessionId: testEntityId('as', 'as_busy_active'),
+        agentSessionId: testEntityId('as', testEntityId('as', 'as_busy_active')),
         inputRef: 'aepsnap_lease_busy_active',
         bindingRef: 'attempt-binding:lease_busy_active',
         sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
@@ -2942,7 +2945,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_busy_followup',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_busy_followup'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_busy_followup')),
           turnInput: 'Stay queued while the Thread is busy',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2958,7 +2961,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_later_dispatchable',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: laterThread.id,
-          turnId: testEntityId('tu', 'turn_later_dispatchable'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_later_dispatchable')),
           turnInput: 'Start the later dispatchable Thread',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -2973,7 +2976,7 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_later_dispatchable'),
+        createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_later_dispatchable')),
         createAttemptId: () => 'attempt_00000000-0000-7ac0-ad21-841055513cdc',
 
         maxDispatches: 1,
@@ -2987,17 +2990,17 @@ describe('scheduler dispatch loop', () => {
 
       expect(result.startedTurns).toHaveLength(1);
       expect(result.startedTurns[0]?.handle.turn.id).toBe(
-        testEntityId('tu', 'turn_later_dispatchable')
+        testEntityId('tu', testEntityId('tu', 'turn_later_dispatchable'))
       );
       expect(result.startedTurns[0]?.dispatch.entry.queueEntryId).toBe('queue_later_dispatchable');
       expect(result.startedTurns[0]?.dispatch.entry.threadId).toBe(laterThread.id);
       expect(turnExecutor.prepareCalls).toEqual([
-        { threadId: laterThread.id, turnId: testEntityId('tu', 'turn_later_dispatchable') },
+        { threadId: laterThread.id, turnId: testEntityId('tu', testEntityId('tu', 'turn_later_dispatchable')) },
       ]);
       expect(turnExecutor.calls).toEqual([
         expect.objectContaining({
           input: 'Start the later dispatchable Thread',
-          turnId: testEntityId('tu', 'turn_later_dispatchable'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_later_dispatchable')),
         }),
       ]);
       expect(
@@ -3022,7 +3025,7 @@ describe('scheduler dispatch loop', () => {
         )
       ).toMatchObject({
         thread_id: laterThread.id,
-        turn_id: testEntityId('tu', 'turn_later_dispatchable'),
+        turn_id: testEntityId('tu', testEntityId('tu', 'turn_later_dispatchable')),
       });
     } finally {
       coreDb.sqlite.close();
@@ -3048,7 +3051,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_commit_failed',
           requestedAgentId: 'agent_codex_host',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_commit_failed'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_commit_failed')),
           turnInput: 'Reject after scheduler dispatch',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3060,7 +3063,7 @@ describe('scheduler dispatch loop', () => {
           gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_commit_failed'),
+          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_commit_failed')),
           createAttemptId: () => 'attempt_00000000-0000-70d0-899e-247d127f901d',
 
           maxDispatches: 1,
@@ -3078,7 +3081,7 @@ describe('scheduler dispatch loop', () => {
         )?.phase
       ).toBe('closed');
       expect(turnExecutor.calls).toEqual([]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_commit_failed'))).toMatchObject({
+      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_commit_failed')))).toMatchObject({
         status: 'failed',
         error: { message: 'prepared AgentSession changed' },
       });
@@ -3103,7 +3106,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_continuity_live',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_continuity_live'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_continuity_live')),
           turnInput: 'Run with continuity',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -3113,7 +3116,7 @@ describe('scheduler dispatch loop', () => {
 
       const setup = createTestAgentSetup();
       const sessionCompatibilityKey = resolveAgentSessionCompatibilityKey({
-        agentSessionId: testEntityId('as', 'as_live_continuity'),
+        agentSessionId: testEntityId('as', testEntityId('as', 'as_live_continuity')),
         agentSetup: setup,
         backend: { kind: 'openshell' },
         requestId: 'req_continuity_live',
@@ -3122,7 +3125,7 @@ describe('scheduler dispatch loop', () => {
           configVersion: null,
           durationMs: null,
           error: null,
-          id: testEntityId('tu', 'turn_continuity_live'),
+          id: testEntityId('tu', testEntityId('tu', 'turn_continuity_live')),
           items: [],
           startedAt: '2026-07-05T00:00:02.000Z',
           status: 'running',
@@ -3138,7 +3141,7 @@ describe('scheduler dispatch loop', () => {
       store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: '2026-07-05T00:00:00.000Z',
-        id: testEntityId('as', 'as_live_continuity'),
+        id: testEntityId('as', testEntityId('as', 'as_live_continuity')),
         message: null,
         sessionCompatibilityKey,
         status: 'idle',
@@ -3151,7 +3154,7 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         agentManifests: [setup.manifest],
         coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_fresh_continuity'),
+        createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_fresh_continuity')),
         createAttemptId: () => 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32',
 
         maxDispatches: 1,
@@ -3168,12 +3171,12 @@ describe('scheduler dispatch loop', () => {
         executionAttempts(coreDb).find(
           (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32'
         )
-      ).toMatchObject({ agent_session_id: testEntityId('as', 'as_live_continuity') });
+      ).toMatchObject({ agent_session_id: testEntityId('as', testEntityId('as', 'as_live_continuity')) });
       expect(
-        store.getAgentSession(testEntityId('as', 'as_live_continuity')).sessionCompatibilityKey
+        store.getAgentSession(testEntityId('as', testEntityId('as', 'as_live_continuity'))).sessionCompatibilityKey
       ).toBe(sessionCompatibilityKey);
       expect(turnExecutor.calls[0]?.context).toMatchObject({
-        agentSessionId: testEntityId('as', 'as_live_continuity'),
+        agentSessionId: testEntityId('as', testEntityId('as', 'as_live_continuity')),
         agentSetup: setup,
         attemptId: 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32',
         sessionCompatibilityKey,
@@ -3263,7 +3266,7 @@ describe('scheduler dispatch loop', () => {
         turnExecutor,
       });
       const firstLease = coreDb.sqlite
-        .prepare('SELECT attempt_id AS leaseId FROM scheduler_execution_attempts WHERE turn_id = ?')
+        .prepare(`SELECT attempt_id AS leaseId FROM scheduler_execution_attempts WHERE ${testEntityId('tu', 'turn_id')} = ?`)
         .get(first.turn.id) as { leaseId: string };
       await closeOwnedExecutionAttempt(coreDb, store, {
         attemptId: firstLease.leaseId,
@@ -3333,7 +3336,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_setup_ledger',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_setup_ledger'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_setup_ledger')),
           turnInput: 'Run the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -3344,7 +3347,7 @@ describe('scheduler dispatch loop', () => {
       const result = await runSchedulerDispatchLoop({
         gatewayConfig: createTestGatewayConfig(),
         coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_setup_ledger'),
+        createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_setup_ledger')),
         createAttemptId: () => 'attempt_00000000-0000-7884-9382-36d53997207b',
 
         dependencies: { providerCredentialResolver: () => 'test-key' },
@@ -3366,16 +3369,16 @@ describe('scheduler dispatch loop', () => {
       try {
         applyScopedMigrations(workspaceDb);
         expect(result.startedTurns[0]?.handle.agentSetupRecordId).toBe(
-          `ras_${testEntityId('tu', 'turn_setup_ledger')}`
+          `ras_${testEntityId('tu', testEntityId('tu', 'turn_setup_ledger'))}`
         );
         expect(
           requireResolvedAgentSetup(
             workspaceDb,
             'ws_00000000-0000-7000-8000-000000000001',
-            `ras_${testEntityId('tu', 'turn_setup_ledger')}`
+            `ras_${testEntityId('tu', testEntityId('tu', 'turn_setup_ledger'))}`
           )
         ).toMatchObject({
-          turnId: testEntityId('tu', 'turn_setup_ledger'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_setup_ledger')),
           requestId: 'req_setup_ledger',
           agentId: 'agent_codex_host',
           logicalModelId: 'openai/gpt-5.2',
@@ -3425,7 +3428,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'request_terminal_busy',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_terminal_busy'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_terminal_busy')),
           turnInput: 'Refuse after terminal publication',
           requestedAgentId: 'agent_codex_host',
         })
@@ -3434,7 +3437,7 @@ describe('scheduler dispatch loop', () => {
         runSchedulerDispatchLoop({
           gatewayConfig: createTestGatewayConfig(),
           coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_terminal_busy'),
+          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_terminal_busy')),
           createAttemptId: () => 'attempt_00000000-0000-71f0-b376-c879918fc38e',
           maxDispatches: 1,
           providerRegistry: localProviderRegistry(),
@@ -3444,7 +3447,7 @@ describe('scheduler dispatch loop', () => {
           agentManifests: [agentManifest()],
         })
       ).rejects.toBe(refusal);
-      expect(store.getTurnById(testEntityId('tu', 'turn_terminal_busy')).status).toBe('failed');
+      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_terminal_busy'))).status).toBe('failed');
       expect(
         schedulerRecords.requireSchedulerAdmissionEntry(coreDb, 'queue_terminal_busy').status
       ).toBe('admitted');
@@ -3458,7 +3461,7 @@ describe('scheduler dispatch loop', () => {
       ]);
       expect(
         store
-          .getTurnEvents(testEntityId('tu', 'turn_terminal_busy'))
+          .getTurnEvents(testEntityId('tu', testEntityId('tu', 'turn_terminal_busy')))
           .filter(
             (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
           )
@@ -3484,7 +3487,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'queue_loop_failed',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_loop_failed'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_loop_failed')),
           turnInput: 'Fail the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
@@ -3496,7 +3499,7 @@ describe('scheduler dispatch loop', () => {
         runSchedulerDispatchLoop({
           gatewayConfig: createTestGatewayConfig(),
           coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_loop_failed'),
+          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_loop_failed')),
           createAttemptId: () => 'attempt_00000000-0000-7183-99eb-6319956c61b9',
 
           maxDispatches: 1,
@@ -3520,10 +3523,10 @@ describe('scheduler dispatch loop', () => {
         resolveNanoHostAttemptTokenBinding(coreDb, {
           sandboxBindingRef: closedAttempt.bindingRef!,
           lineage: {
-            agentSessionId: testEntityId('as', 'as_loop_failed'),
+            agentSessionId: testEntityId('as', testEntityId('as', 'as_loop_failed')),
             packageSnapshotId: closedAttempt.inputRef!,
             threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: testEntityId('tu', 'turn_loop_failed'),
+            turnId: testEntityId('tu', testEntityId('tu', 'turn_loop_failed')),
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         })
@@ -3553,7 +3556,7 @@ describe('scheduler dispatch loop', () => {
         identity: {
           agentSessionId: context.agentSessionId,
           backendKind: 'openshell',
-          backendSessionId: 'openkit-as_cleanup_pending',
+          backendSessionId: `openkit-${testEntityId('as', 'as_cleanup_pending')}`,
           deploymentId: target.deploymentId,
           packageSnapshotId: lease.inputRef,
           runtimeTargetId: target.targetId,
@@ -3597,7 +3600,7 @@ describe('scheduler dispatch loop', () => {
           requestId: 'req_cleanup_pending',
           requestedAgentId: 'agent_codex_host',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_cleanup_pending'),
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_cleanup_pending')),
           turnInput: 'Fail with backend cleanup pending',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3609,7 +3612,7 @@ describe('scheduler dispatch loop', () => {
           gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_cleanup_pending'),
+          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_cleanup_pending')),
           createAttemptId: () => 'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69',
 
           maxDispatches: 1,

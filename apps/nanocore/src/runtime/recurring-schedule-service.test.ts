@@ -1,10 +1,10 @@
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
@@ -33,27 +33,27 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'recurrence-service-'));
   const db = openCoreDb(root);
   applyMigrations(db);
-  ensureLocalUser(db);
+  const localUserId = ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
   const workspace = store.createWorkspace('Recurring');
   const thread = store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
-    ownerUserId: FIXTURE_LOCAL_USER_ID,
+    ownerUserId: localUserId,
   });
   const gate = new WorkspaceMutationAdmission();
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
   const schedules = new AutomationStore(db, gate, clock);
-  const created = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+  const created = schedules.createAutomation(localUserId, {
     name: 'Poll',
     workspaceId: workspace.id,
     threadId: thread.id,
     intervalSeconds: 5,
     prompt: 'Inspect status',
   });
-  const schedule = schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, created.id, {
+  const schedule = schedules.updateAutomation(localUserId, created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: instant,
@@ -173,21 +173,21 @@ describe('serialized recurring scanner', () => {
       db.sqlite
         .prepare(`INSERT INTO users
         (id, display_name, email, email_verified, created_at, updated_at, kind)
-        VALUES ('user_replacement', 'Replacement', 'recurrence-replacement@example.com', false, ?, ?, 'human')`)
-        .run(Date.parse(timestamp), Date.parse(timestamp));
+        VALUES (?, 'Replacement', 'recurrence-replacement@example.com', false, ?, ?, 'human')`)
+        .run(testEntityId('usr', 'user_replacement'), Date.parse(timestamp), Date.parse(timestamp));
       db.sqlite
         .prepare(`INSERT INTO workspace_members
         (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-        VALUES (?, 'user_replacement', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
-        .run(workspace.id, timestamp, timestamp, timestamp);
+        VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+        .run(workspace.id, testEntityId('usr', 'user_replacement'), timestamp, timestamp, timestamp);
       db.sqlite
-        .prepare(`UPDATE workspace_registry SET owner_user_id = 'user_replacement', revision = revision + 1, updated_at = ?
+        .prepare(`UPDATE workspace_registry SET owner_user_id = ?, revision = revision + 1, updated_at = ?
         WHERE workspace_id = ?`)
-        .run(timestamp, workspace.id);
+        .run(testEntityId('usr', 'user_replacement'), timestamp, workspace.id);
       db.sqlite
         .prepare(`UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
-        WHERE workspace_id = ? AND user_id = 'user_local'`)
-        .run(timestamp, timestamp, workspace.id);
+        WHERE workspace_id = ? AND user_id = ?`)
+        .run(timestamp, timestamp, workspace.id, schedule.responsibleUserId);
     })();
     release(structuredClone(ready));
     await scan;
@@ -236,7 +236,7 @@ describe('serialized recurring scanner', () => {
         })
     );
     const scan = service.runOnce();
-    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+    schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
       expectedRevision: schedule.revision,
       status: 'paused',
     });

@@ -1,3 +1,5 @@
+import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from '../../../apps/nanocore/src/test-support/demo-store.js';
+import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -4972,11 +4974,11 @@ describe('app api schemas', () => {
       AutomationRecordSchema.parse({
         id: 'auto_00000000-0000-753e-a23a-1b96fc74424c',
         name: 'Daily summary',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: DEMO_THREAD_ID,
         intervalSeconds: 60,
-        responsibleUserId: 'user_creator',
-        actor: { kind: 'automation', id: 'auto_1', responsibleUserId: 'user_creator' },
+        responsibleUserId: testEntityId('usr', 'user_creator'),
+        actor: { kind: 'automation', id: 'auto_1', responsibleUserId: testEntityId('usr', 'user_creator') },
         revision: 1,
         nextScheduledAt: null,
         greatestAccountedScheduledAt: null,
@@ -5257,7 +5259,7 @@ describe('app api schemas', () => {
 
   it('accepts only exact version-keyed Artifact Review Action Center sources', () => {
     const source = {
-      type: 'artifact_review',
+      type: testEntityId('ar', 'artifact_review'),
       reviewId: 'arev_00000000-0000-725e-9350-18e29b99fc35',
       artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 2,
@@ -5400,7 +5402,7 @@ describe('app api schemas', () => {
       },
       {
         id: 'artifact-review:arev_00000000-0000-725e-9350-18e29b99fc35',
-        kind: 'artifact_review',
+        kind: testEntityId('ar', 'artifact_review'),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
@@ -5412,7 +5414,7 @@ describe('app api schemas', () => {
         severity: 'needs_input',
         createdAt: timestamp,
         source: {
-          type: 'artifact_review',
+          type: testEntityId('ar', 'artifact_review'),
           reviewId: 'arev_00000000-0000-725e-9350-18e29b99fc35',
           artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
           artifactVersion: 1,

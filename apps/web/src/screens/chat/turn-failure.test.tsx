@@ -1,3 +1,4 @@
+import { testEntityId } from '../../../../nanocore/src/test-support/entity-ids.js';
 import type { CoreClient } from '@openkit/core-client';
 import { ItemSchema, ProductTurnSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -246,7 +247,7 @@ describe('task runtime activity', () => {
       value: scroll,
     });
     try {
-      const target = present ? FAILED_DASHBOARD_TURN.id : 'tu_unavailable';
+      const target = present ? FAILED_DASHBOARD_TURN.id : testEntityId('tu', 'tu_unavailable');
       const client = makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
         'thread.dashboard': vi.fn().mockResolvedValue({

@@ -1,10 +1,9 @@
-import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { ensureLocalUser } from './auth/identity.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
@@ -19,14 +18,14 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'automation-api-'));
   const db = openCoreDb(root);
   applyMigrations(db);
-  ensureLocalUser(db);
+  const localUserId = ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
   const workspace = store.createWorkspace('Recurring');
   const thread = store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
-    ownerUserId: FIXTURE_LOCAL_USER_ID,
+    ownerUserId: localUserId,
   });
   let instant = '2026-10-16T00:00:00.000Z';
   const automationStore = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
@@ -47,6 +46,7 @@ function fixture() {
   };
   return {
     db,
+    localUserId,
     store,
     workspace,
     thread,
@@ -68,14 +68,14 @@ afterEach(() => {
 
 describe('fixed-interval automation operations', () => {
   it('creates paused, resumes with exact time, pauses, edits, and retains a deleted tombstone', async () => {
-    const { request, input, automationStore } = fixture();
+    const { request, input, automationStore, localUserId } = fixture();
     const created = await request('create', input);
     expect(created.status).toBe(201);
     const schedule = await created.json();
     expect(schedule).toMatchObject({
       status: 'paused',
       revision: 1,
-      responsibleUserId: FIXTURE_LOCAL_USER_ID,
+      responsibleUserId: localUserId,
     });
     const active = await request('update', {
       automationId: schedule.id,

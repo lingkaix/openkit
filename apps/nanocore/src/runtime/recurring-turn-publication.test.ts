@@ -1,3 +1,5 @@
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 // openkit-test-platform: posix
 import {
   cpSync,
@@ -13,7 +15,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -38,7 +40,7 @@ it.each([
     const thread = store.createThread(workspace.id, 'Target');
     const turn = store.createTurn(workspace.id, thread.id, 'Inspect metadata', {
       kind: 'user',
-      id: 'user_local',
+      id: FIXTURE_LOCAL_USER_ID,
     });
     const path = join(
       root,
@@ -80,7 +82,7 @@ it.each([
     const thread = store.createThread(workspace.id, 'Target');
     const turn = store.createTurn(workspace.id, thread.id, 'Retain exact bytes', {
       kind: 'user',
-      id: 'user_local',
+      id: FIXTURE_LOCAL_USER_ID,
     });
     expect(readPublishedTurnFileRecords(root, workspace.id, thread.id, turn.id)?.turn.id).toBe(
       turn.id
@@ -121,19 +123,19 @@ it.each([
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
-      ownerUserId: 'user_local',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
     });
     const gate = new WorkspaceMutationAdmission();
     const instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, gate, () => instant);
-    const schedule = schedules.createAutomation('user_local', {
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: workspace.id,
       threadId: thread.id,
       name: 'Inspect',
       prompt: 'Inspect',
       intervalSeconds: 5,
     });
-    schedules.updateAutomation('user_local', schedule.id, {
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -210,7 +212,7 @@ it.each([
     const publish = vi.spyOn(freshStore, 'createTurn');
     const update = vi.spyOn(freshStore, 'updateTurn');
     expect(recurringTurnPublicationIssue(freshStore, fixed)).toBe(
-      point === 'before-rename' ? 'turn_missing' : null
+      point === 'before-rename' ? testEntityId('tu', 'turn_missing') : null
     );
     expect(publish).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -232,7 +234,7 @@ it('keeps failed initial Turn files and permits later unrelated Workspace writes
     const store = new FsStore({ dataRoot: root });
     const workspace = store.createWorkspace('Uncertain publication');
     const thread = store.createThread(workspace.id, 'Existing target');
-    const turnId = 'tu_uncertain_publication';
+    const turnId = testEntityId('tu', 'tu_uncertain_publication');
     const turnRoot = join(root, 'workspaces', workspace.id, 'threads', thread.id, 'turns', turnId);
     const native = store as unknown as { persist(workspaceId: string): void };
     const persist = native.persist.bind(store);
@@ -245,7 +247,7 @@ it('keeps failed initial Turn files and permits later unrelated Workspace writes
         workspace.id,
         thread.id,
         'Unpublished cache candidate',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
         null,
         { turnId, status: 'pending', agentId: 'worker', executorKind: 'worker' }
       )

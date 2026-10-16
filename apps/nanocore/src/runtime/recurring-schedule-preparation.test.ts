@@ -1,3 +1,5 @@
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from '../test-support/demo-store.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,20 +32,20 @@ function fixture() {
   fixtures.push({ root, db });
   applyMigrations(db);
   const store = createDemoStore({ dataRoot: root });
-  const thread = store.createThread('ws_demo', 'Recurring preparation');
+  const thread = store.createThread(DEMO_WORKSPACE_ID, 'Recurring preparation');
   const schedules = new AutomationStore(
     db,
     new WorkspaceMutationAdmission(),
     () => '2026-10-16T00:00:00.000Z'
   );
-  const schedule = schedules.createAutomation('user_local', {
-    workspaceId: 'ws_demo',
+  const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+    workspaceId: DEMO_WORKSPACE_ID,
     threadId: thread.id,
     name: 'Inspect',
     prompt: 'Inspect status',
     intervalSeconds: 5,
   });
-  schedules.updateAutomation('user_local', schedule.id, {
+  schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',

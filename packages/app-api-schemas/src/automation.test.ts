@@ -1,3 +1,4 @@
+import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import { describe, expect, it } from 'vitest';
 import {
   AutomationCadenceSchema,
@@ -8,8 +9,8 @@ import {
 import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
 
 const definition = {
-  workspaceId: 'ws_test',
-  threadId: 'th_test',
+  workspaceId: testEntityId('ws', 'ws_test'),
+  threadId: testEntityId('th', 'th_test'),
   name: 'Poll',
   intervalSeconds: 5,
   prompt: 'Inspect status',
@@ -55,7 +56,7 @@ describe('fixed recurrence public contract', () => {
       );
     expect(
       AUTOMATION_OPERATION_DEFINITIONS['automation.history'].inputSchema.safeParse({
-        automationId: 'auto_one',
+        automationId: testEntityId('auto', 'auto_one'),
         limit: 129,
       }).success
     ).toBe(false);

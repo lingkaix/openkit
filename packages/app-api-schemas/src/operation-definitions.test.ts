@@ -1,3 +1,5 @@
+import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from '../../../apps/nanocore/src/test-support/demo-store.js';
+import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import { describe, expect, it } from 'vitest';
 import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
@@ -94,8 +96,8 @@ describe('automation, scheduler and recovery definitions', () => {
       [
         'automation.create',
         {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: DEMO_THREAD_ID,
           name: 'Morning',
           intervalSeconds: 60,
           prompt: 'Work',
@@ -104,13 +106,13 @@ describe('automation, scheduler and recovery definitions', () => {
       ],
       [
         'automation.update',
-        { automationId: 'auto_one', expectedRevision: 1, status: 'paused' },
+        { automationId: testEntityId('auto', 'auto_one'), expectedRevision: 1, status: 'paused' },
         true,
       ],
-      ['automation.delete', { automationId: 'auto_one' }, true],
-      ['scheduler.list', { workspaceId: 'ws_demo' }, false],
-      ['scheduler.retry', { workspaceId: 'ws_demo', queueEntryId: 'queue_one' }, true],
-      ['scheduler.cancel', { workspaceId: 'ws_demo', queueEntryId: 'queue_one' }, true],
+      ['automation.delete', { automationId: testEntityId('auto', 'auto_one') }, true],
+      ['scheduler.list', { workspaceId: DEMO_WORKSPACE_ID }, false],
+      ['scheduler.retry', { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_one' }, true],
+      ['scheduler.cancel', { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_one' }, true],
       ['recovery.worker-list', {}, false],
       [
         'recovery.checkpoint-retry',
