@@ -436,8 +436,6 @@ export const WorkspaceSharingErrorSchema = z.union([
   WorkspaceDeletionInProgressErrorSchema,
 ]);
 
-/** Workspace access level granted by one active membership. */
-/** Effective Workspace role after ownership and membership are combined. */
 /** Durable lifecycle state of one Workspace membership. */
 export type WorkspaceMembershipStatus = z.infer<typeof WorkspaceMembershipStatusSchema>;
 /** Current invitation outcome, including the computed expired projection. */
@@ -470,7 +468,6 @@ export type DeclineWorkspaceInvitationRequest = z.infer<
 export type RevokeWorkspaceInvitationRequest = z.infer<
   typeof RevokeWorkspaceInvitationRequestSchema
 >;
-/** Request that changes one active member's Workspace access level. */
 /** Request that removes one non-owner Workspace member. */
 export type RemoveWorkspaceMemberRequest = z.infer<typeof RemoveWorkspaceMemberRequestSchema>;
 /** Request that removes the current caller's non-owner Workspace membership. */
