@@ -25,6 +25,11 @@ import {
 } from './generative-operations.js';
 import { createGoalOperationImplementations } from './goal-operation-implementations.js';
 import { createGovernanceOperationImplementations } from './governance-operation-implementations.js';
+import {
+  ASSISTANT_SKILL_OPERATION_DEFINITIONS,
+  type AssistantSkillResources,
+} from './internal-agents/assistant-skill-resources.js';
+import type { ToolExecutionContext } from './internal-agents/internal-agent-loop.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
@@ -32,8 +37,11 @@ import type { FsStore } from './lib/store.js';
 import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
 import { createMaterialOperationImplementations } from './material-operation-implementations.js';
 import type { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
-import type { OperationImplementations } from './operation-contract.js';
-import { createOperationEngine } from './operation-invocation.js';
+import type {
+  AssistantOperationInvocationContext,
+  OperationImplementations,
+} from './operation-contract.js';
+import { createInternalOperationEngine, createOperationEngine } from './operation-invocation.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
 import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
@@ -209,4 +217,25 @@ export function createOperationImplementations(dependencies: OperationInvocation
 /** Composes at the caller's existing store lifetime; request status, cancellation and delivery travel only in entry context. */
 export function createOperationInvocation(dependencies: OperationInvocationDependencies) {
   return createOperationEngine(createOperationImplementations(dependencies), dependencies);
+}
+
+/** Joins the static private definition to this admitted command's exact retained Skill handler. */
+export function createAssistantSkillReadInvocation(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly resources: AssistantSkillResources;
+  readonly context: AssistantOperationInvocationContext;
+}) {
+  const context = { ...input.context, actor: structuredClone(input.context.actor) };
+  const invoke = createInternalOperationEngine(
+    ASSISTANT_SKILL_OPERATION_DEFINITIONS,
+    { 'skill.read': input.resources.read.bind(input.resources) },
+    { coreDb: input.coreDb, store: input.store },
+    context
+  );
+  return (value: unknown, tool: ToolExecutionContext) =>
+    invoke('skill.read', value, {
+      ...context,
+      signal: AbortSignal.any([context.signal, tool.signal]),
+    });
 }

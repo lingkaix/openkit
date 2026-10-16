@@ -4,6 +4,8 @@ This directory contains NanoCore's composition root and feature owners. `app.ts`
 
 ## Boundaries
 
+`operation-invocation.ts` shares handler execution and logical output validation between public definitions and release-authored internal-only definitions. Private command bindings use the canonical `AssistantOperationInvocationContext`, current primary admission and a static exact-key retained handler join in `operation-composition.ts`. `skill.read` is omitted from every public table and projection. Its resource owner supplies the single schema/definition and model Tool projection; the engine contains no Skill dispatch. No binding is persisted or registered at runtime.
+
 - Keep authentication and middleware order in `app.ts`; do not move product handlers back into the composition root.
 - Keep one complete route lifecycle in one feature module when practical, and pass only concrete dependencies that the module cannot import from its real owner.
 - `catalog/catalog-operations.ts` carries optional Vault credential bindings through the existing MCP update-binding operation, preserving them on omission and replacing them when supplied. The catalog owner validates the proposed effective entry before publication; malformed request bodies and invalid proposed bindings return JSON 400 `invalid_request`. Retained-record decoding failures keep the catalog operation's former 404 code and the phase-neutral fixed message "The record could not be processed." Output-schema validation belongs to `operation-invocation.ts` and returns HTTP 500 `invalid_operation_output`; validation does not undo committed effects.
