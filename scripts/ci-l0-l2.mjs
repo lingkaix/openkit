@@ -48,7 +48,7 @@ export function shardPlan(root = process.cwd()) {
       .filter((owner) => ['@openkit/nanocore', '@openkit/worker-shim'].includes(owner.name))
       .flatMap((owner) => {
         const id = owner.name.replace('@openkit/', '');
-        const count = id === 'nanocore' ? 4 : 8;
+        const count = 2;
         return Array.from({ length: count }, (_, index) => ({
           id: `${id}-${index + 1}`,
           kind: 'coverage',
