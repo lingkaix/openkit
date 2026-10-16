@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 date: "2026-10-16"
 branch: lane/ch
 ---
@@ -16,11 +16,11 @@ Source: engineer assignment to lane L-CH on 2026-10-16, P23, the shared lane bri
 
 ## Checkpoint
 
-Main1fb33a24 is merged. The identifier cutover has not reached main. Both Builder subfeatures are merged through their own branches. The primary owns the composed production paths. The notification helper now acts as Test Author for the real channel-to-Pending owner seam and owns only that new test and final notification fixture corrections. The independent Reviewer owns no production path and has inspected the merged feature and surrounding owners. No real vendor or host operation occurred.
+Maincf092a5b is merged in0ea9dc5d. Manual merge resolutions preserve both the complete delegated-maintenance schema and the Discord schema, both sets of guide paragraphs, and each native composition join. OpenAPI and CLI were regenerated from the merged definitions. P14 has not reached main. Both Builder branches and the Test Author corrections are merged, and helper write ownership is closed. The primary owns the composed paths; the independent Reviewer owns no production path. No real vendor or host operation occurred.
 
-The implementation adds shared attention references and conditional delivery attempts, signed private Discord pairing and exact responses, startup configuration, native operations, generated projections, live Web settings, and manuals. The new Core migration is additive and preserves retained user data. Unknown delivery and unfinished response dispatch remain separate from Core outcomes. Email has the shared link-only payload contract; this slice supplies no SMTP adapter.
+The implementation adds shared attention references and conditional delivery attempts, signed private Discord pairing and exact responses, startup configuration, native operations, generated projections, live Web settings, and manuals. The additive Core migration preserves retained user data. Unknown delivery and unfinished response dispatch remain separate from Core outcomes. Email has the shared link-only payload contract; this slice supplies no SMTP adapter.
 
-Review corrected prior-user Web cache retention, missing usable grant links, and duplicate notification test DDL. Root also corrected revocation without adapter configuration and streamed body overflow translation. Account transitions clear channel query and mutation results through the existing account owner. Configured Discord identity requires a trusted HTTPS App origin. Exact grant links require current source admission and dispatch no grant. Binding revocation remains a local Core operation when adapter configuration is absent.
+Review corrected prior-user Web cache retention, missing usable grant links, duplicate notification test DDL, and an internal-field assertion against a public binding result. Root also corrected revocation without adapter configuration, streamed body overflow translation, and unavailable Workspace projection recovery. Account transitions clear channel query and mutation results through the existing account owner. A configured Discord identity requires a trusted HTTPS App origin. Exact grant links require current source admission and dispatch no grant. Binding revocation remains local when adapter configuration is absent. Recovery skips an unavailable Workspace projection without repair or a guessed outcome and can inspect it on a later call.
 
 ## Next Action
 
@@ -28,10 +28,14 @@ Complete the final merged checks and exact-head independent review, push, and ru
 
 ## Verification
 
-Use lowest-sufficient module regressions plus a real producer/consumer integration check across the channel-to-Pending Request seam. Fix expected behavior from the owners before implementation. External transports are fakes and prove no real Discord or Email sending. Run focused tests, repository checks, lint, typecheck, generated contract checks, independent review, and exact-head full CI before landing. Keep temporary evidence outside committed documentation. Closeout remains pending.
+Local fake-backed verification is complete. The independent Reviewer has inspected the actual source, merge resolutions, regressions, and named execution outputs. Its exact-head report and full CI remain landing preconditions; this record does not substitute for either gate. Real bot registration, account operation, and sending are outside this verification and remain separately authorized proof.
 
-## Observed Evidence
+The merged-main verification command built the standalone CLI, generated and validated OpenAPI, built NanoCore and Web, ran the complete configuration and App-schema suites, ran the focused native suites, and completed repository checks, lint, and typecheck. Results:323/323 configuration tests,275/275 App-schema tests,95/95 native tests across7 files,14/14 lint tasks, and16/16 typecheck/build tasks. Repository checks passed with3 existing warnings and29 informational diagnostics. The native run includes production migration continuity and the source-DDL guard, all channel and notification cases, the real Pending Request seam, startup-only channel reload, and delegated-maintenance reload after the main merge.
 
-Repository checks passed. All14 lint tasks passed. Runtime configuration regressions passed25/25, including retention of active Discord identity through safe reload. Configuration boundary regressions passed3/3, including missing or non-HTTPS App-origin refusal. The initial native run passed38/40; its failures identified the duplicate test schema and swallowed streamed413, both now corrected. Final native, Web, schema, and merged typecheck evidence remain pending. Earlier module, CLI, and schema runs are retained as supporting observations, not substitutes for the final merged checks.
+Separate deciding outputs establish103/103 Web/account tests with Web and client typecheck,97/97 CLI/interface/redaction tests against the regenerated merged bundle, and58 passing HTTP/MCP/storage cases before removal of the synthetic Core oracle. The initial native failures were the duplicate schema and swallowed streamed413. The next run retained one source-DDL failure in a synthetic Core test table. The correction removed that weak oracle, kept the guard, and used the actual Pending Request seam for Core-outcome preservation; the final95-case run passes it. The targeted recovery, configuration-off revocation, and persisted-attempt cases also passed3/3 with strict test-file types.
 
-Initial independent review inspected the source and reproduced the account-cache defect through the real account transition owner. It found no further production defect after correction. It also inspected the real native seam and found one public-result test assertion that incorrectly expected an internal binding field; the Test Author is correcting that oracle. No unresolved production finding is accepted by a producer report alone.
+Raw execution evidence is retained outside the repository under the lane checkpoint. Deciding logs are merged-main-verification.log, merged-cli-tests.log, final-web-contracts.log, final-native-gates.log, and review-fixes-tests.log. Queue messages and earlier setup failures are not PASS evidence. Independent review reproduced the original account-cache defect through the real account-transition owner and inspected its correction. No unresolved production finding is retained for this slice. The later real-send proof remains an explicit evidence boundary.
+
+## Complexity Observations
+
+The feature changes58 paths and3 governing documents: Communication, Pending Requests, and Remote MCP. It touches8 owner concerns when counted by module boundary: those3 governing concerns, Core storage, the native operation catalog, startup configuration, Web account/settings, and the CLI. It adds6 Core tables for the accepted binding, disclosure, receipt, attention, and attempt lifecycles. Closed projections added here contain5 native operations,5 Discord subcommands,2 notification channels,2 source kinds,5 delivery states,4 attempt states,4 failure codes, and3 inbound receipt states. No runner, compatibility path, or separate schema owner is added. These are descriptive counts, not acceptance thresholds.
