@@ -17,7 +17,7 @@ import { createGoalTools, type GoalWorkerCandidate } from './goal-coordinator.js
 import { executeGoalOperation } from './goal-owner.js';
 
 /** Uses real operation admission and catalog reads; only live setup resolution is supplied. */
-async function fixture() {
+async function fixture(actorKind: 'session' | 'local' = 'session') {
   const root = mkdtempSync(join(tmpdir(), 'goal-discovery-'));
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
@@ -30,7 +30,7 @@ async function fixture() {
   store.setWorkspaceAgentCatalogProjection(() =>
     projectAgentCatalogEntries([createTestAgentSetup({ agentId: 'selected-worker' }).manifest])
   );
-  const actor = { kind: 'session' as const, userId: 'user_local' };
+  const actor = { kind: actorKind, userId: 'user_local' };
   const db = openWorkspaceDb(root, workspace.id);
   applyScopedMigrations(db);
   const created = await executeGoalOperation(
@@ -98,8 +98,11 @@ async function fixture() {
   };
 }
 
-it('discovers through agent.list with exact Workspace scope, no work effect, and fixed Tool membership', async () => {
-  const f = await fixture();
+it.each([
+  'session',
+  'local',
+] as const)('discovers through agent.list with exact Workspace scope, no work effect, and fixed Tool membership (%s)', async (actorKind) => {
+  const f = await fixture(actorKind);
   try {
     const resources = vi.spyOn(f.store, 'getWorkspaceResources');
     const result = await f.tool.execute({});
@@ -118,6 +121,7 @@ it('discovers through agent.list with exact Workspace scope, no work effect, and
     expect(resources.mock.calls.map(([id]) => id)).toEqual([f.workspace.id]);
     expect(f.resolver).toHaveBeenCalledWith(f.workspace.id, 'user_local');
     expect(f.store.listThreads(f.workspace.id)).toHaveLength(1);
+    expect(f.store.listThreadAgentSessions(f.workspace.id, f.goal.threadId)).toEqual([]);
     expect(f.db.sqlite.prepare('SELECT * FROM goal_card_tasks').all()).toEqual([]);
     const names = f.tools.map((tool) => tool.name);
     f.setCandidates([]);
