@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
+import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
@@ -80,6 +81,53 @@ function frame(input: unknown, bytes: readonly Uint8Array[]): Blob {
 }
 
 describe('Turn-owned conversation originals', () => {
+  it('requires exact file handoff confirmation before exposing a private brief or bytes to shared Worker work', async () => {
+    const state = fixture();
+    const source = state.store.createThread(state.workspaceId, 'Private files', undefined, 'conversation', { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID });
+    const setup = createTestAgentSetup();
+    const executor = new SimulatedTurnExecutor({ coreDb: state.coreDb });
+    const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn').mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
+    const app = createApp({coreDb:state.coreDb,dataRoot:state.dataRoot,store:state.store,turnExecutor:executor,agentManifests:[setup.manifest],openKitConfig:{defaults:{defaultAgentId:setup.manifest.id}}});
+    const before = state.store.listThreads(state.workspaceId).map((thread)=>thread.id);
+    const bytes = Buffer.from('Private original');
+    const input = { workspaceId:state.workspaceId,threadId:source.id,requestId:randomUUID(),input:'Private brief must not become shared',targetRef:'new-task-worker',artifactRefs:[],fileInputs:[metadata(bytes)] };
+    const response = await app.request('/api/app/operations/conversation.submit', {method:'POST',headers:{'content-type':CONVERSATION_FILE_MEDIA_TYPE,'x-openkit-request-id':input.requestId},body:frame(input,[bytes])});
+    expect(response.status, await response.clone().text()).toBe(403);
+    expect((await response.json()).code).toBe('file_handoff_confirmation_required');
+    expect(state.store.listThreads(state.workspaceId).map((thread)=>thread.id)).toEqual(before);
+    expect(state.store.listThreadTurns(state.workspaceId,source.id)).toHaveLength(0);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('refuses file Turn publication when the request aborts during awaited Worker preparation', async () => {
+    const state = fixture();
+    const setup = createTestAgentSetup();
+    const executor = new SimulatedTurnExecutor({coreDb:state.coreDb});
+    const start = vi.spyOn(executor,'prepareAgentSessionForTurn').mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
+    const app = createApp({coreDb:state.coreDb,dataRoot:state.dataRoot,store:state.store,turnExecutor:executor,agentManifests:[setup.manifest],openKitConfig:{defaults:{defaultAgentId:setup.manifest.id}}});
+    let reached!:()=>void;
+    const ready = new Promise<void>((resolve)=>{reached=resolve;});
+    let release!:()=>void;
+    const held = new Promise<void>((resolve)=>{release=resolve;});
+    const original = knowledgeOwners.createTaskKnowledgePreparation;
+    vi.spyOn(knowledgeOwners,'createTaskKnowledgePreparation').mockImplementation((dependencies)=>{
+      const prepare = original(dependencies);
+      return async (...arguments_)=>{const prepared=await prepare(...arguments_);reached();await held;return prepared;};
+    });
+    const controller = new AbortController();
+    const bytes = new Uint8Array([0xff,0]);
+    const input = {workspaceId:state.workspaceId,threadId:state.thread.id,requestId:randomUUID(),input:'Implement a focused correction.',targetRef:'new-task-worker',artifactRefs:[],fileInputs:[metadata(bytes)]};
+    const result = app.request('/api/app/operations/conversation.submit',{method:'POST',headers:{'content-type':CONVERSATION_FILE_MEDIA_TYPE,'x-openkit-request-id':input.requestId},body:frame(input,[bytes]),signal:controller.signal});
+    await ready;
+    controller.abort();
+    release();
+    const response = await result;
+    expect(response.status,await response.clone().text()).toBe(499);
+    expect(state.store.listThreads(state.workspaceId).flatMap((thread)=>state.store.listThreadTurns(state.workspaceId,thread.id))).not.toContainEqual(expect.objectContaining({fileInputs:input.fileInputs}));
+    expect(start).not.toHaveBeenCalled();
+    expect(state.store.listCommandRequests().some((receipt)=>receipt.requestId===input.requestId)).toBe(false);
+  });
+
   it('refuses a retained Thread rewrite that exceeds shared publication capacity before Assistant execution', async () => {
     const state = fixture(() => 7_000_000n);
     const threadPath = join(
