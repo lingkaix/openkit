@@ -156,6 +156,8 @@ Follow the current design-to-code loop in [`docs/cookbooks/claude-design-web-ui-
 
 `docs/specs/20261002-goal.md` owns the current Goal journey, which uses the definition-derived Goal operations for intent, cards, exact Plan decisions, Task links and cancellation.
 
+The Goal screen shows the responsible person and actual decision actor. A granted request remains distinct from the Goal owner's applied outcome. Accepted completion retains its candidate summary and unresolved work. Task reservations without an admitted Turn stay visibly unadmitted. Run `src/screens/goal/goal-journey.test.tsx` for these local states.
+
 `DESIGN.md` (§9.5) owns the Draft › Plan › Execute › Review strip.
 
 `DESIGN.md` (§3.1, §3.2, §3.3, §9.4, §12, and §13) owns:

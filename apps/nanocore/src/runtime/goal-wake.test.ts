@@ -187,7 +187,15 @@ describe('Coordinator marker admission', () => {
       );
       expect(considerGoal(store, db, goal.goalId)).toBeNull();
       store.updateTurn(turn!.id, { status: 'completed', completedAt: new Date().toISOString() });
-      expect(considerGoal(store, db, goal.goalId)?.agentId).toBe('goal-coordinator');
+      const next = considerGoal(store, db, goal.goalId);
+      expect(next?.agentId).toBe('goal-coordinator');
+      store.updateTurn(next!.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: { code: 'provider_unavailable', message: 'Provider unavailable.' },
+      });
+      expect(considerGoal(store, db, goal.goalId)).toBeNull();
+      expect(readGoalView(store, db, goal.goalId).goal!.disposition).toBeNull();
     } finally {
       db.sqlite.close();
     }
