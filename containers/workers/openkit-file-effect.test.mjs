@@ -929,3 +929,34 @@ test('terminal export refuses growth, truncation and same-length mutation after 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test('expanded context source admission stays separate from upload and other import bounds', async () => {
+  const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const root = await mkdtemp(join(tmpdir(), 'openkit-context-source-bound-'));
+  try {
+    for (const [slot, maximum, path] of [
+      ['context', 4_000_000_000, 'session/context/original'],
+      ['artifact-input', 1_000_000_000, 'original'],
+      ['turn-inputs', 1_000_000_000, 'original'],
+      ['instructions', MAX_FILE_BYTES, 'original'],
+    ]) {
+      const slotRoot = join(root, slot);
+      await mkdir(slotRoot);
+      for (const extra of [0, 1]) {
+        let sourceEntered = false;
+        const stdin = { async *[Symbol.asyncIterator]() {
+          sourceEntered = true;
+          throw new Error('A metadata-only probe supplies no admitted original body.');
+        } };
+        const result = await invokeFileEffect(runFileEffect, { [slot]: slotRoot }, [
+          'reference.import', '--slot', slot, '--path', path, '--length', String(maximum + extra), '--sha256', `sha256:${'0'.repeat(64)}`,
+        ], stdin);
+        assert.equal(sourceEntered, extra === 0, `${slot} exact bound versus one-byte overflow`);
+        assert.equal(result.exitCode, 1);
+        assert.equal(result.stdout.length, 0);
+        assert.equal(result.stderr.toString(), 'File effect rejected.\n');
+      }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

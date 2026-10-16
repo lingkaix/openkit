@@ -2363,11 +2363,7 @@ async fn poll_reference_import(
         .filter(|length| {
             length.to_string() == byte_length_text
                 && *length
-                    <= if matches!(slot.as_str(), "artifact-input" | "turn-inputs" | "context") {
-                        crate::file_transfer::FILE_BYTES
-                    } else {
-                        FILE_DATA_BODY_MAX_BYTES
-                    }
+                    <= crate::file_transfer::import_byte_limit(&slot)
         })
         .ok_or_else(|| terminal("reference.import byte length invalid"))?;
     let content_length_text = required_header(headers, "content-length").map_err(terminal)?;

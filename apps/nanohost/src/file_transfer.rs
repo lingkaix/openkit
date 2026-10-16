@@ -14,10 +14,22 @@ use sha2::{Digest, Sha256};
 pub const CHUNK_BYTES: usize = 65_536;
 /// Decimal maximum for one admitted source file.
 pub const FILE_BYTES: u64 = 1_000_000_000;
+/// One derived ZIP member in the selected read-only Turn snapshot may use the full expansion bound.
+pub const CONTEXT_SOURCE_BYTES: u64 = 4_000_000_000;
 /// Terminal capture and non-file snapshot inputs keep their existing ceiling.
 pub const EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
 const RESERVE_BYTES: u64 = 1_000_000_000;
 static RESERVED_BYTES: Mutex<u64> = Mutex::new(0);
+
+/// Selects only an existing source owner, without widening uploads, exports or other private imports.
+pub fn import_byte_limit(slot: &str) -> u64 {
+    match slot {
+        "context" => CONTEXT_SOURCE_BYTES,
+        "artifact-input" | "turn-inputs" => FILE_BYTES,
+        _ => EVIDENCE_BYTES,
+    }
+}
+
 
 /// A private partial file. Drop removes its complete request directory on every exit.
 pub struct FileStage {
@@ -331,4 +343,31 @@ mod tests {
         }
         assert_eq!(counted, FILE_BYTES);
     }
+    #[test]
+    fn four_billion_expanded_context_bytes_keep_bounded_buffers_and_exact_identity() {
+        let root = Fixture::new();
+        let mut stage = FileStage::create(&root.0, CONTEXT_SOURCE_BYTES, 0).unwrap();
+        let buffer = [0_u8; CHUNK_BYTES];
+        let mut remaining = CONTEXT_SOURCE_BYTES;
+        while remaining > 0 {
+            let count = remaining.min(CHUNK_BYTES as u64) as usize;
+            stage.write_all(&buffer[..count]).unwrap();
+            remaining -= count as u64;
+        }
+        assert!(stage.write_all(&[0]).is_err());
+        // Independent Python hashlib oracle over exactly 4,000,000,000 zero bytes.
+        let file = stage.complete(Some((CONTEXT_SOURCE_BYTES,
+            "sha256:ddd45e35df0b676747319e4da247e7dc78b53cb99cba1411f1db51ebf4202efb"))).unwrap();
+        let mut reader = file.reader().unwrap();
+        let mut counted = 0_u64;
+        let mut buffer = [1_u8; CHUNK_BYTES];
+        loop {
+            let read = reader.read(&mut buffer).unwrap();
+            if read == 0 { break; }
+            assert!(buffer[..read].iter().all(|byte| *byte == 0));
+            counted += read as u64;
+        }
+        assert_eq!(counted, CONTEXT_SOURCE_BYTES);
+    }
+
 }

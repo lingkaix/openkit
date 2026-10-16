@@ -2250,11 +2250,14 @@ function requireReferenceImportCommand(
     : bodyValue instanceof Uint8Array
       ? Buffer.from(bodyValue)
       : null;
-  const byteLength = readCanonicalByteLength(value.byteLength);
+  const slot = readSlot(value.slot);
+  const maximum = slot === 'context' ? 4_000_000_000
+    : slot === 'artifact-input' || slot === 'turn-inputs' ? 1_000_000_000
+      : 256 * 1024 * 1024;
+  const byteLength = readCanonicalByteLength(value.byteLength, maximum);
   const relativePath = readRelativePath(value.relativePath);
   const sandboxId = readBoundedIdentity(value.sandboxId, 'sandbox');
   const sha256 = readSha256(value.sha256);
-  const slot = readSlot(value.slot);
   const source = value.source;
   if (source !== undefined) {
     if (
@@ -2498,11 +2501,11 @@ function sameFileResult(
  * @returns Exact safe integer within the V1 file bound.
  * @throws A 413 transport error when invalid or oversized.
  */
-function readCanonicalByteLength(value: unknown): number {
+function readCanonicalByteLength(value: unknown, maximum = FILE_DATA_MAX_BYTES): number {
   if (
     !Number.isSafeInteger(value) ||
     (value as number) < 0 ||
-    (value as number) > FILE_DATA_MAX_BYTES
+    (value as number) > maximum
   ) {
     throw effectTransportError(413, 'NanoHost file-data byte length exceeds its bound.');
   }

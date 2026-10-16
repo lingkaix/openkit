@@ -703,14 +703,7 @@ impl FileEffectRequest {
                 self.presence == FileEffectPresence::Required
                     && digest_valid
                     && self.byte_length
-                        <= if matches!(
-                            self.slot.as_str(),
-                            "artifact-input" | "turn-inputs" | "context"
-                        ) {
-                            crate::file_transfer::FILE_BYTES
-                        } else {
-                            FILE_EFFECT_MAX_BYTES
-                        }
+                        <= crate::file_transfer::import_byte_limit(&self.slot)
             }
             FileEffectKind::ExportFile => {
                 self.sha256.is_empty()
@@ -1722,6 +1715,31 @@ mod tests {
             succeeded,
             "admitted live Artifact capture must stage without fabricated final status"
         );
+    }
+
+    #[test]
+    fn selected_context_accepts_expanded_members_without_widening_uploads_or_exports() {
+        for (slot, maximum) in [
+            ("context", 4_000_000_000),
+            ("artifact-input", 1_000_000_000),
+            ("turn-inputs", 1_000_000_000),
+            ("instructions", FILE_EFFECT_MAX_BYTES),
+        ] {
+            let mut request = FileEffectRequest {
+                artifact_submission: false,
+                request_id: "a".repeat(64),
+                sandbox_id: "selected-sandbox".into(),
+                slot: slot.into(),
+                relative_path: PathBuf::from("session/context/original"),
+                sha256: format!("sha256:{}", "0".repeat(64)),
+                byte_length: maximum,
+                kind: FileEffectKind::ImportReference,
+                presence: FileEffectPresence::Required,
+            };
+            assert!(request.helper_command().is_ok(), "{slot} exact source bound");
+            request.byte_length += 1;
+            assert!(request.helper_command().is_err(), "{slot} overflow");
+        }
     }
 
     #[test]

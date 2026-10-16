@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 /** Tests raw carriage below the separately tested authoritative dispatcher, using a real HTTP/2 connection and fixed route. */
-async function carriage(source: NanoHostFileImportSource, byteLength: number, sha256: string) {
+async function carriage(source: NanoHostFileImportSource, byteLength: number, sha256: string, slot = 'context') {
   const poll = vi.fn().mockResolvedValue({
     source,
     byteLength,
@@ -25,7 +25,7 @@ async function carriage(source: NanoHostFileImportSource, byteLength: number, sh
     relativePath: 'session/context/original',
     requestId: 'a'.repeat(64),
     sandboxId: 'sandbox-source',
-    slot: 'context',
+    slot,
   });
   const app = new Hono<{ Variables: AuthVariables }>();
   registerNanoHostSessionEffectRoutes({
@@ -135,7 +135,7 @@ it.each([
   expect(closed).toBe(true);
 });
 
-it('cancels the private producer and releases carriage after an actual H2 reset', async () => {
+it.each([100_000_000, 4_000_000_000])('cancels a %i-byte context declaration and releases carriage after an actual H2 reset', async (total) => {
   let closed = false;
   let produced = 0;
   const source: NanoHostFileImportSource = {
@@ -151,9 +151,22 @@ it('cancels the private producer and releases carriage after an actual H2 reset'
       }
     },
   };
-  const { open } = await carriage(source, 100_000_000, `sha256:${'a'.repeat(64)}`);
+  const { open } = await carriage(source, total, `sha256:${'a'.repeat(64)}`);
   const { request } = await open();
   request.close(constants.NGHTTP2_CANCEL);
   await vi.waitFor(() => expect(closed).toBe(true));
-  expect(produced).toBeLessThan(100_000_000);
+  expect(produced).toBeLessThan(total);
+});
+
+it.each([
+  ['context', 4_000_000_001], ['artifact-input', 1_000_000_001],
+  ['turn-inputs', 1_000_000_001], ['instructions', 268_435_457],
+] as const)('refuses oversized %s import metadata before opening any source', async (slot, length) => {
+  const source = { open: vi.fn(async function* () { yield Buffer.alloc(1); }) };
+  const port = await carriage(source, length, `sha256:${'a'.repeat(64)}`, slot);
+  const { request, headers } = await port.open();
+  expect(headers[':status']).toBe(413);
+  request.resume();
+  await once(request, 'end');
+  expect(source.open).not.toHaveBeenCalled();
 });

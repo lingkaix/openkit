@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url';
 
 const MAX_FILE_BYTES = 268_435_456;
 const MAX_SOURCE_FILE_BYTES = 1_000_000_000;
+// A selected derived ZIP member has its own 4 GB expansion owner. Uploads and outputs stay at 1 GB.
+const MAX_CONTEXT_SOURCE_BYTES = 4_000_000_000;
 const MAX_PATH_BYTES = 4096;
 const IO_CHUNK_BYTES = 65_536;
 const FAILURE_DIAGNOSTIC = 'File effect rejected.\n';
@@ -109,7 +111,7 @@ function parseCommand(argv, slotRoots) {
             : replace
               ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
               : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
-    const length = parseBoundedDecimal(argv[6], ['artifact-input', 'turn-inputs', 'context'].includes(slot) ? MAX_SOURCE_FILE_BYTES : MAX_FILE_BYTES);
+    const length = parseBoundedDecimal(argv[6], slot === 'context' ? MAX_CONTEXT_SOURCE_BYTES : ['artifact-input', 'turn-inputs'].includes(slot) ? MAX_SOURCE_FILE_BYTES : MAX_FILE_BYTES);
     const digest = argv[8];
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error('invalid digest');
