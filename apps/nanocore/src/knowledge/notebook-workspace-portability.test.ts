@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
+import { LOCAL_USER_ID, readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
@@ -124,5 +125,46 @@ describe('canonical Notebook Workspace portability', () => {
     expect(current.revision).not.toBe(f.revision);
     expect(existsSync(join(targetRoot, 'knowledge', 'pages'))).toBe(false);
     expect(new KnowledgeNotebook({ repositoryPath: join(f.root, 'knowledge', 'notebook.git') }).publishedRevision()).toBe(f.revision);
+  });
+
+  it('retains published and unpublished Git content and existing Audit in the ordinary same-deployment backup', async () => {
+    const f = source();
+    const unpublished = f.notebook.prepare({
+      baseRevision: f.revision,
+      changes: { 'notes/portable.md': `${f.content}Unpublished candidate bytes.\n` },
+      metadata: {
+        summary: 'Unpublished test candidate',
+        producer: { kind: 'user', id: LOCAL_USER_ID },
+        authority: { kind: 'direct', instructionReference: 'test:unpublished-backup' },
+        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${createHash('sha256').update('candidate').digest('hex')}` },
+        sourceReferences: [],
+      },
+    });
+    const destination = mkdtempSync(join(tmpdir(), 'openkit-notebook-backup-'));
+    roots.push(destination);
+    const backupRoot = join(destination, 'backup');
+    const restoredRoot = join(destination, 'restored');
+    const originalDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
+    const originalAudit = originalDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY id').all();
+    originalDb.sqlite.close();
+    const timestamp = '2026-10-16T00:00:00.000Z';
+    await writeHotDataRootBackup({
+      dataRoot: f.dataRoot, backupRoot, backupId: randomUUID(),
+      sourceDeploymentId: readDataRootLayoutMarker(f.dataRoot).deploymentId,
+      startedAt: timestamp, completedAt: timestamp,
+    });
+    restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
+    const restored = new KnowledgeNotebook({ repositoryPath: join(restoredRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git') });
+    expect(restored.validateRetainedGraph().publishedRevision).toBe(f.revision);
+    expect(restored.readRevision(f.revision).files['notes/portable.md']).toBe(f.content);
+    expect(restored.inspectRevision(unpublished).files['notes/portable.md']).toBe(`${f.content}Unpublished candidate bytes.\n`);
+    const restoredDb = openWorkspaceDb(restoredRoot, f.workspace.id);
+    try {
+      expect(restoredDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY id').all()).toEqual(originalAudit);
+    } finally {
+      restoredDb.sqlite.close();
+    }
+    expect(new FsStore({ dataRoot: restoredRoot }).getWorkspace(f.workspace.id).id).toBe(f.workspace.id);
+    expect(f.notebook.publishedRevision()).toBe(f.revision);
   });
 });
