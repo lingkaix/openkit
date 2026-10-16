@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-17"
 branch: lane/web-administration-admission
 ---
@@ -50,3 +50,7 @@ The diff changes four paths, edits no owning specification, and adds no closed s
 ## Builder Handoff
 
 The bounded implementation is complete and ready for parent inspection and integration. The final complete-file run includes the access-denial command-result regression that previously failed, with the original mutation outcome visible after read recovery and one effect call only. The source, final test bytes and focused checks have been inspected locally; independent acceptance remains parent-owned. No source writes are planned after handoff. The record stays in progress until the parent settles its separate integration and acceptance obligations.
+
+## Parent Integration
+
+The primary merged the completed builder branch with its companion owner criterion and guides using ordinary Git merges in a separate integration worktree. The third increment changes seven paths: the four builder paths plus Web product projection, the Web guide and the English operator manual. It adds no public operation, schema, durable state or closed registry. P29 uses external operator composition of existing operations; the guides preserve the distinct App, Worker and host evidence boundaries. The primary inspected the candidate admission and observer lifetime changes and the named 38-case, typecheck and lint output. Final independent review, complete local Web gate, generated-output alignment and post-landing CI remain required. The preceding Recovery increment and P14 landing priority stay separate.
