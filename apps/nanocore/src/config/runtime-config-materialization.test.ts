@@ -170,7 +170,7 @@ const selection = [{ id: 'documents', sourceRef: 'documents', access: 'read-writ
 describe('registered config detail read coherence', () => {
   it('binds the revision to one actual source read when an external writer replaces the file', () => {
     const f = fixture();
-    const id = 'workspaces/ws_demo/workspace.jsonc';
+    const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
     const original = '// Original café\n{"workspace":{"name":"Original","roots":[]}}\n';
     const replacement = '// Replacement\n{"workspace":{"name":"Replacement","roots":[]}}\n';
     const path = f.write(id, original);
@@ -208,7 +208,7 @@ describe('registered config detail read coherence', () => {
 
   it('propagates source read failure without changing authored bytes', () => {
     const f = fixture();
-    const id = 'workspaces/ws_demo/workspace.jsonc';
+    const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
     const original = '{"workspace":{"name":"Unreadable","roots":[]}}\n';
     const path = f.write(id, original);
     durability.readFailurePath = path;
@@ -220,8 +220,11 @@ describe('registered config detail read coherence', () => {
 
   it('refuses a foreign Workspace symlink before reading its content', () => {
     const f = fixture(true);
-    const id = 'workspaces/ws_demo/workspace.jsonc';
-    const path = join(f.dataRoot, 'workspaces/ws_demo/config/workspace.jsonc');
+    const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
+    const path = join(
+      f.dataRoot,
+      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
+    );
     const foreignContent = '{"workspace":{"name":"Foreign","roots":[]}}\n';
     const foreignPath = f.write(`workspaces/${f.otherWorkspaceId}/workspace.jsonc`, foreignContent);
     rmSync(path);
@@ -702,8 +705,8 @@ function assistantSelectionContent(skillIds?: readonly unknown[]): string {
 function assistantSelectionFixture(mode: 'create' | 'update') {
   const f = fixture(true);
   for (const [workspaceId, id] of [
-    ['ws_demo', 'local-guidance'],
-    [f.otherWorkspaceId as string, 'foreign-guidance'],
+    ['ws_00000000-0000-7000-8000-000000000001', 'ks_00000000-0000-7000-8000-000000000001'],
+    [f.otherWorkspaceId as string, 'ks_00000000-0000-7000-8000-000000000002'],
   ]) {
     importWorkspaceSkill({
       activate: false,
@@ -712,7 +715,7 @@ function assistantSelectionFixture(mode: 'create' | 'update') {
       displayName: id,
       id,
       expectedRevision: 0,
-      producer: { id: 'user_local', kind: 'user' },
+      producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
       tree: [
         {
           kind: 'file',
@@ -723,8 +726,14 @@ function assistantSelectionFixture(mode: 'create' | 'update') {
       workspaceId,
     });
   }
-  const id = 'workspaces/ws_demo/workspace.jsonc';
-  const path = join(f.dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc');
+  const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
+  const path = join(
+    f.dataRoot,
+    'workspaces',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'config',
+    'workspace.jsonc'
+  );
   const previous = assistantSelectionContent();
   f.write(id, previous);
   const revision = f.files.readFile(id).file.revision;
@@ -739,11 +748,14 @@ function assistantSelectionFixture(mode: 'create' | 'update') {
 describe('Workspace Assistant Skill selection configuration', () => {
   const invalidSelections = [
     ['missing', ['missing-guidance']],
-    ['foreign-only', ['foreign-guidance']],
-    ['different exact ID', ['local-guidance ']],
-    ['path', ['../local-guidance']],
+    ['foreign-only', ['ks_00000000-0000-7000-8000-000000000002']],
+    ['different exact ID', ['ks_00000000-0000-7000-8000-000000000001 ']],
+    ['path', ['../ks_00000000-0000-7000-8000-000000000001']],
     ['empty ID', ['']],
-    ['duplicate ID', ['local-guidance', 'local-guidance']],
+    [
+      'duplicate ID',
+      ['ks_00000000-0000-7000-8000-000000000001', 'ks_00000000-0000-7000-8000-000000000001'],
+    ],
   ] as const;
   it.each(
     invalidSelections.flatMap(([label, ids]) =>
@@ -754,7 +766,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
     mode,
   }) => {
     const f = assistantSelectionFixture(mode);
-    const localCatalog = catalogDocumentPath(f.dataRoot, 'ws_demo');
+    const localCatalog = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const foreignCatalog = catalogDocumentPath(f.dataRoot, f.otherWorkspaceId as string);
     const catalogBefore = readFileSync(localCatalog);
     const foreignBefore = readFileSync(foreignCatalog);
@@ -788,19 +800,24 @@ describe('Workspace Assistant Skill selection configuration', () => {
     mode,
   }) => {
     const f = assistantSelectionFixture(mode);
-    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_demo');
+    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const catalogBefore = readFileSync(catalogPath);
     expect(
-      loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo').skills.entries[0].currentDigest
+      loadWorkspaceResourceCatalog(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001').skills
+        .entries[0].currentDigest
     ).toBeNull();
     const ids =
-      selection === 'absent' ? undefined : selection === 'empty' ? [] : ['local-guidance'];
+      selection === 'absent'
+        ? undefined
+        : selection === 'empty'
+          ? []
+          : ['ks_00000000-0000-7000-8000-000000000001'];
     const content = assistantSelectionContent(ids);
     f.write(content);
     expect(f.files.readFile(f.id).content).toBe(content);
     expect(readFileSync(catalogPath)).toEqual(catalogBefore);
     const loaded = loadRuntimeConfig(f.dataRoot).workspaceConfigs.find(
-      (entry) => entry.workspaceId === 'ws_demo'
+      (entry) => entry.workspaceId === 'ws_00000000-0000-7000-8000-000000000001'
     );
     expect(loaded?.config.workspace.assistant.repositoryInspection.enabled).toBe(false);
     expect(
@@ -810,12 +827,15 @@ describe('Workspace Assistant Skill selection configuration', () => {
 
   it('rejects a reference deleted from current catalog after a prior valid selection without discarding authored selection', () => {
     const f = assistantSelectionFixture('update');
-    const selected = assistantSelectionContent(['local-guidance']);
+    const selected = assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']);
     f.write(selected);
-    const current = loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo');
+    const current = loadWorkspaceResourceCatalog(
+      f.dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     publishWorkspaceResourceCatalog({
       dataRoot: f.dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       expectedRevision: current.revision,
       catalog: { ...current, skills: { entries: [], versions: [], pins: [], candidates: [] } },
     });
@@ -840,12 +860,12 @@ describe('Workspace Assistant Skill selection configuration', () => {
     mode,
   }) => {
     const f = assistantSelectionFixture(mode);
-    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_demo');
+    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     if (authority === 'corrupt') writeFileSync(catalogPath, '{invalid');
     else rmSync(catalogPath);
     let failure: unknown;
     try {
-      f.write(assistantSelectionContent(['local-guidance']));
+      f.write(assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']));
     } catch (error) {
       failure = error;
     }
@@ -863,9 +883,9 @@ describe('Workspace Assistant Skill selection configuration', () => {
     const f = assistantSelectionFixture('update');
     const newer = `${f.previous}\n// Concurrent authored edit\n`;
     writeFileSync(f.path, newer);
-    expect(() => f.write(assistantSelectionContent(['local-guidance']))).toThrowError(
-      expect.objectContaining({ code: 'config_revision_conflict', status: 409 })
-    );
+    expect(() =>
+      f.write(assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']))
+    ).toThrowError(expect.objectContaining({ code: 'config_revision_conflict', status: 409 }));
     expect(readFileSync(f.path, 'utf8')).toBe(newer);
   });
 });
@@ -873,12 +893,28 @@ describe('Workspace Assistant Skill selection configuration', () => {
 describe('Workspace Assistant Skill read-only validation', () => {
   it('validates a real selected Skill without repairing an unrelated missing Workspace subtree', () => {
     const f = assistantSelectionFixture('update');
-    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
-    const catalogPath = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json');
+    const unrelated = join(
+      f.dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'light-apps'
+    );
+    const catalogPath = join(
+      f.dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'catalog',
+      'catalog.json'
+    );
     const catalogBefore = readFileSync(catalogPath);
     rmSync(unrelated, { recursive: true });
     const result = f.files.validate({
-      files: [{ id: f.id, content: assistantSelectionContent(['local-guidance']) }],
+      files: [
+        {
+          id: f.id,
+          content: assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']),
+        },
+      ],
       mode: 'safe',
     });
     expect(result.valid).toBe(true);
@@ -892,8 +928,19 @@ describe('Workspace Assistant Skill read-only validation', () => {
     'update',
   ] as const)('does not repair an unrelated Workspace subtree while refusing an invalid %s selection', (mode) => {
     const f = assistantSelectionFixture(mode);
-    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
-    const catalogPath = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json');
+    const unrelated = join(
+      f.dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'light-apps'
+    );
+    const catalogPath = join(
+      f.dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'catalog',
+      'catalog.json'
+    );
     const catalogBefore = readFileSync(catalogPath);
     rmSync(unrelated, { recursive: true });
     expect(() => f.write(assistantSelectionContent(['missing-guidance']))).toThrowError(
@@ -907,12 +954,22 @@ describe('Workspace Assistant Skill read-only validation', () => {
 
   it('does not reject a valid Skill because an unrelated layout mkdir would fail', () => {
     const f = assistantSelectionFixture('update');
-    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
+    const unrelated = join(
+      f.dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'light-apps'
+    );
     rmSync(unrelated, { recursive: true });
     durability.mkdirFailurePath = unrelated;
     try {
       const result = f.files.validate({
-        files: [{ id: f.id, content: assistantSelectionContent(['local-guidance']) }],
+        files: [
+          {
+            id: f.id,
+            content: assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000001']),
+          },
+        ],
         mode: 'safe',
       });
       expect(result.valid).toBe(true);
@@ -934,7 +991,12 @@ describe('Workspace Assistant Skill catalog confinement', () => {
     mode,
   }) => {
     const f = assistantSelectionFixture(mode);
-    const localDirectory = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog');
+    const localDirectory = join(
+      f.dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'catalog'
+    );
     const foreignDirectory = join(
       f.dataRoot,
       'workspaces',
@@ -948,16 +1010,21 @@ describe('Workspace Assistant Skill catalog confinement', () => {
     const linkTarget = redirect === 'directory' ? foreignDirectory : foreignCatalog;
     rmSync(linkPath, { recursive: redirect === 'directory' });
     symlinkSync(linkTarget, linkPath, redirect === 'directory' ? 'dir' : 'file');
-    expect(() => f.write(assistantSelectionContent(['foreign-guidance']))).toThrowError(
-      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
-    );
+    expect(() =>
+      f.write(assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000002']))
+    ).toThrowError(expect.objectContaining({ code: 'config_file_invalid', status: 400 }));
     if (mode === 'create') expect(existsSync(f.path)).toBe(false);
     else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
     expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
     expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
     expect(readlinkSync(linkPath)).toBe(linkTarget);
     const validation = f.files.validate({
-      files: [{ id: f.id, content: assistantSelectionContent(['foreign-guidance']) }],
+      files: [
+        {
+          id: f.id,
+          content: assistantSelectionContent(['ks_00000000-0000-7000-8000-000000000002']),
+        },
+      ],
       mode: 'safe',
     });
     expect(validation.valid).toBe(false);

@@ -340,7 +340,7 @@ const ExportedWorkspacePermissionDecisionSchema = z
     auditEventId: AuditEventIdSchema.nullable(),
     contextSummary: z.unknown(),
     createdAt: z.string().datetime(),
-    decisionId: z.string().min(1),
+    decisionId: PermissionDecisionIdSchema,
     enforcementPoint: z.string().min(1),
     ownerScope: z.literal('workspace'),
     policyEngineVersion: z.string().min(1),

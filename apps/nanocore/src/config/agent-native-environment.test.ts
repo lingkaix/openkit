@@ -174,14 +174,14 @@ describe('Agent public native environment administration', () => {
     const thread = f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Visible',
-      'native-visible'
+      'th_00000000-0000-7000-8000-000000000002'
     );
     const hidden = f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private sibling',
-      'native-hidden',
+      'th_00000000-0000-7000-8000-000000000003',
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'foreign' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002' }
     );
     const now = '2026-10-01T00:00:00.000Z';
     f.db.sqlite
@@ -207,7 +207,7 @@ describe('Agent public native environment administration', () => {
     const environment = f.service.view(actor, f.fileId).desired;
     expect(() =>
       openNanoHostAgentSessionBinding(f.db, {
-        agentSessionId: 'as-wrong-image',
+        agentSessionId: 'as_00000000-0000-7000-8000-000000000004',
         agentSessionRuntimeBindingId: 'binding-wrong-image',
         agentSessionCompatibilityKey: 'c'.repeat(64),
         effectiveSetupGeneration: 1,
@@ -224,7 +224,7 @@ describe('Agent public native environment administration', () => {
     ).toThrow('measured Sandbox');
     for (const row of [thread, hidden])
       openNanoHostAgentSessionBinding(f.db, {
-        agentSessionId: `as-${row.id}`,
+        agentSessionId: `as_${row.id.slice(3)}`,
         agentSessionRuntimeBindingId: `binding-${row.id}`,
         agentSessionCompatibilityKey: 'c'.repeat(64),
         effectiveSetupGeneration: 1,
@@ -246,7 +246,7 @@ describe('Agent public native environment administration', () => {
     const body = {
       adapterId: 'pi',
       agentSessionCompatibilityKey: 'c'.repeat(64),
-      agentSessionId: `as-${thread.id}`,
+      agentSessionId: `as_${thread.id.slice(3)}`,
       agentSessionRuntimeBindingId: `binding-${thread.id}`,
       effectiveSetupGeneration: 1,
       resume: null,

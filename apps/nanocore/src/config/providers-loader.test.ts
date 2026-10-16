@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ProviderProfileSchema } from '@openkit/config-schema';
+import { isEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -29,7 +30,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'anthropic-worker-direct.provider.jsonc',
     id: 'anthropic',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-7830-8ac0-b5ad7c96fbc8',
   },
   {
     baseUrl: 'https://api.openai.com/v1',
@@ -37,7 +37,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'openai-default.provider.jsonc',
     id: 'openai',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-73c8-9c32-792694898d5d',
   },
   {
     baseUrl: 'https://openrouter.ai/api/v1',
@@ -45,7 +44,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'openrouter-default.provider.jsonc',
     id: 'openrouter',
     kind: 'gateway',
-    secretRef: 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0',
   },
   {
     baseUrl: 'https://api.x.ai/v1',
@@ -53,7 +51,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'xai-grok-default.provider.jsonc',
     id: 'xai',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-7957-886a-3a7ef2745044',
   },
   {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
@@ -61,7 +58,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'google-gemini-default.provider.jsonc',
     id: 'google',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-7652-9153-59e509aca382',
   },
 ] as const;
 
@@ -71,7 +67,6 @@ const EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE = {
   fileName: 'openai-compatible-custom.provider.jsonc.example',
   id: 'openai-compatible-custom',
   kind: 'custom',
-  secretRef: 'vault://vault_00000000-0000-7b1d-88cb-f75d3058afdf',
 } as const;
 
 /**
@@ -204,8 +199,8 @@ describe('loadProviderProfiles', () => {
           kind: template.kind,
         })
       );
-      expect(profile?.secretRef).toBe(template.secretRef);
-      expect(parsed.secretRef).toBe(template.secretRef);
+      expect(isEntityId('vault', profile?.secretRef?.slice('vault://'.length))).toBe(true);
+      expect(parsed.secretRef).toBe(profile?.secretRef);
     }
 
     expect(existsSync(join(providersRoot, EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.fileName))).toBe(
@@ -225,9 +220,14 @@ describe('loadProviderProfiles', () => {
         id: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.id,
         kind: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.kind,
         models: ['custom-model'],
-        secretRef: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.secretRef,
       })
     );
+    expect(isEntityId('vault', String(exampleParsed.secretRef).slice('vault://'.length))).toBe(
+      true
+    );
+    const references = [...profiles.map((profile) => profile.secretRef), exampleParsed.secretRef];
+    expect(new Set(references).size).toBe(references.length);
+    expect(loadProviderProfiles(dataRoot)).toEqual(profiles);
   });
 
   it('loads JSONC provider profiles from data/config/providers', () => {

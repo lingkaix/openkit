@@ -532,7 +532,9 @@ describe('runtime config loading and reload planning', () => {
     );
     const previous = loadRuntimeConfig(baseRoot, { version: 1 });
     const next = loadRuntimeConfig(nextRoot, { version: 2 });
-    expect(next.openKitConfig.policy?.workspaceApprovalModes?.ws_trusted).toEqual({
+    expect(
+      next.openKitConfig.policy?.workspaceApprovalModes?.['ws_00000000-0000-779d-821b-9fd29ef901ba']
+    ).toEqual({
       'repo.push': 'auto_allow',
     });
     const plan = diffRuntimeConfig(previous, next);
