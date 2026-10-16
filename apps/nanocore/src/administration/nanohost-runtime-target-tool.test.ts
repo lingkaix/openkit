@@ -28,7 +28,7 @@ function toolFor(coreDb: ReturnType<typeof openCoreDb> | undefined) {
 }
 
 describe('administration nanohost.runtime-target Tool', () => {
-  it('returns ready, unready, and missing observations without host selection or physicalEpoch', async () => {
+  it('returns ready, unready, and missing observations with stored physicalEpoch and no host selection', async () => {
     const missing = await toolFor(undefined).execute(
       {},
       { callId: 'call_storage', signal: new AbortController().signal }
@@ -68,11 +68,12 @@ describe('administration nanohost.runtime-target Tool', () => {
       freshEmpty: false,
       identityId,
       observedAt: '2026-08-15T01:02:02.000Z',
+      physicalEpoch: null,
       predecessorFenced: false,
       ready: false,
     });
     expect(unready.isError).toBeUndefined();
-    expect(JSON.stringify(unready)).not.toContain('physicalEpoch');
+    expect(JSON.stringify(unready)).toContain('physicalEpoch');
     expect(JSON.stringify(unready)).not.toContain(physicalEpoch);
 
     upsertNanoHostRuntimeTarget(coreDb, {
@@ -93,11 +94,12 @@ describe('administration nanohost.runtime-target Tool', () => {
       freshEmpty: true,
       identityId,
       observedAt: '2026-08-15T01:02:03.000Z',
+      physicalEpoch,
       predecessorFenced: true,
       ready: true,
     });
-    expect(JSON.stringify(ready)).not.toContain('physicalEpoch');
-    expect(JSON.stringify(ready)).not.toContain(physicalEpoch);
+    expect(JSON.stringify(ready)).toContain('physicalEpoch');
+    expect(JSON.stringify(ready)).toContain(physicalEpoch);
 
     const scoped = await tool.execute({ identityId: 'integration_nanohost_other' }, context);
     expect(JSON.parse((scoped.content[0] as { text: string }).text)).toMatchObject({
