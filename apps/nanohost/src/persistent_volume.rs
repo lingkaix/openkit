@@ -1515,7 +1515,12 @@ fn require_seed_capacity(root: &Path, bytes: u64, inode: bool) -> io::Result<()>
         .checked_add(SEED_FREE_BYTE_RESERVE)
         .ok_or_else(|| io::Error::other("seed capacity overflow"))?;
     if available_bytes < required_bytes
-        || (inode && statvfs_value(facts.f_favail) <= SEED_FREE_INODE_RESERVE)
+        || (inode
+            && !crate::filesystem_capacity::inode_reserve_available(
+                &facts,
+                1,
+                SEED_FREE_INODE_RESERVE,
+            ))
     {
         return Err(io::Error::other("seed capacity unavailable"));
     }
@@ -2459,6 +2464,74 @@ pub(crate) mod tests {
         assert!(validate_seed_tree(&root).is_err());
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    /// Reads the real fixture filesystem so absent inode accounting is not confused with exhaustion.
+    fn seed_capacity_facts(root: &Path) -> libc::statvfs {
+        let path = CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
+        let mut facts = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: path is NUL-terminated and facts is writable for one complete result.
+        assert_eq!(
+            unsafe { libc::statvfs(path.as_ptr(), facts.as_mut_ptr()) },
+            0
+        );
+        // SAFETY: successful statvfs initialized the complete structure.
+        unsafe { facts.assume_init() }
+    }
+
+    #[test]
+    fn filesystem_capacity_seed_writes_under_the_observed_inode_accounting() {
+        let root = temporary_root();
+        fs::create_dir(&root).unwrap();
+        let facts = seed_capacity_facts(&root);
+        let available = facts.f_bavail.saturating_mul(facts.f_frsize);
+        let inodes_unreported = facts.f_files == 0 && facts.f_ffree == 0 && facts.f_favail == 0;
+        let can_write =
+            available >= 64 * 1024 * 1024 + 5 && (inodes_unreported || facts.f_favail >= 1025);
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        let mut archive = Vec::new();
+        append_tar_entry(
+            &mut archive,
+            &tar_header("./", b'5', 0, 0o700, uid, gid, None),
+            &[],
+        );
+        append_tar_entry(
+            &mut archive,
+            &tar_header("./capacity-file", b'0', 5, 0o600, uid, gid, None),
+            b"hello",
+        );
+        archive.extend_from_slice(&[0_u8; TAR_BLOCK_BYTES * 2]);
+        let result = extract_seed_archive(Cursor::new(archive), &root);
+        if can_write {
+            result.expect(
+                "sufficient bytes and absent or sufficient inode counts must allow seeding",
+            );
+            assert_eq!(fs::read(root.join("capacity-file")).unwrap(), b"hello");
+        } else {
+            assert!(
+                result.is_err(),
+                "measured capacity shortage must refuse seeding"
+            );
+            assert!(!root.join("capacity-file").exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filesystem_capacity_seed_keeps_byte_reserve_and_overflow_refusals() {
+        let root = temporary_root();
+        fs::create_dir(&root).unwrap();
+        let facts = seed_capacity_facts(&root);
+        let available = facts.f_bavail.saturating_mul(facts.f_frsize);
+        assert!(
+            require_seed_capacity(&root, available, false).is_err(),
+            "growth equal to all available bytes must leave the byte reserve unavailable"
+        );
+        let overflow = require_seed_capacity(&root, u64::MAX, false).unwrap_err();
+        assert_eq!(overflow.to_string(), "seed capacity overflow");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

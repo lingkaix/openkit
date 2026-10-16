@@ -58,9 +58,9 @@ impl AsyncWrite for FragmentedSocket {
 }
 
 /// Owns only the child and temporary files created by this regression.
-struct NativeTlsPeer {
-    child: std::process::Child,
-    root: PathBuf,
+pub(crate) struct NativeTlsPeer {
+    pub(crate) child: std::process::Child,
+    pub(crate) root: PathBuf,
 }
 
 impl Drop for NativeTlsPeer {
@@ -72,7 +72,7 @@ impl Drop for NativeTlsPeer {
 }
 
 /// Starts the real NanoCore route fixture under the caller's pinned Node runtime.
-async fn native_tls_peer(
+pub(crate) async fn native_tls_peer(
     ca_as_leaf: bool,
 ) -> (
     NativeTlsPeer,
