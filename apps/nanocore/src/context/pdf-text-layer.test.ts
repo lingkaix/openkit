@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
