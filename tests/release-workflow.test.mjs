@@ -840,7 +840,9 @@ test('every main push runs the complete nonpublishing candidate gate without pub
   assert.equal(jobRuns('web-e2e', 'workflow_dispatch', 'refs/heads/main', 'web-e2e'), true);
 });
 
-test('CI serializes NanoHost fixture startup without changing other test-harness settings', () => {
+test('CI keeps NanoHost scheduling in its package and preserves inherited harness settings', () => {
+  const nativePackage = JSON.parse(readFileSync('apps/nanohost/package.json', 'utf8'));
+  assert.match(nativePackage.scripts.test, /\bcargo test\b.*--test-threads=1\b/u);
   const command = step(
     workflow.jobs['l0-l2-shards'],
     'Run one complete shard as the unprivileged image user'
@@ -858,7 +860,7 @@ test('CI serializes NanoHost fixture startup without changing other test-harness
         { env, encoding: 'utf8' }
       );
       assert.equal(result.status, 0, id);
-      assert.equal(result.stdout, id === 'native-nanohost' ? '1' : (inherited ?? 'unset'), id);
+      assert.equal(result.stdout, inherited ?? 'unset', id);
     }
   }
 });

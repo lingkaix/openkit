@@ -333,10 +333,6 @@ jobs:
           SHARD_ID: ${{ matrix.id }}
         run: |
           chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store" "/usr/local/cargo" "/usr/local/rustup"
-          # Serialize native fixture bootstrap to bound CPU contention; all product tests and deadlines stay unchanged.
-          if [ "${SHARD_ID}" = native-nanohost ]; then
-            export RUST_TEST_THREADS=1
-          fi
           runuser -u node -- env HOME="${HOME}" node scripts/ci-l0-l2.mjs --run "${SHARD_ID}"
       - name: Retain successful shard evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
