@@ -71,6 +71,11 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
     refetchOnMount: 'always',
   });
   const preview =
+    history.isSuccess &&
+    !history.isFetching &&
+    history.data.revisions.some(
+      (revision) => revision.revision === fromRevision && revision.availability === 'available'
+    ) &&
     diff.isSuccess &&
     !diff.isFetching &&
     diff.data.baseRevision === baseRevision &&
@@ -134,6 +139,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
   function refreshHistory() {
     if (!unknownResult) restore.reset();
     void history.refetch();
+    if (baseRevision && fromRevision) void diff.refetch();
   }
 
   return (
