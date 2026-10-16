@@ -4,12 +4,14 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
@@ -184,6 +186,47 @@ function listColumnNames(
 }
 
 describe('database setup', () => {
+  it('adds channel storage to an existing Core journal without changing retained users', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-channel-migration-'));
+    const legacyFolder = join(dataRoot, 'legacy-core');
+    const productionFolder = join(process.cwd(), 'drizzle', 'core');
+    mkdirSync(join(legacyFolder, 'meta'), { recursive: true });
+    const journal = JSON.parse(
+      readFileSync(join(productionFolder, 'meta', '_journal.json'), 'utf8')
+    );
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 2);
+    writeFileSync(join(legacyFolder, 'meta', '_journal.json'), JSON.stringify(journal));
+    for (const entry of journal.entries)
+      writeFileSync(
+        join(legacyFolder, `${entry.tag}.sql`),
+        readFileSync(join(productionFolder, `${entry.tag}.sql`))
+      );
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyNativeScopeMigrations(coreDb.sqlite, 'core', legacyFolder);
+      ensureLocalUser(coreDb);
+      const before = coreDb.sqlite
+        .prepare('SELECT id,display_name,status FROM users ORDER BY id')
+        .all();
+      expect(listTableNames(coreDb)).not.toContain('discord_account_bindings');
+      applyMigrations(coreDb);
+      expect(
+        coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
+      ).toEqual(before);
+      expect(listTableNames(coreDb)).toContain('discord_account_bindings');
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM notification_attention').get()
+      ).toEqual({ count: 0 });
+      applyMigrations(coreDb);
+      expect(
+        coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
+      ).toEqual(before);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('applies the Core setup idempotently', () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
