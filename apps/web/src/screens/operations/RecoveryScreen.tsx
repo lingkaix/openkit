@@ -38,6 +38,8 @@ const ADMISSION_STATUS = {
 type WorkerOwner = {
   lock: { workspaceId: string; checkpointId: string };
   frozen: FrozenWorkerRelease;
+  /** The exact mutation promise settled; this is not proof of its effect outcome. */
+  settled: boolean;
   recoveryRequired: boolean;
   message: string | null;
 };
@@ -46,6 +48,8 @@ type WorkerOwner = {
 type SchedulerOwner = {
   target: SchedulerAdmissionTarget;
   status: RecoveryAdmissionRow['status'];
+  /** The exact mutation promise settled; this is not proof of its effect outcome. */
+  settled: boolean;
   message: string | null;
 };
 
@@ -169,7 +173,7 @@ export function RecoveryScreen() {
     workspaceId,
   ]);
 
-  const workers = (workersQuery.data ?? []).filter((row) => row.workspaceId === workspaceId);
+  const workers = workersQuery.data ?? [];
   const admissions = admissionsQuery.data ?? [];
   const workersLoading =
     Boolean(workspaceId) && workersQuery.data === undefined && !workersQuery.isError;
@@ -207,10 +211,14 @@ export function RecoveryScreen() {
 
   async function settleWorkerRead(originWorkspaceId: string, checkpointId: string) {
     if (!matchesWorkerOrigin(originWorkspaceId, checkpointId)) return;
+    // A pre-result refresh must not settle a promise that completes during that read.
+    const ownerAtStart = workerOwnersRef.current.get(originWorkspaceId);
+    const eligibleOwner = ownerAtStart?.settled ? ownerAtStart : null;
     try {
-      const ok = await refetchExact(operationsKeys.workers);
+      const ok = await refetchExact(operationsKeys.workers(originWorkspaceId));
       if (!matchesWorkerOrigin(originWorkspaceId, checkpointId)) return;
-      if (!ok) return;
+      if (!ok || !eligibleOwner || workerOwnersRef.current.get(originWorkspaceId) !== eligibleOwner)
+        return;
       // A read cannot settle an unknown command result or replace its exact retry identity.
       if (workerOwnersRef.current.get(originWorkspaceId)?.message) return;
       writeWorkerOwner(originWorkspaceId, null);
@@ -221,10 +229,18 @@ export function RecoveryScreen() {
 
   async function settleAdmissionRead(originWorkspaceId: string, queueEntryId: string) {
     if (!matchesSchedulerOrigin(originWorkspaceId, queueEntryId)) return;
+    // A pre-result refresh must not settle a promise that completes during that read.
+    const ownerAtStart = schedulerOwnersRef.current.get(originWorkspaceId);
+    const eligibleOwner = ownerAtStart?.settled ? ownerAtStart : null;
     try {
       const ok = await refetchExact(operationsKeys.admissions(originWorkspaceId));
       if (!matchesSchedulerOrigin(originWorkspaceId, queueEntryId)) return;
-      if (!ok) return;
+      if (
+        !ok ||
+        !eligibleOwner ||
+        schedulerOwnersRef.current.get(originWorkspaceId) !== eligibleOwner
+      )
+        return;
       const owner = schedulerOwnersRef.current.get(originWorkspaceId);
       const rows = queryClient.getQueryData<RecoveryAdmissionRow[]>(
         operationsKeys.admissions(originWorkspaceId)
@@ -305,6 +321,7 @@ export function RecoveryScreen() {
     writeWorkerOwner(row.workspaceId, {
       lock: { workspaceId: row.workspaceId, checkpointId: row.checkpointId },
       frozen: next,
+      settled: false,
       recoveryRequired: false,
       message: null,
     });
@@ -313,6 +330,9 @@ export function RecoveryScreen() {
     void retryWorker.mutateAsync(next).then(
       () => {
         if (!matchesWorkerOrigin(originWorkspaceId, originCheckpointId)) return;
+        const owner = workerOwnersRef.current.get(originWorkspaceId);
+        if (!owner) return;
+        writeWorkerOwner(originWorkspaceId, { ...owner, settled: true });
         void settleWorkerRead(originWorkspaceId, originCheckpointId);
       },
       (error) => {
@@ -322,6 +342,7 @@ export function RecoveryScreen() {
         if (isRecoveryRequired(error)) {
           writeWorkerOwner(originWorkspaceId, {
             ...owner,
+            settled: true,
             recoveryRequired: true,
             message: null,
           });
@@ -330,6 +351,7 @@ export function RecoveryScreen() {
         }
         writeWorkerOwner(originWorkspaceId, {
           ...owner,
+          settled: true,
           recoveryRequired: false,
           message: workerActionMessage(error),
         });
@@ -349,6 +371,7 @@ export function RecoveryScreen() {
     writeSchedulerOwner(row.workspaceId, {
       target: { workspaceId: row.workspaceId, queueEntryId: row.queueEntryId },
       status: row.status,
+      settled: false,
       message: null,
     });
     const originWorkspaceId = row.workspaceId;
@@ -358,6 +381,9 @@ export function RecoveryScreen() {
       .then(
         () => {
           if (!matchesSchedulerOrigin(originWorkspaceId, originQueueEntryId)) return;
+          const owner = schedulerOwnersRef.current.get(originWorkspaceId);
+          if (!owner) return;
+          writeSchedulerOwner(originWorkspaceId, { ...owner, settled: true });
           void settleAdmissionRead(originWorkspaceId, originQueueEntryId);
         },
         (error) => {
@@ -366,6 +392,7 @@ export function RecoveryScreen() {
           if (!owner) return;
           writeSchedulerOwner(originWorkspaceId, {
             ...owner,
+            settled: true,
             message: schedulerActionMessage(error, 'retry'),
           });
         }
@@ -377,6 +404,7 @@ export function RecoveryScreen() {
     writeSchedulerOwner(row.workspaceId, {
       target: { workspaceId: row.workspaceId, queueEntryId: row.queueEntryId },
       status: row.status,
+      settled: false,
       message: null,
     });
     const originWorkspaceId = row.workspaceId;
@@ -386,6 +414,9 @@ export function RecoveryScreen() {
       .then(
         () => {
           if (!matchesSchedulerOrigin(originWorkspaceId, originQueueEntryId)) return;
+          const owner = schedulerOwnersRef.current.get(originWorkspaceId);
+          if (!owner) return;
+          writeSchedulerOwner(originWorkspaceId, { ...owner, settled: true });
           void settleAdmissionRead(originWorkspaceId, originQueueEntryId);
         },
         (error) => {
@@ -394,6 +425,7 @@ export function RecoveryScreen() {
           if (!owner) return;
           writeSchedulerOwner(originWorkspaceId, {
             ...owner,
+            settled: true,
             message: schedulerActionMessage(error, 'cancel'),
           });
         }
@@ -418,10 +450,7 @@ export function RecoveryScreen() {
     void admissionsQuery.refetch();
   }
 
-  const workerQueryErrorVisible =
-    workersQuery.isError &&
-    workspaceId !== null &&
-    (workerOwnersRef.current.size === 0 || workerOwnersRef.current.has(workspaceId));
+  const workerQueryErrorVisible = workersQuery.isError && workspaceId !== null;
 
   const workersAlert = workerQueryErrorVisible
     ? {
@@ -436,10 +465,14 @@ export function RecoveryScreen() {
       : workerMessage && frozenWorker
         ? {
             message: workerMessage,
-            onRetry: () => {
-              const row = workers.find((item) => item.checkpointId === frozenWorker.checkpointId);
-              if (row) retryInterrupted(row, frozenWorker);
-            },
+            onRetry: workersReadAvailable
+              ? () => {
+                  const row = workers.find(
+                    (item) => item.checkpointId === frozenWorker.checkpointId
+                  );
+                  if (row) retryInterrupted(row, frozenWorker);
+                }
+              : undefined,
           }
         : null;
 
