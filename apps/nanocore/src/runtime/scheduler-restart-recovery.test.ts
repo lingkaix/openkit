@@ -1757,7 +1757,6 @@ describe('terminal failed-start product recovery', () => {
       cleanupSession: vi.fn(async () => {}),
       update: async () => [],
       collectEvidence: async () => [],
-      collectProviderRefreshStatuses: async () => [],
       collectTranscript: async () => ({ itemsJsonl: '' }),
       collectWorkspaceChanges: async () => [],
     };

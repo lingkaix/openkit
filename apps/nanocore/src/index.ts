@@ -65,11 +65,6 @@ import {
 import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import {
-  type OpenShellRefreshStatusCollector,
-  type OpenShellRefreshStatusPollingService,
-  startOpenShellRefreshStatusPollingService,
-} from './runtime/openshell-refresh-status-polling-service.js';
-import {
   installPendingRequestAdmission,
   recoverPendingRequestsAtBoot,
 } from './runtime/pending-request-flow.js';
@@ -123,11 +118,9 @@ const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
 const SHUTDOWN_DEADLINE_MS = 5_000;
 const SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS = 30_000;
-const OPENSHELL_REFRESH_STATUS_POLL_INTERVAL_MS = 60_000;
 const SCHEDULER_DISPATCH_RETRY_INTERVAL_MS = 30_000;
 const SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES = 5;
 let dataRootLock: DataRootLock | null = null;
-let openshellRefreshStatusPolling: OpenShellRefreshStatusPollingService | null = null;
 let schedulerDispatchRetry: SchedulerDispatchRetryService | null = null;
 let schedulerAttemptMaintenance: SchedulerAttemptMaintenanceService | null = null;
 let releaseIdentity: ReturnType<typeof readReleaseIdentity> | undefined;
@@ -528,7 +521,6 @@ const activeWorkerLifecycleRuntime = requireBootValue(
   'Worker lifecycle runtime was not initialized.'
 );
 const workerPlacement = 'local' as const;
-const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
 reconcileWorkerMcpItems(coreDb.dataRoot, store);
@@ -683,19 +675,6 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
   ),
   intervalMs: SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS,
 });
-if (refreshStatusCollector) {
-  openshellRefreshStatusPolling = startOpenShellRefreshStatusPollingService({
-    collector: refreshStatusCollector,
-    intervalMs: OPENSHELL_REFRESH_STATUS_POLL_INTERVAL_MS,
-    onError: (error) => {
-      console.warn(
-        `OpenShell refresh status polling failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    },
-  });
-}
 
 /** Schedules at most one process-local closeout for an accepted `final_status`. */
 function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcceptedInput): void {
@@ -737,11 +716,9 @@ function shutdown(signal: NodeJS.Signals): void {
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
   schedulerDispatchRetry?.stop();
   schedulerAttemptMaintenance?.stop();
-  openshellRefreshStatusPolling?.stop();
   const stepsCompleted = [
     'scheduler.dispatch-retry.stop',
     'scheduler.attempt-maintenance.stop',
-    'openshell.refresh-status-polling.stop',
   ];
   closeWithDeadline({
     close: closeNanoCoreListeners,
@@ -767,27 +744,6 @@ function closeNanoCoreListeners(onClosed: () => void): void {
       appServer.close(markClosed);
       nanoHostServer?.close(markClosed);
     });
-}
-
-/**
- * Returns an OpenShell refresh status collector when the configured turn executor exposes one.
- *
- * @param executor Configured turn executor.
- * @returns Collector or null for runtimes without provider refresh polling.
- */
-function maybeOpenShellRefreshStatusCollector(
-  executor: unknown
-): OpenShellRefreshStatusCollector | null {
-  if (
-    typeof executor === 'object' &&
-    executor !== null &&
-    'collectProviderRefreshStatuses' in executor &&
-    typeof executor.collectProviderRefreshStatuses === 'function'
-  ) {
-    return executor as OpenShellRefreshStatusCollector;
-  }
-
-  return null;
 }
 
 process.once('SIGINT', shutdown);

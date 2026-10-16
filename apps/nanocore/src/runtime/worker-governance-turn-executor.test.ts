@@ -9888,12 +9888,6 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return [];
   }
 
-  public async collectProviderRefreshStatuses(): Promise<WorkerGovernanceEvidenceRecord[]> {
-    this.calls.push('collectProviderRefreshStatuses');
-
-    return [];
-  }
-
   public async collectTranscript(): Promise<WorkerTranscriptPayload> {
     this.calls.push('collectTranscript');
 

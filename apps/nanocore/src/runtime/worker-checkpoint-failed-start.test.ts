@@ -99,7 +99,6 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     },
     update: async () => [],
     collectEvidence: async () => [],
-    collectProviderRefreshStatuses: async () => [],
     collectTranscript: async () => ({ itemsJsonl: '' }),
     collectWorkspaceChanges: async () => [],
   };

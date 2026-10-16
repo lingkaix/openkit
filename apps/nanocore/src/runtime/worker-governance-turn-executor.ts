@@ -140,7 +140,6 @@ import {
   type WorkerGovernanceBackend,
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
-  type WorkerGovernanceEvidenceRecord,
   type WorkerGovernanceNativeResume,
   type WorkerGovernanceWorkspaceChangeRecord,
   WorkerNativeProofValidationError,
@@ -1412,15 +1411,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     return residentWorkSlotRef && residentWorkSlotRef !== plannedWorkSlotRef
       ? resolvePackage(residentWorkSlotRef)
       : planned;
-  }
-
-  /**
-   * Polls provider refresh status for active backend sessions.
-   *
-   * @returns Product-safe refresh status evidence records.
-   */
-  public async collectProviderRefreshStatuses(): Promise<WorkerGovernanceEvidenceRecord[]> {
-    return this.backend.collectProviderRefreshStatuses();
   }
 
   /**

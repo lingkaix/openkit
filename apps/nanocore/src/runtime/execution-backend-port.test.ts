@@ -193,7 +193,6 @@ function fixture(
     interruptTurn: async () => undefined,
     update: async () => [],
     collectEvidence: async () => [],
-    collectProviderRefreshStatuses: async () => [],
     collectWorkspaceChanges: async () => [],
     collectTranscript: async () => ({}),
   };
