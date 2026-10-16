@@ -857,9 +857,10 @@ async function issueNanoHostToken(dataRoot) {
 
 /** Reads the normalized durable call, policy, schema, audit, usage, Item, backend, and attempt facts. */
 async function readDurableOutcome(dataRoot, turnId) {
-  const [{ FsStore }, { openCoreDb, openWorkspaceDb }] = await Promise.all([
+  const [{ FsStore }, { openCoreDb, openWorkspaceDb }, { ItemIdSchema }] = await Promise.all([
     import('../../apps/nanocore/dist/lib/store.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
+    import('../../packages/protocol/dist/index.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
   let backend;
@@ -945,7 +946,7 @@ async function readDurableOutcome(dataRoot, turnId) {
       call === null
         ? null
         : {
-            itemIdValid: /^it_mcp_/u.test(call.itemId),
+            itemIdValid: ItemIdSchema.safeParse(call.itemId).success,
             schemaSnapshotIdValid: /^mcpsnap_echo_/u.test(call.schemaSnapshotId),
             status: call.status,
           },
