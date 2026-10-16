@@ -863,21 +863,21 @@ function createWorkResourceLineageExportInput(
     originalSnapshotPath: materialOriginalPath,
   };
   const inputOriginalPath = 'originals/turn-inputs/0/payload';
-  const representation = 'Retained representation preview\n' + 'Later extracted text\n'.repeat(8);
+  const representation = `Retained representation preview\n${'Later extracted text\n'.repeat(8)}`;
   const representationPath = 'representations/turn-inputs/0/text.txt';
   const inputDescriptor = retainRepresentation
     ? 'Retained representation preview'
     : JSON.stringify({
-    status: 'unavailable',
-    reason: 'unsupported',
-    source: {
-      scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`,
-      objectId: '0',
-    },
-    originalDigest: binaryDigest,
-    byteLength: binaryOriginal.byteLength,
-    mediaType: 'application/octet-stream',
-  });
+        status: 'unavailable',
+        reason: 'unsupported',
+        source: {
+          scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`,
+          objectId: '0',
+        },
+        originalDigest: binaryDigest,
+        byteLength: binaryOriginal.byteLength,
+        mediaType: 'application/octet-stream',
+      });
   if (sourceSnapshotRoot) {
     input.sourceWorkspaceRoot = sourceSnapshotRoot;
     input.turns = input.turns.map((turn) => ({
@@ -986,7 +986,9 @@ function createWorkResourceLineageExportInput(
                   : [],
                 byteLength: Buffer.byteLength(inputDescriptor),
                 truncated: true,
-                availability: retainRepresentation ? ('incomplete' as const) : ('unavailable' as const),
+                availability: retainRepresentation
+                  ? ('incomplete' as const)
+                  : ('unavailable' as const),
                 ...(retainRepresentation ? { representationSnapshotPath: representationPath } : {}),
                 originalSnapshotPath: inputOriginalPath,
               },
@@ -2255,15 +2257,20 @@ describe('workspace auxiliary lineage reminting', () => {
     );
   });
 
-  it.each([false, true])(
-    'round trips binary originals and bounded previews with retained representation=%s',
-    (retainRepresentation) => {
+  it.each([
+    false,
+    true,
+  ])('round trips binary originals and bounded previews with retained representation=%s', (retainRepresentation) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-source-snapshot-portability-'));
     let fixtureParent: string | undefined;
     try {
       const sourceRoot = join(root, 'source');
       mkdirSync(sourceRoot);
-      const input = createWorkResourceLineageExportInput(undefined, sourceRoot, retainRepresentation);
+      const input = createWorkResourceLineageExportInput(
+        undefined,
+        sourceRoot,
+        retainRepresentation
+      );
       fixtureParent = dirname(input.exportRoot);
       input.exportRoot = join(root, 'export');
       writeWorkspacePortableFileState(sourceRoot, input.portableFileState!);
