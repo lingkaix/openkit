@@ -129,7 +129,7 @@ Direct `task.start` accepts optional exact `agentId`. The selector narrows exist
 
 `src/sync-operations.ts` declares the fifteen existing Workspace synchronization operations with complete logical selectors and existing output schemas; `operation-definitions.ts` composes it statically.
 
-`src/workspace-lifecycle-operations.ts` defines the sixteen sharing, invitation, leave, ownership, recovery, user-disable and deletion operations, reusing complete Workspace-sharing schemas with `safeExtend` so deletion confirmation refinements survive model projections. Canonical-user and server authorization scopes stay distinct from their mutation targets; invitation targets carry only minimal Core lineage selectors. The statically composed definitions also declare invitation creation’s secret-input sensitivity for the CLI.
+`src/workspace-lifecycle-operations.ts` defines the fifteen sharing, invitation, leave, ownership, recovery, user-disable and deletion operations, reusing complete Workspace-sharing schemas with `safeExtend` so deletion confirmation refinements survive model projections. Canonical-user and server authorization scopes stay distinct from their mutation targets; invitation targets carry only minimal Core lineage selectors. The statically composed definitions also declare invitation creation’s secret-input sensitivity for the CLI.
 
 `InjectionVisibilitySchema` in `src/vault-injection.ts` defines the closed visibility set shared by public injection-plan responses, NanoCore storage typing, and Workspace archive validation. Workspace plan lists include runtime-env plans without exposing credential values.
 

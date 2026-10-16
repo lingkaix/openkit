@@ -539,7 +539,7 @@ describe('worker.list operation', () => {
     }
   });
 
-  it('labels package preference and last-used model separately and restricts usage without audit.read', async () => {
+  it('labels current-session model usage for an active readonly member and refuses it after removal', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_demo', 'Model Worker');
@@ -664,7 +664,6 @@ describe('worker.list operation', () => {
       );
       const ownerBody = WorkspaceWorkersResponseSchema.parse(await ownerRes.json());
       const ownerWorker = ownerBody.items.find((item) => item.threadId === thread.id);
-      const publicJson = JSON.stringify(ownerBody);
       usageSpy.mockClear();
       const viewerRes = await viewerApp.request(
         ...operationRequest(
@@ -682,6 +681,7 @@ describe('worker.list operation', () => {
       );
       const viewerBody = WorkspaceWorkersResponseSchema.parse(await viewerRes.json());
       const viewerWorker = viewerBody.items.find((item) => item.threadId === thread.id);
+      const publicJson = JSON.stringify([ownerBody, viewerBody]);
 
       expect(ownerRes.status).toBe(200);
       expect(ownerWorker?.packageDetails).toMatchObject({
@@ -711,7 +711,38 @@ describe('worker.list operation', () => {
       expect(publicJson).not.toContain('catalogDigest');
       expect(publicJson).not.toContain('schemaPolicy');
       expect(viewerRes.status).toBe(200);
-      expect(viewerWorker?.lastUsedModel).toEqual({ kind: 'restricted' });
+      expect(viewerWorker?.lastUsedModel).toEqual({
+        kind: 'available',
+        modelId: 'openai/gpt-last-used',
+        recordedAt: '2026-09-17T02:01:00.000Z',
+      });
+      expect(usageSpy).toHaveBeenCalledWith(expect.anything(), {
+        agentSessionId: session.id,
+        threadId: thread.id,
+        workspaceId: 'ws_demo',
+      });
+      const removed = await ownerApp.request(
+        ...operationRequest(
+          'workspace.member-remove',
+          { workspaceId: 'ws_demo', targetUserId: 'user_viewer' },
+          {
+            body: JSON.stringify({
+              expectedRevision: 1,
+              requestId: '00000000-0000-4000-8000-000000000203',
+            }),
+          }
+        )
+      );
+      expect(removed.status).toBe(200);
+      usageSpy.mockClear();
+      const revoked = await viewerApp.request(
+        ...operationRequest(
+          'worker.list',
+          { workspaceId: 'ws_demo' },
+          { headers: { authorization: `Bearer ${viewerToken.secret}` } }
+        )
+      );
+      expect(revoked.status).toBe(403);
       expect(usageSpy).not.toHaveBeenCalled();
     } finally {
       usageSpy.mockRestore();

@@ -747,7 +747,7 @@ describe('action center app API', () => {
         ],
       },
       {
-        name: 'responsible editor',
+        name: 'responsible member',
         secret: issueToken('user_responsible', 'workspace'),
         status: 200,
         visibleIds: [
@@ -757,25 +757,25 @@ describe('action center app API', () => {
         ],
       },
       {
-        name: 'nonresponsible editor',
+        name: 'nonresponsible member',
         secret: issueToken('user_editor', 'workspace'),
         status: 200,
         visibleIds: ['agent-readiness:agent_codex_host', `knowledge:${knowledgeProposal.id}`],
       },
       {
-        name: 'readonly responsible editor',
+        name: 'readonly responsible member',
         secret: issueToken('user_responsible', 'workspace-readonly'),
         status: 200,
         visibleIds: ['agent-readiness:agent_codex_host'],
       },
       {
-        name: 'viewer',
+        name: 'second active member',
         secret: issueToken('user_viewer', 'workspace'),
-        status: 403,
-        visibleIds: [],
+        status: 200,
+        visibleIds: ['agent-readiness:agent_codex_host', `knowledge:${knowledgeProposal.id}`],
       },
       {
-        name: 'removed editor',
+        name: 'removed member',
         secret: issueToken('user_removed', 'workspace'),
         status: 403,
         visibleIds: [],

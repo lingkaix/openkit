@@ -231,8 +231,28 @@ async function advanceWorkspaceDeletion(input: {
   }
   await input.mutationAdmission.close(input.workspaceId);
   await input.closeWorkspaceMcpSessions(input.workspaceId);
-  if (
-    !['requested', 'fenced'].includes(request.phase) &&
+  // Cleanup can yield to revocation, so check authority before advancing the request.
+  if (request.phase === 'requested' || request.phase === 'fenced') {
+    const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+    const activeActor =
+      registry?.status === 'active' &&
+      registry.ownerUserId === request.originalOwnerUserId &&
+      registry.registryRevision === request.expectedRegistryRevision &&
+      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'workspace.lifecycle',
+      });
+    const retryActor =
+      request.phase === 'fenced' &&
+      registry?.status === 'deleting' &&
+      registry.ownerUserId === request.originalOwnerUserId &&
+      registry.registryRevision === request.expectedRegistryRevision + 1 &&
+      hasWorkspaceDeletionRetryAuthority(input.coreDb, input.actor, input.workspaceId, {
+        dataRoot: input.dataRoot,
+        requestId: request.requestId,
+      });
+    if (!activeActor && !retryActor) throw recoveryRequired();
+  } else if (
     !hasWorkspaceDeletionRetryAuthority(input.coreDb, input.actor, input.workspaceId, {
       dataRoot: input.dataRoot,
       requestId: request.requestId,
@@ -301,13 +321,6 @@ async function advanceWorkspaceDeletion(input: {
     return { body: deletionResponse(request), status: 202 };
   }
   if (request.phase === 'fenced') {
-    if (
-      !isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
-        mutating: true,
-        policyOperation: 'workspace.lifecycle',
-      })
-    )
-      throw recoveryRequired();
     const deleting = input.coreDb.sqlite.transaction(() =>
       beginWorkspaceDeletion({
         coreDb: input.coreDb,

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -12,7 +13,10 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -52,6 +56,203 @@ import {
 } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { beginWorkspaceDeletion, completeWorkspaceDeletion } from './workspace-sharing.js';
+
+it.each(['requested', 'fenced'] as const)(
+  'rechecks the current deleting credential after awaited cleanup in %s',
+  async (phase) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-deletion-current-credential-'));
+    const coreDb = openCoreDb(dataRoot);
+    let gateway: ReturnType<typeof createDefaultWorkerMcpGateway> | undefined;
+    let responsePromise: Promise<Response> | undefined;
+    let releaseClose = () => {};
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = new FsStore({ dataRoot });
+      const workspace = store.createWorkspace('Current deletion credential');
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: workspace.id,
+      });
+      const token = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'user_local',
+        scope: phase === 'requested' ? 'workspace' : 'server-admin',
+        workspaceIds: phase === 'requested' ? [workspace.id] : [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const admission = new WorkspaceMutationAdmission();
+      gateway = createDefaultWorkerMcpGateway(coreDb);
+      const closeWorkspace = gateway.closeWorkspace.bind(gateway);
+      const heldClose = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      const close = vi.spyOn(gateway, 'closeWorkspace').mockImplementationOnce(async (id) => {
+        await heldClose;
+        await closeWorkspace(id);
+      });
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        store,
+        turnExecutor: new SimulatedTurnExecutor(),
+        workerMcpGateway: gateway,
+        workspaceMutationAdmission: admission,
+      });
+      // A named busy session keeps the existing early-202 path observable without external work.
+      const now = new Date().toISOString();
+      store.createAgentSession({
+        id: randomUUID(),
+        agentId: 'agent_codex_host',
+        workspaceId: workspace.id,
+        threadId: store.createThread(workspace.id, 'Still running').id,
+        status: 'busy',
+        message: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const request = createWorkspaceDeletionRequest(dataRoot, {
+        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+        createdAt: new Date().toISOString(),
+        expectedRegistryRevision: 1,
+        originalOwnerUserId: 'user_local',
+        initiatingUserId: 'user_local',
+        requestId: randomUUID(),
+        workspaceId: workspace.id,
+      });
+      if (phase === 'fenced') {
+        writeWorkspaceDeletionRequest(dataRoot, { ...request, phase });
+        await admission.close(workspace.id);
+      }
+      const before = readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId);
+      responsePromise = Promise.resolve(
+        app.request(
+          ...operationRequest(
+            'workspace.delete',
+            { workspaceId: workspace.id },
+            {
+              headers: { authorization: `Bearer ${token.secret}` },
+              body: JSON.stringify({
+                confirmation: request.confirmation,
+                expectedRegistryRevision: request.expectedRegistryRevision,
+                requestId: request.requestId,
+              }),
+            }
+          )
+        )
+      );
+      await vi.waitFor(() => expect(close).toHaveBeenCalledWith(workspace.id), {
+        timeout: 10_000,
+      });
+      revokeOpenKitAccessTokenRecord(coreDb, token.tokenId);
+      releaseClose();
+      const response = await responsePromise;
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'recovery_required' });
+      expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId)).toEqual(
+        before
+      );
+      expect(admission.isClosed(workspace.id)).toBe(true);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT owner_user_id, status, revision FROM workspace_registry WHERE workspace_id = ?')
+          .get(workspace.id)
+      ).toEqual({ owner_user_id: 'user_local', status: 'active', revision: 1 });
+      expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(true);
+      expect(existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id))).toBe(
+        false
+      );
+    } finally {
+      releaseClose();
+      await responsePromise;
+      await gateway?.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  }
+);
+
+it('resumes an exact fenced request after its registry transition without ordinary membership authority', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-deletion-fenced-restart-'));
+  const coreDb = openCoreDb(dataRoot);
+  const gateway = createDefaultWorkerMcpGateway(coreDb);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Fenced deletion restart');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'workspace',
+      workspaceIds: [workspace.id],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const admission = new WorkspaceMutationAdmission();
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'server',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+      workerMcpGateway: gateway,
+      workspaceMutationAdmission: admission,
+    });
+    const request = createWorkspaceDeletionRequest(dataRoot, {
+      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+      createdAt: new Date().toISOString(),
+      expectedRegistryRevision: 1,
+      originalOwnerUserId: 'user_local',
+      initiatingUserId: 'user_local',
+      requestId: randomUUID(),
+      workspaceId: workspace.id,
+    });
+    writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'fenced' });
+    await admission.close(workspace.id);
+    // Model the existing crash boundary between the Core transition and file-phase publication.
+    coreDb.sqlite.transaction(() =>
+      beginWorkspaceDeletion({
+        coreDb,
+        workspaceId: workspace.id,
+        originalOwnerUserId: request.originalOwnerUserId,
+        expectedRegistryRevision: request.expectedRegistryRevision,
+      })
+    )();
+    expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, 'user_local')).toBeNull();
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          headers: { authorization: `Bearer ${token.secret}` },
+          body: JSON.stringify({
+            confirmation: request.confirmation,
+            expectedRegistryRevision: request.expectedRegistryRevision,
+            requestId: request.requestId,
+          }),
+        }
+      )
+    );
+    expect(response.status).toBe(200);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId)).toMatchObject({
+      initiatingUserId: 'user_local',
+      originalOwnerUserId: 'user_local',
+      phase: 'cleaned',
+    });
+    expect(admission.isClosed(workspace.id)).toBe(true);
+    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
+  } finally {
+    await closeRetrievalServices();
+    await gateway.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  }
+});
 
 it('keeps every durable legal-hold schema in the deletion-owner inventory', () => {
   const repositoryRoot = join(import.meta.dirname, '..', '..', '..');
