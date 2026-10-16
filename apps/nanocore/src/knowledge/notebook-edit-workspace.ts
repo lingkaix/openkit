@@ -314,8 +314,19 @@ export class NotebookEditWorkspace {
           );
         return normalized;
       };
-      const checkContent = (content: FileContent): void => {
-        if (Buffer.byteLength(content) > NOTEBOOK_EDIT_LIMITS.fileBytes)
+      const checkContent = (
+        content: FileContent,
+        options: Parameters<IFileSystem['writeFile']>[2],
+        existingBytes = 0
+      ): void => {
+        const bytes =
+          typeof content === 'string'
+            ? Buffer.byteLength(
+                content,
+                typeof options === 'string' ? options : (options?.encoding ?? 'utf8')
+              )
+            : content.byteLength;
+        if (existingBytes + bytes > NOTEBOOK_EDIT_LIMITS.fileBytes)
           deny('limit_reached', 'Notebook editing file exceeds 2 MiB UTF-8.');
       };
       const affected = async (path: string): Promise<string[]> => {
@@ -348,15 +359,13 @@ export class NotebookEditWorkspace {
         readlink: memory.readlink.bind(memory),
         writeFile: async (path, content, options) => {
           writable(path);
-          checkContent(content);
+          checkContent(content, options);
           await allocate(() => memory.writeFile(path, content, options));
         },
         appendFile: async (path, content, options) => {
           writable(path);
-          checkContent(content);
           const existing = (await memory.exists(path)) ? (await memory.stat(path)).size : 0;
-          if (existing + Buffer.byteLength(content) > NOTEBOOK_EDIT_LIMITS.fileBytes)
-            deny('limit_reached', 'Notebook editing file exceeds 2 MiB UTF-8.');
+          checkContent(content, options, existing);
           await allocate(() => memory.appendFile(path, content, options));
         },
         mkdir: async (path, options) => {
@@ -416,6 +425,7 @@ export class NotebookEditWorkspace {
           maxExtensionCleanupTimeMs: 0,
         },
       });
+      ensureLive();
       const result = await bash.exec(input.script, {
         signal: controller.signal,
         rawScript: true,

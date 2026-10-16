@@ -157,8 +157,11 @@ describe('NotebookEditWorkspace', () => {
   });
 
   it('caps combined UTF-8 output and preserves exact candidate bytes independently of display', async () => {
+    const text =
+      '€'.repeat(Math.floor(NOTEBOOK_EDIT_LIMITS.fileBytes / 3)) +
+      'x'.repeat(NOTEBOOK_EDIT_LIMITS.fileBytes % 3);
     const editor = workspace({
-      baseFiles: { 'one.md': '€'.repeat(40_000) },
+      baseFiles: { 'one.md': text },
       editablePaths: ['one.md'],
     });
     const result = await editor.update(
@@ -171,7 +174,7 @@ describe('NotebookEditWorkspace', () => {
     expect(result.truncated).toBe(true);
     expect(result.stdout).toBe('€'.repeat(Math.floor(NOTEBOOK_EDIT_LIMITS.outputBytes / 3)));
     expect(result.stdout).not.toContain('\ufffd');
-    expect(editor.changes()).toEqual({ 'new.md': '€'.repeat(40_000) });
+    expect(editor.changes()).toEqual({ 'new.md': text });
   });
 
   it('rejects invalid input and admitted content bounds before shell execution', async () => {
