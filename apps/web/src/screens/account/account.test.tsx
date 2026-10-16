@@ -3045,32 +3045,73 @@ describe('account-level My invitations', () => {
 });
 
 describe('selected-Workspace member confirmation custody', () => {
-  it.each([
-    ['Remove member', 'removeWorkspaceMember'],
-    ['Transfer ownership', 'transferWorkspaceOwnership'],
-  ] as const)('closes the %s dialog when the same member is shown in another Workspace', async (action, method) => {
-    const listWorkspaceMembers = vi.fn().mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
-      items: WORKSPACE_MEMBERS.items.map((member) => ({ ...member, workspaceId })),
-    }));
+  it.each(
+    [
+      {
+        scenario: 'the same member',
+        workspaceA: 'ws1',
+        workspaceB: 'ws2',
+        userA: 'user-editor',
+        userB: 'user-editor',
+      },
+      {
+        scenario: 'colliding opaque identifier tuples',
+        workspaceA: 'ws_scope:user_group',
+        workspaceB: 'ws_scope',
+        userA: 'user_member',
+        userB: 'user_group:user_member',
+      },
+    ].flatMap((target) => [
+      { ...target, action: 'Remove member', method: 'removeWorkspaceMember' as const },
+      { ...target, action: 'Transfer ownership', method: 'transferWorkspaceOwnership' as const },
+    ])
+  )('closes $action for $scenario when the selected Workspace changes', async ({
+    action,
+    method,
+    workspaceA,
+    workspaceB,
+    userA,
+    userB,
+  }) => {
+    const membersFor = (workspaceId: string) => ({
+      items: [
+        { ...EDITOR_MEMBER, workspaceId, userId: workspaceId === workspaceA ? userA : userB },
+      ],
+    });
+    const listWorkspaceMembers = vi
+      .fn()
+      .mockImplementation(async ({ workspaceId }: { workspaceId: string }) =>
+        membersFor(workspaceId)
+      );
     const { client, methods } = makeSharingClient({
+      authorizedWorkspaces: {
+        items: OWNER_WORKSPACES.items.map((workspace, index) => ({
+          ...workspace,
+          workspace: { ...workspace.workspace, id: index === 0 ? workspaceA : workspaceB },
+        })),
+      },
       methods: { listWorkspaceMembers },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: workspaceA });
     const { queryClient } = renderApp('/settings/account', client);
     const members = await screen.findByRole('region', { name: 'Workspace members' });
-    const row = await within(members).findByRole('row', { name: /user-editor.*member/i });
-    // Both canonical reads are cached so the selected target changes without unmounting a loading table.
-    queryClient.setQueryData(memberManagementKeys.members('ws2'), {
-      items: WORKSPACE_MEMBERS.items.map((member) => ({ ...member, workspaceId: 'ws2' })),
-    });
-    queryClient.setQueryData(memberManagementKeys.invitations('ws2'), { items: [] });
+    const row = (await within(members).findByText(userA)).closest('tr')!;
+    // Cached canonical reads keep the table mounted across the target change.
+    queryClient.setQueryData(memberManagementKeys.members(workspaceB), membersFor(workspaceB));
+    queryClient.setQueryData(memberManagementKeys.invitations(workspaceB), { items: [] });
     const user = userEvent.setup();
     await user.click(await revealRowAction(user, row, new RegExp(action, 'i')));
-    expect(screen.getByRole('dialog', { name: new RegExp(`confirm ${action}`, 'i') })).toBeInTheDocument();
+    expect(
+      screen.getByRole('dialog', { name: new RegExp(`confirm ${action}`, 'i') })
+    ).toBeInTheDocument();
     expect(methods[method]).not.toHaveBeenCalled();
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
-    await waitFor(() => expect(listWorkspaceMembers).toHaveBeenCalledWith({ workspaceId: 'ws2' }));
-    expect(screen.queryByRole('dialog', { name: new RegExp(`confirm ${action}`, 'i') })).not.toBeInTheDocument();
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: workspaceB }));
+    await waitFor(() =>
+      expect(listWorkspaceMembers).toHaveBeenCalledWith({ workspaceId: workspaceB })
+    );
+    expect(
+      screen.queryByRole('dialog', { name: new RegExp(`confirm ${action}`, 'i') })
+    ).not.toBeInTheDocument();
     expect(methods.removeWorkspaceMember).not.toHaveBeenCalled();
     expect(methods.transferWorkspaceOwnership).not.toHaveBeenCalled();
   });

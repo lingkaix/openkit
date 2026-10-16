@@ -1132,7 +1132,10 @@ it('does not substitute a session replacement Token for the credential that deci
   }
 });
 
-it.each(['workspace', 'server'] as const)('records the actual administrator decision without changing the responsible requester for %s', async (scope) => {
+it.each([
+  'workspace',
+  'server',
+] as const)('records the actual administrator decision without changing the responsible requester for %s', async (scope) => {
   const f = fixture();
   try {
     const source = await prepare(f, scope);
@@ -1201,7 +1204,9 @@ it.each(['workspace', 'server'] as const)('records the actual administrator deci
       });
       expect(
         db.sqlite
-          .prepare('SELECT actor_json, permission_decision_id, request_id FROM audit_events WHERE audit_event_id = ?')
+          .prepare(
+            'SELECT actor_json, permission_decision_id, request_id FROM audit_events WHERE audit_event_id = ?'
+          )
           .get(decisions[0]!.audit_event_id)
       ).toEqual({
         actor_json: JSON.stringify({ kind: 'user', id: reviewerId }),
