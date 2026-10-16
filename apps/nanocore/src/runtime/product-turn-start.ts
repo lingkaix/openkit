@@ -269,7 +269,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
               fileInputs: input.fileInputs,
               filePayloadPaths: input.filePayloadPaths,
               fileWriteAdmission: input.fileWriteAdmission,
-            assertFileInputAdmission: input.assertFileInputAdmission,
+              assertFileInputAdmission: input.assertFileInputAdmission,
             }
           : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),

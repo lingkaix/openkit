@@ -94,7 +94,9 @@ export function ChatStarter() {
       ) : null}
 
       <Composer
-        fileWorkspaceLabel={workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name}
+        fileWorkspaceLabel={
+          workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
+        }
         targetCatalog={targets.data ?? null}
         artifacts={(artifacts.data ?? []).map((artifact) => ({
           id: artifact.id,

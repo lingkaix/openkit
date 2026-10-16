@@ -3003,7 +3003,11 @@ export function createConversationService({
         }
         artifacts.push(artifact);
       }
-      if (chatInput.fileInputs?.length && acceptedTarget.requiresFileHandoffConfirmation && !chatInput.fileHandoffConfirmed)
+      if (
+        chatInput.fileInputs?.length &&
+        acceptedTarget.requiresFileHandoffConfirmation &&
+        !chatInput.fileHandoffConfirmed
+      )
         throw new TurnStartValidationError(
           'file_handoff_confirmation_required',
           'Confirm the exact work brief and selected files for the receiving Workspace.',

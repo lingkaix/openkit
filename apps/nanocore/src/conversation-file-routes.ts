@@ -130,7 +130,9 @@ export function registerConversationFileRoutes(
             } catch (error) {
               if (context.req.raw.signal.aborted)
                 throw new TurnStartValidationError(
-                  'file_submission_aborted', 'Conversation file transfer was aborted.', 499
+                  'file_submission_aborted',
+                  'Conversation file transfer was aborted.',
+                  499
                 );
               if (error instanceof OperationError)
                 throw new TurnStartValidationError(error.code, error.message, error.status);

@@ -15,11 +15,11 @@ import {
 } from 'react';
 import {
   Button as AriaButton,
+  Modal as AriaModal,
   Dialog,
   DialogTrigger,
   ListBox,
   ListBoxItem,
-  Modal as AriaModal,
   ModalOverlay,
   Popover,
   Select,
@@ -42,13 +42,23 @@ interface FileHandoffProposal {
 }
 
 /** Consent is reusable only for the same Workspace, canonical draft and immutable File objects. */
-function sameFileHandoff(left: Pick<FileHandoffProposal, 'draft' | 'workspaceId'> | null, right: Pick<FileHandoffProposal, 'draft' | 'workspaceId'>): boolean {
+function sameFileHandoff(
+  left: Pick<FileHandoffProposal, 'draft' | 'workspaceId'> | null,
+  right: Pick<FileHandoffProposal, 'draft' | 'workspaceId'>
+): boolean {
   if (!left || left.workspaceId !== right.workspaceId) return false;
   const { files: leftFiles = [], fileHandoffConfirmed: _leftConsent, ...leftInput } = left.draft;
-  const { files: rightFiles = [], fileHandoffConfirmed: _rightConsent, ...rightInput } = right.draft;
-  return JSON.stringify(leftInput) === JSON.stringify(rightInput) && leftFiles.length === rightFiles.length && leftFiles.every((file, index) => file === rightFiles[index]);
+  const {
+    files: rightFiles = [],
+    fileHandoffConfirmed: _rightConsent,
+    ...rightInput
+  } = right.draft;
+  return (
+    JSON.stringify(leftInput) === JSON.stringify(rightInput) &&
+    leftFiles.length === rightFiles.length &&
+    leftFiles.every((file, index) => file === rightFiles[index])
+  );
 }
-
 
 /** A restored request keeps its exact choice even when inventory details are unavailable. */
 type SelectedEnvironment =
@@ -183,7 +193,12 @@ export function Composer({
   const [pending, setPending] = useState(false);
   const [fileHandoff, setFileHandoff] = useState<FileHandoffProposal | null>(null);
   const confirmedFileHandoff = useRef<Pick<FileHandoffProposal, 'draft' | 'workspaceId'> | null>(
-    initialDraft?.fileHandoffConfirmed && initialDraft.requestId && initialDraft.targetRef && initialDraft.input !== undefined && initialDraft.artifactRefs && targetCatalog
+    initialDraft?.fileHandoffConfirmed &&
+      initialDraft.requestId &&
+      initialDraft.targetRef &&
+      initialDraft.input !== undefined &&
+      initialDraft.artifactRefs &&
+      targetCatalog
       ? { draft: initialDraft as ComposerDraft, workspaceId: targetCatalog.workspaceId }
       : null
   );
@@ -279,7 +294,10 @@ export function Composer({
   }
 
   /** Dispatches only the captured draft; a later catalog render cannot redirect confirmed bytes. */
-  async function dispatchDraft(draft: ComposerDraft, submitDraft: (draft: ComposerDraft) => unknown) {
+  async function dispatchDraft(
+    draft: ComposerDraft,
+    submitDraft: (draft: ComposerDraft) => unknown
+  ) {
     if (draft.requestId !== requestId) setRequestId(draft.requestId);
     setEffortChoice({ logicalModelId: draft.logicalModelId ?? '', value: draft.reasoningEffort });
     setEffortSubmitted(true);
@@ -309,16 +327,21 @@ export function Composer({
       })),
       requestId: cancelledRequestId === requestId ? crypto.randomUUID() : requestId,
       ...(selectedEnvironment
-        ? { workerStorageChoice: {
-            expectedRevision: selectedEnvironment.expectedRevision,
-            kind: 'selected' as const,
-            purpose: selectedEnvironment.purpose,
-            storageRef: selectedEnvironment.storageRef,
-          } }
+        ? {
+            workerStorageChoice: {
+              expectedRevision: selectedEnvironment.expectedRevision,
+              kind: 'selected' as const,
+              purpose: selectedEnvironment.purpose,
+              storageRef: selectedEnvironment.storageRef,
+            },
+          }
         : {}),
     };
     const workspaceId = targetCatalog?.workspaceId ?? '';
-    const previouslyConfirmed = sameFileHandoff(confirmedFileHandoff.current, {draft, workspaceId});
+    const previouslyConfirmed = sameFileHandoff(confirmedFileHandoff.current, {
+      draft,
+      workspaceId,
+    });
     if (files.length && selectedTarget?.requiresFileHandoffConfirmation && !previouslyConfirmed) {
       setFileHandoff({
         draft,
@@ -329,15 +352,18 @@ export function Composer({
       });
       return;
     }
-    await dispatchDraft(previouslyConfirmed ? {...draft, fileHandoffConfirmed: true} : draft, onSubmit);
+    await dispatchDraft(
+      previouslyConfirmed ? { ...draft, fileHandoffConfirmed: true } : draft,
+      onSubmit
+    );
   }
 
   /** One existing work handoff confirmation admits only the exact displayed brief and selected files. */
   function confirmFileHandoff() {
     if (!fileHandoff) return;
     const accepted = fileHandoff;
-    const draft: ComposerDraft = {...accepted.draft, fileHandoffConfirmed: true};
-    confirmedFileHandoff.current = {draft, workspaceId: accepted.workspaceId};
+    const draft: ComposerDraft = { ...accepted.draft, fileHandoffConfirmed: true };
+    confirmedFileHandoff.current = { draft, workspaceId: accepted.workspaceId };
     setFileHandoff(null);
     void dispatchDraft(draft, accepted.submit);
   }
@@ -544,7 +570,9 @@ export function Composer({
       </div>
       <ModalOverlay
         isOpen={fileHandoff !== null}
-        onOpenChange={(open) => { if (!open) setFileHandoff(null); }}
+        onOpenChange={(open) => {
+          if (!open) setFileHandoff(null);
+        }}
         isDismissable
         className="fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-6"
       >
@@ -552,14 +580,36 @@ export function Composer({
           <ConfirmationDialog title="Share selected files with Worker">
             <p>This work brief and the selected inputs will enter shared Worker work in:</p>
             <p className="font-bold">{fileHandoff?.workspaceLabel}</p>
-            <pre aria-label="Work brief" className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3">{fileHandoff?.draft.input}</pre>
+            <pre
+              role="region"
+              aria-label="Work brief"
+              className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3"
+            >
+              {fileHandoff?.draft.input}
+            </pre>
             <ul aria-label="Files to share">
-              {fileHandoff?.draft.files?.map((file, ordinal) => <li key={ordinal}>{file.name}</li>)}
-              {fileHandoff?.artifacts.map((artifact) => <li key={`${artifact.id}:${artifact.version}`}>{artifact.label} · Version {artifact.version}</li>)}
+              {fileHandoff?.draft.files?.map((file, ordinal) => (
+                <li key={ordinal}>{file.name}</li>
+              ))}
+              {fileHandoff?.artifacts.map((artifact) => (
+                <li key={`${artifact.id}:${artifact.version}`}>
+                  {artifact.label} · Version {artifact.version}
+                </li>
+              ))}
             </ul>
             <div className="flex justify-end gap-2">
-              <AriaButton onPress={() => setFileHandoff(null)} className="rounded-ok border border-border px-3 py-2">Cancel</AriaButton>
-              <AriaButton onPress={confirmFileHandoff} className="rounded-ok bg-accent px-3 py-2 text-on-accent">Share files and send</AriaButton>
+              <AriaButton
+                onPress={() => setFileHandoff(null)}
+                className="rounded-ok border border-border px-3 py-2"
+              >
+                Cancel
+              </AriaButton>
+              <AriaButton
+                onPress={confirmFileHandoff}
+                className="rounded-ok bg-accent px-3 py-2 text-on-accent"
+              >
+                Share files and send
+              </AriaButton>
             </div>
           </ConfirmationDialog>
         </AriaModal>
