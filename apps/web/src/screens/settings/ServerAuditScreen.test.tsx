@@ -79,7 +79,7 @@ describe('Server audit administration', () => {
       'audit.server-list': vi.fn().mockResolvedValue({
         auditEvents: [
           { id: 'aud_019a0000-0000-7000-8000-000000000017', category: 'command', action: 'turn.interrupt', outcome: 'succeeded',
-            summary: 'Stop accepted', actor: { kind: 'agent', id: 'agent_recorded', responsibleUserId: PRIVATE },
+            summary: 'Stop accepted', actor: { kind: 'agent', id: 'agent_recorded', responsibleUserId: 'usr_019a0000-0000-7000-8000-000000000020' },
             workspaceId: 'ws_019a0000-0000-7000-8000-000000000011', threadId: 'th_019a0000-0000-7000-8000-000000000012', turnId: 'tu_019a0000-0000-7000-8000-000000000013', requestId: '019a0000-0000-7000-8000-000000000014' },
           { id: 'aud_019a0000-0000-7000-8000-000000000018', category: 'command', action: 'legacy.action', outcome: 'succeeded',
             summary: 'Historical event', actor: null, workspaceId: null, threadId: 'th_019a0000-0000-7000-8000-000000000019' },
@@ -94,6 +94,7 @@ describe('Server audit administration', () => {
     expect(screen.getByText('Turn: tu_019a0000-0000-7000-8000-000000000013')).toBeVisible();
     expect(screen.getByText('Request: 019a0000-0000-7000-8000-000000000014')).toBeVisible();
     expect(document.body.textContent).not.toContain('th_019a0000-0000-7000-8000-000000000019');
+    expect(document.body.textContent).not.toContain('usr_019a0000-0000-7000-8000-000000000020');
     expect(document.body.textContent).not.toContain(PRIVATE);
   });
 
