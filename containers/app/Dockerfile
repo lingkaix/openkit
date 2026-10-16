@@ -83,6 +83,7 @@ RUN apt-get update \
     ca-certificates \
     curl \
     git \
+    imagemagick \
     libsqlite3-0 \
     openssh-client \
     poppler-utils \

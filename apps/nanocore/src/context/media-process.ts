@@ -27,7 +27,7 @@ export interface MediaProcessLimits {
   wallTimeMs: number;
 }
 /** Fixed release-authored native programs, never a user-selected executable. */
-export type MediaExecutable = '/usr/bin/pdfinfo' | '/usr/bin/pdftotext' | '/usr/bin/timeout';
+export type MediaExecutable = '/usr/bin/pdfinfo' | '/usr/bin/pdftotext' | '/usr/bin/timeout' | '/usr/bin/identify' | '/usr/bin/convert' | '/usr/bin/pdftoppm';
 /** Closed infrastructure failures, without peer text, host paths or source bodies. */
 export class MediaProcessFailure extends Error {
   constructor(
@@ -145,7 +145,7 @@ async function stageSource(
   await chmod(path, 0o400);
 }
 
-/** Fixed executable, namespace and sanitized environment; neither path nor PDF bytes select code. */
+/** Fixed executable, namespace and sanitized environment; neither path nor media bytes select code. */
 export function runMediaProcess(
   executable: MediaExecutable,
   args: string[],
