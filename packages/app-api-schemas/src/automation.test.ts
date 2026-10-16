@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { CreateAutomationRequestSchema, UpdateAutomationRequestSchema } from './automation.js';
+import {
+  AutomationCadenceSchema,
+  CreateAutomationRequestSchema,
+  MonthlyUtcScheduleSchema,
+  UpdateAutomationRequestSchema,
+} from './automation.js';
 import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
 
 const definition = {
@@ -55,4 +60,62 @@ describe('fixed recurrence public contract', () => {
       }).success
     ).toBe(false);
   });
+});
+
+describe('monthly UTC public contract', () => {
+  it('admits an explicit bounded monthly rule without an artificial interval', () => {
+    const { intervalSeconds: _interval, ...request } = definition;
+    const monthly = {
+      ...request,
+      monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 0, second: 0 },
+    };
+    expect(CreateAutomationRequestSchema.strict().safeParse(monthly).success).toBe(true);
+  });
+});
+
+it('rejects ambiguous, incomplete or unsupported monthly timing at the public boundary', () => {
+  const monthlyUtc = { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 0, second: 0 };
+  const { intervalSeconds: _interval, ...request } = definition;
+  for (const value of [
+    { ...monthlyUtc, dayOfMonth: 0 },
+    { ...monthlyUtc, dayOfMonth: 29 },
+    { ...monthlyUtc, dayOfMonth: 30 },
+    { ...monthlyUtc, dayOfMonth: 31 },
+    { ...monthlyUtc, dayOfMonth: 1.5 },
+    { ...monthlyUtc, hour: 24 },
+    { ...monthlyUtc, minute: 60 },
+    { ...monthlyUtc, second: 60 },
+    { ...monthlyUtc, zone: 'Etc/UTC' },
+    { ...monthlyUtc, zone: '+00:00' },
+    { ...monthlyUtc, zone: 'Australia/Melbourne' },
+  ])
+    expect(MonthlyUtcScheduleSchema.safeParse(value).success).toBe(false);
+  expect(CreateAutomationRequestSchema.strict().safeParse(request).success).toBe(false);
+  expect(
+    CreateAutomationRequestSchema.strict().safeParse({ ...definition, monthlyUtc }).success
+  ).toBe(false);
+  expect(
+    CreateAutomationRequestSchema.strict().safeParse({
+      ...request,
+      monthlyUtc: { ...monthlyUtc, milliseconds: 0 },
+    }).success
+  ).toBe(false);
+  expect(
+    UpdateAutomationRequestSchema.strict().safeParse({
+      expectedRevision: 1,
+      intervalSeconds: 5,
+      monthlyUtc,
+    }).success
+  ).toBe(false);
+  expect(
+    AUTOMATION_OPERATION_DEFINITIONS['automation.update'].inputSchema.safeParse({
+      automationId: 'schedule',
+      expectedRevision: 1,
+      intervalSeconds: 5,
+      monthlyUtc,
+    }).success
+  ).toBe(false);
+  expect(
+    AutomationCadenceSchema.parse({ intervalSeconds: 5, description: 'Unowned additive note' })
+  ).toEqual({ intervalSeconds: 5 });
 });

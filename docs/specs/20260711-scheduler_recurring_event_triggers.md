@@ -2,20 +2,20 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 # Scheduler Recurring Triggers
 
 ## Owns
 
-- Durable fixed-interval schedule definitions and occurrence history for requesting the existing worker Turn admission operation.
+- Durable fixed-interval and bounded monthly UTC schedule definitions and occurrence history for requesting the existing worker Turn admission operation.
 - The one NanoCore-local five-second scan, bounded admission retry, ten-minute expiry, restart, overlap, clock, and missed-occurrence rules for those schedules.
 - The boundary between occurrence admission history and the existing scheduler, Turn, worker-runtime, permission, audit, storage, backup, and product-surface owners.
 
 ## Does Not Own
 
 - Scheduler queue ordering, placement, execution attempts, dispatch, Turn execution, worker-effect recovery, or Task and Goal workflow progression.
-- A second executor, event bus, cron parser, calendar system, general workflow engine, generic job registry, or recovery coordinator.
+- A second executor, event bus, cron parser, general calendar system, general workflow engine, generic job registry, or recovery coordinator.
 - Domain events, webhooks, arbitrary operations, schedule dependencies, approval decisions, or actor substitution.
 - Physical table DDL, retention-class vocabulary, AuditEvent schema, backup archive layout, portable import activation, or Web presentation.
 
@@ -29,7 +29,7 @@ updated: 2026-10-16
 
 ## Summary
 
-NanoCore may retain a fixed-interval instruction to request an ordinary worker Turn in one existing Thread. One serialized, process-local soft timer scans durable due work every five seconds. A schedule occurrence owns only whether NanoCore submitted that request into the existing durable scheduler admission queue; the scheduler and Turn owners continue to own whether and how it executes.
+NanoCore may retain a fixed-interval or bounded monthly UTC instruction to request an ordinary worker Turn in one existing Thread. One serialized, process-local soft timer scans durable due work every five seconds. A schedule occurrence owns only whether NanoCore submitted that request into the existing durable scheduler admission queue; the scheduler and Turn owners continue to own whether and how it executes.
 
 Each occurrence receives at most three committed admission-attempt outcomes: the initial attempt and two retries on later scans. A failed attempt is never retried in the same scan. If the third committed attempt fails, the occurrence becomes terminal `admission-failed`. If an unresolved occurrence reaches its deadline, exactly ten minutes after its original scheduled instant, it becomes terminal `expired` before another attempt. A transaction execution proved to have rolled back before any queue or launch effect is not an admission outcome and may run again on a later scan until that deadline. Once the existing scheduler queue row commits, the occurrence becomes terminal `admission-accepted` and recurring logic never resubmits it because dispatch or execution later defers, denies, fails, is interrupted, becomes unknown, or waits for approval.
 
@@ -45,7 +45,7 @@ Each occurrence receives at most three committed admission-attempt outcomes: the
 
 ### Non-goals
 
-- Do not support cron expressions, time zones, calendar rules, one-shot schedules, or domain-event subscriptions.
+- Do not support cron expressions, zones other than literal UTC, calendar rules outside the monthly UTC variant below, one-shot schedules, or domain-event subscriptions.
 - Do not retry execution, answer an approval, replace a removed actor, or infer success from runtime activity.
 - Do not create occurrence-owned run states that duplicate scheduler admission or Turn status.
 - Do not promise high availability, multi-process scanning, or distributed timer ownership.
@@ -58,9 +58,25 @@ The first recurring operation is one direct worker Turn admission using the same
 
 The target Thread remains single-flight. At most one `admission-accepted` occurrence for a schedule may still link to a scheduler row whose current status is `queued`; one earlier occurrence may already be admitted or running. Distinct schedules targeting the same Thread may each have one queued occurrence, while scheduler admission and execution-attempt exclusion still prevent two Turns in that Thread from executing concurrently. This bounded waiting rule is the only trigger-specific overlap behavior; there is no skip policy or parallel execution mode.
 
-The public cadence is `intervalSeconds`, an integer of at least five, plus the next exact UTC `scheduledAt` instant supplied on resume. Cron text is not accepted in this fixed-interval slice. Absolute UTC instants make recurrence independent of local time zones and daylight-saving changes. The five-second soft scanner grants no exact due-time precision guarantee.
+The fixed-interval public cadence is `intervalSeconds`, an integer of at least five, plus the next exact UTC `scheduledAt` instant supplied on resume. Cron text is not accepted in this fixed-interval slice. Absolute UTC instants make recurrence independent of local time zones and daylight-saving changes. The five-second soft scanner grants no exact due-time precision guarantee.
 
-Creating a schedule creates it `paused`. Resuming requires a `scheduledAt` that is not earlier than the current Core clock and sets the first due instant. The next nominal instant is always `scheduledAt + intervalSeconds`; scan delay never shifts the cadence.
+Creating a schedule creates it `paused`. Resuming requires a `scheduledAt` that is not earlier than the current Core clock and sets the first due instant. For a fixed interval, the next nominal instant is always `scheduledAt + intervalSeconds`; scan delay never shifts the cadence.
+
+### Monthly UTC cadence
+
+Monthly UTC is the second closed timing variant of the same RecurringSchedule and direct Worker admission. Its complete authored timing value is `monthlyUtc: { zone: 'UTC', dayOfMonth, hour, minute, second }`. `dayOfMonth` is an integer from 1 through 28, `hour` from 0 through 23, and `minute` and `second` from 0 through 59. Milliseconds are zero. Exactly one of `intervalSeconds` and `monthlyUtc` is present. Existing fixed-interval shapes and retained bytes remain usable without a migration, compatibility layer, dual write or artificial interval. Readers must understand the admitted timing core; an unknown variant, non-UTC zone, contradictory shapes, unsupported required semantics or invalid value fails closed. Descriptive additions retain the ordinary extension rules.
+
+Each calendar month has exactly one nominal instant with that Gregorian UTC day and time. The successor uses the following nominal calendar month, never a fixed elapsed duration, callback, attempt, acceptance or completion time. Resume supplies a current-or-future exact UTC instant matching the complete rule, with zero milliseconds and strictly after the greatest nominal instant already accounted for. A mismatch conflicts without changing the definition; Core must not normalize it to another date. Calendar or timestamp overflow is a refusal, not wraparound. Days 29 through 31, last-day rules, ordinal weekdays, local or browser time, numeric offset zones, IANA zones, DST conversion, holidays, cron and RRULE are excluded.
+
+Creation is paused. A paused edit supplies either complete timing shape and atomically replaces the previous shape; supplying both is invalid. Pause and delete seal the old rule and revision through their mutation time before future edits. Monthly occurrence snapshots retain the old monthly rule; exact expired ranges retain that same rule, revision and immutable request snapshot. An intentionally paused interval is not missed work. Accepted work and its original snapshot are never changed by pause, edit or delete. The existing queued-admission cancellation owner may release the waiting slot without reopening an occurrence or changing future month boundaries.
+
+A missed monthly prefix is located directly by integer Gregorian month indices. Its count is the inclusive month-index difference between its exact first and last matching instants; elapsed duration divided by an assumed month length is invalid. Range readers validate rule matching, order, exact count and snapshot consistency. They do not enumerate an unbounded outage. Candidate selection, including native SQL ordering before its limit, compares the actual first live nominal instant for both variants. One shared scan retains the aggregate bound of 128 live candidates, live-before-expired priority, and bounded range accounting; the bound is not multiplied per cadence. Cursor and greatest-accounted advancement remain in the same transaction as the exact occurrence or range coverage.
+
+All existing responsible-user, automation actor, membership, policy, Thread audience, mutation-fence, Audit, ten-minute deadline, three-outcome attempt, frozen selection, one waiting-slot, restart, forward/backward clock, atomic queue acceptance and unknown-result rules apply unchanged. The scanner admits existing Worker work; it submits no Worker and starts no new timer, runner, API family or record family. Once-only initial Turn publication and later missing or contradictory publication keep the existing no-repair contract. Portable monthly definitions and history are descriptive and inert under the existing transfer owner; import restores no cursor, admission authority, queue or Turn.
+
+Acceptance includes January 28, February 28 and March 28 at one explicit UTC time through the existing native admission service over the same retained definition and Thread, with a Core/Store reopen before February and no duplicate after repeat scans or another reopen. Exact history must show the three distinct accepted instants, immutable responsible actor and request, actual queue states and real Turn links where publication exists. January-to-February and February-to-March have different elapsed lengths. Lower-level checks cover leap years, year boundaries, invalid days and zones, resume mismatch, overflow, old-revision sealing, long-outage range counts, SQL live-frontier ordering and the inherited failure rules. This proves local monthly admission, not real host execution or completion.
+
+Recurring Goal creation remains an open follow-up only. This variant creates no Goal or Coordinator Turn, carries no Plan approval, changes no Goal wake marker, and grants no Goal progression or completion authority. The accepted ruling is [Bounded Monthly UTC Recurring Work](../decisions/20261017-monthly_utc_recurring_work.md).
 
 ### Durable definition
 
@@ -68,7 +84,7 @@ One `RecurringSchedule` record is the unique definition authority. Its minimum a
 
 - schedule ID, Workspace ID, target Thread ID, name, and status `paused`, `active`, or `deleted`;
 - concrete Workspace-scoped `AutomationIdentity`, its exact automation `ActorRef`, and immutable responsible-user identity;
-- interval seconds, worker input, and optional requested Agent/profile/model selections;
+- exactly one complete timing shape, worker input, and optional requested Agent/profile/model selections;
 - next nominal scheduled instant, greatest nominal instant ever accounted for, revision, creation time, update time, and deletion time.
 
 This specification is the separate owner for the schedule's bounded `AutomationIdentity` responsible-user binding; it adds no AutomationIdentity token, membership, or general automation authority. The schedule record is the concrete durable identity owner for this slice, so no synthetic actor summary exists without it. Trigger permissions are not stored grants: each attempt derives them from current Policy, and last-trigger time is a read projection over durable occurrence history rather than another mutable identity field. `active` permits due attempts, `paused` disables triggering while preserving identity and history, and `deleted` is its terminal revoked tombstone. The actor and responsible user cannot be edited or inferred. A different responsible actor requires a new schedule. Editing the cadence, target, or worker input is allowed only while paused and affects future occurrences only. Resume sets a future-or-current next instant strictly later than the greatest nominal instant ever accounted for, so pause, resume, or a backward clock jump cannot reuse an occurrence identity. The intentionally paused interval is not missed work. Deleted definitions remain discoverable as read-only history and cannot resume. Delete stops future materialization and retains the identity tombstone and occurrence links; it does not cancel an accepted scheduler admission or rewrite its Turn.
@@ -80,7 +96,7 @@ Pause and delete first account for every nominal instant through their mutation 
 One `RecurringOccurrence` record represents exactly one nominal scheduled instant. Its deterministic identity derives from `(scheduleId, scheduledAt)`. Its minimum areas are:
 
 - occurrence ID, schedule ID, Workspace ID, exact scheduled instant, and ten-minute deadline;
-- immutable snapshot of the target Thread, exact automation `ActorRef`, authored worker input, authored optional Agent/profile/model selections, and nullable exact resolved admission payload containing Agent/profile/model selections, Workspace roots, and Workspace working directory;
+- immutable snapshot of the target Thread, exact automation `ActorRef`, authored worker input, authored optional Agent/profile/model selections, monthly UTC rule when present, and nullable exact resolved admission payload containing Agent/profile/model selections, Workspace roots, and Workspace working directory;
 - state `pending`, `admission-accepted`, `admission-failed`, `expired`, `cancelled`, or `recovery_required`;
 - bounded admission-attempt summaries, each containing attempt number, attempt time, typed result code, and redacted summary;
 - deterministic scheduler request ID and nullable scheduler queue-entry and Turn IDs;
@@ -88,7 +104,13 @@ One `RecurringOccurrence` record represents exactly one nominal scheduled instan
 
 The bounded attempt summaries contain at most three committed entries and are the authoritative trigger history. Authentication, authorization, lineage, bounded pre-admission preparation, input validation, selection resolution, and scheduler admission failures consume one attempt when the failed-attempt update commits. If optional selections cannot resolve, the occurrence retains its authored inputs and records the failed attempt. The first successful resolution freezes the exact Agent/profile/model selection, Workspace roots, and Workspace working directory in the same transaction as that attempt result or admission acceptance; later attempts validate and reuse that complete payload without substitution. A proved Core database rollback with no queue or launch effect leaves the attempt uncounted and permits a later scan before the deadline because it produced no admission outcome. An unknown commit result blocks another attempt until durable inspection proves the atomic acceptance tuple, a retryable pending record, or a contradiction. `recovery_required` is a terminal fence for contradictory durable identity or payload, is never scanner-eligible, and requires inspection rather than automatic repair. Scheduler queue status and Turn status remain with their existing owners and are joined by the stored queue-entry and Turn IDs for read models. An occurrence therefore projects accepted-but-not-executed truth as `state=admission-accepted` plus the linked scheduler status, rather than claiming a worker run succeeded.
 
-Nominal instants already past their deadline before materialization use one lossless `ExpiredOccurrenceRange` instead of one physical row per instant. Its minimum areas are schedule ID, Workspace ID, definition revision, immutable interval seconds, first and last nominal scheduled instants, exact occurrence count, reason, creation time, terminal time, and the exact old-definition snapshot: target Thread, automation `ActorRef`, authored worker input, and requested Agent/profile/model selections. Those fields preserve what every covered task would have requested and identify each deterministic `(scheduleId, scheduledAt)` occurrence without separate physical rows. Ranges for different definition revisions never merge. History pagination returns ranges directly; an optional bounded time-window projection may enumerate covered occurrence identities, but no read expands an unbounded range.
+Nominal instants already past their deadline before materialization use one lossless `ExpiredOccurrenceRange` instead of one physical row per instant. Its minimum areas are schedule ID, Workspace ID, definition revision, immutable timing shape, first and last nominal scheduled instants, exact occurrence count, reason, creation time, terminal time, and the exact old-definition snapshot: target Thread, automation `ActorRef`, authored worker input, and requested Agent/profile/model selections. Those fields preserve what every covered task would have requested and identify each deterministic `(scheduleId, scheduledAt)` occurrence without separate physical rows. Ranges for different definition revisions never merge. History pagination returns ranges directly; an optional bounded time-window projection may enumerate covered occurrence identities, but no read expands an unbounded range.
+
+### Identifier producers
+
+The native definition producer allocates a new schedule through shared `allocateEntityId('auto')`. It retains that identity through pause, edit, resume, delete tombstone and reopen. A new native occurrence uses kind `occ` and the shared UUIDv5 derivation over the exact UTF-8 JSON array `[scheduleId, scheduledAt]`; `scheduledAt` is the canonical recorded UTC millisecond timestamp. The same nominal pair always names the same occurrence. A new retained expired range uses kind `range` and shared UUIDv7 allocation at its first insertion. Its allocated identity is retained on replay and reopen; range identity is not a second derivation of its covered instants. The fixed source Turn uses existing kind `tu` and shared UUIDv5 derivation over the exact UTF-8 JSON array `["recurring", scheduleId, scheduledAt]`. These declarations use the shared entity allocation and derivation APIs, kind namespaces and canonical name encoding in [Core Protocol](../core/protocol.md#ids), under [Identifier Owner Declarations](../decisions/20261015-identifier_owner_declarations.md) and [Identifier Derivation And Import Allocations](../decisions/20261016-identifier_derivation_and_import_allocations.md). They permit no private formatter, validator exception, alternate identifier owner or new record family.
+
+Portable import remints each schedule with shared `allocateEntityId('auto')`, derives its imported occurrence identities from that reminted schedule and the same canonical UTC timestamp, and allocates imported range identities only within the invocation-local accepted import map. It restores no live Core schedule, cursor, queue, Turn or admission authority. The source admission, exact queue replay, accepted-occurrence terminality and no-repair rules are unchanged. Shared registry admission and implementation cutover follow the identifier owner; this producer declaration does not authorize mixing an unlanded identifier implementation into a delivery branch.
 
 ### Scan and retry lifecycle
 
@@ -127,7 +149,7 @@ No external runtime, provider, repository, or sandbox effect belongs to this tra
 
 Schedule and occurrence truth survives restart. After boot recovery, the ordinary scan resumes from durable definition cursors and pending occurrences; it does not shift deadlines by downtime duration. The ten-minute deadline always derives from the original nominal scheduled instant.
 
-A forward wall-clock jump makes nominal instants due or expired under the same comparisons. A backward jump does not undo terminal history, reduce an attempt count, or create an earlier duplicate; no occurrence is due until the clock again reaches its nominal instant. Schedule calculations use integer interval arithmetic from the last nominal instant, not elapsed callback counts.
+A forward wall-clock jump makes nominal instants due or expired under the same comparisons. A backward jump does not undo terminal history, reduce an attempt count, or create an earlier duplicate; no occurrence is due until the clock again reaches its nominal instant. Schedule calculations use the admitted interval or Gregorian UTC month arithmetic from the last nominal instant, not elapsed callback counts.
 
 For each definition, the same transaction that inserts individual due occurrences or one exact expired range advances `nextScheduledAt` and `greatestAccountedScheduledAt` across precisely those nominal instants. A rollback advances neither. After an unknown database commit result, restart reads the deterministic occurrence or exact range coverage and advances only from durable truth; it never guesses that a missing instant was recorded.
 
@@ -135,7 +157,7 @@ The scan prioritizes unresolved occurrences and unmaterialized due instants whos
 
 ## Current Implementation Projection
 
-`apps/nanocore/src/lib/automation-store.ts` replaces the process-local cron store with durable fixed-interval definitions, immutable occurrences, and expired ranges. Its Core transaction joins the existing scheduler queue insertion to acceptance and its required AuditEvent. Definition changes and scanner writes share the existing Workspace mutation fence. Opaque request UUIDs use the existing UUIDv5 API with the fixed RFC 4122 URL namespace (`6ba7b811-9dad-11d1-80b4-00c04fd430c8`) and the UTF-8 JSON pair `[scheduleId, scheduledAt]`. The instant is normalized to UTC milliseconds before this derivation.
+`apps/nanocore/src/lib/automation-store.ts` replaces the process-local cron store with durable fixed-interval and monthly UTC definitions, immutable occurrences, and expired ranges. Its Core transaction joins the existing scheduler queue insertion to acceptance and its required AuditEvent. Definition changes and scanner writes share the existing Workspace mutation fence. Opaque request UUIDs use the existing UUIDv5 API with the fixed RFC 4122 URL namespace (`6ba7b811-9dad-11d1-80b4-00c04fd430c8`) and the UTF-8 JSON pair `[scheduleId, scheduledAt]`. The instant is normalized to UTC milliseconds before this derivation. The shared identifier producer declarations above are the accepted cutover target; their registry integration remains pending the identifier owner landing.
 
 `apps/nanocore/src/runtime/recurring-schedule-service.ts` serializes five-second scans and checks the exact responsible actor before preparation and transaction commit. It accepts only bounded Core-local preparation and never invokes the worker executor or combined product Turn starter. The definition-derived automation family exposes the lifecycle and bounded occurrence/range history, including current scheduler status without backend or host paths.
 
@@ -170,7 +192,7 @@ The implementation should add the smallest deterministic timer/clock-injected un
 
 ## Consequences
 
-The fixed-interval input is less expressive than cron and intentionally avoids parser, time-zone, and calendar semantics. Durable attempted-occurrence history remains under `workspace-audit` retention with no automatic pruning in this slice; exact expired ranges and bounded per-scan work prevent a long outage from turning one callback into an unbounded write or execution burst.
+The two bounded cadence variants are less expressive than cron and intentionally avoid parser, non-UTC time-zone, and general calendar semantics. Durable attempted-occurrence history remains under `workspace-audit` retention with no automatic pruning in this slice; exact expired ranges and bounded per-scan work prevent a long outage from turning one callback into an unbounded write or execution burst.
 
 Sustained overlap may record `queue_backlog_full` on three successive soft scans and close an occurrence `admission-failed` even if the waiting slot opens later within the ten-minute window. That terminal result does not reopen; it is a direct consequence of the selected three-attempt policy.
 
@@ -178,11 +200,11 @@ The shared SQLite transaction is a deliberate physical placement constraint. It 
 
 ## Open Questions
 
-There are no unresolved product decisions in the initial fixed-interval slice. The timing, retry and admission boundary recorded in [Schedule Admission Numbers Are Empirical Defaults](../decisions/20260924-schedule_admission_numbers_are_empirical.md) and the independently reviewed owner extensions are accepted; production implementation and runtime evidence remain outstanding.
+There are no unresolved product decisions in the admitted fixed-interval and monthly UTC Worker-admission slices. Recurring Goal creation remains open and is not specified here. The timing, retry and admission boundary recorded in [Schedule Admission Numbers Are Empirical Defaults](../decisions/20260924-schedule_admission_numbers_are_empirical.md) and the independently reviewed owner extensions are accepted; production implementation and runtime evidence remain outstanding.
 
 ## Deferred / Future Work
 
-Cron and calendar schedules, one-shot schedules, event subscriptions, arbitrary operation families, schedule dependencies, configurable overlap policy, catch-up coalescing, user-configurable retry counts or deadlines, multi-process timer ownership, and distributed takeover remain outside this contract.
+Cron and other calendar schedules, non-UTC zones, days 29 through 31 and last-day rules, recurring Goal creation, one-shot schedules, event subscriptions, arbitrary operation families, schedule dependencies, configurable overlap policy, catch-up coalescing, user-configurable retry counts or deadlines, multi-process timer ownership, and distributed takeover remain outside this contract.
 
 ## Links
 

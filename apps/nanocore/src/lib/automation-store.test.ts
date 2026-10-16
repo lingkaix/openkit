@@ -1,12 +1,20 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
+import { startRecurringScheduleService } from '../runtime/recurring-schedule-service.js';
+import {
+  cancelSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { AutomationStore } from './automation-store.js';
+import { AutomationMutationError, AutomationStore } from './automation-store.js';
+import { FsStore } from './store.js';
 
 const fixtures: { root: string; db: CoreDb }[] = [];
 function fixture() {
@@ -535,4 +543,392 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
   expect(store.commitAttempt(accepted.id, 2, { kind: 'ready', payload })?.state).toBe(
     'recovery_required'
   );
+});
+
+const monthlyDefinition = {
+  workspaceId: 'ws_test',
+  threadId: 'th_test',
+  name: 'Monthly',
+  prompt: 'Inspect status',
+  monthlyUtc: { zone: 'UTC' as const, dayOfMonth: 28, hour: 9, minute: 0, second: 0 },
+};
+
+describe('monthly UTC recurrence lifecycle', () => {
+  it('materializes the monthly nominal instant and advances its exact cursor', () => {
+    const { db, store, gate, clock, setTime } = fixture();
+    setTime('2027-01-28T09:00:00.000Z');
+    const paused = store.createAutomation('user_creator', monthlyDefinition);
+    expect(paused.status).toBe('paused');
+    expect(store.collectScanCandidates(clock())).toEqual([]);
+    const active = store.updateAutomation('user_creator', paused.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: clock(),
+    });
+    const candidates = store.collectScanCandidates(clock());
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      scheduledAt: clock(),
+      snapshot: { monthlyUtc: monthlyDefinition.monthlyUtc },
+      definitionRevision: active.revision,
+    });
+    expect(store.getAutomation(paused.id)).toMatchObject({
+      nextScheduledAt: '2027-02-28T09:00:00.000Z',
+      greatestAccountedScheduledAt: clock(),
+    });
+    const secondStore = new AutomationStore(db, gate, clock);
+    expect(secondStore.collectScanCandidates(clock()).map((record) => record.id)).toEqual(
+      candidates.map((record) => record.id)
+    );
+  });
+});
+
+it('rejects off-rule monthly resume without mutation and replaces complete paused timing', () => {
+  const { store, setTime } = fixture();
+  setTime('2027-01-01T00:00:00.000Z');
+  const original = store.createAutomation('user_creator', monthlyDefinition);
+  for (const scheduledAt of [
+    '2027-01-29T09:00:00.000Z',
+    '2027-01-28T09:01:00.000Z',
+    '2027-01-28T09:00:00.001Z',
+    '2027-01-28T09:00:00.0001Z',
+  ]) {
+    expect(() =>
+      store.updateAutomation('user_creator', original.id, {
+        expectedRevision: 1,
+        status: 'active',
+        scheduledAt,
+      })
+    ).toThrow(AutomationMutationError);
+    expect(store.getAutomation(original.id)).toEqual(original);
+  }
+  const fixed = store.updateAutomation('user_creator', original.id, {
+    expectedRevision: 1,
+    intervalSeconds: 7,
+  });
+  expect(fixed.intervalSeconds).toBe(7);
+  expect(fixed).not.toHaveProperty('monthlyUtc');
+  const monthly = store.updateAutomation('user_creator', original.id, {
+    expectedRevision: 2,
+    monthlyUtc: monthlyDefinition.monthlyUtc,
+  });
+  expect(monthly.monthlyUtc).toEqual(monthlyDefinition.monthlyUtc);
+  expect(monthly).not.toHaveProperty('intervalSeconds');
+});
+
+it('seals a monthly outage with an exact immutable range and cancels the live instant before editing', () => {
+  const { store, setTime } = fixture();
+  setTime('2020-01-28T09:00:00.000Z');
+  const created = store.createAutomation('user_creator', monthlyDefinition);
+  store.updateAutomation('user_creator', created.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: '2020-01-28T09:00:00.000Z',
+  });
+  setTime('2027-01-28T09:00:00.000Z');
+  const paused = store.updateAutomation('user_creator', created.id, {
+    expectedRevision: 2,
+    status: 'paused',
+  });
+  expect(paused).toMatchObject({
+    nextScheduledAt: null,
+    greatestAccountedScheduledAt: '2027-01-28T09:00:00.000Z',
+  });
+  const history = store.listHistory(created.id).items;
+  expect(history).toHaveLength(2);
+  expect(history[0]).toMatchObject({
+    kind: 'occurrence',
+    record: {
+      state: 'cancelled',
+      scheduledAt: '2027-01-28T09:00:00.000Z',
+      snapshot: { monthlyUtc: monthlyDefinition.monthlyUtc },
+      definitionRevision: 2,
+    },
+  });
+  expect(history[1]).toMatchObject({
+    kind: 'expired-range',
+    record: {
+      count: 84,
+      firstScheduledAt: '2020-01-28T09:00:00.000Z',
+      lastScheduledAt: '2026-12-28T09:00:00.000Z',
+      monthlyUtc: monthlyDefinition.monthlyUtc,
+      definitionRevision: 2,
+    },
+  });
+  store.updateAutomation('user_creator', created.id, {
+    expectedRevision: 3,
+    monthlyUtc: { ...monthlyDefinition.monthlyUtc, dayOfMonth: 27 },
+    prompt: 'New request',
+  });
+  expect(store.listHistory(created.id).items).toEqual(history);
+  expect(() =>
+    store.updateAutomation('user_creator', created.id, {
+      expectedRevision: 4,
+      status: 'active',
+      scheduledAt: '2027-01-27T09:00:00.000Z',
+    })
+  ).toThrow(AutomationMutationError);
+  store.deleteAutomation('user_creator', created.id);
+  expect(store.getAutomation(created.id).status).toBe('deleted');
+  expect(store.listHistory(created.id).items).toEqual(history);
+});
+
+it('orders actual fixed and monthly live frontiers before the shared 128 schedule limit', () => {
+  const { store, setTime } = fixture();
+  setTime('2020-01-28T09:00:00.000Z');
+  for (let index = 0; index < 129; index++) {
+    const created = store.createAutomation('user_creator', monthlyDefinition);
+    store.updateAutomation('user_creator', created.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: '2020-01-28T09:00:00.000Z',
+    });
+  }
+  const fixed = store.createAutomation('user_creator', { ...definition, intervalSeconds: 3600 });
+  store.updateAutomation('user_creator', fixed.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: '2027-01-28T08:59:59.000Z',
+  });
+  setTime('2027-01-28T09:00:00.000Z');
+  const selected = store.collectScanCandidates('2027-01-28T09:00:00.000Z');
+  expect(selected).toHaveLength(128);
+  expect(selected[0]).toMatchObject({
+    scheduleId: fixed.id,
+    scheduledAt: '2027-01-28T08:59:59.000Z',
+  });
+  expect(
+    selected.slice(1).every((record) => record.scheduledAt === '2027-01-28T09:00:00.000Z')
+  ).toBe(true);
+  expect(store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toHaveLength(128);
+});
+
+it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Core restart', async () => {
+  const state = fixture();
+  let db = state.db;
+  ensureLocalUser(db);
+  let files = new FsStore({ dataRoot: state.root });
+  const workspace = files.createWorkspace('Monthly proof');
+  const thread = files.createThread(workspace.id, 'Existing target');
+  recordWorkspaceOwnerMembership({
+    coreDb: db,
+    workspaceId: workspace.id,
+    ownerUserId: 'user_local',
+  });
+  state.setTime('2027-01-28T09:00:00.000Z');
+  let schedules = state.store;
+  const created = schedules.createAutomation('user_local', {
+    ...monthlyDefinition,
+    workspaceId: workspace.id,
+    threadId: thread.id,
+  });
+  const errors = vi.fn();
+  const prepare = vi.fn(async () => ({ kind: 'ready' as const, payload }));
+  const start = () =>
+    startRecurringScheduleService({
+      schedules,
+      store: files,
+      prepare,
+      now: state.clock,
+      onError: errors,
+      setInterval: () => 'timer',
+      clearInterval: () => undefined,
+    });
+  let service = start();
+  try {
+    await service.runOnce();
+    expect(prepare).not.toHaveBeenCalled();
+    schedules.updateAutomation('user_local', created.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: state.clock(),
+    });
+    await service.runOnce();
+    const january = schedules.listHistory(created.id).items[0]!;
+    expect(january.kind).toBe('occurrence');
+    if (january.kind !== 'occurrence') throw new Error('Expected individual January occurrence.');
+    expect(january.record).toMatchObject({
+      state: 'admission-accepted',
+      scheduledAt: state.clock(),
+      attempts: [{ number: 1, code: 'accepted' }],
+      snapshot: {
+        monthlyUtc: monthlyDefinition.monthlyUtc,
+        actor: created.actor,
+        threadId: thread.id,
+      },
+    });
+    expect(files.getTurnById(january.record.turnId!)).toMatchObject({
+      status: 'pending',
+      threadId: thread.id,
+    });
+    expect(requireSchedulerAdmissionEntry(db, january.record.queueEntryId!)).toMatchObject({
+      triggerActor: created.actor,
+      turnInput: monthlyDefinition.prompt,
+      threadId: thread.id,
+      ...payload,
+    });
+    cancelSchedulerAdmissionEntry(db, {
+      queueEntryId: january.record.queueEntryId!,
+      workspaceId: workspace.id,
+    });
+    state.setTime('2027-02-28T08:59:59.999Z');
+    await service.runOnce();
+    expect(prepare).toHaveBeenCalledTimes(1);
+    service.stop();
+    await service.runOnce();
+    db.sqlite.close();
+    db = openCoreDb(state.root);
+    fixtures.push({ root: state.root, db });
+    files = new FsStore({ dataRoot: state.root });
+    schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), state.clock);
+    state.setTime('2027-02-28T09:00:00.000Z');
+    service = start();
+    await service.runOnce();
+    const february = schedules.listHistory(created.id).items[0]!;
+    if (february.kind !== 'occurrence') throw new Error('Expected individual February occurrence.');
+    expect(february.record).toMatchObject({
+      state: 'admission-accepted',
+      scheduledAt: state.clock(),
+      definitionRevision: 2,
+      snapshot: { monthlyUtc: monthlyDefinition.monthlyUtc },
+    });
+    cancelSchedulerAdmissionEntry(db, {
+      queueEntryId: february.record.queueEntryId!,
+      workspaceId: workspace.id,
+    });
+    state.setTime('2027-03-28T09:00:00.000Z');
+    await service.runOnce();
+    await service.runOnce();
+    expect(errors).not.toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledTimes(3);
+    const history = schedules.listHistory(created.id).items;
+    expect(history).toHaveLength(3);
+    expect(history.map(({ record }) => record)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          scheduledAt: '2027-01-28T09:00:00.000Z',
+          state: 'admission-accepted',
+        }),
+        expect.objectContaining({
+          scheduledAt: '2027-02-28T09:00:00.000Z',
+          state: 'admission-accepted',
+        }),
+        expect.objectContaining({
+          scheduledAt: '2027-03-28T09:00:00.000Z',
+          state: 'admission-accepted',
+        }),
+      ])
+    );
+    expect(
+      db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+    ).toEqual({ n: 3 });
+    expect(new Set(history.map(({ record }) => record.id)).size).toBe(3);
+    expect(schedules.getAutomation(created.id).nextScheduledAt).toBe('2027-04-28T09:00:00.000Z');
+    for (const item of history) {
+      if (item.kind !== 'occurrence') throw new Error('Expected accepted monthly occurrence.');
+      expect(item.record.snapshot).toMatchObject({
+        actor: created.actor,
+        prompt: monthlyDefinition.prompt,
+        monthlyUtc: monthlyDefinition.monthlyUtc,
+      });
+      expect(files.getTurnById(item.record.turnId!)).toMatchObject({
+        status: 'pending',
+        threadId: thread.id,
+      });
+    }
+    expect(
+      db.sqlite.prepare('SELECT status FROM scheduler_admission_entries ORDER BY enqueued_at').all()
+    ).toEqual([{ status: 'cancelled' }, { status: 'cancelled' }, { status: 'queued' }]);
+    service.stop();
+    await service.runOnce();
+    db.sqlite.close();
+    db = openCoreDb(state.root);
+    fixtures.push({ root: state.root, db });
+    files = new FsStore({ dataRoot: state.root });
+    schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), state.clock);
+    service = start();
+    await service.runOnce();
+    expect(schedules.listHistory(created.id).items).toEqual(history);
+    expect(
+      db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+    ).toEqual({ n: 3 });
+    expect(prepare).toHaveBeenCalledTimes(3);
+    expect(errors).not.toHaveBeenCalled();
+  } finally {
+    service.stop();
+    await service.runOnce();
+  }
+});
+
+it('rolls back monthly range, cursor and Audit together before retrying the same exact prefix', () => {
+  const { db, store, setTime } = fixture();
+  setTime('2020-01-28T09:00:00.000Z');
+  const created = store.createAutomation('user_creator', monthlyDefinition);
+  const active = store.updateAutomation('user_creator', created.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: '2020-01-28T09:00:00.000Z',
+  });
+  setTime('2027-01-28T09:00:00.000Z');
+  db.sqlite.exec(`CREATE TRIGGER reject_monthly_range_audit BEFORE INSERT ON audit_events
+    WHEN NEW.action = 'recurring.expired-range.record' BEGIN SELECT RAISE(ABORT, 'range audit rejected'); END;`);
+  expect(() => store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toThrow(
+    'range audit rejected'
+  );
+  expect(store.getAutomation(created.id)).toEqual(active);
+  expect(store.listHistory(created.id).items).toEqual([]);
+  db.sqlite.exec('DROP TRIGGER reject_monthly_range_audit');
+  expect(store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toHaveLength(1);
+  expect(store.listHistory(created.id).items).toHaveLength(2);
+  const row = store.listHistory(created.id).items.find((item) => item.kind === 'expired-range');
+  expect(row).toMatchObject({ record: { count: 84, lastScheduledAt: '2026-12-28T09:00:00.000Z' } });
+});
+
+it('fails the SQL frontier closed on contradictory retained core timing', () => {
+  const { db, store, setTime } = fixture();
+  setTime('2027-01-28T09:00:00.000Z');
+  const created = store.createAutomation('user_creator', monthlyDefinition);
+  const active = store.updateAutomation('user_creator', created.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: '2027-01-28T09:00:00.000Z',
+  });
+  db.sqlite
+    .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
+    .run(JSON.stringify({ ...active, intervalSeconds: 5 }), created.id);
+  expect(() => store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toThrow();
+  expect(db.sqlite.prepare('SELECT count(*) AS n FROM recurring_occurrences').get()).toEqual({
+    n: 0,
+  });
+});
+
+it('selects a live monthly instant ahead of more than 128 expired-only fixed prefixes', () => {
+  const { db, store, setTime } = fixture();
+  setTime('2020-01-28T09:00:00.000Z');
+  db.sqlite.transaction(() => {
+    for (let index = 0; index < 129; index++) {
+      const old = store.createAutomation('user_creator', { ...definition, intervalSeconds: 86400 });
+      store.updateAutomation('user_creator', old.id, {
+        expectedRevision: 1,
+        status: 'active',
+        scheduledAt: '2020-01-28T09:01:00.000Z',
+      });
+    }
+  })();
+  const monthly = store.createAutomation('user_creator', monthlyDefinition);
+  store.updateAutomation('user_creator', monthly.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: '2027-01-28T09:00:00.000Z',
+  });
+  setTime('2027-01-28T09:00:00.000Z');
+  const selected = store.collectScanCandidates('2027-01-28T09:00:00.000Z');
+  expect(selected).toHaveLength(1);
+  expect(selected[0]).toMatchObject({
+    scheduleId: monthly.id,
+    scheduledAt: '2027-01-28T09:00:00.000Z',
+  });
+  expect(db.sqlite.prepare('SELECT count(*) AS n FROM recurring_expired_ranges').get()).toEqual({
+    n: 128,
+  });
 });

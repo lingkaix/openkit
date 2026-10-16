@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  AutomationCadenceSchema,
   type AutomationRecord,
   AutomationRecordSchema,
   type CreateAutomationRequest,
@@ -28,6 +29,11 @@ import {
   recurringSchedulerAdmissionInput,
 } from '../storage/recurring-records.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import {
+  advanceRecurringNominal,
+  recurringNominalMatches,
+  recurringPrefixThrough,
+} from './recurring-cadence.js';
 
 const SCAN_LIMIT = 128;
 
@@ -42,7 +48,27 @@ export class AutomationStore {
     public readonly coreDb: CoreDb,
     public readonly mutationAdmission: WorkspaceMutationAdmission,
     private readonly now: () => string = () => new Date().toISOString()
-  ) {}
+  ) {
+    // Each actual connection needs this deterministic function before its first scan. Re-registering
+    // the same pure callback when another Store uses that connection does not add persistent state.
+    coreDb.sqlite.function(
+      'recurring_live_frontier',
+      { deterministic: true },
+      (intervalSeconds: unknown, monthlyJson: unknown, first: unknown, through: unknown) => {
+        if (
+          typeof first !== 'number' ||
+          typeof through !== 'number' ||
+          (monthlyJson !== null && typeof monthlyJson !== 'string')
+        )
+          throw new Error('Recurring scan has invalid required timing values.');
+        const cadence = AutomationCadenceSchema.parse({
+          ...(intervalSeconds === null ? {} : { intervalSeconds }),
+          ...(monthlyJson === null ? {} : { monthlyUtc: JSON.parse(monthlyJson as string) }),
+        });
+        return recurringPrefixThrough(cadence, first, through)?.next ?? first;
+      }
+    );
+  }
 
   /** Resolves immutable lineage before current Workspace admission; ownership grants no extra privilege. */
   public getAutomationLineage(
@@ -122,9 +148,12 @@ export class AutomationStore {
           if (editing && (schedule.status !== 'paused' || status === 'active'))
             throw new AutomationMutationError('Edit requires a paused recurring schedule.');
           if (status === 'active') {
+            // Date.parse truncates finer precision, so authored monthly fractions need an exact zero check.
             if (
               schedule.status !== 'paused' ||
               !scheduledAt ||
+              !recurringNominalMatches(schedule, Date.parse(scheduledAt)) ||
+              (schedule.monthlyUtc !== undefined && /\.[0-9]*[1-9][0-9]*Z$/.test(scheduledAt)) ||
               Date.parse(scheduledAt) < Date.parse(timestamp) ||
               (schedule.greatestAccountedScheduledAt !== null &&
                 Date.parse(scheduledAt) <= Date.parse(schedule.greatestAccountedScheduledAt))
@@ -142,6 +171,8 @@ export class AutomationStore {
               throw new AutomationMutationError('A nominal instant is accepted only on resume.');
             if (status === 'paused') schedule = this.sealSchedule(schedule, timestamp);
             const candidate = { ...schedule, ...edits };
+            if (edits.monthlyUtc !== undefined) delete candidate.intervalSeconds;
+            if (edits.intervalSeconds !== undefined) delete candidate.monthlyUtc;
             for (const field of ['agentId', 'profileId', 'modelId'] as const)
               if (candidate[field] === null) delete candidate[field];
             schedule = AutomationRecordSchema.parse(candidate);
@@ -221,19 +252,19 @@ export class AutomationStore {
           const schedules = this.coreDb.sqlite
             .prepare(`SELECT record_json FROM recurring_schedules
         WHERE status = 'active' AND next_scheduled_at <= ?
-        ORDER BY CASE WHEN next_scheduled_at > ? THEN next_scheduled_at ELSE
-          next_scheduled_at + (CAST((? - next_scheduled_at) /
-            (json_extract(record_json, '$.intervalSeconds') * 1000) AS INTEGER) + 1) *
-            (json_extract(record_json, '$.intervalSeconds') * 1000) END, id LIMIT ?`)
-            .all(now, now - DEADLINE_MS, now - DEADLINE_MS, SCAN_LIMIT) as JsonRow[];
+        ORDER BY recurring_live_frontier(json_extract(record_json, '$.intervalSeconds'),
+          json_extract(record_json, '$.monthlyUtc'), next_scheduled_at, ?), id LIMIT ?`)
+            .all(now, now - DEADLINE_MS, SCAN_LIMIT) as JsonRow[];
           for (const row of schedules) {
             const schedule = readRecurringSchedule(row.record_json);
             if (!admit(schedule.workspaceId)) continue;
             const next = Date.parse(schedule.nextScheduledAt!);
-            const step = schedule.intervalSeconds * 1000;
-            const first =
-              next + Math.max(0, Math.floor((now - DEADLINE_MS - next) / step) + 1) * step;
-            for (let at = first, count = 0; at <= now && count < SCAN_LIMIT; at += step, count++)
+            const first = recurringPrefixThrough(schedule, next, now - DEADLINE_MS)?.next ?? next;
+            for (
+              let at = first, count = 0;
+              at <= now && count < SCAN_LIMIT;
+              at = advanceRecurringNominal(schedule, at), count++
+            )
               candidates.push({ schedule, at });
           }
           candidates.sort((a, b) => a.at - b.at || a.schedule.id.localeCompare(b.schedule.id));
@@ -449,7 +480,7 @@ export class AutomationStore {
     if (schedule.status === 'active' && schedule.nextScheduledAt) {
       schedule = this.accountExpiredPrefix(schedule, now, timestamp);
       const first = Date.parse(schedule.nextScheduledAt!);
-      for (let at = first; at <= now; at += schedule.intervalSeconds * 1000) {
+      for (let at = first; at <= now; at = advanceRecurringNominal(schedule, at)) {
         const occurrence = this.newOccurrence(schedule, at, timestamp);
         this.finish(occurrence, 'cancelled', timestamp, true);
         schedule = this.advanceSchedule(schedule, at);
@@ -472,15 +503,15 @@ export class AutomationStore {
     if (!schedule.nextScheduledAt) return schedule;
     const first = Date.parse(schedule.nextScheduledAt);
     if (first > now - DEADLINE_MS) return schedule;
-    const step = schedule.intervalSeconds * 1000;
-    const count = Math.floor((now - DEADLINE_MS - first) / step) + 1;
-    const last = first + (count - 1) * step;
+    const coverage = recurringPrefixThrough(schedule, first, now - DEADLINE_MS);
+    if (!coverage) return schedule;
+    const { count, last } = coverage;
     const record: ExpiredOccurrenceRange = {
       id: `range_${recurringRequestId(schedule.id, schedule.nextScheduledAt)}`,
       scheduleId: schedule.id,
       workspaceId: schedule.workspaceId,
       definitionRevision: schedule.revision,
-      intervalSeconds: schedule.intervalSeconds,
+      ...AutomationCadenceSchema.parse(schedule),
       firstScheduledAt: new Date(first).toISOString(),
       lastScheduledAt: new Date(last).toISOString(),
       count,
@@ -517,12 +548,12 @@ export class AutomationStore {
     return this.advanceSchedule(schedule, last);
   }
 
-  /** Advances only nominal integer arithmetic, never callback time. */
+  /** Advances the exact nominal cadence, never callback time. */
   private advanceSchedule(schedule: AutomationRecord, at: number): AutomationRecord {
     const updated = {
       ...schedule,
       greatestAccountedScheduledAt: new Date(at).toISOString(),
-      nextScheduledAt: new Date(at + schedule.intervalSeconds * 1000).toISOString(),
+      nextScheduledAt: new Date(advanceRecurringNominal(schedule, at)).toISOString(),
     };
     this.writeSchedule(updated);
     return updated;
@@ -694,6 +725,7 @@ function snapshot(schedule: AutomationRecord): RecurringOccurrence['snapshot'] {
     threadId: schedule.threadId,
     actor: schedule.actor,
     prompt: schedule.prompt,
+    ...(schedule.monthlyUtc === undefined ? {} : { monthlyUtc: { ...schedule.monthlyUtc } }),
     ...(schedule.agentId === undefined ? {} : { agentId: schedule.agentId }),
     ...(schedule.profileId === undefined ? {} : { profileId: schedule.profileId }),
     ...(schedule.modelId === undefined ? {} : { modelId: schedule.modelId }),
