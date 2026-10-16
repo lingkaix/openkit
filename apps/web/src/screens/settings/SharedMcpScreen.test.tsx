@@ -258,4 +258,28 @@ describe('Shared MCP administration', () => {
       )
     ).not.toContain('ghp_fake_canary');
   });
+  it('rejects credential-bearing endpoint userinfo before cache admission or transport', async () => {
+    const operations = setup();
+    await screen.findByText('Shared example');
+    await userEvent.type(screen.getByLabelText('New MCP id'), 'new-example');
+    await userEvent.type(screen.getByLabelText('New display name'), 'New example');
+    await userEvent.type(
+      screen.getByLabelText('New HTTP endpoint'),
+      'https://ordinary-user:plain-password@example.invalid/mcp'
+    );
+    await userEvent.type(screen.getByLabelText('New allowed tools'), 'read');
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add inactive shared configuration' })
+    );
+    await screen.findByText(/Check configuration fields/);
+    expect(operations['administration.server-mcp-create']).not.toHaveBeenCalled();
+    expect(
+      JSON.stringify(
+        operations.cache
+          .getMutationCache()
+          .getAll()
+          .map((mutation) => mutation.state)
+      )
+    ).not.toContain('plain-password');
+  });
 });

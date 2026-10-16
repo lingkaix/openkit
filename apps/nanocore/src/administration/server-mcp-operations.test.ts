@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type OperationOutput, SERVER_MCP_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
@@ -93,6 +93,22 @@ const creation = {
 };
 
 describe('Server MCP administration owner and recovery', () => {
+  it('refuses credential-bearing endpoints before catalog publication', async () => {
+    const f = fixture();
+    const path = join(f.dataRoot, 'server/catalog/catalog.json');
+    const before = existsSync(path) ? readFileSync(path) : null;
+    await expect(
+      f.call('administration.server-mcp-create', {
+        ...creation,
+        declaration: {
+          kind: 'http',
+          endpoint: 'https://ordinary-user:plain-password@example.invalid/mcp',
+        },
+      })
+    ).rejects.toMatchObject({ status: 400 });
+    expect(existsSync(path) ? readFileSync(path) : null).toEqual(before);
+    expect(loadResourceCatalog(f.dataRoot, { kind: 'server' }).mcp.entries).toEqual([]);
+  });
   it('admits the current administrator Web session and denies ordinary or revoked sessions', async () => {
     const f = fixture();
     const session: Actor = {
