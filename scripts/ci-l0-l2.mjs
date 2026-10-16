@@ -4,9 +4,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import * as suites from './release-tests.mjs';
 import {
   coveredSuite,
+  mergeCoveredSuite,
   packageSuite,
   prepareCoverage,
   rootNodeInventory,
@@ -88,7 +88,7 @@ function command(args, root) {
     throw Error(`L0-L2 shard command failed: ${args[0]}`);
 }
 
-/** Execute one complete shard; coverage uses the already admitted unchanged package recipe. */
+/** Execute one admitted owner partition without omitting its existing prerequisites or skip guard. */
 export function runShard(
   id,
   { root = process.cwd(), inventoryOnly = false, execute = command, runPackage = packageSuite } = {}
@@ -149,7 +149,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       if (!merge) throw Error('Unknown L0-L2 coverage merge');
       const owner = testOwners(process.cwd()).find((o) => merge.owners.includes(o.name));
       const directory = resolve('temp/ci-shards', merge.id);
-      const execution = suites.mergeCoveredSuite(owner, {
+      const execution = mergeCoveredSuite(owner, {
         directory,
         reportFile: join(directory, `${merge.id}-merged-execution.report`),
         count: 8,
