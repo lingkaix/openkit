@@ -55,6 +55,8 @@ export const chatKeys = {
 export interface ConversationDraft {
   /** Original client selections retained in TanStack mutation variables for exact retry. */
   files?: File[];
+  /** Payload-bound consent from the existing Worker handoff confirmation. */
+  fileHandoffConfirmed?: true;
   input: string;
   targetRef: string;
   logicalModelId?: string;

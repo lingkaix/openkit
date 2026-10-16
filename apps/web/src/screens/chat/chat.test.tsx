@@ -184,8 +184,13 @@ function createDeferred<T>() {
 }
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
-function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClient {
+function makeClient(
+  core: CoreOverrides = {},
+  app: AppOverrides = {},
+  files: Partial<CoreClient['artifactFiles']> = {}
+): CoreClient {
   const client = {
+    artifactFiles: files,
     core: {
       meta: vi.fn().mockResolvedValue({}),
 
@@ -458,6 +463,19 @@ async function switchToThread(
 }
 
 beforeEach(() => {
+  // jsdom lacks the browser byte-read method; FileReader reads the actual fixture bytes.
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+    configurable: true,
+    writable: true,
+    value: function (this: Blob) {
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(this);
+      });
+    },
+  });
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });

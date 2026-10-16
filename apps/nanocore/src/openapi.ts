@@ -152,9 +152,12 @@ function appJsonOperation<const OperationId extends string>(input: {
               ...(input.operationId === 'conversation.submit'
                 ? {
                     [CONVERSATION_FILE_MEDIA_TYPE]: {
-                      schema: { type: 'string', format: 'binary' },
-                      description:
-                        'Four-byte unsigned big-endian UTF-8 JSON length (1 through 1,048,576), that many strict conversation.submit input bytes, then one exact payload per ordered fileInputs entry. No extra bytes. Combined payload limit: 1,000,000,000 bytes. JSON-only nonempty inventory reconciles an existing receipt; a new command returns file_input_bytes_required before effects.',
+                      schema: {
+                        type: 'string',
+                        format: 'binary',
+                        description:
+                          'Four-byte unsigned big-endian UTF-8 JSON length (1 through 1,048,576), that many strict conversation.submit input bytes, then one exact payload per ordered fileInputs entry. No extra bytes. Combined payload limit: 1,000,000,000 bytes. JSON-only nonempty inventory reconciles an existing receipt; a new command returns file_input_bytes_required before effects.',
+                      },
                     },
                   }
                 : {}),

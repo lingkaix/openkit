@@ -33,10 +33,11 @@ test('keeps files as local drafts and publishes exact originals only on the rece
     body: '{}',
   });
   expect(workspaces.status).toBe(200);
-  const workspaceId = ListAuthorizedWorkspacesResponseSchema.parse(
+  const workspace = ListAuthorizedWorkspacesResponseSchema.parse(
     await workspaces.json()
-  ).items.find(({ workspace }) => workspace.kind === 'code')?.workspace.id;
-  expect(workspaceId).toBeTruthy();
+  ).items.find(({ workspace }) => workspace.kind === 'code')?.workspace;
+  expect(workspace).toBeTruthy();
+  const workspaceId = workspace!.id;
   const artifactInventory = async () => {
     const response = await fetch(`${stack!.coreUrl}/api/app/operations/artifact.list`, {
       method: 'POST',
@@ -48,6 +49,12 @@ test('keeps files as local drafts and publishes exact originals only on the rece
   };
   const before = await artifactInventory();
   await page.goto(`${stack.webUrl}/chat`);
+  const navigation = page.getByRole('navigation', { name: 'Primary workspace navigation' });
+  await navigation.getByRole('button', { name: 'Quick Chat', exact: true }).click();
+  await page.getByRole('menuitem', { name: workspace!.name, exact: true }).click();
+  await expect(
+    navigation.getByRole('button', { name: workspace!.name, exact: true })
+  ).toBeVisible();
   const originals = [
     {
       name: 'exact-original.bin',
@@ -74,9 +81,18 @@ test('keeps files as local drafts and publishes exact originals only on the rece
       response.request().headers()['content-type'] === 'application/vnd.openkit.conversation-files'
   );
   await page.getByRole('button', { name: /^Send message$/ }).click();
+  const disclosure = page.getByRole('dialog', { name: 'Share selected files with Worker' });
+  await expect(disclosure.getByLabel('Work brief')).toHaveText(
+    'Inspect the attached exact originals.'
+  );
+  for (const file of originals)
+    await expect(disclosure.getByText(file.name, { exact: true })).toBeVisible();
+  expect(await artifactInventory()).toEqual(before);
+  await disclosure.getByRole('button', { name: 'Share files and send' }).click();
   const response = await accepted;
   expect(response.status(), await response.text()).toBe(202);
   const result = SubmitConversationResponseSchema.parse(await response.json());
+  expect(result.turn.workspaceId).toBe(workspaceId);
   expect(result.turn.fileInputs).toEqual(
     originals.map((file) => ({
       name: file.name,

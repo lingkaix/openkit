@@ -123,6 +123,24 @@ export function registerConversationFileRoutes(
         context.get('actor'),
         {
           fileAdmission: dependencies.fileAdmission,
+          assertCurrent: () => {
+            try {
+              assertAuthorized();
+              reservation?.assertAvailable();
+            } catch (error) {
+              if (context.req.raw.signal.aborted)
+                throw new TurnStartValidationError(
+                  'file_submission_aborted',
+                  'Conversation file transfer was aborted.',
+                  499
+                );
+              if (error instanceof OperationError)
+                throw new TurnStartValidationError(error.code, error.message, error.status);
+              if (error instanceof FileAdmissionError)
+                throw new TurnStartValidationError(error.code, error.message, 507);
+              throw error;
+            }
+          },
           prepare: async () => {
             try {
               assertAuthorized();

@@ -65,3 +65,19 @@ it('admits an ordered exact file inventory without text and bounds combined decl
     }).success
   ).toBe(false);
 });
+
+it('binds explicit file handoff consent without accepting false or invented confirmation payloads', () => {
+  const input = {
+    input: 'Exact shared work brief',
+    targetRef: 'new-task-worker',
+    requestId: 'confirmed-file-command',
+    artifactRefs: [],
+    fileHandoffConfirmed: true,
+  };
+  expect(SubmitConversationRequestSchema.parse(input)).toEqual(input);
+  for (const fileHandoffConfirmed of [false, 'true', { confirmed: true }]) {
+    expect(
+      SubmitConversationRequestSchema.safeParse({ ...input, fileHandoffConfirmed }).success
+    ).toBe(false);
+  }
+});

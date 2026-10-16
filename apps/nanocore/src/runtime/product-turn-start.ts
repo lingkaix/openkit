@@ -66,6 +66,8 @@ interface StartProductTurnInput
   readonly filePayloadPaths?: readonly string[];
   /** Shared runtime disk owner; never persisted or projected. */
   readonly fileWriteAdmission?: FileStorageAdmission;
+  /** Synchronous live file-input admission immediately before publication. */
+  readonly assertFileInputAdmission?: () => void;
   /**
    * Optional callback once this admission's Turn and resolved setup are durable, carrying its nullable AgentSession while queued acceptance remains independent of execution.
    *
@@ -219,6 +221,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     );
   const reasoningEffort =
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
+  if (input.fileInputs?.length) input.assertFileInputAdmission?.();
   try {
     createSchedulerAdmissionEntry(input.coreDb, {
       backendId: backend.id,
@@ -266,6 +269,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
               fileInputs: input.fileInputs,
               filePayloadPaths: input.filePayloadPaths,
               fileWriteAdmission: input.fileWriteAdmission,
+              assertFileInputAdmission: input.assertFileInputAdmission,
             }
           : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),

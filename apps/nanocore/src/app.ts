@@ -1225,6 +1225,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly filePayloadPaths?: readonly string[];
     /** Shared runtime disk owner; never persisted or projected. */
     readonly fileWriteAdmission?: FileStorageAdmission;
+    /** Synchronous live file-input admission immediately before publication. */
+    readonly assertFileInputAdmission?: () => void;
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
@@ -1251,6 +1253,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             fileInputs: input.fileInputs,
             filePayloadPaths: input.filePayloadPaths,
             fileWriteAdmission: input.fileWriteAdmission,
+            assertFileInputAdmission: input.assertFileInputAdmission,
           }
         : {}),
       ...(input.requestActor ? { requestActor: input.requestActor } : {}),
