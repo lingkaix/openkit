@@ -15,6 +15,14 @@ Cadence, committed admission attempts and history survive restart. The existing 
 
 The coordinator chose the smaller current-owner route after independent Consultant scrutiny of a bounded pending/published proposal. The local publication crash window is narrow; adding another durable authority field, owner exception and projection obligations is not justified for this pre-stable slice. A retained queue proves acceptance, not complete pending Turn publication or successful execution. Explicit inspection preserves that distinction.
 
-## Source
+## Rejected Alternatives
+
+The bounded pending/published amendment would add durable authority, an owner exception, projection, migration and portability obligations for a rare interruption. Unconditional missing-Turn reconstruction and empty-input persistence retries conflict with the retained no-repair owner. Neither route is accepted.
+
+## Revisit When
+
+Revisit only when interruption evidence justifies a new owner amendment and the engineer explicitly accepts its authority and recovery consequences.
+
+## Affected Owners
 
 The coordinator answered the L-GO publication decision question in the active engineering session on 2026-10-16. The external proposal and independent Consultant review are execution evidence under `backlog-20261015/evidence/L-GO/`; neither is design authority. [Durable Scheduler](../specs/20260703-durable_scheduler_design.md) and [Recurring Triggers](../specs/20260711-scheduler_recurring_event_triggers.md) remain the owning specifications.
