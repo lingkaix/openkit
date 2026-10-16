@@ -268,19 +268,23 @@ export function createChannelServices(input: {
   /** Re-enumerates the request authority at boot or binding change, without a notification runner or implicit retry. */
   function recoverAttention(): void {
     for (const workspace of store.listWorkspaces()) {
-      const db = input.openWorkspace(workspace.id);
       try {
-        for (const thread of store.listThreads(workspace.id)) {
-          for (const record of listThreadPendingRequests(db.sqlite, workspace.id, thread.id)) {
-            try {
-              attentionRaised(record);
-            } catch {
-              /* An unavailable projection never settles or blocks a Core request. */
+        const db = input.openWorkspace(workspace.id);
+        try {
+          for (const thread of store.listThreads(workspace.id)) {
+            for (const record of listThreadPendingRequests(db.sqlite, workspace.id, thread.id)) {
+              try {
+                attentionRaised(record);
+              } catch {
+                /* An unavailable projection never settles or blocks a Core request. */
+              }
             }
           }
+        } finally {
+          db.sqlite.close();
         }
-      } finally {
-        db.sqlite.close();
+      } catch {
+        /* Missing source storage skips this projection; a later recovery can inspect it again. */
       }
     }
   }

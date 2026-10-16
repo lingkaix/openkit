@@ -19,7 +19,7 @@ export const NotificationDeliverySchema = z.object({
     requestId: z.union([ApprovalRequestIdSchema, UserInputRequestIdSchema]),
     kind: z.enum(['approval-request', 'user-input-request']),
   }),
-  recipientUserId: z.string().refine(isUserId),
+  recipientUserId: z.string().min(1).refine(isUserId),
   channel: z.enum(['discord', 'email']).nullable(),
   status: z.enum(['queued', 'sending', 'sent', 'failed-no-send', 'delivery-unknown']),
   createdAt: z.string().datetime(),
