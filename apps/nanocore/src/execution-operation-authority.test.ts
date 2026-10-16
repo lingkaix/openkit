@@ -7,7 +7,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from './auth/identity.js';
+import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
@@ -19,6 +19,7 @@ import {
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -34,25 +35,38 @@ describe('execution operation authority', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const automationStore = new AutomationStore();
-    const automation = automationStore.createAutomation('user_other', {
-      workspaceId: 'ws_demo',
-      name: 'Other owner',
-      cron: '*',
-      prompt: 'Work',
-    });
-    const thread = store.createThread('ws_demo', 'Private queue', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'user_other',
-    });
+    const automation = automationStore.createAutomation(
+      'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        name: 'Other owner',
+        cron: '*',
+        prompt: 'Work',
+      }
+    );
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Private queue',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      }
+    );
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_admin',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
-      turnId: 'turn_admin',
-      triggerActor: { kind: 'user', id: 'user_other' },
+      turnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
       turnInput: 'Work',
       requestedAgentId: 'agent_codex_host',
     });
@@ -60,7 +74,7 @@ describe('execution operation authority', () => {
       queueEntryId: 'queue_admin',
       denialReason: 'authority-denied',
     });
-    let actor: Actor = { kind: 'session', userId: 'user_local' };
+    let actor: Actor = { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' };
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
       c.set('actor', actor);
@@ -87,25 +101,27 @@ describe('execution operation authority', () => {
       const queueBefore = requireSchedulerAdmissionEntry(coreDb, 'queue_admin');
       const privateDenied = await app.request(
         ...operationRequest('scheduler.retry', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           queueEntryId: 'queue_admin',
         })
       );
       expect(privateDenied.status).toBe(404);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_admin')).toEqual(queueBefore);
-      expect(automationStore.getAutomation('user_other', automation.id)).toEqual(automation);
+      expect(
+        automationStore.getAutomation('usr_00000000-0000-73d4-904a-d4c4b905df7c', automation.id)
+      ).toEqual(automation);
       const token = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       actor =
         kind === 'session'
-          ? { kind, userId: 'user_local' }
+          ? { kind, userId: 'usr_00000000-0000-7000-8000-000000000001' }
           : {
               kind,
-              userId: 'user_local',
+              userId: 'usr_00000000-0000-7000-8000-000000000001',
               tokenId: token.record.tokenId,
               tokenScope: 'server-admin',
               tokenWorkspaceIds: [],
@@ -113,7 +129,9 @@ describe('execution operation authority', () => {
       const listed = await app.request(...operationRequest('automation.list', {}));
       await expect(listed.json()).resolves.toEqual({ items: [automation] });
       const queueList = await app.request(
-        ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+        ...operationRequest('scheduler.list', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
       );
       expect(
         (await queueList.json()).items.map((row: { queueEntryId: string }) => row.queueEntryId)
@@ -124,12 +142,15 @@ describe('execution operation authority', () => {
       expect(update.status).toBe(200);
       const retried = await app.request(
         ...operationRequest('scheduler.retry', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           queueEntryId: 'queue_admin',
         })
       );
       expect(retried.status).toBe(200);
-      const updated = automationStore.getAutomation('user_other', automation.id);
+      const updated = automationStore.getAutomation(
+        'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+        automation.id
+      );
       const retriedRow = requireSchedulerAdmissionEntry(coreDb, 'queue_admin');
       revokeOpenKitAccessTokenRecord(coreDb, token.record.tokenId);
       expect(
@@ -141,12 +162,14 @@ describe('execution operation authority', () => {
       ).toBe(403);
       const cancelled = await app.request(
         ...operationRequest('scheduler.cancel', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           queueEntryId: 'queue_admin',
         })
       );
       expect(cancelled.status).toBe(kind === 'token' ? 403 : 404);
-      expect(automationStore.getAutomation('user_other', automation.id)).toEqual(updated);
+      expect(
+        automationStore.getAutomation('usr_00000000-0000-73d4-904a-d4c4b905df7c', automation.id)
+      ).toEqual(updated);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_admin')).toEqual(retriedRow);
     } finally {
       coreDb.sqlite.close();

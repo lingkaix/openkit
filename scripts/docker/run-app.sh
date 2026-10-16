@@ -201,7 +201,6 @@ if (!dataRoot) {
 
 mkdirp(dataRoot);
 mkdirp(path.join(dataRoot, 'config', 'providers'));
-mkdirp(path.join(dataRoot, 'users', 'user_local'));
 mkdirp(path.join(dataRoot, 'workspaces'));
 
 const serverConfigPath = path.join(dataRoot, 'config', 'server.jsonc');

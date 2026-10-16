@@ -38,12 +38,12 @@ vi.mock('node:timers/promises', async (importOriginal) => {
 });
 
 const lineage = {
-  agentSessionId: 'as_cancellation',
+  agentSessionId: 'as_00000000-0000-7cce-b576-0390f8b77b03',
   packageSnapshotId: 'pkg_cancellation',
   requestId: 'req_cancellation',
-  threadId: 'th_cancellation',
-  turnId: 'tu_cancellation',
-  workspaceId: 'ws_cancellation',
+  threadId: 'th_00000000-0000-708e-8255-3295675ccd6d',
+  turnId: 'tu_00000000-0000-79cb-a1bd-c9c720157749',
+  workspaceId: 'ws_00000000-0000-73d1-8c4d-a8256336535e',
 };
 const tokens = {
   capabilityToken: 'fixture-capability',

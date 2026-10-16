@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -23,11 +23,15 @@ it.each([
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const app = createApp({ coreDb, dataRoot, store, mode: 'server' });
@@ -41,10 +45,14 @@ it.each([
       throw failure;
     });
     const before = structuredClone({
-      workspace: store.getWorkspace('ws_demo'),
+      workspace: store.getWorkspace('ws_00000000-0000-7000-8000-000000000001'),
       receipts: store.listCommandRequests(),
     });
-    const input = { workspaceId: 'ws_demo', name: 'Must not rename', requestId: randomUUID() };
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      name: 'Must not rename',
+      requestId: randomUUID(),
+    };
     const authorization = `Bearer ${token.secret}`;
     if (projection === 'HTTP') {
       const response = await app.request(
@@ -57,7 +65,7 @@ it.each([
           }
         )
       );
-      expect(owner).toHaveBeenCalledExactlyOnceWith('ws_demo', {
+      expect(owner).toHaveBeenCalledExactlyOnceWith('ws_00000000-0000-7000-8000-000000000001', {
         name: input.name,
         requestId: input.requestId,
       });
@@ -81,7 +89,7 @@ it.each([
           params: { name: 'call', arguments: { operation: 'workspace.update', input } },
         }),
       });
-      expect(owner).toHaveBeenCalledExactlyOnceWith('ws_demo', {
+      expect(owner).toHaveBeenCalledExactlyOnceWith('ws_00000000-0000-7000-8000-000000000001', {
         name: input.name,
         requestId: input.requestId,
       });
@@ -98,7 +106,7 @@ it.each([
       });
     }
     expect(errors).toEqual([]);
-    expect(store.getWorkspace('ws_demo')).toEqual(before.workspace);
+    expect(store.getWorkspace('ws_00000000-0000-7000-8000-000000000001')).toEqual(before.workspace);
     expect(store.listCommandRequests()).toEqual(before.receipts);
   } finally {
     vi.restoreAllMocks();

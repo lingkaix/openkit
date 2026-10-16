@@ -1,3 +1,9 @@
+import {
+  MaterialIdSchema,
+  MaterialRevisionIdSchema,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import {
   BindThreadMaterialRequestSchema,
@@ -20,8 +26,7 @@ import {
 } from './material.js';
 import type { OperationDefinition } from './operation-contract.js';
 
-const opaqueId = z.string().min(1);
-const workspace = { workspaceId: opaqueId };
+const workspace = { workspaceId: WorkspaceIdSchema };
 const credentials = [
   'local-user',
   'user-session',
@@ -62,7 +67,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Read one Workspace Material metadata record.',
-    inputSchema: z.object({ ...workspace, materialId: opaqueId }).strict(),
+    inputSchema: z.object({ ...workspace, materialId: MaterialIdSchema }).strict(),
     outputSchema: GetWorkspaceMaterialResponseSchema,
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -75,7 +80,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'List immutable Workspace Material revision metadata.',
-    inputSchema: z.object({ ...workspace, materialId: opaqueId }).strict(),
+    inputSchema: z.object({ ...workspace, materialId: MaterialIdSchema }).strict(),
     outputSchema: ListWorkspaceMaterialRevisionsResponseSchema,
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -90,7 +95,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     description: 'Save one immutable Workspace Material revision.',
     inputSchema: SaveWorkspaceMaterialRevisionRequestSchema.extend({
       ...workspace,
-      materialId: opaqueId,
+      materialId: MaterialIdSchema,
     }).strict(),
     outputSchema: SaveWorkspaceMaterialRevisionResponseSchema,
     credentials,
@@ -104,7 +109,9 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Read one exact Workspace Material revision.',
-    inputSchema: z.object({ ...workspace, materialId: opaqueId, revisionId: opaqueId }).strict(),
+    inputSchema: z
+      .object({ ...workspace, materialId: MaterialIdSchema, revisionId: MaterialRevisionIdSchema })
+      .strict(),
     outputSchema: GetWorkspaceMaterialRevisionResponseSchema,
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -117,7 +124,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Read the singular Thread Material projection.',
-    inputSchema: z.object({ ...workspace, threadId: opaqueId }).strict(),
+    inputSchema: z.object({ ...workspace, threadId: ThreadIdSchema }).strict(),
     outputSchema: GetThreadMaterialResponseSchema,
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -132,8 +139,8 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     description: 'Bind one Workspace Material to a Thread.',
     inputSchema: BindThreadMaterialRequestSchema.extend({
       ...workspace,
-      threadId: opaqueId,
-      materialId: opaqueId,
+      threadId: ThreadIdSchema,
+      materialId: MaterialIdSchema,
     }).strict(),
     outputSchema: BindThreadMaterialResponseSchema,
     credentials,
@@ -149,8 +156,8 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     description: 'Unbind one Workspace Material from a Thread.',
     inputSchema: UnbindThreadMaterialRequestSchema.extend({
       ...workspace,
-      threadId: opaqueId,
-      materialId: opaqueId,
+      threadId: ThreadIdSchema,
+      materialId: MaterialIdSchema,
     }).strict(),
     outputSchema: UnbindThreadMaterialResponseSchema,
     credentials,
@@ -166,8 +173,8 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     description: 'Exclude one bound Workspace Material from worker context.',
     inputSchema: ExcludeThreadMaterialRequestSchema.extend({
       ...workspace,
-      threadId: opaqueId,
-      materialId: opaqueId,
+      threadId: ThreadIdSchema,
+      materialId: MaterialIdSchema,
     }).strict(),
     outputSchema: ExcludeThreadMaterialResponseSchema,
     credentials,
@@ -183,8 +190,8 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     description: 'Restore one bound Workspace Material to worker context.',
     inputSchema: RestoreThreadMaterialRequestSchema.extend({
       ...workspace,
-      threadId: opaqueId,
-      materialId: opaqueId,
+      threadId: ThreadIdSchema,
+      materialId: MaterialIdSchema,
     }).strict(),
     outputSchema: RestoreThreadMaterialResponseSchema,
     credentials,

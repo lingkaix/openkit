@@ -6,7 +6,6 @@ import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as setupResolver from './agents/setup-resolver.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -27,6 +26,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -50,7 +50,11 @@ function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const vault = createVaultUnlockState({
     backendKind: 'encrypted-file',
     storeDir: join(dataRoot, 'server', 'vault'),
@@ -77,7 +81,7 @@ function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
               kind: 'gateway' as const,
               vendor: 'openai',
               baseUrl: 'https://inference.example.invalid/v1',
-              secretRef: 'vault://provider_presence_fixture',
+              secretRef: 'vault://vault_00000000-0000-778d-b94a-e2ca3936439b',
             }
           : { kind: 'local' as const }),
       models: ['openai/gpt-5.2'],
@@ -94,8 +98,14 @@ function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
       openKitConfig: { defaults: { defaultAgentId: preferred.id } },
       workspaceConfigs: [
         {
-          workspaceId: 'ws_demo',
-          path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          path: join(
+            dataRoot,
+            'workspaces',
+            'ws_00000000-0000-7000-8000-000000000001',
+            'config',
+            'workspace.jsonc'
+          ),
           config: WorkspaceConfigSchema.parse({
             schemaVersion: 1,
             workspace: { name: 'Demo Workspace', agents: [{ agentId: warm.id }] },
@@ -105,10 +115,10 @@ function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
     }),
   });
   store.createAgentSession({
-    id: 'as_live_readiness',
+    id: 'as_00000000-0000-7260-9908-7d6a85734e99',
     agentId: running.id,
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     status: 'ready',
     message: null,
     createdAt: timestamp,
@@ -176,15 +186,15 @@ function expectLiveOwners(dependencies: unknown, f: ReturnType<typeof fixture>) 
 function capturedRequest(agentId: string): PendingRequestRecord {
   return {
     requestId: 'pr_readiness_composition',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    raisingTurnId: 'turn_readiness_composition',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    raisingTurnId: 'tu_00000000-0000-7bda-8adf-5c9608ac03d7',
     requestItemId: 'item_readiness_composition',
     kind: 'approval',
     requesterKind: 'worker',
     agentId,
-    agentSessionId: 'as_live_readiness',
-    responsibleUserId: 'user_local',
+    agentSessionId: 'as_00000000-0000-7260-9908-7d6a85734e99',
+    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     state: 'pending',
     resolution: null,
     decidingActor: null,
@@ -253,23 +263,29 @@ describe('live Provider readiness composition', () => {
       const frozen =
         entry === 'pending-outcome'
           ? f.store.createTurn(
-              'ws_demo',
-              'th_demo',
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
               'Receive pending request outcomes.',
-              { kind: 'user', id: 'user_local' },
+              { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
               f.manager.current().version,
               { agentId: f.preferred.id, status: 'pending', executorKind: 'worker' }
             )
           : undefined;
       const before = {
-        turns: f.store.listThreadTurns('ws_demo', 'th_demo'),
-        items: f.store.listThreadItems('ws_demo', 'th_demo'),
+        turns: f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ),
+        items: f.store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ),
         receipts: f.store.listCommandRequests(),
       };
       const requestId = '00000000-0000-4000-8000-000000000932';
       const input = {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         requestId,
         input: 'Use current supply.',
         agentId: f.preferred.id,
@@ -278,7 +294,10 @@ describe('live Provider readiness composition', () => {
         const response = await f.app.request(
           ...operationRequest(
             'turn.start',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -293,9 +312,9 @@ describe('live Provider readiness composition', () => {
         await expect(
           start({
             store: f.store,
-            triggerActor: { kind: 'user', id: 'user_local' },
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             prompt: input.input,
             requestId,
             requestedAgentId: f.preferred.id,
@@ -306,9 +325,9 @@ describe('live Provider readiness composition', () => {
         ).rejects.toMatchObject({ code: 'agent_not_ready' });
       } else if (entry === 'remote-mcp') {
         const token = createOpenKitAccessTokenRecord(f.coreDb, {
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           scope: 'workspace',
-          workspaceIds: ['ws_demo'],
+          workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
           expiresAt: '2099-01-01T00:00:00.000Z',
         });
         const response = await f.app.request('http://127.0.0.1/mcp', {
@@ -340,8 +359,18 @@ describe('live Provider readiness composition', () => {
       expect(f.productAdmission).toHaveBeenCalledTimes(1);
       expectLiveOwners(f.productAdmission.mock.calls[0]![0], f);
       expectLiveOwners(f.resolver.mock.calls.at(-1)![1], f);
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before.turns);
-      expect(f.store.listThreadItems('ws_demo', 'th_demo')).toEqual(before.items);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual(before.turns);
+      expect(
+        f.store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual(before.items);
       expect(f.store.listCommandRequests()).toEqual(before.receipts);
       expect(f.coreDb.sqlite.prepare('SELECT * FROM scheduler_admission_entries').all()).toEqual(
         []
@@ -363,21 +392,26 @@ describe('live Provider readiness composition', () => {
       for (const [index, phase] of ['missing', 'restored', 'revoked'].entries()) {
         if (phase === 'restored')
           createVaultReference(f.coreDb, {
-            referenceId: 'provider_presence_fixture',
+            referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
             ownerScope: 'server',
             displayName: 'Presence fixture',
             secretKind: 'provider-api-key',
             backendKind: 'encrypted-file',
           });
         if (phase === 'revoked')
-          revokeVaultReference(f.coreDb, { referenceId: 'provider_presence_fixture' });
-        const thread = f.store.createThread('ws_demo', `Live supply ${phase}`);
+          revokeVaultReference(f.coreDb, {
+            referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
+          });
+        const thread = f.store.createThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          `Live supply ${phase}`
+        );
         const before = f.coreDb.sqlite.prepare('SELECT * FROM scheduler_admission_entries').all();
         const preparations = f.prepare.mock.calls.length;
         const response = await f.app.request(
           ...operationRequest(
             'turn.start',
-            { workspaceId: 'ws_demo', threadId: thread.id },
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -394,12 +428,16 @@ describe('live Provider readiness composition', () => {
         );
         expectLiveOwners(f.productAdmission.mock.calls.at(-1)![0], f);
         if (phase === 'restored') {
-          expect(f.store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+          expect(
+            f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
+          ).toHaveLength(1);
           await setImmediate();
           await Promise.allSettled([...getSchedulerPreparationClaims(f.coreDb).values()]);
         } else {
           expect(await response.json()).toMatchObject({ code: 'agent_not_ready' });
-          expect(f.store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
+          expect(
+            f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
+          ).toEqual([]);
           expect(
             f.coreDb.sqlite.prepare('SELECT * FROM scheduler_admission_entries').all()
           ).toEqual(before);
@@ -424,14 +462,16 @@ describe('live Provider readiness composition', () => {
       for (const phase of ['missing', 'configured', 'revoked'] as const) {
         if (phase === 'configured')
           createVaultReference(f.coreDb, {
-            referenceId: 'provider_presence_fixture',
+            referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
             ownerScope: 'server',
             displayName: 'Presence fixture',
             secretKind: 'provider-api-key',
             backendKind: 'encrypted-file',
           });
         if (phase === 'revoked')
-          revokeVaultReference(f.coreDb, { referenceId: 'provider_presence_fixture' });
+          revokeVaultReference(f.coreDb, {
+            referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
+          });
         f.resolver.mockClear();
         const response = await f.app.request(...operationRequest('diagnostics.setup', {}));
         expect(response.status, await response.clone().text()).toBe(200);
@@ -445,9 +485,9 @@ describe('live Provider readiness composition', () => {
         ]);
         for (const [, dependencies] of f.resolver.mock.calls) {
           const live = expectLiveOwners(dependencies, f);
-          expect(live.providerCredentialConfigured!('vault://provider_presence_fixture')).toBe(
-            phase === 'configured'
-          );
+          expect(
+            live.providerCredentialConfigured!('vault://vault_00000000-0000-778d-b94a-e2ca3936439b')
+          ).toBe(phase === 'configured');
           expect(live.subscriptionAccounts!.gatewayUnavailableReason(pair)).toBe(
             phase === 'missing' ? 'subscription_vault_unavailable' : 'subscription_account_absent'
           );
@@ -456,7 +496,12 @@ describe('live Provider readiness composition', () => {
       }
       expect(f.resolver.mock.results.every((result) => result.type === 'return')).toBe(true);
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual([]);
     } finally {
       f.cleanup();
     }
@@ -466,7 +511,10 @@ describe('live Provider readiness composition', () => {
     const f = fixture();
     try {
       const response = await f.app.request(
-        ...operationRequest('conversation.targets', { workspaceId: 'ws_demo', threadId: 'th_demo' })
+        ...operationRequest('conversation.targets', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        })
       );
       expect(response.status, await response.clone().text()).toBe(200);
       expect((await response.json()).targets).toEqual(
@@ -485,7 +533,12 @@ describe('live Provider readiness composition', () => {
       for (const [, dependencies] of f.resolver.mock.calls) expectLiveOwners(dependencies, f);
       expect(f.resolver.mock.results.every((result) => result.type === 'return')).toBe(true);
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual([]);
     } finally {
       f.cleanup();
     }
@@ -493,7 +546,7 @@ describe('live Provider readiness composition', () => {
 
   it('forwards the same live owners to the App captured-call setup evaluation', () => {
     const f = fixture();
-    const workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const services = f.registration.mock.calls.at(-1)![0].pendingRequestServices!;
       const facts = services.evaluateCapturedCall!(
@@ -507,7 +560,12 @@ describe('live Provider readiness composition', () => {
       expectLiveOwners(f.resolver.mock.calls[0]![1], f);
       expect(f.resolver.mock.results[0]!.type).toBe('return');
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
       f.cleanup();

@@ -7,6 +7,7 @@ import type { AgentManifest } from '../agents/manifest.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createDiagnosticsSnapshot } from './snapshot.js';
 
 /**
@@ -34,7 +35,7 @@ describe('createDiagnosticsSnapshot', () => {
     try {
       applyMigrations(coreDb);
       const snapshot = createDiagnosticsSnapshot({
-        actor: { kind: 'local', userId: 'user_local' },
+        actor: { kind: 'local', userId: FIXTURE_LOCAL_USER_ID },
         coreDb,
         dataRoot,
         mode: 'local',

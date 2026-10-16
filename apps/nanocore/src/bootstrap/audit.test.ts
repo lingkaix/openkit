@@ -34,9 +34,9 @@ describe('boot audit recorder', () => {
         migrationIds: ['core_0000_setup'],
         indexRebuildEvents: [
           {
-            indexPath: 'workspaces/ws_demo/indexes/search.json',
+            indexPath: 'workspaces/ws_00000000-0000-7000-8000-000000000001/indexes/search.json',
             itemCount: 2,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
         storageRecoveryEvents: [
@@ -82,9 +82,9 @@ describe('boot audit recorder', () => {
         migrationIds: ['core_0000_setup'],
         indexRebuildEvents: [
           {
-            indexPath: 'workspaces/ws_demo/indexes/search.json',
+            indexPath: 'workspaces/ws_00000000-0000-7000-8000-000000000001/indexes/search.json',
             itemCount: 2,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
         storageRecoveryEvents: [
@@ -101,7 +101,7 @@ describe('boot audit recorder', () => {
         expect.objectContaining({
           action: 'boot.start',
           category: 'system',
-          id: 'aud_boot_start_test_start',
+          id: 'aud_d4426a3f-e83e-5c97-9471-b87b74bd0e72',
           outcome: 'succeeded',
           resource: 'server:boot:boot_start_test',
           severity: 'info',
@@ -184,7 +184,7 @@ describe('boot audit recorder', () => {
           action: 'boot.outcome',
           category: 'system',
           errorCode: 'boot_degraded',
-          id: 'aud_boot_audit_test_outcome',
+          id: 'aud_16ab7e83-eb41-5091-a878-d798a5cca4d1',
           outcome: 'succeeded',
           resource: 'server:boot:boot_audit_test',
           severity: 'warning',
@@ -245,7 +245,7 @@ describe('boot audit recorder', () => {
         expect.objectContaining({
           action: 'boot.shutdown',
           category: 'system',
-          id: 'aud_boot_shutdown_test_shutdown',
+          id: 'aud_4c53f7f6-e79d-580a-b6f0-fb1cf968b333',
           outcome: 'succeeded',
           resource: 'server:boot:boot_shutdown_test',
           severity: 'info',

@@ -19,7 +19,7 @@ CREATE TABLE `artifact_reviews` (
 	`applied_material_revision_id` text,
 	`created_at` text NOT NULL,
 	PRIMARY KEY(`workspace_id`,`artifact_id`,`artifact_version`),
-	CONSTRAINT `artifact_reviews_review_id_check` CHECK (length(`review_id`) = 29 AND substr(`review_id`, 1, 5) = 'arev_' AND substr(`review_id`, 6) NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT `artifact_reviews_review_id_check` CHECK (length(`review_id`) = 41 AND `review_id` GLOB 'arev_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[57][0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
 	CONSTRAINT `artifact_reviews_version_check` CHECK (typeof(`artifact_version`) = 'integer' AND `artifact_version` > 0),
 	CONSTRAINT `artifact_reviews_content_digest_check` CHECK (length(`content_digest`) = 71 AND substr(`content_digest`, 1, 7) = 'sha256:' AND substr(`content_digest`, 8) NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT `artifact_reviews_proposal_tuple_check` CHECK ((`proposal_material_id` IS NULL AND `proposal_base_revision_id` IS NULL AND `proposal_base_content_digest` IS NULL) OR (`proposal_material_id` IS NOT NULL AND `proposal_base_revision_id` IS NOT NULL AND `proposal_base_content_digest` IS NOT NULL)),

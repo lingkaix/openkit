@@ -1,9 +1,9 @@
 {
-  "protocolVersion": "0.5.0",
+  "protocolVersion": "0.6.0",
   "schema": "item-delta",
   "data": {
     "type": "item-delta",
-    "itemId": "0190f4c8-0016-7abc-8def-000000000016",
+    "itemId": "it_00000000-0000-794e-a97d-1591b8d8281d",
     "itemType": "tool-call",
     "deltaKind": "request-started",
     "requestRefId": "tool_request_1",

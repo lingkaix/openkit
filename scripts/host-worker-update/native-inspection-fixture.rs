@@ -22,14 +22,22 @@ async fn main() {
     let mode = args.next().expect("fixture scenario");
     let gateway = Gateway(Command::new("/bin/sleep").arg("60").spawn().unwrap());
     let state = InspectionState::new("2".repeat(64), gateway.0.id()).unwrap();
-    state.admit("host-fixture", "deployment-fixture", 8);
+    state.admit(
+        "host-fixture",
+        "dep_0190f4c8-0000-7000-8000-000000000003",
+        8,
+    );
     let changed = Arc::clone(&state);
     let member = gateway.0.id();
     let after_pin: Option<Arc<dyn Fn() + Send + Sync>> = match mode.as_str() {
         "observed" => None,
         "reconnect" => Some(Arc::new(move || {
             changed.clear();
-            changed.admit("host-fixture", "deployment-fixture", 9);
+            changed.admit(
+                "host-fixture",
+                "dep_0190f4c8-0000-7000-8000-000000000003",
+                9,
+            );
         })),
         "replace" => Some(Arc::new(move || {
             // SAFETY: this PID belongs to the child retained by the fixture's Gateway guard.

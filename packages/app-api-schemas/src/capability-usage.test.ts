@@ -12,12 +12,12 @@ const SYSTEM_PROMPT_DIGEST = `sha256:${'a'.repeat(64)}`;
 function usageCall() {
   return {
     agentId: 'assistant',
-    agentSessionId: 'session_demo',
+    agentSessionId: 'as_00000000-0000-78be-889a-02eee50dd060',
     capabilityId: 'llm.chat_completions',
     completedAt: '2026-09-21T00:00:01.000Z',
     errorCode: null,
     family: 'llm' as const,
-    id: 'cap_digest_demo',
+    id: 'cap_00000000-0000-76f1-9c8b-8f96d4d06e57',
     operation: 'chat_completions',
     providerRef: 'openrouter',
     redactionClass: 'metadata-only',
@@ -26,9 +26,9 @@ function usageCall() {
     startedAt: '2026-09-21T00:00:00.000Z',
     status: 'succeeded' as const,
     summary: 'Gateway call completed.',
-    threadId: 'th_demo',
-    turnId: 'turn_demo',
-    workspaceId: 'ws_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 

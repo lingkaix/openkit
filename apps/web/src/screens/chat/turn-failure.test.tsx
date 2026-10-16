@@ -13,8 +13,8 @@ const FAILURE_MESSAGE =
   'Worker reported terminal status: failed. Last worker inference stream failed before completion.';
 
 const THREAD = {
-  id: 'th_82',
-  workspaceId: 'ws1',
+  id: 'th_00000000-0000-7b47-b9e3-5a516884858f',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   name: 'Failed worker task',
   preview: 'Failed worker task',
   status: 'active' as const,
@@ -23,23 +23,23 @@ const THREAD = {
 };
 
 const USER_MESSAGE = ItemSchema.parse({
-  id: 'it_user_tu_82',
-  workspaceId: 'ws1',
-  threadId: 'th_82',
-  turnId: 'tu_82',
+  id: 'it_00000000-0000-7d92-88f0-ce053bddd03c',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
+  turnId: 'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
   type: 'user-message',
   status: 'completed',
-  actor: { kind: 'user', id: 'user_operator' },
+  actor: { kind: 'user', id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
   text: 'Start the worker task.',
   createdAt: '2026-09-16T05:20:00.000Z',
   completedAt: '2026-09-16T05:20:00.000Z',
 });
 
 const ACCEPTED_STATUS_ITEM = ItemSchema.parse({
-  id: 'it_worker_result_tu_82',
-  workspaceId: 'ws1',
-  threadId: 'th_82',
-  turnId: 'tu_82',
+  id: 'it_00000000-0000-76eb-a38d-371253d2bde1',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
+  turnId: 'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
   type: 'status',
   status: 'completed',
   level: 'info',
@@ -50,10 +50,10 @@ const ACCEPTED_STATUS_ITEM = ItemSchema.parse({
 });
 
 const FAILED_DASHBOARD_TURN = ProductTurnSchema.parse({
-  id: 'tu_82',
-  workspaceId: 'ws1',
-  threadId: 'th_82',
-  triggerActor: { kind: 'user', id: 'user_operator' },
+  id: 'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
+  triggerActor: { kind: 'user', id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
   items: [USER_MESSAGE, ACCEPTED_STATUS_ITEM],
   error: {
     code: 'worker_governance_turn_failed',
@@ -77,8 +77,8 @@ const HISTORICAL_FAILURE_MESSAGE =
 
 const HISTORICAL_USER_MESSAGE = ItemSchema.parse({
   ...USER_MESSAGE,
-  id: 'it_user_tu_81',
-  turnId: 'tu_81',
+  id: 'it_00000000-0000-7c02-9057-a964ac246063',
+  turnId: 'tu_00000000-0000-780c-a2d1-635989a81c43',
   text: 'Start the earlier worker task.',
   createdAt: '2026-09-16T05:18:00.000Z',
   completedAt: '2026-09-16T05:18:00.000Z',
@@ -86,26 +86,26 @@ const HISTORICAL_USER_MESSAGE = ItemSchema.parse({
 
 const HISTORICAL_ACCEPTED_STATUS_ITEM = ItemSchema.parse({
   ...ACCEPTED_STATUS_ITEM,
-  id: 'it_worker_result_tu_81',
-  turnId: 'tu_81',
+  id: 'it_00000000-0000-75c7-a970-cd6178bdb2bf',
+  turnId: 'tu_00000000-0000-780c-a2d1-635989a81c43',
   createdAt: '2026-09-16T05:18:01.000Z',
   completedAt: '2026-09-16T05:18:01.000Z',
 });
 
 const LATER_USER_MESSAGE = ItemSchema.parse({
   ...USER_MESSAGE,
-  id: 'it_user_tu_83',
-  turnId: 'tu_83',
+  id: 'it_00000000-0000-72f5-81b3-53ef9232c105',
+  turnId: 'tu_00000000-0000-7d88-a3e7-a916baddc142',
   text: 'Continue after the failure.',
   createdAt: '2026-09-16T05:22:00.000Z',
   completedAt: '2026-09-16T05:22:00.000Z',
 });
 
 const LATER_ASSISTANT_DONE = ItemSchema.parse({
-  id: 'it_assistant_tu_83',
-  workspaceId: 'ws1',
-  threadId: 'th_82',
-  turnId: 'tu_83',
+  id: 'it_00000000-0000-7de6-8bcf-1e4c1f8c9377',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
+  turnId: 'tu_00000000-0000-7d88-a3e7-a916baddc142',
   type: 'assistant-message',
   status: 'completed',
   text: 'Done',
@@ -115,7 +115,7 @@ const LATER_ASSISTANT_DONE = ItemSchema.parse({
 
 const HISTORICAL_FAILED_TURN = ProductTurnSchema.parse({
   ...FAILED_DASHBOARD_TURN,
-  id: 'tu_81',
+  id: 'tu_00000000-0000-780c-a2d1-635989a81c43',
   items: [HISTORICAL_USER_MESSAGE, HISTORICAL_ACCEPTED_STATUS_ITEM],
   error: {
     code: 'worker_governance_turn_failed',
@@ -127,7 +127,7 @@ const HISTORICAL_FAILED_TURN = ProductTurnSchema.parse({
 
 const LATER_COMPLETED_TURN = ProductTurnSchema.parse({
   ...COMPLETED_DASHBOARD_TURN,
-  id: 'tu_83',
+  id: 'tu_00000000-0000-7d88-a3e7-a916baddc142',
   items: [LATER_USER_MESSAGE, LATER_ASSISTANT_DONE],
   startedAt: '2026-09-16T05:22:00.000Z',
   completedAt: '2026-09-16T05:22:01.000Z',
@@ -161,8 +161,8 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
       'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       'turn.start': vi.fn(),
       'conversation.targets': vi.fn().mockResolvedValue({
-        workspaceId: 'ws1',
-        threadId: 'th_82',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
         defaultTargetRef: 'internal-role:assistant',
         targets: [],
       }),
@@ -180,28 +180,32 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
       'workspace.list': vi
         .fn()
         .mockResolvedValueOnce({
-          items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
-            effectiveRole: 'owner',
-            membershipRevision: 1,
-            ownerUserId: 'user_local',
-            registryRevision: 1,
-          })),
+          items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map(
+            (workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+              registryRevision: 1,
+            })
+          ),
         })
         .mockImplementation(
           ((core['workspace.list'] ?? app['workspace.list']) as
             | CoreClient['operations']['workspace.list']
             | undefined) ??
             vi.fn().mockResolvedValue({
-              items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
+              items: [
+                { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+              ].map((workspace) => ({
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -215,7 +219,13 @@ function renderTask(client: CoreClient) {
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter initialEntries={['/tasks/ws1/th_82']}>{children}</MemoryRouter>
+        <MemoryRouter
+          initialEntries={[
+            '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7b47-b9e3-5a516884858f',
+          ]}
+        >
+          {children}
+        </MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -225,7 +235,7 @@ function renderTask(client: CoreClient) {
 
 beforeEach(() => {
   localStorage.clear();
-  useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+  useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
 });
 
 describe('task runtime activity', () => {
@@ -243,7 +253,7 @@ describe('task runtime activity', () => {
             turns: [HISTORICAL_FAILED_TURN, COMPLETED_DASHBOARD_TURN],
             runtimeActivity: [
               {
-                turnId: 'tu_81',
+                turnId: 'tu_00000000-0000-780c-a2d1-635989a81c43',
                 contentCapture: 'on',
                 coverage: 'partial',
                 entries: [
@@ -294,10 +304,14 @@ describe('task runtime activity', () => {
               { ...HISTORICAL_FAILED_TURN, items: [], status: 'completed', error: null },
               { ...COMPLETED_DASHBOARD_TURN, items: [] },
             ],
-            runtimeActivity: ['tu_81', 'tu_82'].map((turnId) => ({
+            runtimeActivity: [
+              'tu_00000000-0000-780c-a2d1-635989a81c43',
+              'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
+            ].map((turnId) => ({
               turnId,
               coverage,
-              contentCapture: turnId === 'tu_81' ? 'off' : 'unknown',
+              contentCapture:
+                turnId === 'tu_00000000-0000-780c-a2d1-635989a81c43' ? 'off' : 'unknown',
               entries: [],
               omittedEntryCount: 0,
             })),

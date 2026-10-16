@@ -54,7 +54,7 @@ describe('canonical append writes', () => {
       workspace.id,
       thread.id,
       'Durability',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { captureCoverage: { scope: 'server', value: 'off' } }
     );
@@ -135,11 +135,11 @@ describe('canonical append writes', () => {
   });
   it('finishes one JSONL row when the filesystem reports partial writes', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-partial-append-'));
-    const threadId = 'th_partial_append';
-    const turnId = 'tu_partial_append';
+    const threadId = 'th_00000000-0000-7855-a199-a72329fa45c0';
+    const turnId = 'tu_00000000-0000-7726-a488-91b3274371a4';
     const item = {
-      id: 'it_partial_append',
-      workspaceId: 'ws_partial_append',
+      id: 'it_00000000-0000-7399-9fe3-0b3d37002502',
+      workspaceId: 'ws_00000000-0000-739a-9803-af1c03be9d3f',
       threadId,
       turnId,
       type: 'assistant-message',

@@ -8,13 +8,14 @@ import {
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -62,29 +63,38 @@ function createRestorableWorkerControlFixture(
 
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-  const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Restore worker inference identity', {
-    kind: 'user',
-    id: 'user_local',
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
+  const store = createDemoStore();
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Restore worker inference identity',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'as_restore_1',
+      agentSessionId: 'as_00000000-0000-71b5-9df2-90c10d27f16c',
       backend: {
         kind: 'openshell',
       },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_restore_1',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turn,
       workspaceCwd: '/workspace/openkit',
       workspaceRoots: [],
     })
   );
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
   applyScopedMigrations(workspaceDb);
   try {
@@ -121,7 +131,7 @@ function createRestorableWorkerControlFixture(
 
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_restore_1',
+    attemptId: testEntityId('attempt', 'lease_restore_1'),
     agentSessionId: options.attemptAgentSessionId ?? environmentPackage.scope.agentSessionId,
     inputRef: environmentPackage.snapshotId,
     bindingRef: sandboxBindingRef,
@@ -130,7 +140,7 @@ function createRestorableWorkerControlFixture(
     now: () => '2026-07-13T00:00:04.000Z',
   });
   bindNanoHostAttemptRouteTokenHashes(coreDb, {
-    attemptId: 'lease_restore_1',
+    attemptId: testEntityId('attempt', 'lease_restore_1'),
     now: () => '2026-07-13T00:00:05.000Z',
     sandboxBindingRef,
     workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
@@ -191,13 +201,13 @@ describe('worker control gateway restart hydration', () => {
   it('fails closed when the durable AEP snapshot is missing or mismatched', () => {
     for (const options of [
       { recordSnapshot: false },
-      { attemptAgentSessionId: 'as_wrong_owner' },
+      { attemptAgentSessionId: 'as_00000000-0000-7862-ab63-7b3f305baefa' },
       { admissionRequestId: 'req_wrong_owner' },
       {
         admissionTriggerActor: {
           kind: 'automation',
-          id: 'automation_wrong_actor',
-          responsibleUserId: 'user_local',
+          id: 'auto_00000000-0000-7c0a-84d1-ecc00dfd92fa',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         },
       },
     ]) {

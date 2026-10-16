@@ -30,7 +30,7 @@ describe('worker MCP gateway', () => {
         credentials: { bearer: 'synthetic-bearer-canary' },
         server,
         toolName: 'echo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(upstream.observedHeaders.length).toBeGreaterThan(0);
       expect(
@@ -38,7 +38,9 @@ describe('worker MCP gateway', () => {
           (headers) => headers.get('authorization') === 'Bearer synthetic-bearer-canary'
         )
       ).toBe(true);
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('inactive');
     } finally {
       await gateway.close();
       coreDb.sqlite.close();
@@ -63,7 +65,7 @@ describe('worker MCP gateway', () => {
       await gateway.listTools({
         credentials: { headers: { [name]: 'raw-"quoted\\slash-canary' } },
         server,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(upstream.observedHeaders.length).toBeGreaterThan(0);
       expect(
@@ -97,7 +99,7 @@ describe('worker MCP gateway', () => {
             ...(form === 'query-encoded' ? { query: { token: canary } } : {}),
           },
           server: httpTestServer(upstream.url, 2_000),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
     } finally {
@@ -133,7 +135,7 @@ describe('worker MCP gateway', () => {
             },
             server: httpTestServer(upstream.url, 2_000),
             toolName: 'echo',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).rejects.toMatchObject({
           code: 'mcp-call-failed',
@@ -170,7 +172,7 @@ describe('worker MCP gateway', () => {
         gateway.listTools({
           credentials: { bearer },
           server: httpTestServer(upstream.url, 2_000),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
       expect(upstream.observed).toEqual([]);
@@ -204,7 +206,7 @@ describe('worker MCP gateway', () => {
         gateway.listTools({
           credentials: { bearer: 'static-auth-canary' },
           server: httpTestServer(`http://127.0.0.1:${address.port}/mcp`, 2_000),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({
         code: 'mcp-server-unavailable',
@@ -283,7 +285,9 @@ describe('worker MCP gateway', () => {
     });
 
     try {
-      await expect(gateway.listTools({ server, workspaceId: 'ws_demo' })).resolves.toMatchObject({
+      await expect(
+        gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).resolves.toMatchObject({
         serverVersion: '1.0.0',
         tools: [{ name: 'echo' }],
       });
@@ -291,13 +295,13 @@ describe('worker MCP gateway', () => {
         arguments: { message: 'first' },
         server,
         toolName: 'echo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const second = await gateway.callTool({
         arguments: { message: 'second' },
         server,
         toolName: 'echo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(first.structuredContent).toMatchObject({ message: 'first' });
@@ -305,7 +309,9 @@ describe('worker MCP gateway', () => {
         message: 'second',
         pid: (first.structuredContent as { pid: number }).pid,
       });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('ready');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('ready');
       for (let elapsed = 0; elapsed < 60_000; elapsed += 15_000) {
         await vi.advanceTimersByTimeAsync(15_000);
         for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -313,7 +319,9 @@ describe('worker MCP gateway', () => {
         }
       }
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('inactive');
     } finally {
       await gateway.close();
       ping.mockRestore();
@@ -354,15 +362,22 @@ describe('worker MCP gateway', () => {
         arguments: { message: 'pid' },
         server,
         toolName: 'echo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const pid = (result.structuredContent as { pid: number }).pid;
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('ready');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('ready');
 
       process.kill(pid, 'SIGTERM');
       await vi.waitFor(
         () => {
-          expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+          expect(
+            gateway.getServerHealth({
+              server,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            })
+          ).toBe('degraded');
         },
         { timeout: 2_000 }
       );
@@ -405,7 +420,7 @@ describe('worker MCP gateway', () => {
           arguments: { message: 'oversize' },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({
         code: 'mcp-result-too-large',
@@ -419,7 +434,7 @@ describe('worker MCP gateway', () => {
           arguments: { message: 'crash' },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-call-failed', upstreamEffect: 'unknown' });
       await expect(
@@ -427,7 +442,7 @@ describe('worker MCP gateway', () => {
           arguments: { message: 'tool-error' },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-call-failed', upstreamEffect: 'contacted' });
     } finally {
@@ -440,7 +455,9 @@ describe('worker MCP gateway', () => {
     const server = stdioTestServer(5_000);
 
     try {
-      await expect(gateway.listTools({ server, workspaceId: 'ws_demo' })).resolves.toMatchObject({
+      await expect(
+        gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).resolves.toMatchObject({
         tools: [{ name: 'echo' }],
       });
       await expect(
@@ -448,10 +465,12 @@ describe('worker MCP gateway', () => {
           arguments: { message: 'timeout' },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-timeout', upstreamEffect: 'unknown' });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('degraded');
     } finally {
       await gateway.close();
     }
@@ -468,7 +487,7 @@ describe('worker MCP gateway', () => {
           arguments: { message: 'oversized-chunked' },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({
         code: 'mcp-result-too-large',
@@ -494,7 +513,7 @@ describe('worker MCP gateway', () => {
           arguments: { message: 'never-dispatched' },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({
         code: 'mcp-server-unavailable',
@@ -516,7 +535,7 @@ describe('worker MCP gateway', () => {
       const live = await gateway.listTools({
         credentials: { environment: { OPENKIT_MCP_STDERR_FLOOD: floodCredential } },
         server: floodServer,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(live.tools).toMatchObject([{ name: 'echo' }]);
       expect(JSON.stringify(live)).not.toContain('private-stderr-canary');
@@ -525,7 +544,7 @@ describe('worker MCP gateway', () => {
         gateway.listTools({
           credentials: { environment: { OPENKIT_MCP_INIT_HANG: 'hang-private-value' } },
           server: stdioTestServer(50),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-timeout', credentialsMaterialized: true });
       expect(performance.now() - startedAt).toBeLessThan(6_000);
@@ -541,13 +560,13 @@ describe('worker MCP gateway', () => {
     const cancellation = new AbortController();
 
     try {
-      await gateway.listTools({ server, workspaceId: 'ws_demo' });
+      await gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
       const call = gateway.callTool({
         arguments: { message: 'timeout' },
         server,
         signal: cancellation.signal,
         toolName: 'echo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await new Promise((resolve) => setTimeout(resolve, 10));
       cancellation.abort();
@@ -556,7 +575,9 @@ describe('worker MCP gateway', () => {
         code: 'mcp-call-failed',
         upstreamEffect: 'unknown',
       });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('degraded');
     } finally {
       await gateway.close();
     }
@@ -573,7 +594,7 @@ describe('worker MCP gateway', () => {
         gateway.listTools({
           server,
           signal: preCancelled.signal,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ cancelled: true, upstreamEffect: 'not-contacted' });
       await expect(
@@ -582,12 +603,14 @@ describe('worker MCP gateway', () => {
           server,
           signal: preCancelled.signal,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ cancelled: true, upstreamEffect: 'not-contacted' });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('inactive');
 
-      await gateway.listTools({ server, workspaceId: 'ws_demo' });
+      await gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
       const cancellation = new AbortController();
       const callTool = vi.spyOn(Client.prototype, 'callTool').mockImplementationOnce(async () => {
         setImmediate(() => cancellation.abort());
@@ -599,7 +622,7 @@ describe('worker MCP gateway', () => {
           server,
           signal: cancellation.signal,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ cancelled: false, upstreamEffect: 'unknown' });
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -625,7 +648,7 @@ describe('worker MCP gateway', () => {
       const listing = gateway.listTools({
         server: stdioTestServer(2_000),
         signal: cancellation.signal,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       cancellation.abort();
       await expect(listing).rejects.toMatchObject({ cancelled: true });
@@ -641,14 +664,17 @@ describe('worker MCP gateway', () => {
     const input = {
       credentials: { bearer: 'revoked-private-value' },
       server: httpTestServer(upstream.url, 2_000),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
 
     try {
       await gateway.listTools(input);
       await vi.waitFor(() => expect(gateway.getServerHealth(input)).toBe('inactive'));
       expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
         expect(
           workspaceDb.sqlite
@@ -675,7 +701,7 @@ describe('worker MCP gateway', () => {
     const input = {
       credentials: { headers: { authorization: 'retry-private-value' } },
       server: httpTestServer(upstream.url, 2_000),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const terminate = vi
       .spyOn(StreamableHTTPClientTransport.prototype, 'terminateSession')
@@ -715,7 +741,7 @@ describe('worker MCP gateway', () => {
     const input = {
       credentials: { headers: { authorization: 'bounded-private-value' } },
       server: httpTestServer(upstream.url, 50),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const teardownSettlementDeadlineMs = 10_000;
     const cleanup = new AbortController();
@@ -785,7 +811,7 @@ describe('worker MCP gateway', () => {
     const input = {
       credentials: { headers: { authorization: 'init-retry-private-value' } },
       server: httpTestServer(upstream.url, 2_000),
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const connect = vi.spyOn(Client.prototype, 'connect').mockRejectedValueOnce(new Error('init'));
     const terminate = vi
@@ -815,7 +841,10 @@ describe('worker MCP gateway', () => {
   it('rejects fresh sessions once gateway shutdown starts', async () => {
     const upstream = await createMcpHttpStub();
     const gateway = createDefaultWorkerMcpGateway();
-    const input = { server: httpTestServer(upstream.url, 2_000), workspaceId: 'ws_demo' };
+    const input = {
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
     let releaseTermination!: () => void;
     const heldTermination = new Promise<void>((resolve) => {
       releaseTermination = resolve;
@@ -862,7 +891,7 @@ describe('worker MCP gateway', () => {
         },
       },
       server,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
 
     try {
@@ -881,15 +910,19 @@ describe('worker MCP gateway', () => {
       expect(descendant.credentialDigest).toBe(
         createHash('sha256').update(credential).digest('hex')
       );
-      await gateway.closeWorkspace('ws_demo');
+      await gateway.closeWorkspace('ws_00000000-0000-7000-8000-000000000001');
       expect(await activeCallOutcome).toMatchObject({ code: 'mcp-call-failed' });
       expect(() => process.kill(descendantPid, 0)).toThrow(
         expect.objectContaining({ code: 'ESRCH' })
       );
-      rmSync(join(dataRoot, 'workspaces', 'ws_demo'), { recursive: true });
+      rmSync(join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001'), {
+        recursive: true,
+      });
       vi.useFakeTimers({ toFake: ['clearTimeout', 'setTimeout'] });
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo'))).toBe(false);
+      expect(
+        existsSync(join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001'))
+      ).toBe(false);
     } finally {
       vi.useRealTimers();
       await gateway.close();
@@ -913,7 +946,7 @@ describe('worker MCP gateway', () => {
         },
       },
       server,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const kill = process.kill.bind(process);
     let leaderPid = 0;
@@ -945,9 +978,9 @@ describe('worker MCP gateway', () => {
       leaderPid = descendant.supervisorPid;
       expect(leaderPid).toBeGreaterThan(0);
       expect(kill(-leaderPid, 0)).toBe(true);
-      await expect(gateway.closeWorkspace('ws_demo')).rejects.toThrow(
-        'MCP stdio process group remained addressable after SIGKILL.'
-      );
+      await expect(
+        gateway.closeWorkspace('ws_00000000-0000-7000-8000-000000000001')
+      ).rejects.toThrow('MCP stdio process group remained addressable after SIGKILL.');
       expect(() => process.kill(descendantPid, 0)).not.toThrow();
       await expect(gateway.listTools(gatewayInput)).rejects.toMatchObject({
         code: 'recovery_required',
@@ -976,7 +1009,7 @@ describe('worker MCP gateway', () => {
             },
           },
           server: stdioTestServer(2_000),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
       const descendantPid = JSON.parse(readFileSync(pidFile, 'utf8')).pid;
@@ -992,7 +1025,7 @@ describe('worker MCP gateway', () => {
     const pidFile = join(dataRoot, 'descendant.pid');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     workspaceDb.sqlite.exec(`
       CREATE TRIGGER reject_mcp_start_audit
@@ -1015,7 +1048,7 @@ describe('worker MCP gateway', () => {
             },
           },
           server: stdioTestServer(2_000),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
       expect(existsSync(pidFile)).toBe(false);
@@ -1072,14 +1105,14 @@ describe('worker MCP gateway', () => {
     let settled = false;
 
     try {
-      await gateway.listTools({ server, workspaceId: 'ws_demo' });
+      await gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
       callTool.mockReturnValue(response.promise);
       const call = gateway
         .callTool({
           arguments: { message: 'delayed' },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
         .then(
           (result) => {
@@ -1093,12 +1126,19 @@ describe('worker MCP gateway', () => {
         );
       await vi.advanceTimersByTimeAsync(60_000);
       expect(settled).toBe(false);
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('ready');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('ready');
       response.resolve({ content: [{ text: 'delayed', type: 'text' }] });
       await expect(call).resolves.toMatchObject({ result: { content: [{ text: 'delayed' }] } });
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.waitFor(() =>
-        expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive')
+        expect(
+          gateway.getServerHealth({
+            server,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toBe('inactive')
       );
     } finally {
       vi.useRealTimers();
@@ -1114,7 +1154,7 @@ describe('worker MCP gateway', () => {
     const upstream = await createMcpHttpStub({ delayMs: 100 });
     const { coreDb, gateway } = createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
-    const input = { server, workspaceId: 'ws_demo' };
+    const input = { server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
     const call = gateway.callTool({
       ...input,
       arguments: { message: 'delayed' },
@@ -1154,7 +1194,7 @@ describe('worker MCP gateway', () => {
         credentials,
         server,
         toolName: 'echo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       // Hold the delayed response until credential rejection closes its session; timers cannot establish this ordering under load.
       const delayedRejection = expect(delayed).rejects.toMatchObject({
@@ -1170,11 +1210,13 @@ describe('worker MCP gateway', () => {
           credentials,
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-call-failed' });
       await delayedRejection;
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('degraded');
     } finally {
       response.resolve();
       await gateway.close();
@@ -1196,7 +1238,7 @@ describe('worker MCP gateway', () => {
     const input = {
       credentials: { headers: { authorization: credential } },
       server,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const nativeTerminate = StreamableHTTPClientTransport.prototype.terminateSession;
     const terminate = vi.spyOn(StreamableHTTPClientTransport.prototype, 'terminateSession');
@@ -1247,8 +1289,10 @@ describe('worker MCP gateway', () => {
     const server = httpTestServer(upstream.url, 1_000);
 
     try {
-      await gateway.listTools({ server, workspaceId: 'ws_demo' });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('ready');
+      await gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('ready');
       expect(upstream.observed.some((request) => request.endsWith('|initialize'))).toBe(false);
       expect(upstream.observed.some((request) => request.endsWith('|server/discover'))).toBe(true);
       const discoversBefore = upstream.observed.filter((request) =>
@@ -1257,7 +1301,12 @@ describe('worker MCP gateway', () => {
       upstream.stopAnswering();
       await vi.waitFor(
         () => {
-          expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+          expect(
+            gateway.getServerHealth({
+              server,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            })
+          ).toBe('degraded');
         },
         { timeout: 20_000 }
       );
@@ -1296,7 +1345,9 @@ describe('worker MCP gateway', () => {
     });
 
     try {
-      await expect(gateway.listTools({ server, workspaceId: 'ws_demo' })).resolves.toMatchObject({
+      await expect(
+        gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).resolves.toMatchObject({
         tools: [{ name: 'echo' }, { name: 'echo-page-2' }],
       });
       expect(
@@ -1333,7 +1384,9 @@ describe('worker MCP gateway', () => {
     });
 
     try {
-      await expect(gateway.listTools({ server, workspaceId: 'ws_demo' })).rejects.toMatchObject({
+      await expect(
+        gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).rejects.toMatchObject({
         code: 'mcp-server-unavailable',
       });
       expect(upstream.observed.filter((request) => request.endsWith('|tools/list'))).toHaveLength(
@@ -1355,7 +1408,7 @@ describe('worker MCP gateway', () => {
         gateway.listTools({
           credentials: { headers: { authorization: 'protocol-error-private-value' } },
           server,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({
         code: 'mcp-server-unavailable',
@@ -1384,12 +1437,12 @@ describe('worker MCP gateway', () => {
               {
                 sink: { kind: 'header', name: 'authorization' },
                 slot: 'auth',
-                vaultGrantId: 'grant_auth',
+                vaultGrantId: 'grant_00000000-0000-7cee-ad3e-bd323b13f224',
               },
               {
                 sink: { kind: 'query', name: 'token' },
                 slot: 'query',
-                vaultGrantId: 'grant_query',
+                vaultGrantId: 'grant_00000000-0000-7f7a-bf26-88faf32ee63d',
               },
             ],
             deniedTools: [],
@@ -1416,10 +1469,12 @@ describe('worker MCP gateway', () => {
           credentials,
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).resolves.toMatchObject({ content: [{ text: 'safe', type: 'text' }] });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('inactive');
       expect(
         upstream.observed.some((request) => request.startsWith(`${credential}|query-canary|`))
       ).toBe(true);
@@ -1429,10 +1484,12 @@ describe('worker MCP gateway', () => {
           credentials,
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-call-failed' });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('degraded');
     } finally {
       await gateway.close();
       await upstream.close();
@@ -1453,7 +1510,7 @@ describe('worker MCP gateway', () => {
           credentials: { query: { token: credential } },
           server: httpTestServer(upstream.url, 2_000),
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({
         code: 'mcp-call-failed',
@@ -1491,7 +1548,7 @@ describe('worker MCP gateway', () => {
         {
           sink: { kind: 'header' as const, name: 'authorization' },
           slot: 'auth',
-          vaultGrantId: 'grant_auth',
+          vaultGrantId: 'grant_00000000-0000-7cee-ad3e-bd323b13f224',
         },
       ],
     };
@@ -1503,7 +1560,7 @@ describe('worker MCP gateway', () => {
           credentials: { headers: { authorization: 'canary' } },
           server,
           toolName: 'echo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable', upstreamEffect: 'not-contacted' });
     } finally {
@@ -1542,10 +1599,12 @@ describe('worker MCP gateway', () => {
         gateway.listTools({
           credentials: { headers: { authorization: credential } },
           server,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+      expect(
+        gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
+      ).toBe('degraded');
     } finally {
       await gateway.close();
       await upstream.close();
