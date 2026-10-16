@@ -27,6 +27,7 @@ import {
 import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
+import { SOURCE_PREVIEW_LIMITS } from '../context/bounded-source-view.js';
 import { prepareMaterialSourceInput } from '../context/material-source-files.js';
 import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
@@ -353,7 +354,6 @@ export async function prepareWorkerTurnContextPackage(
   const queuedMaterial = selectQueuedThreadMaterialRevision(workspaceDb, input.threadId);
   const materialSelections: WorkerContextPackageMaterialSelectionInput[] = [];
   const materialExclusions: WorkerContextPackageMaterialExclusion[] = [];
-  let selectedContextBytes = Buffer.byteLength(input.workerRequest, 'utf8');
   let queuedMaterialSelection: QueuedThreadMaterialSelection | null = null;
   const bindingCandidate = queuedMaterial;
   if (bindingCandidate?.inclusionState === 'excluded') {
@@ -418,8 +418,15 @@ export async function prepareWorkerTurnContextPackage(
       );
     }
     for (const page of pages) {
+      // S61 currently provides no notebook commit for a verified excerpt. Admit a complete
+      // page only within the independent preview allowance; never infer a token count.
       const pageBytes = Buffer.byteLength(page.content, 'utf8');
-      if (Math.ceil((selectedContextBytes + pageBytes) / 4) > contextBudgetTokens) {
+      if (
+        pageBytes > SOURCE_PREVIEW_LIMITS.bytes ||
+        page.content.split('\n', SOURCE_PREVIEW_LIMITS.lines + 2).length -
+          Number(page.content.endsWith('\n')) >
+          SOURCE_PREVIEW_LIMITS.lines
+      ) {
         knowledgeExclusions.push({
           contentDigest: page.contentDigest,
           knowledgePageId: page.knowledgePageId,
@@ -427,7 +434,6 @@ export async function prepareWorkerTurnContextPackage(
         });
         continue;
       }
-      selectedContextBytes += pageBytes;
       knowledgeSelections.push(page);
     }
   }
