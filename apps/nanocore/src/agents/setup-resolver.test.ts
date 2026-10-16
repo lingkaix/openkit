@@ -1,4 +1,9 @@
-import type { GatewayConfig, UserConfig, WorkspaceConfig } from '@openkit/config-schema';
+import {
+  AuthoredAgentConfigSchema,
+  type GatewayConfig,
+  type UserConfig,
+  type WorkspaceConfig,
+} from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderRegistry } from '../providers/registry.js';
@@ -570,16 +575,18 @@ describe('resolveAgentSetup', () => {
 
   it('refuses conflicting exact Skill versions in the composed setup', () => {
     const result = resolveAgentSetup(
-      agentConfig({
-        skills: [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }],
-        profiles: [
-          {
-            id: 'selected',
-            skills: [{ id: 'review-skill', digest: `sha256:${'b'.repeat(64)}` }],
-            mcp: [],
-          },
-        ],
-      }),
+      AuthoredAgentConfigSchema.parse(
+        agentConfig({
+          skills: [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }],
+          profiles: [
+            {
+              id: 'selected',
+              skills: [{ id: 'review-skill', digest: `sha256:${'b'.repeat(64)}` }],
+              mcp: [],
+            },
+          ],
+        })
+      ),
       {
         selectedProfileId: 'selected',
         gatewayConfig: gatewayConfig(),
