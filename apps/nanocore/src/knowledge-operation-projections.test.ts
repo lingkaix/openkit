@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
@@ -7,8 +7,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -53,12 +55,54 @@ function fixture(member = true) {
     store,
     dependencies,
     dataRoot,
-    close: () => {
+    close: async () => {
+      await closeRetrievalServices();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     },
   };
 }
+
+/** Test-owned exact immutable base; all mutations still cross current native admission. */
+function notebook(f: ReturnType<typeof fixture>) {
+  return new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces/ws_demo/knowledge/notebook.git'),
+  });
+}
+
+/** Accepted public inventory; the same definitions must drive each concrete projection. */
+const governedIds = [
+  'knowledge.answer',
+  'knowledge.source.list',
+  'knowledge.source.register',
+  'knowledge.source.read',
+  'knowledge.observation.list',
+  'knowledge.observation.record',
+  'knowledge.claim.list',
+  'knowledge.claim.record',
+  'knowledge.conflict.list',
+  'knowledge.conflict.record',
+  'knowledge.conflict.resolve',
+  'knowledge.indexes',
+  'knowledge.retrieval',
+  'knowledge.context.prepare',
+  'knowledge.proposal.draft',
+  'knowledge.repair.suggest',
+  'knowledge.health.check',
+  'knowledge.proposal.decide',
+  'knowledge.proposal.reverse',
+] as const;
+const entryIds = [
+  'knowledge.notebook.history',
+  'knowledge.notebook.diff',
+  'knowledge.notebook.restore',
+  'knowledge.notebook.update',
+  'knowledge.list',
+  'knowledge.create',
+  'knowledge.update',
+  'knowledge.delete',
+] as const;
+const acceptedIds = [...governedIds, ...entryIds].sort();
 
 /** Executes the three real public projections without an HTTP stand-in. */
 async function projections(f: ReturnType<typeof fixture>, token?: string) {
@@ -106,16 +150,17 @@ async function projections(f: ReturnType<typeof fixture>, token?: string) {
 }
 
 /** Exact candidate bytes derive from the existing proposal owner's schema, with registered source lineage. */
-function proposalInput(source: { id: string; contentDigest: string }) {
+function proposalInput(source: { id: string; contentDigest: string }, baseRevision: string) {
   const sourceReferences = [`source:${source.id}@${source.contentDigest}`];
   const canonicalPageBytes = [
     '---',
     'type: "KnowledgePage"',
     'title: "Cutover lesson"',
-    'schema_version: "openkit-workspace-knowledge-schema-v2"',
+    'schema_version: "openkit-scope-knowledge-schema-v4"',
     'openkit_status: "active"',
     'status: "stable"',
-    'scope: "workspace"',
+    'scope: {kind: workspace, workspaceId: ws_demo}',
+    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_entry_id: "cutover-lesson"',
     'openkit_entry_kind: "project-context"',
     `source_refs: ${JSON.stringify(sourceReferences)}`,
@@ -130,6 +175,7 @@ function proposalInput(source: { id: string; contentDigest: string }) {
   ].join('\n');
   return {
     requestId: randomUUID(),
+    baseRevision,
     knowledgePageId: 'cutover-lesson',
     canonicalPageBytes,
     contentDigest: `sha256:${createHash('sha256').update(canonicalPageBytes).digest('hex')}`,
@@ -185,10 +231,14 @@ const oldRoutes = [
 ] as const;
 
 describe('Knowledge operation definition cutover', () => {
-  it('declares nineteen governed operations and four retained entries with no handwritten projection catalogs', () => {
+  it('declares the accepted governed and Notebook operation inventory without handwritten projection catalogs', () => {
     const tables = schemas as unknown as Record<string, Record<string, unknown>>;
-    expect(Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS ?? {})).toHaveLength(19);
-    expect(Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS ?? {})).toHaveLength(4);
+    expect(Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
+      [...governedIds].sort()
+    );
+    expect(Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
+      [...entryIds].sort()
+    );
     const ids = [
       ...Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS!),
       ...Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS!),
@@ -220,7 +270,7 @@ describe('Knowledge operation definition cutover', () => {
         ).status
       ).toBe(404);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -292,16 +342,22 @@ describe('Knowledge operation definition cutover', () => {
         resolution: 'Resolved after inspection',
         resolvedBy: 'user_local',
       });
-      const draft = await compare('knowledge.proposal.draft', proposalInput(source.source));
+      const draft = await compare(
+        'knowledge.proposal.draft',
+        proposalInput(source.source, notebook(f).publishedRevision())
+      );
       const decision = await compare('knowledge.proposal.decide', {
         requestId: randomUUID(),
         proposalId: draft.proposal.id,
         decision: 'accepted',
+        proposalDigest: f.store.knowledgeProposalDigest('ws_demo', draft.proposal.id),
+        baseRevision: draft.proposal.baseRevision,
+        candidateRevision: draft.proposal.candidateRevision,
       });
-      expect(f.store.getKnowledgeEntry('ws_demo', 'cutover-lesson').content).toContain(
+      const reviewed = await compare('knowledge.list', {});
+      expect(reviewed.items.find(({ id }) => id === 'cutover-lesson')?.content).toContain(
         'Source traced'
       );
-      await compare('knowledge.list', {});
       await compare('knowledge.indexes', {});
       await compare('knowledge.retrieval', { query: 'cutover lesson' });
       await compare('knowledge.context.prepare', { query: 'cutover lesson' });
@@ -314,9 +370,13 @@ describe('Knowledge operation definition cutover', () => {
         reviewId: decision.review.reviewId,
         knowledgePageId: 'cutover-lesson',
         expectedContentDigest: draft.proposal.contentDigest,
+        baseRevision: notebook(f).publishedRevision(),
+        confirmRemoval: true,
       });
       const entry = await compare('knowledge.create', {
         requestId: randomUUID(),
+        knowledgePageId: 'entry-cutover',
+        baseRevision: notebook(f).publishedRevision(),
         kind: 'project-context',
         title: 'Entry cutover',
         content: 'Retained entry lesson',
@@ -324,15 +384,44 @@ describe('Knowledge operation definition cutover', () => {
       });
       await compare('knowledge.update', {
         requestId: randomUUID(),
+        baseRevision: notebook(f).publishedRevision(),
         knowledgeEntryId: entry.id,
         title: 'Updated entry cutover',
       });
-      await compare('knowledge.delete', { requestId: randomUUID(), knowledgeEntryId: entry.id });
-      expect(compared.size).toBe(23);
+      const fromRevision = notebook(f).publishedRevision();
+      const path = `${entry.id}.md`;
+      const bytes = notebook(f).readRevision(fromRevision, [path]).files[path]!;
+      await compare('knowledge.notebook.update', {
+        requestId: randomUUID(),
+        baseRevision: fromRevision,
+        changes: [
+          { path, content: bytes.replace('Retained entry lesson', 'Notebook edit lesson') },
+        ],
+        summary: 'Notebook projection edit',
+      });
+      await compare('knowledge.notebook.history', { limit: 2 });
+      const baseRevision = notebook(f).publishedRevision();
+      await compare('knowledge.notebook.diff', { baseRevision, fromRevision, pageIds: [entry.id] });
+      await compare('knowledge.notebook.restore', {
+        requestId: randomUUID(),
+        baseRevision,
+        fromRevision,
+        pageIds: [entry.id],
+        summary: 'Restore entry projection',
+      });
+      const beforeRemoval = await compare('knowledge.list', {});
+      await compare('knowledge.delete', {
+        requestId: randomUUID(),
+        knowledgeEntryId: entry.id,
+        baseRevision: beforeRemoval.notebookRevision,
+        expectedContentDigest: beforeRemoval.items.find(({ id }) => id === entry.id)!.contentDigest,
+        confirmRemoval: true,
+      });
+      expect([...compared].sort()).toEqual(acceptedIds);
     } finally {
-      f.close();
+      await f.close();
     }
-  });
+  }, 120_000);
 
   it('keeps unauthorized Workspace refusal on every definition, scoped source denial and readonly refusal on every mutation before effects', async () => {
     const f = fixture();
@@ -345,10 +434,14 @@ describe('Knowledge operation definition cutover', () => {
       });
       const projectors = await projections(f, issued.secret);
       const requestId = randomUUID();
-      const draft = proposalInput({
-        id: `ks_${randomUUID()}`,
-        contentDigest: `sha256:${'a'.repeat(64)}`,
-      });
+      const baseRevision = notebook(f).publishedRevision();
+      const draft = proposalInput(
+        {
+          id: `ks_${randomUUID()}`,
+          contentDigest: `sha256:${'a'.repeat(64)}`,
+        },
+        baseRevision
+      );
       const inputs: Record<string, Record<string, unknown>> = {
         'knowledge.source.register': {
           requestId,
@@ -387,29 +480,70 @@ describe('Knowledge operation definition cutover', () => {
         'knowledge.proposal.draft': draft,
         'knowledge.repair.suggest': {},
         'knowledge.health.check': {},
-        'knowledge.proposal.decide': { requestId, proposalId: 'kp_missing', decision: 'accepted' },
+        'knowledge.proposal.decide': {
+          requestId,
+          proposalId: 'kp_missing',
+          decision: 'accepted',
+          baseRevision,
+          candidateRevision: baseRevision,
+          proposalDigest: `sha256:${'a'.repeat(64)}`,
+        },
         'knowledge.proposal.reverse': {
           requestId,
           proposalId: 'kp_missing',
           reviewId: 'kr_missing',
+          baseRevision,
+          confirmRemoval: true,
           knowledgePageId: 'missing',
           expectedContentDigest: `sha256:${'a'.repeat(64)}`,
         },
         'knowledge.list': {},
         'knowledge.create': {
           requestId,
+          baseRevision,
+          knowledgePageId: 'denied-entry',
           kind: 'project-context',
           title: 'Denied entry',
           content: 'Denied content',
         },
-        'knowledge.update': { requestId, knowledgeEntryId: 'missing', title: 'Denied update' },
-        'knowledge.delete': { requestId, knowledgeEntryId: 'missing' },
+        'knowledge.update': {
+          requestId,
+          baseRevision,
+          knowledgeEntryId: 'missing',
+          title: 'Denied update',
+        },
+        'knowledge.delete': {
+          requestId,
+          baseRevision,
+          knowledgeEntryId: 'missing',
+          expectedContentDigest: `sha256:${'a'.repeat(64)}`,
+          confirmRemoval: true,
+        },
+        'knowledge.notebook.update': {
+          requestId,
+          baseRevision,
+          changes: [{ path: 'cutover-lesson.md', content: draft.canonicalPageBytes }],
+          summary: 'Denied notebook edit',
+        },
+        'knowledge.notebook.history': { revision: baseRevision, limit: 1 },
+        'knowledge.notebook.diff': {
+          baseRevision,
+          fromRevision: baseRevision,
+          pageIds: ['mem_project'],
+        },
+        'knowledge.notebook.restore': {
+          requestId,
+          baseRevision,
+          fromRevision: baseRevision,
+          pageIds: ['mem_project'],
+          summary: 'Denied restore',
+        },
       };
       const definitions = schemas.PRODUCT_OPERATION_DEFINITIONS as unknown as Record<
         string,
         { mutating: boolean }
       >;
-      expect(Object.keys(inputs)).toHaveLength(23);
+      expect(Object.keys(inputs).sort()).toEqual(acceptedIds);
       for (const project of Object.values(projectors)) {
         for (const [id, input] of Object.entries(inputs)) {
           await expect(project(id, { ...input, workspaceId: 'ws_unknown' })).rejects.toMatchObject({
@@ -429,7 +563,7 @@ describe('Knowledge operation definition cutover', () => {
       const traceRoot = join(f.dataRoot, 'workspaces/ws_demo/threads/th_demo/retrieval-traces');
       expect(existsSync(traceRoot) ? readdirSync(traceRoot) : []).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -464,7 +598,7 @@ describe('Knowledge operation definition cutover', () => {
         )
       ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -472,7 +606,11 @@ describe('Knowledge operation definition cutover', () => {
     const f = fixture();
     try {
       const member = await projections(f);
-      const foreign = f.store.createWorkspace('Foreign source authority');
+      const foreign = f.store.createWorkspace('Foreign source authority', {
+        requestId: randomUUID(),
+        producer: { kind: 'user', id: 'user_local' },
+        instructionReference: 'test-owned-fresh-workspace',
+      });
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
         ownerUserId: 'user_local',
@@ -485,17 +623,28 @@ describe('Knowledge operation definition cutover', () => {
         title: 'Foreign secret title',
         content: 'Foreign secret bytes',
       })) as schemas.OperationOutput<'knowledge.source.register'>;
-      const entry = f.store.createKnowledgeEntry('ws_demo', {
+      const entry = (await member.http('knowledge.create', {
+        workspaceId: 'ws_demo',
+        requestId: randomUUID(),
+        baseRevision: notebook(f).publishedRevision(),
+        knowledgePageId: 'restricted-audience-lesson',
         kind: 'project-context',
         title: 'Restricted audience lesson',
         content: 'audience budget baseline is forty two',
         sourceReferences: [],
+      })) as schemas.OperationOutput<'knowledge.create'>;
+      const baseRevision = notebook(f).publishedRevision();
+      const path = `${entry.id}.md`;
+      const bytes = notebook(f).readRevision(baseRevision, [path]).files[path]!;
+      await member.http('knowledge.notebook.update', {
+        workspaceId: 'ws_demo',
+        requestId: randomUUID(),
+        baseRevision,
+        changes: [
+          { path, content: bytes.replace(/sensitivity: .*\n/, 'sensitivity: "confidential"\n') },
+        ],
+        summary: 'Restrict selected fixture page',
       });
-      const page = join(f.dataRoot, 'workspaces/ws_demo/knowledge/pages', `${entry.id}.md`);
-      writeFileSync(
-        page,
-        readFileSync(page, 'utf8').replace(/sensitivity: .*\n/, 'sensitivity: "restricted"\n')
-      );
       const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: 'user_local',
         scope: 'server-admin',
@@ -514,7 +663,7 @@ describe('Knowledge operation definition cutover', () => {
           } catch (error) {
             expect(error).toMatchObject({
               code: 'workspace_access_denied',
-              message: 'Workspace access denied.',
+              message: 'Knowledge source is unavailable.',
             });
             const view = {
               code: (error as { code: string }).code,
@@ -557,7 +706,7 @@ describe('Knowledge operation definition cutover', () => {
         }
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -633,7 +782,7 @@ describe('Knowledge operation definition cutover', () => {
       expect(retrieve).toHaveBeenCalledTimes(2);
     } finally {
       retrieve.mockRestore();
-      f.close();
+      await f.close();
     }
   });
 
@@ -653,7 +802,7 @@ describe('Knowledge operation definition cutover', () => {
       ).rejects.toMatchObject({ code: 'data_root_required', status: 409 });
     } finally {
       root.mockRestore();
-      f.close();
+      await f.close();
     }
   });
 });
@@ -741,6 +890,6 @@ it.each([
     }
   } finally {
     vi.restoreAllMocks();
-    f.close();
+    await f.close();
   }
 });
