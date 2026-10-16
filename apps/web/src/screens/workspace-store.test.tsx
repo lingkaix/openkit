@@ -9,12 +9,12 @@ import { useWorkspaceStore, WORKSPACE_SELECTION_STORAGE_KEY } from './workspace-
 const USER_A_QUICK_CHAT = {
   id: 'ws_quick_a',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
 } as const;
 const USER_B_QUICK_CHAT = {
   id: 'ws_quick_b',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
 } as const;
 const PROJECT_WORKSPACE = {
   id: 'ws_project',

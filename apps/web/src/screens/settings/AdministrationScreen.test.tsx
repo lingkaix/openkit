@@ -26,7 +26,7 @@ const QUICK_CHAT = {
   ...PROJECT,
   id: 'ws_quick_chat',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
 };
 const SECOND_PROJECT = { ...PROJECT, id: 'ws_second', name: 'Project Borealis' };
 const STORAGE_REF = `wst_${'a'.repeat(32)}`;

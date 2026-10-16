@@ -28,7 +28,7 @@ describe('built-in Agent System Prompts', () => {
     const context = {
       workspaceId: 'ws_current',
       threadId: 'th_current',
-      workspaceKind: 'quick-chat',
+      workspaceKind: 'personal',
     } as const;
 
     expect(assembleBuiltInSystemPrompt('administration', context)).toBe(

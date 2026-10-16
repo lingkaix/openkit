@@ -30,10 +30,10 @@ function workspace(id: string, name: string, kind: WorkspaceRecord['kind'] = 'ge
   };
 }
 
-const FOREIGN_QUICK_CHAT = workspace('ws_foreign_quick', 'Foreign Quick Chat', 'quick-chat');
+const FOREIGN_QUICK_CHAT = workspace('ws_foreign_quick', 'Foreign Personal Workspace', 'personal');
 const FOREIGN_PROJECT = workspace('ws_foreign_project', 'Foreign project');
 const REMOVED_PROJECT = workspace('ws_removed_project', 'Former membership');
-const OWN_QUICK_CHAT = workspace('ws_own_quick', 'My Quick Chat', 'quick-chat');
+const OWN_QUICK_CHAT = workspace('ws_own_quick', 'My Personal Workspace', 'personal');
 const OWN_PROJECT = workspace('ws_own_project', 'My project');
 const SHARED_EDITOR = workspace('ws_shared_editor', 'Shared editor project');
 const SHARED_VIEWER = workspace('ws_shared_viewer', 'Shared viewer project');

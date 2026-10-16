@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +34,7 @@ import {
 } from './assistant-skill-resources.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import type { AgentMessage, AgentTool } from './internal-agent-loop.js';
+import { readInternalContextEvidence } from './internal-context-evidence.js';
 
 const roots: string[] = [];
 const databases: Array<CoreDb | WorkspaceDb> = [];
@@ -438,6 +439,114 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         outcome: 'succeeded',
       }),
     ]);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it('accounts summary production and the answer through one captured Gateway environment and budget', async () => {
+    const f = await fixture(false);
+    f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
+    for (let index = 0; index < 8; index += 1) {
+      const earlier = f.store.createTurn(
+        f.workspaceId,
+        f.threadId,
+        'Earlier request.',
+        { kind: 'user', id: f.actor.userId },
+        null,
+        { startedAt: `2026-10-15T00:00:0${index}.000Z`, agentId: 'quick-chat' }
+      );
+      for (const type of ['user-message', 'assistant-message'] as const) {
+        f.store.createItem({
+          id: randomUUID(),
+          workspaceId: f.workspaceId,
+          threadId: f.threadId,
+          turnId: earlier.id,
+          type,
+          status: 'completed',
+          text: `${type} ${index}: ${'x'.repeat(800)}`,
+          ...(type === 'user-message'
+            ? { actor: { kind: 'user', id: f.actor.userId } as const }
+            : {}),
+          createdAt: earlier.startedAt!,
+          completedAt: earlier.startedAt!,
+        });
+      }
+      f.store.updateTurn(earlier.id, { status: 'completed', completedAt: earlier.startedAt });
+    }
+    const assembly = assembleAssistantCommandRun({
+      resources: f.resources,
+      tools: f.tools,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] }],
+    });
+    let summaryCalls = 0;
+    f.createResponses.mockImplementation(async (_provider, request) => {
+      expect(environments(f)).toHaveLength(1);
+      const summary = JSON.stringify(request.input).includes('openkit_context_summary_task');
+      if (summary) summaryCalls += 1;
+      return {
+        ...response(
+          summary
+            ? 'Keep the exact unresolved constraint and source references.'
+            : 'Bounded answer.',
+          `response-${summaryCalls}-${summary ? 'summary' : 'answer'}`
+        ),
+        usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+      };
+    });
+    const boundedModel = {
+      ...logicalModel,
+      contract: { context: 14_000, output: 512, inputModalities: ['text'], reasoning: false },
+    };
+    const result = await runAssistantCommand({
+      ...f.input,
+      assembly,
+      turn: f.store.getTurnById(f.turn.id),
+      readContextEvidence: (items) =>
+        readInternalContextEvidence({
+          store: f.store,
+          coreDb: f.coreDb,
+          actor: f.actor,
+          workspaceId: f.workspaceId,
+          threadId: f.threadId,
+          items,
+        }),
+      limits: { ...limits, maxModelTurns: 8 },
+      gateway: {
+        ...f.input.gateway,
+        logicalModel: boundedModel,
+        resolveLogicalModel: () => boundedModel,
+      },
+    });
+    expect(summaryCalls).toBeGreaterThan(0);
+    expect(f.createResponses).toHaveBeenCalledTimes(summaryCalls + 1);
+    expect(result.content).toBe('Bounded answer.');
+    expect(result.assertContextCurrent).toEqual(expect.any(Function));
+    expect(() => result.assertContextCurrent!()).not.toThrow();
+    expect(environments(f)).toHaveLength(1);
+    const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
+    expect(calls).toHaveLength(summaryCalls + 1);
+    for (const call of calls) {
+      expect(call).toMatchObject({
+        status: 'succeeded',
+        turnId: f.turn.id,
+        requestId: null,
+        capabilityId: 'inference.local.quick_chat',
+      });
+      expect(
+        f.workspaceDb.sqlite
+          .prepare(
+            'SELECT request_id FROM audit_events WHERE capability_call_id = ? AND action = ?'
+          )
+          .get(call.id, 'capability.finish')
+      ).toEqual({ request_id: requestId });
+    }
+    const usage = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
+    expect(usage).toHaveLength(summaryCalls + 1);
+    expect(usage.every((record) => record.quantity === 10 && record.requestId === null)).toBe(true);
+    expect(
+      f.store
+        .listThreadItems(f.workspaceId, f.threadId)
+        .filter((item) => item.type === 'context-summary')
+    ).toHaveLength(summaryCalls);
     expect(f.execute).not.toHaveBeenCalled();
   });
 

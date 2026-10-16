@@ -226,7 +226,7 @@ describe('app api openapi projection', () => {
   it('does not publish caller provider or model authority for Internal Core Role requests', () => {
     const schemas = createAppOpenApiDocument().components.schemas;
 
-    for (const name of ['chat.quick.input', 'conversation.submit.input'] as const) {
+    for (const name of ['conversation.submit.input'] as const) {
       expect(schemas[name]).toMatchObject({ additionalProperties: false });
       expect(schemas[name]).not.toHaveProperty('properties.providerId');
       expect(schemas[name]).not.toHaveProperty('properties.model');
@@ -427,30 +427,7 @@ describe('app api openapi projection', () => {
       expect(document.components.schemas).not.toHaveProperty(schemaName);
     }
     expect(document.paths['/api/app/quick-chat']).toBeUndefined();
-    expect(document.paths['/api/app/operations/chat.quick']?.post).toMatchObject({
-      operationId: 'chat.quick',
-      tags: ['chat'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/chat.quick.input',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/chat.quick.output',
-              },
-            },
-          },
-        },
-      },
-    });
+    expect(document.paths['/api/app/operations/chat.quick']).toBeUndefined();
     expect(document.paths['/api/app/operations/worker.list']?.post).toMatchObject({
       operationId: 'worker.list',
       responses: {
@@ -1725,7 +1702,7 @@ describe('app api openapi projection', () => {
   });
 
   it('pins one representative for every Workspace resolver and each non-Workspace exception', () => {
-    expect(PUBLIC_OPERATION_ACCESS['chat.quick']).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['administration.conversation-submit']).toMatchObject({
       mutating: true,
       policyOperation: 'turn.run',
       resolver: 'actor-quick-chat-workspace',

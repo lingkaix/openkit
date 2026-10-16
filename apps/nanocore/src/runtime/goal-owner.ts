@@ -60,6 +60,12 @@ export interface GoalOwnerContext {
   readonly coordinatorTurnId?: string;
   /** Existing caller-owned Turn receives origin publication without another admission. */
   readonly originTurnId?: string;
+  /** Receipt-free create bound by the Assistant's frozen, confirmed pending outcome. */
+  readonly assistantHandoff?: {
+    readonly originThreadId: string;
+    readonly originTurnId: string;
+    readonly sourceHash: string;
+  };
 }
 /** Process and current authority owners; optional callbacks are supplied by app assembly. */
 export interface GoalOwnerServices {
@@ -571,7 +577,32 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   }
   let result: GoalView;
   try {
-    result = await runIdempotentCommand({
+    const runCommand = async (
+      options: Parameters<typeof runIdempotentCommand<GoalView>>[0]
+    ): Promise<GoalView> => {
+      if (!context.assistantHandoff) return runIdempotentCommand(options);
+      if (id !== 'goal.create' || !options.workspaceTransaction)
+        throw new GoalCommandError(
+          'invalid_request',
+          'Only Goal creation accepts an Assistant handoff.',
+          400
+        );
+      const source = store.getTurnById(context.assistantHandoff.originTurnId);
+      if (
+        source.threadId !== context.assistantHandoff.originThreadId ||
+        source.agentSessionId ||
+        source.agentId !== 'quick-chat' ||
+        source.triggerActor.id !== context.actor.userId ||
+        !context.assistantHandoff.sourceHash
+      )
+        throw new GoalCommandError(
+          'origin_authority_denied',
+          'The Assistant handoff source is unavailable.',
+          403
+        );
+      return db.sqlite.transaction(options.execute)();
+    };
+    result = await runCommand({
       store,
       inflightCommands: services.inflightCommands ?? inflight,
       command: id as Exclude<GoalOperationId, 'goal.read'>,
@@ -608,7 +639,13 @@ export async function executeGoalOperation<K extends GoalOperationId>(
             input.intent.slice(0, 100),
             `th_goal_${commandInput.requestId}`,
             'conversation',
-            { visibility: 'workspace' }
+            {
+              visibility: 'workspace',
+              threadSource: 'conversation',
+              ...(context.assistantHandoff?.originThreadId || origin
+                ? { parentThreadId: (context.assistantHandoff?.originThreadId ?? origin)! }
+                : {}),
+            }
           );
           const at = now();
           goal = {

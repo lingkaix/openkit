@@ -44,7 +44,7 @@ const EXPORTED_ABSENT_ID = 'ws_exported_absent';
 const QUICK_CHAT_WORKSPACE = {
   id: 'ws_quick_chat',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
 } as const;
 const EXPORT_ID = 'wsexp_1';
 const EXPORT_ID_B = 'wsexp_2';

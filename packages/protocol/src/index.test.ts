@@ -642,7 +642,7 @@ describe('protocol schemas', () => {
     const parsed = WorkspaceRecordSchema.parse({
       id: 'ws_quick_chat',
       name: 'Quick Chat',
-      kind: 'quick-chat',
+      kind: 'personal',
       status: 'active',
       counts: {
         threadCount: 0,
@@ -653,7 +653,7 @@ describe('protocol schemas', () => {
       updatedAt: '2026-04-15T00:00:00Z',
     });
 
-    expect(parsed.kind).toBe('quick-chat');
+    expect(parsed.kind).toBe('personal');
   });
 
   it('parses workspace resources separately from the workspace record', () => {

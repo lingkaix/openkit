@@ -80,7 +80,7 @@ A Thread has a durable visibility classification independent of its Workspace pl
 
 A Thread groups sequential Turns, Items, Artifacts, Approvals, and Agent activity over time. It may involve different Agents and historical AgentSessions across those sequential Turns, but it has at most one current AgentSession and one Turn in flight. Parallel work uses parallel Threads rather than parallel Turns in one Thread ([decision](../decisions/20260924-one_active_turn_per_thread_reason.md)).
 
-A Thread carries `threadSource` and optional `parentThreadId`. `threadSource` identifies whether the Thread originated as a user conversation, worker execution, or another accepted execution class. `parentThreadId` preserves causal Thread lineage without moving or copying history. These fields are fixed when the Thread is created; a missing or inaccessible parent leaves lineage unresolved and MUST NOT authorize access, execution, or mutation.
+A Thread carries `threadSource` and optional `parentThreadId`. `threadSource` identifies whether the Thread originated as a user conversation, worker execution, or another accepted execution class. `parentThreadId` preserves causal Thread lineage without moving or copying history. New Threads use the closed `conversation` or `worker` source classification. A retained record with no exact recorded inception classification keeps an absent source rather than a guessed role; it grants no execution authority. These fields are fixed when the Thread is created; a missing or inaccessible parent leaves lineage unresolved and MUST NOT authorize access, execution, or mutation.
 
 A handoff always creates a new Thread in the Workspace that will own the receiving execution. The originating Thread retains an append-only handoff Item referencing the new Thread; it does not change addressee or move history, and neither Thread spans two Workspaces. Review, redo, refinement, retry, and recovery remain in the existing Thread only while its Workspace and addressee remain unchanged; otherwise they create a new linked Thread.
 
@@ -117,6 +117,8 @@ A Turn is created only after its input and exact Thread are accepted while that 
 Items preserve visible inputs, outputs, summaries, decisions, state changes, handoffs, artifact references, and other stable work history. Item identity and lineage are immutable, and ordered Item history must not be replaced by a competing communication log.
 
 Runtime-private traces and chain-of-thought are not Items unless an owning design intentionally promotes a safe, product-visible summary.
+
+A source-bound internal continuation summary is an ordinary canonical Item. Its containing Thread retains the exact source history; the summary names and verifies that history without replacing it or granting authority. [Context Management](../specs/20260902-agent_runtime_context_compaction.md#source-bound-summary-items) owns its required provenance, production, invalidation and acceptance semantics.
 
 ## Related Root Concepts
 

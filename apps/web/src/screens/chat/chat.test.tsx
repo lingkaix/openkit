@@ -365,7 +365,7 @@ const TASK_MODE_RESPONSE = {
 const QUICK_CHAT_WORKSPACE = WorkspaceRecordSchema.parse({
   id: 'ws_quick_chat',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
   status: 'active',
   counts: {
     threadCount: 1,
@@ -859,7 +859,7 @@ describe('chat starter (board 01)', () => {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [
             { id: 'ws_project', name: 'Project Workspace', kind: 'general' },
-            { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' },
+            { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'personal' },
           ].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
@@ -1284,10 +1284,9 @@ describe('chat starter (board 01)', () => {
     const getThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
     const startTurn = vi.fn();
     const submitConversation = vi.fn().mockResolvedValue(STARTER_CHAT_MODE_RESPONSE);
-    const quickChat = vi.fn();
     const client = makeClient(
       { 'thread.create': createThread, 'thread.read': getThread, 'turn.start': startTurn },
-      { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
+      { 'conversation.submit': submitConversation }
     );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -1319,7 +1318,6 @@ describe('chat starter (board 01)', () => {
       submitConversation.mock.invocationCallOrder[0] ?? 0
     );
     expect(startTurn).not.toHaveBeenCalled();
-    expect(quickChat).not.toHaveBeenCalled();
     // Navigated into the thread screen (its index toggle is present).
     expect(await screen.findByRole('button', { name: /Side panel/i })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith({ workspaceId: 'ws1', threadId: 'th-new' });
@@ -1549,14 +1547,13 @@ describe('chat starter (board 01)', () => {
     const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
     const startTurn = vi.fn();
     const submitConversation = vi.fn().mockRejectedValue(new Error('chat_mode_unavailable'));
-    const quickChat = vi.fn();
     const client = makeClient(
       {
         'thread.create': createThread,
         'turn.start': startTurn,
         'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
       },
-      { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
+      { 'conversation.submit': submitConversation }
     );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -1582,7 +1579,6 @@ describe('chat starter (board 01)', () => {
     expect(submitConversation.mock.calls[1]).toEqual(submitted);
     expect(createThread).toHaveBeenCalledTimes(1);
     expect(startTurn).not.toHaveBeenCalled();
-    expect(quickChat).not.toHaveBeenCalled();
   });
 
   it('does not open a workspace A starter result after the current workspace switches to B', async () => {
@@ -2265,13 +2261,12 @@ describe('chat thread (boards 02/03)', () => {
     const user = userEvent.setup();
     const startTurn = vi.fn();
     const submitConversation = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
-    const quickChat = vi.fn();
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         'turn.start': startTurn,
       },
-      { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
+      { 'conversation.submit': submitConversation }
     );
     renderApp('/chat/ws1/th1', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -2290,7 +2285,6 @@ describe('chat thread (boards 02/03)', () => {
       )
     );
     expect(startTurn).not.toHaveBeenCalled();
-    expect(quickChat).not.toHaveBeenCalled();
   });
 
   it('shows a skeleton while the stream loads', async () => {
@@ -4809,14 +4803,12 @@ describe('task thread (board 04)', () => {
       ...CHAT_MODE_RESPONSE,
       targetRef: 'warm-worker:agent_codex_host:default',
     });
-    const quickChat = vi.fn();
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         'turn.start': startTurn,
       },
       {
-        'chat.quick': quickChat,
         'conversation.submit': submitConversation,
         'task.start': startTaskMode,
       }
@@ -4840,7 +4832,6 @@ describe('task thread (board 04)', () => {
     );
     expect(startTaskMode).not.toHaveBeenCalled();
     expect(startTurn).not.toHaveBeenCalled();
-    expect(quickChat).not.toHaveBeenCalled();
   });
 
   const INITIATING_REQUEST_TEXT =
@@ -5048,7 +5039,6 @@ describe('mode entry and feedback (S8)', () => {
     const startTurn = vi.fn();
     const submitConversation = vi.fn().mockResolvedValue(QUICK_CHAT_MODE_RESPONSE);
     const startTaskMode = vi.fn();
-    const quickChat = vi.fn();
     const client = makeClient(
       {
         'thread.read': vi
@@ -5069,7 +5059,6 @@ describe('mode entry and feedback (S8)', () => {
         'turn.start': startTurn,
       },
       {
-        'chat.quick': quickChat,
         'conversation.submit': submitConversation,
         'task.start': startTaskMode,
       }
@@ -5093,7 +5082,6 @@ describe('mode entry and feedback (S8)', () => {
     );
     expect(startTaskMode).not.toHaveBeenCalled();
     expect(startTurn).not.toHaveBeenCalled();
-    expect(quickChat).not.toHaveBeenCalled();
   });
 
   it('refreshes only the submitted composer owner after a workspace switch', async () => {

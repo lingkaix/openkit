@@ -1,10 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
+  type ConversationRetrievalTrace,
   type KnowledgeRetrievalTrace,
-  KnowledgeRetrievalTraceReaderSchema,
-  KnowledgeRetrievalTraceSchema,
+  type ProductRetrievalTrace,
+  ProductRetrievalTraceReaderSchema,
+  ProductRetrievalTraceSchema,
 } from '@openkit/app-api-schemas';
 import {
   parseReferenceScope,
@@ -28,7 +38,7 @@ export function retrievalTraceRelativePath(reference: RetrievalTraceReference): 
 /** Checks the exact owner/id relationship before a trace can be published or consumed. */
 export function assertRetrievalTraceIdentity(
   reference: RetrievalTraceReference,
-  trace: KnowledgeRetrievalTrace
+  trace: ProductRetrievalTrace
 ): void {
   const scope = parseReferenceScope(reference.scopeId);
   if (
@@ -48,9 +58,9 @@ export function assertRetrievalTraceIdentity(
 export function publishRetrievalTrace(
   workspaceRoot: string,
   reference: RetrievalTraceReference,
-  value: KnowledgeRetrievalTrace
+  value: ProductRetrievalTrace
 ): void {
-  const trace = KnowledgeRetrievalTraceSchema.parse(value);
+  const trace = ProductRetrievalTraceSchema.parse(value);
   assertRetrievalTraceIdentity(reference, trace);
   const relative = retrievalTraceRelativePath(reference);
   // Check every existing parent before mkdir or canonical reads; no symlink can redirect a trace.
@@ -78,11 +88,28 @@ export function publishRetrievalTrace(
   }
 }
 
-/** Reads exact evidence bytes for an already admitted owner; callers must recheck current access. */
+/** Allocates through the existing retrieval-trace identifier owner. */
+export function allocateRetrievalTraceId(): string {
+  return `krt_${randomUUID()}`;
+}
+
+/** Reads Knowledge evidence after caller-owned containing-record and source admission. */
 export function readRetrievalTrace(
   workspaceRoot: string,
   reference: RetrievalTraceReference
-): KnowledgeRetrievalTrace | null {
+): KnowledgeRetrievalTrace | null;
+/** Reads conversation evidence after caller-owned containing-record and source admission. */
+export function readRetrievalTrace(
+  workspaceRoot: string,
+  reference: RetrievalTraceReference,
+  sourceKind: 'conversation'
+): ConversationRetrievalTrace | null;
+/** Reads exact evidence bytes; a caller cannot reinterpret another source family. */
+export function readRetrievalTrace(
+  workspaceRoot: string,
+  reference: RetrievalTraceReference,
+  sourceKind?: 'conversation'
+): ProductRetrievalTrace | null {
   const relative = retrievalTraceRelativePath(reference);
   let parent = workspaceRoot;
   assertCanonicalDirectory(parent);
@@ -93,7 +120,47 @@ export function readRetrievalTrace(
   }
   const path = join(workspaceRoot, relative);
   if (!lstatSync(path, { throwIfNoEntry: false })) return null;
-  const trace = KnowledgeRetrievalTraceReaderSchema.parse(JSON.parse(readCanonicalTextFile(path)));
+  const trace = ProductRetrievalTraceReaderSchema.parse(JSON.parse(readCanonicalTextFile(path)));
+  if ((sourceKind === 'conversation') !== 'sourceKind' in trace)
+    throw new OperationError(
+      'workspace_access_denied',
+      'Retrieval trace source is unavailable.',
+      403
+    );
   assertRetrievalTraceIdentity(reference, trace);
   return trace;
+}
+
+/** Reads the existing query-owned trace inventory for one exact Turn without a second manifest. */
+export function readTurnRetrievalTraces(
+  workspaceRoot: string,
+  workspaceId: string,
+  threadId: string,
+  turnId: string
+): Array<{ reference: RetrievalTraceReference; trace: ProductRetrievalTrace }> {
+  const scopeId = `retrieval-trace/turn/${workspaceId}/${threadId}/${turnId}`;
+  const scope = parseReferenceScope(scopeId);
+  if (!scope || scope.family !== 'retrieval-trace' || scope.kind !== 'turn')
+    throw new Error('Invalid retrieval trace owner.');
+  let directory = workspaceRoot;
+  assertCanonicalDirectory(directory);
+  for (const segment of ['threads', scope.threadId, 'turns', scope.turnId, 'retrieval-traces']) {
+    directory = join(directory, segment);
+    if (!existsSync(directory)) return [];
+    assertCanonicalDirectory(directory);
+  }
+  return readdirSync(directory)
+    .filter((name) => name.endsWith('.json'))
+    .sort()
+    .map((name) => {
+      const reference = RetrievalTraceReferenceSchema.parse({
+        scopeId,
+        objectId: name.slice(0, -5),
+      });
+      const trace = ProductRetrievalTraceReaderSchema.parse(
+        JSON.parse(readCanonicalTextFile(join(directory, name)))
+      );
+      assertRetrievalTraceIdentity(reference, trace);
+      return { reference, trace };
+    });
 }

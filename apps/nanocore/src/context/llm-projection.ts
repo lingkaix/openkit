@@ -258,6 +258,8 @@ function summarizeItemForProvider(item: Item): string {
       return `User message ${item.id}:\n${item.text}`;
     case 'assistant-message':
       return `Assistant message ${item.id}:\n${item.text}`;
+    case 'context-summary':
+      return `Continuation summary ${item.sourceRange.firstItemId} through ${item.sourceRange.lastItemId}: ${item.text}`;
     case 'reasoning':
       return joinNonEmpty([`Review ${item.id}:`, ...item.summary, ...item.content]);
     case 'artifact-reference':

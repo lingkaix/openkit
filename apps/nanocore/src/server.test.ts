@@ -90,9 +90,7 @@ import {
   FsStore,
   type FsStoreOptions,
 } from './lib/store.js';
-import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
-import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -1544,17 +1542,6 @@ describe('nanocore server', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ input: 'Hello', model: 'gpt-test' }),
     });
-    const quickChat = await app.request(
-      ...operationRequest(
-        'chat.quick',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ input: 'Hello' }),
-        }
-      )
-    );
     const turn = await app.request(
       ...operationRequest(
         'turn.start',
@@ -1603,10 +1590,7 @@ describe('nanocore server', () => {
     await expect(responses.json()).resolves.toMatchObject({
       code: 'product_work_unavailable',
     });
-    expect(quickChat.status).toBe(503);
-    await expect(quickChat.json()).resolves.toMatchObject({
-      code: 'product_work_unavailable',
-    });
+
     expect(turn.status).toBe(503);
     await expect(turn.json()).resolves.toMatchObject({
       code: 'product_work_unavailable',
@@ -9542,7 +9526,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign workspace review owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const baseReview = workspaceSyncReviewRouteItem();
@@ -9656,7 +9640,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign workspace recovery owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const reconciliationRecordId = 'wrr_foreign_child_lineage';
@@ -9743,7 +9727,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign workspace apply-result owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const applyResultId = 'war_foreign_child_lineage';
@@ -9806,7 +9790,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign AEP snapshot owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
@@ -11197,64 +11181,14 @@ describe('nanocore server', () => {
     });
   });
 
-  it('returns the logical-model fallback error after quick chat routes are exhausted', async () => {
-    const app = createApp(
-      {
-        gatewayConfig: createTestGatewayConfig({
-          privateRoute: {
-            providerProfileId: 'openrouter',
-            providerModel: 'openai/gpt-5.2',
-          },
-        }),
-        providerCredentialResolver: () => 'test-key',
-        providerRegistry: new ProviderRegistry([
-          {
-            baseUrl: 'https://openrouter.ai/api/v1',
-            defaultModel: 'openai/gpt-5.2',
-            displayName: 'OpenRouter',
-            id: 'openrouter',
-            kind: 'gateway',
-            models: ['openai/gpt-5.2'],
-            secretRef: 'env:OPENROUTER_API_KEY',
-          },
-        ]),
-        turnExecutor: new FakeTurnExecutor(),
-        llmPiAiClient: {
-          createChatCompletion: async () => {
-            throw attachPiAiFailure(
-              new OpenAICompatibleProviderError({
-                status: 429,
-                code: 'rate_limit_exceeded',
-                message: 'Rate limit exceeded token=tok_private_rate_limit.',
-              })
-            );
-          },
-        } as unknown as PiAiGatewayClient,
-      },
-      true
-    );
-    const res = await app.request(
-      ...operationRequest(
-        'chat.quick',
-        {},
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            input: 'hello',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      )
-    );
-
-    const body = await res.json();
-
-    expect(res.status, JSON.stringify(body)).toBe(503);
-    expect(body).toMatchObject({
-      code: 'gateway_logical_model_unavailable',
-      message: 'Logical model is temporarily unavailable.',
+  it('has no stateless Assistant operation after the Timeline cutover', async () => {
+    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const response = await app.request('/api/app/operations/chat.quick', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'Hello' }),
     });
-    expect(body).not.toHaveProperty('details');
+    expect(response.status).toBe(404);
   });
 
   it('emits SSE events that conform to the shared protocol schema', async () => {

@@ -1035,10 +1035,10 @@ function workspaceIdForUser(userId: string, suffix: string): string {
 }
 
 /**
- * Derives the built-in owner-only Quick Chat Workspace id for one canonical user.
+ * Derives the built-in owner-only personal Workspace id for one canonical user.
  *
  * @param userId Canonical user id.
- * @returns Stable Quick Chat Workspace id.
+ * @returns Stable personal Workspace id.
  */
 export function quickChatWorkspaceIdForUser(userId: string): string {
   return workspaceIdForUser(userId, 'quick_chat');
@@ -1223,9 +1223,7 @@ export class FsStore {
       this.workspaces.set(records.workspace.id, records.workspace);
       this.workspaceResources.set(
         records.workspace.id,
-        records.workspace.kind === 'quick-chat'
-          ? { knowledge: [...records.knowledge], skills: [], agents: [], models: [] }
-          : createWorkspaceResources([...records.knowledge])
+        createWorkspaceResources([...records.knowledge])
       );
       for (const thread of records.threads) {
         this.threads.set(thread.id, thread);
@@ -1997,18 +1995,18 @@ export class FsStore {
   }
 
   /**
-   * Ensures the built-in owner-only Quick Chat Workspace for one canonical user.
+   * Ensures the built-in owner-only personal Workspace for one canonical user.
    *
    * @param userId Canonical user id that determines the stable Workspace id.
-   * @returns Existing or newly created Quick Chat Workspace.
+   * @returns Existing or newly created personal Workspace.
    * @throws Error when the reserved id already belongs to another Workspace kind.
    */
   public ensureQuickChatWorkspace(userId: string): WorkspaceRecord {
     const workspaceId = quickChatWorkspaceIdForUser(userId);
     const existing = this.workspaces.get(workspaceId);
     if (existing) {
-      if (existing.kind !== 'quick-chat') {
-        throw new Error(`Reserved Quick Chat workspace id ${workspaceId} has another kind.`);
+      if (existing.kind !== 'personal') {
+        throw new Error(`Reserved personal workspace id ${workspaceId} has another kind.`);
       }
       return existing;
     }
@@ -2016,8 +2014,8 @@ export class FsStore {
     const timestamp = now();
     const workspace: WorkspaceRecord = {
       id: workspaceId,
-      name: 'Quick Chat',
-      kind: 'quick-chat',
+      name: 'Personal',
+      kind: 'personal',
       status: 'active',
       counts: {
         threadCount: 0,
@@ -2597,22 +2595,27 @@ export class FsStore {
     title: string,
     threadId?: string,
     entryPath: Thread['entryPath'] = 'conversation',
-    audience?: { visibility: Thread['visibility']; privateOwnerUserId?: string }
+    audience?: {
+      visibility: Thread['visibility'];
+      privateOwnerUserId?: string;
+      threadSource?: Thread['threadSource'];
+      parentThreadId?: string;
+    }
   ): Thread {
     const id = threadId ?? threadIdForUser(LOCAL_USER_ID, String(this.threads.size + 1));
     if (this.threads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
     }
     audience ??=
-      this.getWorkspace(workspaceId).kind === 'quick-chat' || entryPath === 'administration'
+      entryPath === 'administration'
         ? { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
         : { visibility: 'workspace' };
     if (
-      this.getWorkspace(workspaceId).kind === 'quick-chat' &&
-      (audience.visibility !== 'private' ||
-        workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? ''))
+      this.getWorkspace(workspaceId).kind === 'personal' &&
+      audience.visibility === 'private' &&
+      workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? '')
     ) {
-      throw new Error('Quick Chat requires its owner-only private audience.');
+      throw new Error('Personal Workspace private Threads require their owner.');
     }
     const thread = ThreadSchema.parse({
       id,
@@ -2621,6 +2624,7 @@ export class FsStore {
       preview: title,
       status: 'active',
       entryPath,
+      threadSource: 'conversation',
       ...audience,
       createdAt: now(),
       updatedAt: now(),

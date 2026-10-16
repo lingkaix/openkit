@@ -1246,7 +1246,16 @@ function loadWorkspace(
     );
   }
 
-  const workspaceRecord = WorkspaceSystemRecordSchema.parse(readJson(workspacePath));
+  const retainedWorkspaceRecord = readJson(workspacePath);
+  // Carry the former home kind forward once; no old kind is admitted by current schemas.
+  const personalCutover =
+    typeof retainedWorkspaceRecord === 'object' &&
+    retainedWorkspaceRecord !== null &&
+    'kind' in retainedWorkspaceRecord &&
+    retainedWorkspaceRecord.kind === 'quick-chat';
+  const workspaceRecord = WorkspaceSystemRecordSchema.parse(
+    personalCutover ? { ...retainedWorkspaceRecord, kind: 'personal' } : retainedWorkspaceRecord
+  );
   const workspaceConfig = WorkspaceConfigSchema.parse(
     parseJsoncObject(readCanonicalTextFile(workspaceConfigPath), workspaceConfigPath)
   );
@@ -1376,6 +1385,11 @@ function loadWorkspace(
     agentSessions,
     turnEvents: streamEvents,
   });
+
+  // Validate the complete canonical history before replacing metadata, preserving annotations.
+  if (personalCutover) {
+    writeJsonAtomic(workspacePath, { ...retainedWorkspaceRecord, kind: 'personal' });
+  }
 
   return {
     workspace: history.workspace,
@@ -2118,7 +2132,7 @@ function classifyThreadVisibilityCutover(
   kind: WorkspaceRecord['kind'],
   threadId: string
 ): Pick<Thread, 'visibility' | 'privateOwnerUserId'> {
-  if (kind === 'quick-chat') {
+  if (kind === 'personal') {
     const workspaceId = basename(workspaceRoot);
     const candidates = new Set([LOCAL_USER_ID, ...listDirectoryNames(join(dataRoot, 'users'))]);
     if (existsSync(coreDbPath(dataRoot))) {

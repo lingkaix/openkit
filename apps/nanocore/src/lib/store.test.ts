@@ -250,7 +250,7 @@ describe('FsStore persistence', () => {
     expect(workspaces[0]).toMatchObject({
       id: 'ws_quick_chat',
       name: 'Quick Chat',
-      kind: 'quick-chat',
+      kind: 'personal',
     });
   });
 

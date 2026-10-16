@@ -75,7 +75,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     requireCurrentDeploymentAdmin(coreDb, actor);
     const workspace = store.getWorkspace(workspaceId);
     const thread = store.getThread(workspaceId, threadId);
-    if (workspace.kind !== 'quick-chat' || thread.entryPath !== 'administration')
+    if (workspace.kind !== 'personal' || thread.entryPath !== 'administration')
       fail('configuration_target_not_found');
     if (turnId) store.getTurn(workspaceId, threadId, turnId);
   }

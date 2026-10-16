@@ -53,6 +53,7 @@ import {
   listStoredWorkspaceEvidenceBundles,
 } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
+import { assertConversationRetrievalTraceReadable } from '../internal-agents/assistant-history.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -1163,6 +1164,18 @@ export function createVerifiedWorkspaceExport({
       workspaceId
     );
     if (!deletionRecoveryAuthorized) {
+      if ('sourceKind' in trace) {
+        if (!coreDb || !requestActor)
+          throw new Error('Conversation trace export requires current authority.');
+        assertConversationRetrievalTraceReadable({
+          store,
+          coreDb,
+          actor: requestActor,
+          workspaceId,
+          retrievalTraceRef: reference,
+        });
+        continue;
+      }
       assertKnowledgeRetrievalTraceReadable({
         dataRoot,
         workspaceId,

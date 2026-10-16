@@ -17,7 +17,7 @@ import {
 } from '../agents/setup-resolver.js';
 import { deriveArtifactReviewWorkerRequestId } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
+import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -50,10 +50,6 @@ import {
   TurnStartValidationError,
   workspaceSourceRefsFromAgentManifest,
 } from './orchestrator.js';
-import {
-  assistantPendingOutcomeSourceHash,
-  listThreadPendingRequests,
-} from './pending-requests.js';
 import { generateUuidV7 } from './session-id.js';
 import type { PrepareAgentSessionForTurnInput, TurnExecutor } from './types.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
@@ -270,7 +266,7 @@ function schedulerEntryPublicationComplete(
       )
     )
       return true;
-    if (assistantOutcomePublicationComplete(input.store, workspaceDb, entry)) return true;
+    if (readAssistantTaskHandoffSource(input.store, workspaceDb, entry)) return true;
     if (activationPublicationComplete(input, entry)) return true;
     const checkpoint = workspaceDb.sqlite
       .prepare(
@@ -290,50 +286,6 @@ function schedulerEntryPublicationComplete(
   } finally {
     workspaceDb.sqlite.close();
   }
-}
-
-/** Joins an Assistant handoff to its original decided outcome tuple, which has no command receipt. */
-function assistantOutcomePublicationComplete(
-  store: FsStore,
-  workspaceDb: import('../storage/db.js').WorkspaceDb,
-  entry: SchedulerAdmissionEntryRecord
-): boolean {
-  const userId = responsibleUserIdForActor(entry.triggerActor);
-  if (!userId || !entry.requestId?.startsWith('pending_')) return false;
-  let value: unknown;
-  try {
-    value = JSON.parse(entry.turnInput);
-  } catch {
-    return false;
-  }
-  const parsed = StructuredWorkerDelegationRequestSchema.safeParse(value);
-  if (!parsed.success) return false;
-  const itemIds = parsed.data.contextRefs.filter((ref) => ref.kind === 'item').map((ref) => ref.id);
-  if (!itemIds.length) return false;
-  const sources = workspaceDb.sqlite
-    .prepare(`SELECT DISTINCT thread_id AS threadId, delivery_turn_id AS turnId
-    FROM pending_requests WHERE workspace_id = ? AND requester_kind = 'assistant'
-      AND delivery_cause = 'outcome' AND delivery = 'delivered'
-      AND request_item_id IN (${itemIds.map(() => '?').join(',')})`)
-    .all(entry.workspaceId, ...itemIds) as Array<{ threadId: string; turnId: string }>;
-  return sources.some((source) => {
-    const records = listThreadPendingRequests(
-      workspaceDb.sqlite,
-      entry.workspaceId,
-      source.threadId
-    ).filter(
-      (record) => record.deliveryTurnId === source.turnId && record.requesterKind === 'assistant'
-    );
-    if (!records.length || records.some((record) => !itemIds.includes(record.requestItemId)))
-      return false;
-    const turn = store.getTurn(entry.workspaceId, source.threadId, source.turnId);
-    const hash = assistantPendingOutcomeSourceHash(turn, records, userId);
-    return (
-      entry.requestId === `pending_${hash}` &&
-      entry.threadId === `th_task_${hash.slice(0, 24)}` &&
-      entry.turnId === `tu_task_${hash.slice(0, 24)}`
-    );
-  });
 }
 
 /** Resolves the existing administrator-home activation receipt and immutable result for its queued successor. */

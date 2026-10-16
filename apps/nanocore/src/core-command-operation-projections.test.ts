@@ -88,13 +88,12 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
         { rating: 'good', note: 'Useful' },
         200,
       ],
-      ['chat.quick', 'POST', '/api/app/quick-chat', { input: 'Hello', stream: false }, 500],
     ] as const,
   };
 }
 
 describe('core command operation cutover', () => {
-  for (let index = 0; index < 11; index++) {
+  for (let index = 0; index < 10; index++) {
     it(`retires former route ${index + 1} after an authorized owner response on the base`, async () => {
       const { app, rows, store } = fixture();
       const [id, method, path, body] = rows[index]!;
@@ -114,7 +113,7 @@ describe('core command operation cutover', () => {
         const { app, rows, store, thread, turn } = fixture();
         const [id, , , body, status] = rows[index]!;
         const selectors =
-          id === 'workspace.create' || id === 'chat.quick'
+          id === 'workspace.create'
             ? {}
             : id === 'turn.feedback'
               ? { turnId: turn.id }
@@ -234,7 +233,7 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
   for (const index of [0, 2, 5, 6, 7, 8, 9, 10]) {
     const [id, , , body] = rows[index]!;
     const selectors =
-      id === 'workspace.create' || id === 'chat.quick'
+      id === 'workspace.create'
         ? {}
         : id === 'turn.feedback'
           ? { turnId: turn.id }

@@ -34,7 +34,7 @@ const WORKSPACE_B = { id: 'ws2', name: 'Second workspace', kind: 'general' } as 
 const QUICK_CHAT_WORKSPACE = {
   id: 'ws_quick_chat',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
 } as const;
 const EVIDENCE_BUNDLE_ID = 'evb_wrr_1';
 const PENDING_PATCH_TEXT = 'diff --git a/docs/spec.md b/docs/spec.md\n';

@@ -45,7 +45,7 @@ export { useCurrentWorkspaceId, useWorkspaces };
  * @returns False for Quick Chat; true for ordinary Workspace kinds.
  */
 export function isWorkspaceSyncEligible(workspace: { kind: string } | null | undefined): boolean {
-  return workspace != null && workspace.kind !== 'quick-chat';
+  return workspace != null;
 }
 
 /**

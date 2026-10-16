@@ -17,7 +17,6 @@ import {
 } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
-import type { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -81,7 +80,7 @@ function createFixture() {
   const store = createDemoStore({ dataRoot });
   const quickChatWorkspace = store
     .listWorkspaces()
-    .find((workspace) => workspace.kind === 'quick-chat');
+    .find((workspace) => workspace.kind === 'personal');
   const workspace = store.listWorkspaces().find((item) => item.kind === 'code');
   if (!quickChatWorkspace || !workspace) {
     throw new Error('Expected Quick Chat and Demo Workspace fixtures.');
@@ -222,16 +221,6 @@ function createFixture() {
     runtimeConfigManager: createRuntimeConfigManager({
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
     }),
-    // This fixture tests native admission; the direct provider effect is covered by quick-chat.test.ts.
-    conversationService: {
-      quick: async (_input, _actor, workspaceId) => ({
-        id: 'reply',
-        status: 'completed',
-        workspaceId,
-        modelId: 'model',
-        content: 'Hello',
-      }),
-    } as ReturnType<typeof createConversationService>,
   });
   registerRemoteMcpRoutes({
     app,
@@ -586,25 +575,6 @@ describe('central Workspace operation authorizer', () => {
     expect(
       currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true)
     ).toBeNull();
-  });
-
-  it('derives the Quick Chat Workspace from the authenticated actor', async () => {
-    const response = await fixture.app.request(
-      ...operationRequest(
-        'chat.quick',
-        {},
-        {
-          body: JSON.stringify({ input: 'Hello' }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
-
-    expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      workspaceId: fixture.quickChatWorkspace.id,
-    });
   });
 
   it('derives collection candidates from active Core memberships before loading content', async () => {
@@ -1177,7 +1147,7 @@ describe('central Workspace operation authorizer', () => {
     expect(fixture.store.listThreads(actorQuickChatId)).toHaveLength(1);
     expect(fixture.store.getWorkspace(actorQuickChatId)).toMatchObject({
       id: actorQuickChatId,
-      kind: 'quick-chat',
+      kind: 'personal',
     });
     expect(registeredWorkspaceOwner(actorQuickChatId)).toBe('user_missing');
     expect(registeredWorkspaceOwner(fixture.quickChatWorkspace.id)).toBe('user_local');

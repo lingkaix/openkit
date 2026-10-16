@@ -133,12 +133,6 @@ export async function startTurn(
     turnExecutor,
     workerPlacement,
   } = dependencies;
-  if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
-    throw new TurnStartValidationError(
-      'workspace_kind_not_supported',
-      'Quick Chat workspace cannot start worker turns. Create or select a project workspace.'
-    );
-  }
   store.getThread(input.workspaceId, input.threadId);
   const turn = await runIdempotentCommand({
     store,

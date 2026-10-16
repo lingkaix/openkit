@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
 import {
@@ -43,7 +43,11 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
 import { resolveDataRootPath } from './fs-layout.js';
-import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
+import {
+  allocateRetrievalTraceId,
+  publishRetrievalTrace,
+  readRetrievalTrace,
+} from './retrieval-traces.js';
 import {
   assertCanonicalDirectory,
   listKnowledgePageIds,
@@ -593,7 +597,7 @@ export async function retrieveWorkspaceKnowledge(
   const pinnedPageIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
   const limit = normalized.limit;
   const createdAt = input.now?.() ?? new Date().toISOString();
-  const traceId = input.traceId ?? `krt_${randomUUID()}`;
+  const traceId = input.traceId ?? allocateRetrievalTraceId();
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);

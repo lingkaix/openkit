@@ -237,7 +237,7 @@ describe('server auth flow', () => {
       ).toMatchObject({
         items: [
           expect.objectContaining({
-            workspace: expect.objectContaining({ id: firstQuickChatId, kind: 'quick-chat' }),
+            workspace: expect.objectContaining({ id: firstQuickChatId, kind: 'personal' }),
           }),
         ],
       });

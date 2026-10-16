@@ -662,7 +662,6 @@ describe('remote MCP App endpoint', () => {
       ['turn.start', { workspaceId: 'ws_demo', threadId: 'th_demo', input: 'Blocked' }],
       ['turn.interrupt', { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }],
       ['turn.feedback', { turnId: turn.id, rating: 'good', note: 'Blocked' }],
-      ['chat.quick', { input: 'Blocked' }],
     ] as const) {
       const result = await f.call(
         'call',
@@ -670,9 +669,7 @@ describe('remote MCP App endpoint', () => {
           operation,
           input: {
             ...input,
-            ...(['turn.feedback', 'chat.quick'].includes(operation)
-              ? {}
-              : { requestId: randomUUID() }),
+            ...(operation === 'turn.feedback' ? {} : { requestId: randomUUID() }),
           },
         },
         token.secret

@@ -28,13 +28,13 @@ const OTHER_WORKSPACE: WorkspaceRecord = {
 const USER_A_QUICK_CHAT: WorkspaceRecord = {
   ...PROJECT_WORKSPACE,
   id: 'ws_quick_a',
-  kind: 'quick-chat',
+  kind: 'personal',
   name: 'Quick Chat',
 };
 const USER_B_QUICK_CHAT: WorkspaceRecord = {
   ...PROJECT_WORKSPACE,
   id: 'ws_quick_b',
-  kind: 'quick-chat',
+  kind: 'personal',
   name: 'Quick Chat',
 };
 

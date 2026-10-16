@@ -397,7 +397,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+/** Bounds an already owned asynchronous effect by its existing cancellation and deadline signal. */
+export async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   // Invocation can cancel synchronously before returning a rejecting Promise.
   void promise.catch(() => undefined);
   signal.throwIfAborted();

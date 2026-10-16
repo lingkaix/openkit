@@ -343,7 +343,7 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: 'active' as const,
               accessCause: 'membership' as const,
-              workspace: { id: 'ws_quick', name: 'My quick chat', kind: 'quick-chat' },
+              workspace: { id: 'ws_quick', name: 'My quick chat', kind: 'personal' },
               effectiveRole: 'owner',
               membershipRevision: 2,
               ownerUserId: 'user_admin',
@@ -352,7 +352,7 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: null,
               accessCause: 'administrator' as const,
-              workspace: { id: 'ws_theirs', name: 'Someone else', kind: 'quick-chat' },
+              workspace: { id: 'ws_theirs', name: 'Someone else', kind: 'personal' },
               effectiveRole: null,
               membershipRevision: null,
               ownerUserId: 'user_other',

@@ -6,7 +6,6 @@ import type {
 import { HumanAttentionReadError, readHumanAttention } from './action-center.js';
 import { ConversationNavigationReadError, readConversationNavigation } from './app-dashboard.js';
 import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
-import { quickChatWorkspaceIdForUser } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -26,24 +25,6 @@ export function createTaskConversationOperationImplementations(
 ) {
   const store = dependencies.store!;
   return {
-    'chat.quick': async (input, context) => {
-      try {
-        const actor = publicOperationActor(context);
-        return await dependencies.conversationService!.quick(
-          input,
-          actor,
-          quickChatWorkspaceIdForUser(actor.userId),
-          context.signal ?? new AbortController().signal
-        );
-      } catch (error) {
-        if (
-          error instanceof TurnStartValidationError ||
-          error instanceof IdempotencyKeyConflictError
-        )
-          throw new OperationError(error.code, error.message, error.status, { cause: error });
-        throw error;
-      }
-    },
     'conversation.targets': async (input, context) => {
       try {
         return await dependencies.conversationService!.targets(

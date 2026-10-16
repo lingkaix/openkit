@@ -26,7 +26,6 @@ const operations = [
   'turn.start',
   'turn.interrupt',
   'turn.feedback',
-  'chat.quick',
 ] as const;
 
 /** Captures all canonical rows, including other Threads and the actor's Quick Chat Workspace. */
@@ -90,10 +89,7 @@ it.each(
       throw failure;
     });
     const enter = vi.spyOn(admission, 'enter');
-    const workspaceId =
-      id === 'chat.quick'
-        ? store.listWorkspaces().find((workspace) => workspace.kind === 'quick-chat')!.id
-        : 'ws_demo';
+    const workspaceId = 'ws_demo';
     const inputs = {
       'workspace.read': { workspaceId },
       'workspace.update': { workspaceId, name: 'Must not rename', requestId: randomUUID() },
@@ -119,7 +115,6 @@ it.each(
         requestId: randomUUID(),
       },
       'turn.feedback': { turnId: turn.id, rating: 'good', note: 'Must not write' },
-      'chat.quick': { input: 'Must not dispatch', stream: false },
     };
     expect(
       Object.keys(OPERATION_DEFINITIONS)

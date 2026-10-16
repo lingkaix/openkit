@@ -43,6 +43,10 @@ Read `thread.dashboard` for `taskInputs`: each `{ itemId, objective }` summarize
 
 Do not promote work to a heavier mode merely because that mode exists. Let NanoCore report when an accepted handoff or transition is required.
 
+For a one-shot Assistant answer from the CLI or this Skill, discover the caller's personal Workspace with `workspace.list`, then call `thread.create` with that Workspace, a name and a new request identity. This opens the caller's existing private Timeline or creates its first Thread; a later call does not allocate another private conversation. Read `conversation.targets` for that exact Workspace and Thread, then submit through `conversation.submit` with `targetRef: "internal-role:assistant"`, the returned `threadId`, the exact input, a new request identity and `artifactRefs: []` when there are no selected attachments. Read the returned ordinary Item and Turn. Preserve the same request identity and input for exact replay after a transport failure; use a new identity only for a new attempt. An archived Timeline needs an explicit `thread.update` before another Turn.
+
+Use `openkit ops describe conversation.submit` to inspect the current flat input contract and `openkit ops call conversation.submit --input -` to send the JSON request. This one-shot invocation retains the same Timeline history, usage, current authorization and replay evidence as Web. It creates no private AgentSession or alternate stateless conversation.
+
 Use `goal.create` to capture current intent and `goal.read` to inspect intent, cards, separate proposed and active immutable Plans, exact Pending Requests, linked ordinary Tasks and disposition. `goal.intent.revise`, `goal.card.create`, `goal.card.edit` and `goal.card.cancel` change current desired work without steering a running worker. Human Plan and completion decisions use `goal.plan.approve` and `goal.completion.accept` with the captured Pending Request identity. A grant waits for the Goal owner to consume it; activation alone starts no worker. `goal.cancel` closes the Goal and invalidates unconsumed requests.
 
 Use `usage.read` for durably recorded model usage; process-local diagnostics are not the Workspace ledger.
@@ -250,3 +254,7 @@ The Agent host may separately have SSH, browser, repository or deployment tools.
 Report the goal, actual identifiers, observed outcome, relevant evidence and unresolved limitations. A benchmark additionally identifies its inputs/checks, model/configuration, budget and sample count; a single sample is an observation, not a demonstrated performance improvement. Use existing tasks and Artifacts rather than a private test database.
 
 Remove only attempt-owned temporary resources when cleanup is requested and safe. Keep the deployment and its Provider configuration available for the next task. Report unrelated discoveries without expanding the work or closing untested plans.
+
+A Timeline can contain a `context-summary` Item. `thread.items` returns its continuation text, source-range endpoints, Item count and digests. This shows the earlier history represented in the model window. Exact earlier Items remain available through `thread.items`; a summary does not delete or replace them. If summary production fails, inspect the failed Turn cause before you submit a new request. Exact replay does not regenerate it.
+
+Assistant Task and Goal proposals show the exact shared payload and receiving Workspace in a pending question. Select `Confirm exact handoff` only for the shown work, or `Do not start`. Confirmation selects the work; current permissions and any required effect Approval still apply. The later native outcome creates a linked receiving Thread and keeps the private Timeline history in place.
