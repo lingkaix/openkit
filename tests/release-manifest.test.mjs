@@ -256,3 +256,85 @@ test('manifest CLI generates the asset and refuses changed downloaded bytes', (t
   assert.equal(changed.status, 1);
   assert.match(changed.stderr, /differs/);
 });
+
+test('publication attaches a fifth checksummed asset and compares all downloaded facts', async (t) => {
+  const { publicationManifest } = await import('../scripts/release-record.mjs');
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-published-manifest-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const input = manifestInput();
+  for (const name of ['release-notes', 'records', 'assets']) mkdirSync(path.join(dir, name));
+  const { sourceCommit: _source, appDigest: _app, ...facts } = input.assertions;
+  writeFileSync(
+    path.join(dir, 'release-notes', `${input.tag}.manifest.json`),
+    JSON.stringify(facts)
+  );
+  for (const image of input.images)
+    writeFileSync(path.join(dir, 'records', `${image.id}.json`), JSON.stringify(image));
+  const sums = `${input.checksums
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const name = line.slice(66);
+      const bytes = Buffer.from(`synthetic archive ${name}`);
+      writeFileSync(path.join(dir, 'assets', name), bytes);
+      return `${createHash('sha256').update(bytes).digest('hex')}  ${name}`;
+    })
+    .join('\n')}\n`;
+  writeFileSync(path.join(dir, 'assets', 'SHA256SUMS'), sums);
+  const params = {
+    repoRoot: dir,
+    tag: input.tag,
+    sha: input.sha,
+    repository: input.repository,
+    recordsDir: path.join(dir, 'records'),
+    assetsDir: path.join(dir, 'assets'),
+  };
+  publicationManifest(params);
+  const name = `openkit-release-${input.tag}.json`;
+  assert.equal(
+    readFileSync(path.join(params.assetsDir, 'SHA256SUMS'), 'utf8').trim().split('\n').length,
+    4
+  );
+  assert.equal(publicationManifest({ ...params, verify: true }).assets.length, 3);
+  assert.throws(() => publicationManifest(params), /already written/);
+  const original = readFileSync(path.join(params.assetsDir, name));
+  writeFileSync(path.join(params.assetsDir, name), `${original}\n`);
+  assert.throws(() => publicationManifest({ ...params, verify: true }), /manifest differs/);
+  writeFileSync(path.join(params.assetsDir, name), original);
+  writeFileSync(
+    path.join(params.assetsDir, input.checksums.trim().split('\n')[0].slice(66)),
+    'changed'
+  );
+  assert.throws(
+    () => publicationManifest({ ...params, verify: true }),
+    /portable checksum mismatch/
+  );
+});
+
+test('reviewed publication assessment refuses absent, negative and caller-supplied binding facts', async (t) => {
+  const { readReleaseAssessment } = await import('../scripts/release-record.mjs');
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-assessment-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(path.join(dir, 'release-notes'));
+  const input = manifestInput();
+  const { sourceCommit: _source, appDigest: _app, ...facts } = input.assertions;
+  const file = path.join(dir, 'release-notes', `${input.tag}.manifest.json`);
+  assert.throws(() => readReleaseAssessment(dir, input.tag), /ENOENT/);
+  for (const key of Object.keys(facts)) {
+    const missing = { ...facts };
+    delete missing[key];
+    writeFileSync(file, JSON.stringify(missing));
+    assert.throws(() => readReleaseAssessment(dir, input.tag), /missing or unassessed/, key);
+  }
+  for (const changed of [
+    { ...facts, migrationFree: false },
+    { ...facts, recovery: 'unknown' },
+    { ...facts, sourceCommit: input.sha },
+    { ...facts, appDigest: input.assertions.appDigest },
+  ]) {
+    writeFileSync(file, JSON.stringify(changed));
+    assert.throws(() => readReleaseAssessment(dir, input.tag), /missing or unassessed/);
+  }
+  writeFileSync(file, JSON.stringify(facts));
+  assert.deepEqual(readReleaseAssessment(dir, input.tag), facts);
+});

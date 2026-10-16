@@ -5,6 +5,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
+import { readReleaseAssessment } from './release-record.mjs';
 
 /**
  * Validates release identity, portable inputs, image manifest, and optional main-branch ancestry.
@@ -16,6 +17,7 @@ import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
  * @param {string} [input.mainRef] Git ref that represents main.
  * @param {string} [input.sha] Commit sha for main ancestry validation.
  * @param {boolean} [input.requirePrerelease] Whether the tag must identify a prerelease.
+ * @param {boolean} [input.requireReleaseManifestAssessment] Require reviewed release assessment before publication.
  * @param {boolean} [input.requireReleaseImageDigests] Whether release image base images must be digest-pinned.
  * @returns {{ version: string, releaseImages: string[] }} Release summary.
  */
@@ -32,6 +34,7 @@ export function validateReleasePreflight(input) {
     );
   }
 
+  if (input.requireReleaseManifestAssessment) readReleaseAssessment(repoRoot, input.tag);
   validatePortableReleaseInputs(repoRoot);
   validateNanoHostReleaseInputs(repoRoot);
   const releaseImages = validateImageManifest(repoRoot, Boolean(input.requireReleaseImageDigests));
@@ -619,6 +622,7 @@ function main() {
     repoRoot: String(args['repo-root'] ?? process.cwd()),
     requireMain: Boolean(args['require-main']),
     requirePrerelease: true,
+    requireReleaseManifestAssessment: true,
     requireReleaseImageDigests: true,
     sha: args.sha ? String(args.sha) : undefined,
     tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
