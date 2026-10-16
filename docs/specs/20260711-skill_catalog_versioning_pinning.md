@@ -185,6 +185,8 @@ Skill instructions/scripts remain subordinate to authored setup, current permiss
 
 The engineer ruling of 2026-10-16 requires BWM and Meta-Skill first-loop implementation now, including synthetic and fake-backed regressions. Missing B01 business inputs do not block that implementation. BWM and Meta-Skill remain ordinary Skill packages: an authorized Task or Goal produces an attributable candidate Artifact, an explicit authorized submission creates the existing SkillCandidate, and current human decisions and pins select exact retained versions for later work. Add no BWM Core entity, evaluator, automatic promotion, background runner or alternate authority. Synthetic checks establish implementation behavior only. No BWM acceptance occurs now; the engineer supplies further ideas on2026-10-17 and acceptance follows that work. Real-use acceptance must never be inferred from synthetic material, fake execution or a candidate's existence.
 
+The current implementation includes the ordinary `openkit-bwm-author` package and a synthetic native regression through real Task admission, Worker-output Artifact retention, exact Artifact-origin candidate submission, human promotion and pinning, and a later Task's exact AEP selection. The fake Worker boundary and synthetic domain inputs do not prove physical Worker delivery or real-use acceptance. The existing catalog and Task owners retain all runtime behavior; this loop introduces no BWM-specific production owner.
+
 ## Deferred / Future Work
 
 Experiment scheduling, statistical analysis, held-back evaluation suites, autonomous promotion policy, business-model representations, generic proposals, registry search, source hosting, version ranges, and cross-deployment distribution remain separate work.
