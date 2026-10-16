@@ -204,7 +204,7 @@ const ImportedThreadMaterialBindingSchema = z
   .strip();
 const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.safeExtend({
   materialProposal: ArtifactReviewViewSchema.shape.materialProposal.unwrap().strip().nullable(),
-  rangeFeedback: ArtifactReviewViewSchema.shape.rangeFeedback.unwrap().unwrap().safeExtend({}).strip().nullable().optional(),
+  rangeFeedback: ArtifactReviewViewSchema.shape.rangeFeedback.unwrap().unwrap().strip().nullable().optional(),
   candidateSelections: z.array(ArtifactReviewViewSchema.shape.candidateSelections.unwrap().element.strip()).default([]),
   decisionRequestId: z.string().min(1).nullable(),
 }).strip();
