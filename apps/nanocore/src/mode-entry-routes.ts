@@ -158,7 +158,7 @@ import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.
 /** Stable attribution id for the direct Quick Chat provider call. */
 export const QUICK_CHAT_AGENT_ID = 'quick-chat';
 
-/** Maximum duration of one direct Quick Chat provider call. */
+/** Shared absolute deadline for an ordinary Assistant run, including summaries and its answer. */
 const QUICK_CHAT_TIMEOUT_MS = 30_000;
 const ConversationCommandBodySchema = SubmitConversationResponseSchema.omit({
   originatingWorkspaceId: true,
