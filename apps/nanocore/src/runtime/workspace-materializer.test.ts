@@ -115,7 +115,9 @@ describe('workspace materializer records', () => {
       workspaceCwd: null,
       workspaceRoots: [],
     });
-    const contextRoot = workerSessionInputPaths(environmentPackage.scope.agentSessionId).contextRoot;
+    const contextRoot = workerSessionInputPaths(
+      environmentPackage.scope.agentSessionId
+    ).contextRoot;
     const contextInput: AgentEnvironmentPackage['workspace']['inputs'][number] = {
       access: 'read-only',
       id: `context_${turn.id}`,
