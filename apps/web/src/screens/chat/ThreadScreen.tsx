@@ -264,7 +264,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
 
   /** Imports an attachment and starts this Thread's list refresh without delaying selection. */
   async function importFile(file: File) {
-    const attachment = await importComposerFile(workspaceId, file, importArtifact.mutateAsync);
+    const attachment = await importComposerFile(workspaceId, file, importArtifact);
     void workspaceArtifacts.refetch();
     return attachment;
   }

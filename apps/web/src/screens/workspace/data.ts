@@ -693,7 +693,7 @@ export function openHrefForRow(row: AttentionRow): string | null {
     return '/workspace-changes';
   }
   if (row.source.type === 'artifact_review') {
-    return `/goals/${row.workspaceId}/${row.source.threadId}/artifacts/${row.source.artifactId}`;
+    return `/goals/${encodeURIComponent(row.workspaceId)}/${encodeURIComponent(row.source.threadId)}/artifacts/${encodeURIComponent(row.source.artifactId)}`;
   }
 
   if (row.threadId) {

@@ -91,7 +91,7 @@ export function ChatStarter() {
 
   /** Imports an attachment and starts this starter's list refresh without delaying selection. */
   async function importFile(file: File) {
-    const attachment = await importComposerFile(workspaceId, file, importArtifact.mutateAsync);
+    const attachment = await importComposerFile(workspaceId, file, importArtifact);
     void artifacts.refetch();
     return attachment;
   }
