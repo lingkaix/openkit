@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { parseReferenceScope } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -12,6 +15,7 @@ import {
 } from '../runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { verifyTurnFileInput } from '../storage/workspace-file-records.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from '../workspace-materials.js';
 import type { WorkerContextPackageAuthorityReader } from './worker-context-package.js';
 
@@ -65,6 +69,72 @@ export function createWorkerContextPackageAuthorityReader(
       });
 
   return {
+    readSourceFile: (source) =>
+      readOrNull(() => {
+        const scope = parseReferenceScope(source.source.reference.scopeId);
+        if (!scope || !('workspaceId' in scope) || scope.workspaceId !== workspaceDb.workspaceId)
+          return null;
+        if (source.source.kind === 'artifact') {
+          const artifact = store.getArtifact(scope.workspaceId, source.source.reference.objectId);
+          // The current Artifact owner is create-only. Never substitute a different version if this owner gains updates.
+          if (artifact.version !== source.source.artifactVersion) return null;
+          store.assertArtifactContent(artifact);
+          return {
+            originalDigest: artifact.contentDigest,
+            byteLength:
+              artifact.content.format === 'file'
+                ? artifact.content.byteLength
+                : Buffer.byteLength(artifact.content.body, 'utf8'),
+            mediaType:
+              artifact.content.format === 'file'
+                ? artifact.content.mediaType
+                : artifact.content.format === 'markdown'
+                  ? 'text/markdown'
+                  : artifact.content.format === 'json'
+                    ? 'application/json'
+                    : 'text/plain',
+          };
+        }
+        if (source.source.kind === 'material') {
+          if (
+            getWorkspaceMaterial(workspaceDb, source.source.reference.objectId).sensitivity ===
+            'restricted'
+          )
+            return null;
+          const revision = getWorkspaceMaterialRevision(
+            workspaceDb,
+            source.source.reference.objectId,
+            source.source.revisionId
+          );
+          if (
+            `sha256:${createHash('sha256').update(revision.content, 'utf8').digest('hex')}` !==
+            revision.contentDigest
+          )
+            return null;
+          return {
+            originalDigest: revision.contentDigest,
+            byteLength: Buffer.byteLength(revision.content, 'utf8'),
+            mediaType: revision.mediaType,
+          };
+        }
+        if (scope.family !== 'input') return null;
+        const ordinal = Number(source.source.reference.objectId);
+        if (
+          !Number.isSafeInteger(ordinal) ||
+          ordinal < 0 ||
+          String(ordinal) !== source.source.reference.objectId
+        )
+          return null;
+        const turn = store.getTurn(scope.workspaceId, scope.threadId, scope.turnId);
+        const original = turn.fileInputs?.[ordinal];
+        if (!original) return null;
+        verifyTurnFileInput(join(coreDb.dataRoot, 'workspaces', scope.workspaceId), turn, ordinal);
+        return {
+          originalDigest: original.contentDigest,
+          byteLength: original.sizeBytes,
+          mediaType: original.mediaType,
+        };
+      }),
     readAdmission: (workspaceId, threadId, turnId) => {
       const matches = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         workspaceId,
