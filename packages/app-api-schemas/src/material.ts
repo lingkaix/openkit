@@ -1,6 +1,7 @@
 import {
   ArtifactMediaTypeSchema,
   MAX_ARTIFACT_FILE_BYTES,
+  MaterialIdSchema,
   TimestampSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -30,7 +31,7 @@ const materialMediaTypeSchema = z.enum(['text/markdown', 'text/plain']);
 export const WorkspaceMaterialViewSchema = z
   .object({
     workspaceId: opaqueIdSchema,
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     title: z.string().min(1),
     kind: materialKindSchema,
     currentRevisionId: opaqueIdSchema.nullable(),
@@ -44,7 +45,7 @@ export const WorkspaceMaterialViewSchema = z
 export const WorkspaceMaterialRevisionSummarySchema = z
   .object({
     workspaceId: opaqueIdSchema,
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     revisionId: opaqueIdSchema,
     parentRevisionId: opaqueIdSchema.nullable(),
     mediaType: materialMediaTypeSchema,
@@ -62,7 +63,7 @@ export const WorkspaceMaterialRevisionViewSchema = WorkspaceMaterialRevisionSumm
 /** Immutable Material target and base captured by one Artifact Review. */
 export const ArtifactMaterialProposalSchema = z
   .object({
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     baseRevisionId: opaqueIdSchema,
     baseContentDigest: contentDigestSchema,
   })
@@ -157,7 +158,7 @@ export const ThreadMaterialActiveDeliverySchema = z
     contentItemId: opaqueIdSchema,
     goalId: opaqueIdSchema,
     activeTurnId: opaqueIdSchema,
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     revisionId: opaqueIdSchema,
     contentDigest: contentDigestSchema,
   })
@@ -299,7 +300,7 @@ export const CreateWorkspaceMaterialRequestSchema = z
 
 /** Response payload after creating one Workspace Material. */
 export const CreateWorkspaceMaterialResponseSchema = z
-  .object({ materialId: opaqueIdSchema })
+  .object({ materialId: MaterialIdSchema })
   .strict();
 
 /** Request payload for saving one immutable Workspace Material revision. */
@@ -315,7 +316,7 @@ export const SaveWorkspaceMaterialRevisionRequestSchema = z
 /** Response payload after saving one immutable Workspace Material revision. */
 export const SaveWorkspaceMaterialRevisionResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     revisionId: opaqueIdSchema,
   })
   .strict();
@@ -331,7 +332,7 @@ export const BindThreadMaterialRequestSchema = z
 /** Response payload after binding one Material to a Thread. */
 export const BindThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     threadId: opaqueIdSchema,
     outcome: z.literal('bound'),
   })
@@ -348,7 +349,7 @@ export const UnbindThreadMaterialRequestSchema = z
 /** Response payload after unbinding one Material from a Thread. */
 export const UnbindThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     threadId: opaqueIdSchema,
     outcome: z.literal('unbound'),
   })
@@ -367,7 +368,7 @@ export const ExcludeThreadMaterialRequestSchema = z
 /** Response payload after excluding one bound Material from worker context. */
 export const ExcludeThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     threadId: opaqueIdSchema,
     outcome: z.literal('excluded'),
   })
@@ -385,7 +386,7 @@ export const RestoreThreadMaterialRequestSchema = z
 /** Response payload after restoring one bound Material to worker context. */
 export const RestoreThreadMaterialResponseSchema = z
   .object({
-    materialId: opaqueIdSchema,
+    materialId: MaterialIdSchema,
     threadId: opaqueIdSchema,
     outcome: z.literal('included'),
   })

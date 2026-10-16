@@ -25,6 +25,9 @@ export const ItemIdSchema = z.string().min(1);
  */
 export const ArtifactIdSchema = z.string().min(1);
 
+/** Opaque identity owned by the existing Workspace Material records. */
+export const MaterialIdSchema = z.string().min(1);
+
 /**
  * Opaque protocol IDs are strings on the wire.
  */

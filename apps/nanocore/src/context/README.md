@@ -25,3 +25,5 @@ Run `pnpm --filter @openkit/nanocore exec vitest run src/context` and the workfl
 See [Work Model](../../../../docs/core/work-model.md).
 
 Revalidating a parsed Context Package trace with its retained original requires equality of their normalized known core; a changed supplied core fails closed before serialization.
+
+`bounded-source-view.ts` verifies one immutable UTF-8 representation with bounded source reads, pins its separate original and representation identities, and serves exact preview/read ranges with continuation and full serialized envelope limits. Its caller owns current authorization, source acquisition, file handles and disposal. `pdf-text-layer.ts` produces bounded PDF text-layer representations in an isolated process; processing failure does not prove body absence. Media processing grants no model input or file access.
