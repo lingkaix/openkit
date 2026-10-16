@@ -24,6 +24,8 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  allocateEntityId,
+  deriveEntityId,
   KnowledgeEntrySchema,
   ListKnowledgeEntriesResponseSchema,
 } from '@openkit/protocol';
@@ -368,7 +370,7 @@ export function createKnowledgeOperationImplementations(
           execute: () =>
             store.createKnowledgeSource(
               {
-                id: `ks_${randomUUID()}`,
+                id: allocateEntityId('ks'),
                 workspaceId,
                 kind: commandInput.kind,
                 title: commandInput.title,
@@ -471,7 +473,7 @@ export function createKnowledgeOperationImplementations(
           responseKind: 'knowledge_observation',
           execute: () =>
             store.recordKnowledgeObservation({
-              id: `ko_${randomUUID()}`,
+              id: allocateEntityId('ko'),
               workspaceId,
               kind: commandInput.kind,
               summary: commandInput.summary,
@@ -531,7 +533,7 @@ export function createKnowledgeOperationImplementations(
           responseKind: 'knowledge_claim',
           execute: () =>
             store.recordKnowledgeClaim({
-              id: `kc_${randomUUID()}`,
+              id: allocateEntityId('kc'),
               workspaceId,
               statement: commandInput.statement,
               sourceReferences: commandInput.sourceReferences,
@@ -591,7 +593,7 @@ export function createKnowledgeOperationImplementations(
           responseKind: 'knowledge_conflict',
           execute: () =>
             store.recordKnowledgeConflict({
-              id: `kf_${randomUUID()}`,
+              id: allocateEntityId('kf'),
               workspaceId,
               subjectReferences: commandInput.subjectReferences,
               sourceReferences: commandInput.sourceReferences,
@@ -727,7 +729,7 @@ export function createKnowledgeOperationImplementations(
               outputThreadId: context.queryContext?.threadId,
               outputTurnId: context.queryContext?.turnId,
             },
-            traceId: `krt_${randomUUID()}`,
+            traceId: allocateEntityId('krt'),
           })
         );
         recordKnowledgeGatewayUsage({
@@ -987,8 +989,8 @@ export function createKnowledgeOperationImplementations(
         }
 
         const scope = { workspaceId, proposalId };
-        const reviewId = knowledgeAuthorityId('kr_', {
-          workspaceId,
+        const reviewId = deriveEntityId('kr', {
+          ownerScope: { kind: 'workspace', workspaceId },
           proposalId,
           requestId: commandInput.requestId,
         });

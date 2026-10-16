@@ -23,7 +23,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from './auth/identity.js';
+import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { createOperationInvocation } from './operation-composition.js';
@@ -48,7 +48,9 @@ import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import {
   createWorkspaceDeletionRequest,
   readWorkspaceDeletionRequest,
@@ -82,16 +84,20 @@ function fixture() {
   coreDb.sqlite.pragma('journal_mode = WAL');
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
   const actor: Actor = {
     kind: 'token',
-    userId: 'user_local',
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     tokenScope: 'server-admin',
     tokenId: token.tokenId,
   };
@@ -123,24 +129,25 @@ function fixture() {
 /** Creates the deletion owner's durable request without advancing deletion. */
 function deletion(f: ReturnType<typeof fixture>, requestId = REQUEST) {
   return createWorkspaceDeletionRequest(f.dataRoot, {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     requestId,
-    originalOwnerUserId: 'user_local',
-    confirmation: 'permanently-delete-workspace:ws_demo:1',
+    originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    confirmation: 'permanently-delete-workspace:ws_00000000-0000-7000-8000-000000000001:1',
     expectedRegistryRevision: 1,
     createdAt: CREATED,
   });
 }
 
 /** Creates a real prepared Scheduler attempt with no execution or Host contact. */
-function attempt(coreDb: CoreDb, id = 'attempt_cleanup_operation') {
+function attempt(coreDb: CoreDb, label = 'attempt_cleanup_operation') {
+  const id = testEntityId('attempt', label);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${id}`,
-    triggerActor: { kind: 'user', id: 'user_local' },
-    workspaceId: 'ws_demo',
-    threadId: `thread_${id}`,
-    turnId: `turn_${id}`,
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: testEntityId('th', `thread_${id}`),
+    turnId: testEntityId('tu', `turn_${id}`),
     turnInput: PRIVATE,
     requestedAgentId: 'agent_cleanup',
     now: () => CREATED,
@@ -148,11 +155,44 @@ function attempt(coreDb: CoreDb, id = 'attempt_cleanup_operation') {
   return recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: id,
-    agentSessionId: `session_${id}`,
+    agentSessionId: testEntityId('as', `session_${id}`),
     inputRef: `package_${id}`,
     bindingRef: `binding_${id}`,
     sessionCompatibilityKey: 'b'.repeat(64),
     now: () => CREATED,
+  });
+}
+
+/** Creates a native Sandbox identity to exercise complete UTF-8 response bounds without invalid Core IDs. */
+function sandbox(coreDb: CoreDb, id: string) {
+  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: testEntityId('dep', 'deployment_cleanup'),
+    identityId: 'identity_cleanup',
+    targetId: 'target_cleanup',
+    observedAt: CREATED,
+  });
+  upsertNanoHostRuntimeTarget(coreDb, {
+    ...target,
+    freshEmpty: true,
+    predecessorFenced: true,
+    ready: true,
+    physicalEpoch: 'a'.repeat(64),
+    observedAt: CREATED,
+  });
+  createNanoHostHarnessRuntime(coreDb, {
+    adapterId: 'pi',
+    adapterVersion: '1',
+    harnessInstanceId: `harness_${id}`,
+    harnessBindingRef: `harness_binding_${id}`,
+    harnessCompatibilityKey: 'b'.repeat(64),
+    imageDigest: `sha256:${'c'.repeat(64)}`,
+    originPhysicalEpoch: 'a'.repeat(64),
+    sandboxBindingRef: `sandbox_binding_${id}`,
+    sandboxCompatibilityKey: 'd'.repeat(64),
+    sandboxIntegrationBindingRef: `integration_${id}`,
+    sandboxRuntimeId: id,
+    runtimeTargetId: 'target_cleanup',
+    timestamp: CREATED,
   });
 }
 
@@ -161,7 +201,7 @@ function populate(f: ReturnType<typeof fixture>) {
   const request = deletion(f);
   const execution = attempt(f.coreDb);
   const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
-    deploymentId: 'deployment_cleanup',
+    deploymentId: testEntityId('dep', 'deployment_cleanup'),
     identityId: 'identity_cleanup',
     targetId: 'target_cleanup',
     observedAt: CREATED,
@@ -179,7 +219,7 @@ function populate(f: ReturnType<typeof fixture>) {
       agentSessionId: execution.agentSessionId!,
       backendKind: 'openshell',
       backendSessionId: PRIVATE,
-      deploymentId: 'deployment_cleanup',
+      deploymentId: testEntityId('dep', 'deployment_cleanup'),
       packageSnapshotId: execution.inputRef!,
       runtimeTargetId: 'target_cleanup',
       stagingDirectoryRef: `server/runtime/${PRIVATE}`,
@@ -219,9 +259,9 @@ function populate(f: ReturnType<typeof fixture>) {
     timestamp: CREATED,
   });
   const storage = createWorkerStorageBinding(f.coreDb, {
-    deploymentId: 'deployment_cleanup',
+    deploymentId: testEntityId('dep', 'deployment_cleanup'),
     runtimeTargetId: 'target_cleanup',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: CREATED,
     layout: {
       family: 'worker',
@@ -309,7 +349,7 @@ describe('administrator cleanup public operation composition', () => {
   it.each([
     null,
     [],
-    { workspaceId: 'ws_demo' },
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     { maxEntries: 1 },
     { maxBytes: 1 },
     { now: CREATED },
@@ -326,12 +366,14 @@ describe('administrator cleanup public operation composition', () => {
   it('refuses caller-supplied authority before source access', async () => {
     const f = fixture();
     const read = vi.spyOn(f.coreDb.sqlite, 'prepare');
-    await expect(f.native({ actor: 'user_local' })).rejects.toMatchObject({
+    await expect(
+      f.native({ actor: 'usr_00000000-0000-7000-8000-000000000001' })
+    ).rejects.toMatchObject({
       code: 'bound_input_conflict',
       status: 403,
     });
     expect(read).not.toHaveBeenCalled();
-    expect((await f.json({ actor: 'user_local' })).status).toBe(403);
+    expect((await f.json({ actor: 'usr_00000000-0000-7000-8000-000000000001' })).status).toBe(403);
   });
 
   it('joins every real source, preserves waiting and unknown facts, and exposes no private payload', async () => {
@@ -342,7 +384,7 @@ describe('administrator cleanup public operation composition', () => {
     expect(result.incomplete).toBe(false);
     expect(result.items[0]).toMatchObject({
       source: 'workspace-deletion',
-      target: { workspaceId: 'ws_demo', requestId: REQUEST },
+      target: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', requestId: REQUEST },
       state: { phase: 'requested', retainedStaging: false, cleanedAt: null },
       sourceUpdatedAt: null,
       evidence: { kind: 'unknown' },
@@ -383,15 +425,20 @@ describe('administrator cleanup public operation composition', () => {
     const f = fixture();
     populate(f);
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope,
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     await expect(
       f.native(
         {},
-        { kind: 'token', userId: 'user_local', tokenId: token.tokenId, tokenScope: scope }
+        {
+          kind: 'token',
+          userId: 'usr_00000000-0000-7000-8000-000000000001',
+          tokenId: token.tokenId,
+          tokenScope: scope,
+        }
       )
     ).rejects.toMatchObject({ status: 403 });
   });
@@ -415,7 +462,9 @@ describe('administrator cleanup public operation composition', () => {
     await expect(f.native()).rejects.toMatchObject({ status: 403 });
     const http = await f.json();
     expect(http.status).toBe(403);
-    expect(JSON.stringify(await http.json())).not.toMatch(/ws_demo|attempt_cleanup_operation/);
+    expect(JSON.stringify(await http.json())).not.toMatch(
+      /ws_00000000-0000-7000-8000-000000000001|attempt_cleanup_operation/
+    );
   });
 
   it.each([
@@ -428,7 +477,7 @@ describe('administrator cleanup public operation composition', () => {
     const contexts = {
       worker: {
         kind: 'worker' as const,
-        actor: { kind: 'user' as const, id: 'user_local' },
+        actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
         lineage: {
           workspaceId: execution.workspaceId,
           threadId: execution.threadId,
@@ -442,7 +491,7 @@ describe('administrator cleanup public operation composition', () => {
       coordinator: {
         kind: 'coordinator' as const,
         actor: f.actor,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: execution.threadId,
         turnId: execution.turnId,
         goalId: 'goal_cleanup',
@@ -494,7 +543,7 @@ describe('administrator cleanup public operation composition', () => {
     const error = await http.json();
     expect(error).toMatchObject({ code: 'operation_storage_unavailable' });
     expect(JSON.stringify(error)).not.toMatch(
-      /openkit_access_tokens|attempt_cleanup_operation|ws_demo|SQLITE|injected authority storage failure/
+      /openkit_access_tokens|attempt_cleanup_operation|ws_00000000-0000-7000-8000-000000000001|SQLITE|injected authority storage failure/
     );
   });
 
@@ -522,8 +571,8 @@ describe('administrator cleanup public operation composition', () => {
     f.coreDb.sqlite.transaction(() =>
       beginWorkspaceDeletion({
         coreDb: f.coreDb,
-        workspaceId: 'ws_demo',
-        originalOwnerUserId: 'user_local',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         expectedRegistryRevision: 1,
       })
     )();
@@ -541,8 +590,11 @@ describe('administrator cleanup public operation composition', () => {
     await expect(
       f.invoke(
         'workspace.read',
-        { workspaceId: 'ws_demo' },
-        { kind: 'public', actor: { kind: 'local', userId: 'user_local' } }
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {
+          kind: 'public',
+          actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+        }
       )
     ).rejects.toMatchObject({ code: 'workspace_access_denied' });
     expect(rows(f.coreDb)).toEqual(beforeRows);
@@ -561,7 +613,7 @@ describe('administrator cleanup public operation composition', () => {
         'server',
         'exports',
         'workspace-deletions',
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         REQUEST,
         'request.json'
       );
@@ -625,7 +677,14 @@ describe('administrator cleanup public operation composition', () => {
     expect(first.items.slice(1).map((item) => item.target)).toEqual(
       second.items.slice(1).map((item) => item.target)
     );
-    expect(first.items[99]).toMatchObject({ target: { attemptId: 'attempt_098' } });
+    expect(first.items.slice(1).map((item) => item.target)).toEqual(
+      Array.from({ length: 102 }, (_, index) =>
+        testEntityId('attempt', `attempt_${String(index).padStart(3, '0')}`)
+      )
+        .sort()
+        .slice(0, 99)
+        .map((attemptId) => expect.objectContaining({ attemptId }))
+    );
     expect(first.sources[1]).toMatchObject({
       incomplete: true,
       reasons: expect.arrayContaining(['count_limit']),
@@ -646,7 +705,13 @@ describe('administrator cleanup public operation composition', () => {
     attempt(f.coreDb);
     const fileRead = vi.spyOn(fs, 'readFileSync');
     syncBuiltinESMExports();
-    const canonicalRoot = join(f.dataRoot, 'server', 'exports', 'workspace-deletions', 'ws_demo');
+    const canonicalRoot = join(
+      f.dataRoot,
+      'server',
+      'exports',
+      'workspace-deletions',
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     const canonicalReadPaths = () =>
       fileRead.mock.calls
         .map(([path]) => String(path))
@@ -689,13 +754,17 @@ describe('administrator cleanup public operation composition', () => {
     deletion(f);
     if (state === 'missing')
       f.coreDb.sqlite
-        .prepare("DELETE FROM workspace_registry WHERE workspace_id = 'ws_demo'")
+        .prepare(
+          "DELETE FROM workspace_registry WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'"
+        )
         .run();
     else {
       // Model a corrupted retained registry row; restore constraint enforcement before the public read.
       f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
       f.coreDb.sqlite
-        .prepare("UPDATE workspace_registry SET status = ? WHERE workspace_id = 'ws_demo'")
+        .prepare(
+          "UPDATE workspace_registry SET status = ? WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'"
+        )
         .run(PRIVATE);
       f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
     }
@@ -708,82 +777,62 @@ describe('administrator cleanup public operation composition', () => {
     });
     expect(result.incomplete).toBe(true);
     expect(JSON.stringify(result)).not.toMatch(
-      /ws_demo|00000000-0000-4000-8000-000000000226|private-cleanup-operation-canary/
+      /ws_00000000-0000-7000-8000-000000000001|00000000-0000-4000-8000-000000000226|private-cleanup-operation-canary/
     );
   });
 
-  it('counts UTF-8 bytes on the complete six-source response and omits oversized identities intact', async () => {
+  it('counts UTF-8 bytes on the complete six-source response and preserves bounded native identities intact', async () => {
     const f = fixture();
     deletion(f);
-    attempt(f.coreDb, 'attempt_000');
-    const oversized = `attempt_001_${'界'.repeat(12000)}`;
-    attempt(f.coreDb, oversized);
+    const ids = Array.from(
+      { length: 96 },
+      (_, index) => `sandbox_${String(index).padStart(3, '0')}_${'界'.repeat(470)}`
+    );
+    for (const id of ids) sandbox(f.coreDb, id);
+
     const result = bounded(await f.native());
-    expect(result.items.map((item) => item.source)).toEqual([
-      'workspace-deletion',
-      'execution-attempt',
-    ]);
-    expect(result.items[1]).toMatchObject({ target: { attemptId: 'attempt_000' } });
-    expect(JSON.stringify(result)).not.toContain('界');
-    expect(result.sources[1]).toMatchObject({
+    const serialized = JSON.stringify(result);
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(262144);
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeGreaterThan(serialized.length);
+    expect(result.items[0]?.source).toBe('workspace-deletion');
+    const runtimes = result.items.filter((item) => item.source === 'sandbox-runtime');
+    expect(runtimes.length).toBeGreaterThan(0);
+    expect(runtimes.length).toBeLessThan(ids.length);
+    for (const item of runtimes) {
+      expect(item.target.kind).toBe('sandbox-runtime');
+      if (item.target.kind === 'sandbox-runtime') {
+        expect(ids).toContain(item.target.sandboxRuntimeId);
+      }
+    }
+    expect(result.sources[4]).toMatchObject({
       incomplete: true,
       reasons: expect.arrayContaining(['byte_limit']),
     });
+    expect(result.sources.flatMap((source) => source.reasons)).not.toContain('count_limit');
     expect(result.incomplete).toBe(true);
   });
 
-  it('retains a complete runtime item that fits within the full public byte ceiling', async () => {
-    const calibration = fixture();
-    attempt(calibration.coreDb, 'attempt_');
-    const baseline = bounded(await calibration.native());
-    expect(baseline.items).toHaveLength(1);
-    const extraCharacters = Math.floor(
-      (262144 - Buffer.byteLength(JSON.stringify(baseline), 'utf8')) / 24
-    );
+  it('retains complete native runtime items when the complete response fits its byte ceiling', async () => {
     const f = fixture();
-    const id = `attempt_${'界'.repeat(extraCharacters)}`;
-    attempt(f.coreDb, id);
-    const result = bounded(await f.native());
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({ target: { attemptId: id } });
-    expect(262144 - Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(24);
-    expect(result.incomplete).toBe(false);
-  });
+    deletion(f);
+    const ids = Array.from(
+      { length: 4 },
+      (_, index) => `sandbox_${String(index).padStart(3, '0')}_${'界'.repeat(470)}`
+    );
+    for (const id of ids) sandbox(f.coreDb, id);
 
-  it('includes joined deletion and coverage metadata in the final UTF-8 byte limit', async () => {
-    const calibration = fixture();
-    const requests = Array.from(
-      { length: 30 },
-      (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+    const result = bounded(await f.native());
+    expect(result.items).toHaveLength(ids.length + 1);
+    expect(result.items.slice(1).map((item) => item.target)).toEqual(
+      ids.map((sandboxRuntimeId) => ({
+        kind: 'sandbox-runtime',
+        sandboxRuntimeId,
+        runtimeTargetId: 'target_cleanup',
+      }))
     );
-    for (const requestId of requests) deletion(calibration, requestId);
-    attempt(calibration.coreDb, 'attempt_');
-    const baseline = bounded(await calibration.native());
-    expect(baseline.items).toHaveLength(31);
-    // Each of the four exact attempt identities occurs in target and inspection references.
-    const extraCharacters =
-      Math.floor((262144 - Buffer.byteLength(JSON.stringify(baseline), 'utf8')) / 24) + 1;
-    const f = fixture();
-    const id = `attempt_${'界'.repeat(extraCharacters)}`;
-    attempt(f.coreDb, id);
-    const runtimeOnly = bounded(await f.native());
-    expect(runtimeOnly.items).toHaveLength(1);
-    expect(runtimeOnly.items[0]).toMatchObject({ target: { attemptId: id } });
-    for (const requestId of requests) deletion(f, requestId);
-    const fullItems = [...baseline.items.slice(0, 30), runtimeOnly.items[0]!];
-    // Items fit by themselves; only the complete six-source metadata makes this response too large.
-    expect(Buffer.byteLength(JSON.stringify(fullItems), 'utf8')).toBeLessThan(262144);
-    expect(
-      Buffer.byteLength(JSON.stringify({ ...baseline, items: fullItems }), 'utf8')
-    ).toBeGreaterThan(262144);
-    const joined = bounded(await f.native());
-    expect(joined.items).toHaveLength(30);
-    expect(joined.items.every((item) => item.source === 'workspace-deletion')).toBe(true);
-    expect(joined.sources[1]).toMatchObject({
-      incomplete: true,
-      reasons: expect.arrayContaining(['byte_limit']),
-    });
-    expect(joined.incomplete).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(262144);
+    expect(result.sources.every((source) => source.reasons.length === 0)).toBe(true);
+    expect(result.incomplete).toBe(false);
   });
 
   it('preserves coherent current owner facts during a concurrent source transition', async () => {
@@ -832,7 +881,7 @@ describe('administrator cleanup public operation composition', () => {
       'server',
       'exports',
       'workspace-deletions',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       REQUEST,
       'request.json'
     );
@@ -865,7 +914,10 @@ describe('administrator cleanup public operation composition', () => {
         incomplete: true,
         reasons: expect.arrayContaining(['source_changed']),
       });
-    expect(readWorkspaceDeletionRequest(f.dataRoot, 'ws_demo', REQUEST).phase).toBe('blocked');
+    expect(
+      readWorkspaceDeletionRequest(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001', REQUEST)
+        .phase
+    ).toBe('blocked');
     expect(rows(f.coreDb)).toEqual(beforeRows);
     const afterFiles = files(f.dataRoot);
     expect(afterFiles.map(([name]) => name)).toEqual(beforeFiles.map(([name]) => name));
@@ -897,7 +949,10 @@ describe('administrator cleanup public operation composition', () => {
       sourceUpdatedAt: CHANGED,
       state: { state: 'cleanup-pending' },
     });
-    expect(readWorkspaceDeletionRequest(f.dataRoot, 'ws_demo', REQUEST).phase).toBe('blocked');
+    expect(
+      readWorkspaceDeletionRequest(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001', REQUEST)
+        .phase
+    ).toBe('blocked');
   });
 
   it('uses the same real JSON operation through generated CLI and eligible remote MCP', async () => {

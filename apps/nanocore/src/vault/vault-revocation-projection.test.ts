@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InjectionVisibility } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -30,8 +31,8 @@ describe('Vault receipt revocation projection', () => {
       const db = openCoreDb(root);
       try {
         applyMigrations(db);
-        const referenceId = randomUUID();
-        const grantId = randomUUID();
+        const referenceId = allocateEntityId('vault');
+        const grantId = allocateEntityId('grant');
         createVaultReference(db, {
           referenceId,
           ownerScope: 'server',
@@ -43,7 +44,7 @@ describe('Vault receipt revocation projection', () => {
           grantId,
           vaultReferenceId: referenceId,
           ownerScope: 'workspace',
-          workspaceId: randomUUID(),
+          workspaceId: allocateEntityId('ws'),
           allowedInjectionPaths: visibilities,
           lifetime: 'workspace',
         });
@@ -66,7 +67,7 @@ describe('Vault receipt revocation projection', () => {
               receiptId: randomUUID(),
               planId,
               grantId,
-              agentSessionId: randomUUID(),
+              agentSessionId: allocateEntityId('as'),
               backendSummary: 'Synthetic completion',
               injectedAt: '2026-10-16T00:00:00.000Z',
               revocationStatus: 'active',

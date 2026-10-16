@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type {
   WorkspaceAccessLevel,
   WorkspaceAccessRecoveryState,
@@ -6,6 +5,7 @@ import type {
   WorkspaceMember,
   WorkspaceRegistryStatus,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { CoreDb } from './storage/db.js';
 import { listActiveWorkspaceIdsForActor, resolveWorkspaceRole } from './workspace-membership.js';
@@ -397,7 +397,7 @@ export function createWorkspaceInvitation(
        WHERE workspace_id = ? AND invitee_user_id = ? AND status = 'pending'`
     )
     .run(nowIso, nowIso, input.workspaceId, inviteeUserId);
-  const invitationId = `inv_${randomUUID()}`;
+  const invitationId = allocateEntityId('inv');
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_invitations (

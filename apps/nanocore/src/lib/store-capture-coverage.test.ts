@@ -125,7 +125,7 @@ afterEach(() => {
   for (const root of syncFailureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
+const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 describe('Turn capture coverage binding', () => {
   it.each([
@@ -136,12 +136,15 @@ describe('Turn capture coverage binding', () => {
     syncFailureRoots.push(dataRoot);
     const store = createDemoStore({ dataRoot });
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
-    const thread = store.createThread('ws_demo', 'Capture sync failure');
-    const turnId = 'tu_capture_sync_failure';
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture sync failure'
+    );
+    const turnId = 'tu_00000000-0000-7a17-81b3-4a0efca762bc';
     const turnPath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'threads',
       thread.id,
       'turns',
@@ -155,9 +158,16 @@ describe('Turn capture coverage binding', () => {
 
     await expect(
       (async () => {
-        const turn = store.createTurn('ws_demo', thread.id, 'Must not collect', LOCAL_ACTOR, null, {
-          turnId,
-        });
+        const turn = store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          thread.id,
+          'Must not collect',
+          LOCAL_ACTOR,
+          null,
+          {
+            turnId,
+          }
+        );
         await withTurnModelCapture({ store, turn }, collect);
       })()
     ).rejects.toThrow(`injected Turn manifest ${stage} sync failure`);
@@ -175,20 +185,30 @@ describe('Turn capture coverage binding', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-manifest-sync-'));
     syncFailureRoots.push(dataRoot);
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Manifest sync failure');
-    const turn = store.createTurn('ws_demo', thread.id, 'Admitted', LOCAL_ACTOR, null, {
-      captureCoverage: { scope: 'server', value: 'on' },
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Manifest sync failure'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Admitted',
+      LOCAL_ACTOR,
+      null,
+      {
+        captureCoverage: { scope: 'server', value: 'on' },
+      }
+    );
     const turnRoot = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'threads',
       thread.id,
       'turns',
       turn.id
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(db);
       syncFailure.target = join(turnRoot, 'turn.json');
@@ -227,7 +247,7 @@ describe('Turn capture coverage binding', () => {
         count: 0,
       });
       const bundleId = workObservationBodyBundleId(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         thread.id,
         turn.id,
         'blocked-observation',
@@ -235,7 +255,16 @@ describe('Turn capture coverage binding', () => {
       );
       expect(
         existsSync(
-          join(dataRoot, 'workspaces', 'ws_demo', 'evidence', 'backend', bundleId, 'raw', 'content')
+          join(
+            dataRoot,
+            'workspaces',
+            'ws_00000000-0000-7000-8000-000000000001',
+            'evidence',
+            'backend',
+            bundleId,
+            'raw',
+            'content'
+          )
         )
       ).toBe(false);
       expect(existsSync(join(turnRoot, 'observations.jsonl'))).toBe(false);
@@ -247,8 +276,13 @@ describe('Turn capture coverage binding', () => {
 
   it('records the off pair at admission by default', () => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Capture off');
-    const turn = store.createTurn('ws_demo', thread.id, 'Default off', LOCAL_ACTOR);
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture off');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Default off',
+      LOCAL_ACTOR
+    );
 
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual(DEFAULT_CAPTURE_COVERAGE_BINDING);
     expect(store.getLiveCaptureCoverage()).toEqual({ scope: 'server', value: 'off' });
@@ -257,21 +291,39 @@ describe('Turn capture coverage binding', () => {
   it('records the on pair when the live switch is on at admission', () => {
     const store = createDemoStore();
     store.setLiveCaptureCoverage({ scope: 'workspace', value: 'on' });
-    const thread = store.createThread('ws_demo', 'Capture on');
-    const turn = store.createTurn('ws_demo', thread.id, 'Switch on', LOCAL_ACTOR);
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture on');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Switch on',
+      LOCAL_ACTOR
+    );
 
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'workspace', value: 'on' });
   });
 
   it('keeps a running Turn pair unchanged and does not interrupt when the live switch changes', () => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Capture mid-turn');
-    const turn = store.createTurn('ws_demo', thread.id, 'Keep historical pair', LOCAL_ACTOR);
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture mid-turn'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Keep historical pair',
+      LOCAL_ACTOR
+    );
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
 
     expect(store.getTurnById(turn.id).status).toBe('running');
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual(DEFAULT_CAPTURE_COVERAGE_BINDING);
-    const next = store.createTurn('ws_demo', thread.id, 'Next turn sees the new pair', LOCAL_ACTOR);
+    const next = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Next turn sees the new pair',
+      LOCAL_ACTOR
+    );
     expect(store.getTurnCaptureCoverage(next.id)).toEqual({ scope: 'server', value: 'on' });
     expect(store.getTurnById(turn.id).status).toBe('running');
   });
@@ -280,12 +332,17 @@ describe('Turn capture coverage binding', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-coverage-'));
     const store = createDemoStore({ dataRoot });
     store.setLiveCaptureCoverage({ scope: 'task', value: 'on' });
-    const thread = store.createThread('ws_demo', 'Capture restart');
-    const turn = store.createTurn('ws_demo', thread.id, 'Persist the pair', LOCAL_ACTOR);
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture restart');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Persist the pair',
+      LOCAL_ACTOR
+    );
     const turnPath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'threads',
       thread.id,
       'turns',
@@ -315,8 +372,16 @@ describe('Turn capture coverage binding', () => {
       })
     );
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Configured capture');
-    const turn = store.createTurn('ws_demo', thread.id, 'Operator switch on', LOCAL_ACTOR);
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Configured capture'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Operator switch on',
+      LOCAL_ACTOR
+    );
 
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'on' });
   });

@@ -183,10 +183,8 @@ export function Composer({
     !pendingImport &&
     environmentReady &&
     Boolean(value.trim() || selectedArtifacts.length) &&
-    (!targetCatalog ||
-      (selectedTarget?.availability === 'available' &&
-        (!logicalModelId ||
-          selectedTarget.logicalModels.some((model) => model.id === logicalModelId))));
+    selectedTarget?.availability === 'available' &&
+    (!logicalModelId || selectedTarget.logicalModels.some((model) => model.id === logicalModelId));
 
   /** Starts a fresh request after acceptance without resetting agent/model preferences. */
   const clearSentDraft = useCallback(() => {

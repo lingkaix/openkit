@@ -47,7 +47,7 @@ describe('injection plans', () => {
         backendCapabilityRequirement: 'encrypted-file:resolve',
         capabilityId: 'mcp.github.call_tool',
         expirationBehavior: 'delete-on-turn-end',
-        grantId: 'grant_github_turn',
+        grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         injectionVisibility: 'runtime-file',
         now: () => '2026-07-05T00:10:00.000Z',
         packageSnapshotId: 'aep_1',
@@ -84,7 +84,7 @@ describe('injection plans', () => {
         backendCapabilityRequirement: 'encrypted-file:resolve',
         capabilityId: 'mcp.github.call_tool',
         expirationBehavior: 'delete-on-turn-end',
-        grantId: 'grant_github_turn',
+        grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         injectionVisibility: 'runtime-file',
         packageSnapshotId: 'aep_1',
         planId: 'plan_github_file',
@@ -111,13 +111,13 @@ describe('injection plans', () => {
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
-          grantId: 'grant_missing',
+          grantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
           injectionVisibility: 'gateway-only',
           planId: 'plan_missing',
           redactionRule: 'status-only',
           revocationBehavior: 'deny-new-use',
         })
-      ).toThrow('Vault grant not found: grant_missing');
+      ).toThrow('Vault grant not found: grant_00000000-0000-7278-b714-46e2d53cb316');
 
       createGrant(coreDb);
 
@@ -125,7 +125,7 @@ describe('injection plans', () => {
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
-          grantId: 'grant_github_turn',
+          grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
           injectionVisibility: 'runtime-file',
           planId: 'plan_missing_path',
           redactionRule: 'path-only',
@@ -136,7 +136,7 @@ describe('injection plans', () => {
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'unset-env-on-turn-end',
-          grantId: 'grant_github_turn',
+          grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
           injectionVisibility: 'runtime-env',
           planId: 'plan_missing_env',
           redactionRule: 'name-only',
@@ -147,7 +147,7 @@ describe('injection plans', () => {
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
-          grantId: 'grant_github_turn',
+          grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
           injectionVisibility: 'gateway-only',
           planId: 'plan_gateway_path',
           redactionRule: 'status-only',
@@ -165,15 +165,17 @@ describe('injection plans', () => {
 
     try {
       createGrant(coreDb);
-      const source = getVaultGrant(coreDb, 'grant_github_turn');
+      const source = getVaultGrant(coreDb, 'grant_00000000-0000-7502-bb07-4104daba6c66');
       expect(source).not.toBeNull();
-      importWorkspaceVaultGrants(coreDb, [{ ...source!, grantId: 'grant_imported_ws_1_1' }]);
+      importWorkspaceVaultGrants(coreDb, [
+        { ...source!, grantId: 'grant_00000000-0000-721b-84e8-23aac7d1425e' },
+      ]);
 
       expect(() =>
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
-          grantId: 'grant_imported_ws_1_1',
+          grantId: 'grant_00000000-0000-721b-84e8-23aac7d1425e',
           injectionVisibility: 'gateway-only',
           planId: 'plan_imported_grant',
           redactionRule: 'status-only',
@@ -197,15 +199,15 @@ function createGrant(coreDb: CoreDb): void {
     backendKind: 'encrypted-file',
     displayName: 'GitHub token',
     ownerScope: 'server',
-    referenceId: 'vault_github',
+    referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     secretKind: 'repository-token',
   });
   createVaultGrant(coreDb, {
     allowedInjectionPaths: ['runtime-file', 'gateway-only'],
-    grantId: 'grant_github_turn',
+    grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     lifetime: 'turn',
     ownerScope: 'workspace',
-    vaultReferenceId: 'vault_github',
-    workspaceId: 'ws_1',
+    vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
 }

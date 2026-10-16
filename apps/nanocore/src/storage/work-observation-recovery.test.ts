@@ -40,7 +40,7 @@ function fixture() {
     workspace.id,
     thread.id,
     'Recover',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     {
       captureCoverage: { scope: 'server', value: 'off' },
@@ -199,7 +199,7 @@ describe('restart recovery observations', () => {
       f.db.workspaceId,
       f.owner.threadId,
       'Another Turn',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
         captureCoverage: { scope: 'server', value: 'off' },
@@ -331,7 +331,9 @@ describe('restart recovery observations', () => {
 
   it('leaves a never-created product Turn without an observation ledger', () => {
     const f = fixture();
-    expect(recover({ ...f, owner: { ...f.owner, turnId: 'turn_missing' } })).toEqual({
+    expect(
+      recover({ ...f, owner: { ...f.owner, turnId: 'tu_00000000-0000-76d4-be96-fe2dccab50f4' } })
+    ).toEqual({
       status: 'missing',
     });
     expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);

@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -24,7 +23,9 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
@@ -63,8 +64,8 @@ function createCoreDb(): CoreDb {
   createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   return coreDb;
 }
@@ -76,7 +77,7 @@ function createCoreDb(): CoreDb {
  * @returns Migrated workspace database handle.
  */
 function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -88,7 +89,7 @@ function preparedWorkerTurn(reviewRequired: boolean) {
       schemaVersion: 1 as const,
       objective: 'Run the selected task.',
       acceptanceCriteria: ['Task passes.'],
-      contextRefs: [{ kind: 'workspace', id: 'ws_demo' }],
+      contextRefs: [{ kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' }],
       resources: [],
       expectedArtifacts: [],
       constraints: { maxContextTokens: 1000, maxWorkerIterations: 1 },
@@ -116,10 +117,10 @@ describe('worker turn loop', () => {
       const result = await runWorkerTurnLoop({
         store,
         coreDb,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceDb,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         goalId: 'goal_demo',
         taskId: 'task_demo',
         requestId: 'req_worker_1',
@@ -130,41 +131,51 @@ describe('worker turn loop', () => {
           prepareCalls.push(args);
           return preparedWorkerTurn(true);
         },
-        reservedTurnId: 'turn_worker_1',
-        reserveTurn: () => ({ turnId: 'turn_worker_1' }),
-        startWorker: admittedWorker(coreDb, store, 'req_worker_1', 'session_worker_1'),
+        reservedTurnId: 'tu_00000000-0000-70bb-b641-bbcd02b08432',
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-70bb-b641-bbcd02b08432' }),
+        startWorker: admittedWorker(
+          coreDb,
+          store,
+          'req_worker_1',
+          testEntityId('as', 'session_worker_1')
+        ),
         awaitWorker: () => ({
           stopReason: 'completed',
-          itemIds: ['it_done'],
-          artifactIds: ['art_done'],
+          itemIds: ['it_00000000-0000-7815-a0f2-b025bd06cb71'],
+          artifactIds: [testEntityId('ar', 'art_done')],
         }),
       });
 
       expect(prepareCalls).toEqual([[]]);
       expect(result).not.toHaveProperty('queues');
       expect(result).toMatchObject({
-        turnId: 'turn_worker_1',
-        workerSessionId: 'session_worker_1',
+        turnId: 'tu_00000000-0000-70bb-b641-bbcd02b08432',
+        workerSessionId: testEntityId('as', 'session_worker_1'),
         stopDecision: {
           outcome: 'review',
           shouldStop: true,
           stopReason: 'completed',
         },
         evidence: {
-          itemIds: ['it_done'],
-          artifactIds: ['art_done'],
+          itemIds: ['it_00000000-0000-7815-a0f2-b025bd06cb71'],
+          artifactIds: [testEntityId('ar', 'art_done')],
         },
       });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_worker_1')).toMatchObject(
-        {
-          goalId: 'goal_demo',
-          taskId: 'task_demo',
-          stage: 'completed',
-          workerSessionId: 'session_worker_1',
-          contextDigest: 'ctxpkg_sha256_demo',
-          stopReason: 'completed',
-        }
-      );
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-70bb-b641-bbcd02b08432'
+        )
+      ).toMatchObject({
+        goalId: 'goal_demo',
+        taskId: 'task_demo',
+        stage: 'completed',
+        workerSessionId: testEntityId('as', 'session_worker_1'),
+        contextDigest: 'ctxpkg_sha256_demo',
+        stopReason: 'completed',
+      });
       expect(latestPermissionDecision(workspaceDb)).toMatchObject({
         action: 'runtime.launch',
         enforcement_point: 'runtime.worker_turn_loop.start',
@@ -187,10 +198,10 @@ describe('worker turn loop', () => {
         runWorkerTurnLoop({
           store,
           coreDb,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceDb,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           goalId: 'goal_demo',
           taskId: 'task_demo',
           requestId: 'req_worker_error',
@@ -198,8 +209,8 @@ describe('worker turn loop', () => {
           reviewRequired: false,
           remainingWorkerIterations: 0,
           prepare: () => preparedWorkerTurn(true),
-          reservedTurnId: 'turn_worker_error',
-          reserveTurn: () => ({ turnId: 'turn_worker_error' }),
+          reservedTurnId: 'tu_00000000-0000-77df-adbb-60408251b537',
+          reserveTurn: () => ({ turnId: 'tu_00000000-0000-77df-adbb-60408251b537' }),
           startWorker: () => {
             throw new Error('Worker failed Authorization: Bearer live_secret');
           },
@@ -208,7 +219,12 @@ describe('worker turn loop', () => {
       ).rejects.toThrow('Worker failed');
 
       expect(
-        getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_worker_error')
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-77df-adbb-60408251b537'
+        )
       ).toMatchObject({
         stage: 'failed',
         stopReason: 'error',
@@ -230,10 +246,10 @@ describe('worker turn loop', () => {
         runWorkerTurnLoop({
           store,
           coreDb,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceDb,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           goalId: 'goal_demo',
           taskId: 'task_demo',
           requestId: 'req_worker_human_gate',
@@ -241,8 +257,8 @@ describe('worker turn loop', () => {
           reviewRequired: false,
           remainingWorkerIterations: 0,
           prepare: () => preparedWorkerTurn(false),
-          reservedTurnId: 'turn_worker_human_gate',
-          reserveTurn: () => ({ turnId: 'turn_worker_human_gate' }),
+          reservedTurnId: 'tu_00000000-0000-73bc-a823-88c41cce6d2d',
+          reserveTurn: () => ({ turnId: 'tu_00000000-0000-73bc-a823-88c41cce6d2d' }),
           startWorker: () => {
             throw new TurnStartValidationError(
               'recovery_required',
@@ -255,7 +271,12 @@ describe('worker turn loop', () => {
       ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
 
       expect(
-        getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_worker_human_gate')
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-73bc-a823-88c41cce6d2d'
+        )
       ).toMatchObject({
         stage: 'preparing',
         stopReason: null,
@@ -276,7 +297,7 @@ describe('worker turn loop', () => {
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind
-        ) VALUES ('user_removed_worker', 'Removed Worker', 'removed-worker@example.com', false, ?, ?, 'human')`
+        ) VALUES ('usr_00000000-0000-7f44-93c6-043af05a4ae7', 'Removed Worker', 'removed-worker@example.com', false, ?, ?, 'human')`
       )
       .run(now, now);
     coreDb.sqlite
@@ -284,7 +305,7 @@ describe('worker turn loop', () => {
         `INSERT INTO workspace_members (
           workspace_id, user_id, status, access_level, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES ('ws_demo', 'user_removed_worker', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+        ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7f44-93c6-043af05a4ae7', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
       )
       .run(timestamp, timestamp, timestamp, timestamp);
     let reserveCalls = 0;
@@ -295,19 +316,19 @@ describe('worker turn loop', () => {
         runWorkerTurnLoop({
           store,
           coreDb,
-          triggerActor: { kind: 'user', id: 'user_removed_worker' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7f44-93c6-043af05a4ae7' },
           workspaceDb,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           requestId: 'req_worker_removed_authority',
           requestInputHash: 'sha256:worker_removed_authority',
           reviewRequired: false,
           remainingWorkerIterations: 0,
           prepare: () => preparedWorkerTurn(false),
-          reservedTurnId: 'turn_worker_removed_authority',
+          reservedTurnId: 'tu_00000000-0000-7e51-b48b-2bc309ffc97d',
           reserveTurn: () => {
             reserveCalls += 1;
-            return { turnId: 'turn_worker_removed_authority' };
+            return { turnId: 'tu_00000000-0000-7e51-b48b-2bc309ffc97d' };
           },
           startWorker: () => {
             workerCalls += 1;
@@ -320,7 +341,12 @@ describe('worker turn loop', () => {
       expect(reserveCalls).toBe(0);
       expect(workerCalls).toBe(0);
       expect(
-        getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_worker_removed_authority')
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7e51-b48b-2bc309ffc97d'
+        )
       ).toBeNull();
       expect(
         (
@@ -346,12 +372,12 @@ describe('worker turn loop', () => {
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
-        ) VALUES ('user_admin_worker', 'Admin Worker', 'admin-worker@example.com', false, ?, ?, 'human', 'active', NULL)`
+        ) VALUES ('usr_00000000-0000-7916-9acc-f85082f95261', 'Admin Worker', 'admin-worker@example.com', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(now, now);
     createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'user_admin_worker',
+      ownerUserId: 'usr_00000000-0000-7916-9acc-f85082f95261',
       scope: 'server-admin',
       tokenId: 'token_admin_worker',
       workspaceIds: [],
@@ -363,26 +389,26 @@ describe('worker turn loop', () => {
       const result = await runWorkerTurnLoop({
         store,
         coreDb,
-        triggerActor: { kind: 'user', id: 'user_admin_worker' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7916-9acc-f85082f95261' },
         requestActor: {
           kind: 'token',
           tokenId: 'token_admin_worker',
           tokenScope: 'server-admin',
           tokenWorkspaceIds: [],
-          userId: 'user_admin_worker',
+          userId: 'usr_00000000-0000-7916-9acc-f85082f95261',
         },
         workspaceDb,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         requestId: 'req_worker_admin_authority',
         requestInputHash: 'sha256:worker_admin_authority',
         reviewRequired: false,
         remainingWorkerIterations: 0,
         prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'turn_worker_admin_authority',
+        reservedTurnId: 'tu_00000000-0000-760d-af55-17911ecc38a5',
         reserveTurn: () => {
           reserveCalls += 1;
-          return { turnId: 'turn_worker_admin_authority' };
+          return { turnId: 'tu_00000000-0000-760d-af55-17911ecc38a5' };
         },
         startWorker: async (input) => {
           workerCalls += 1;
@@ -390,21 +416,21 @@ describe('worker turn loop', () => {
             coreDb,
             store,
             'req_worker_admin_authority',
-            'session_worker_admin_authority',
-            'user_admin_worker',
+            testEntityId('as', 'session_worker_admin_authority'),
+            'usr_00000000-0000-7916-9acc-f85082f95261',
             {
               kind: 'token',
               tokenId: 'token_admin_worker',
               tokenScope: 'server-admin',
               tokenWorkspaceIds: [],
-              userId: 'user_admin_worker',
+              userId: 'usr_00000000-0000-7916-9acc-f85082f95261',
             }
           )(input);
         },
         awaitWorker: () => ({ stopReason: 'completed' }),
       });
 
-      expect(result.turnId).toBe('turn_worker_admin_authority');
+      expect(result.turnId).toBe('tu_00000000-0000-760d-af55-17911ecc38a5');
       expect(reserveCalls).toBe(1);
       expect(workerCalls).toBe(1);
     } finally {
@@ -452,9 +478,9 @@ it('bounds quoting worker errors in the loop checkpoint before rethrowing', asyn
         store,
         coreDb,
         workspaceDb,
-        triggerActor: { kind: 'user', id: 'user_local' },
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         goalId: 'goal_demo',
         taskId: 'task_demo',
         requestId: 'req_publication',
@@ -462,15 +488,20 @@ it('bounds quoting worker errors in the loop checkpoint before rethrowing', asyn
         reviewRequired: false,
         remainingWorkerIterations: 0,
         prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'tu_publication',
-        reserveTurn: () => ({ turnId: 'tu_publication' }),
+        reservedTurnId: 'tu_00000000-0000-7718-9293-4265e25b9375',
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-7718-9293-4265e25b9375' }),
         startWorker: () => {
           throw error;
         },
         awaitWorker: () => ({ stopReason: 'completed' }),
       })
     ).rejects.toBe(error);
-    const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_publication');
+    const checkpoint = getWorkerCheckpoint(
+      workspaceDb,
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'tu_00000000-0000-7718-9293-4265e25b9375'
+    );
     expect(checkpoint).toMatchObject({
       stage: 'failed',
       stopReason: 'error',
@@ -489,7 +520,7 @@ function admittedWorker(
   store: import('../lib/store.js').FsStore,
   requestId: string,
   agentSessionId: string,
-  actorId = 'user_local',
+  actorId = 'usr_00000000-0000-7000-8000-000000000001',
   requestActor?: import('../auth/identity.js').Actor,
   hooks: {
     execute?: (turnId: string) => Promise<void>;
@@ -504,7 +535,7 @@ function admittedWorker(
     const executor = new SimulatedTurnExecutor({ coreDb });
     let workerFailure: unknown;
     let workerCompletion: Promise<void> | undefined;
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     executor.prepareAgentSessionForTurn = async () => {
       hooks.prepare?.();
       return {
@@ -655,8 +686,8 @@ function admittedWorker(
         providerCredentialResolver: () => null,
         reservedTurnId: turnId,
         input: {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           agentId: manifest.id,
           requestId,
           input: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
@@ -692,14 +723,17 @@ it.each([
   const coreDb = createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
   const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-  const sessionId = kind === 'reused' ? 'as_existing' : 'as_fresh';
+  const sessionId =
+    kind === 'reused'
+      ? 'as_00000000-0000-754f-9277-4058a2a883d1'
+      : 'as_00000000-0000-7df9-8dd9-3222dd5f7145';
   const at = '2026-10-06T00:00:00.000Z';
   if (kind === 'reused')
     store.createAgentSession({
       id: sessionId,
       sessionCompatibilityKey: 'sha256:fixture',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       agentId: createTestAgentSetup().manifest.id,
       status: 'idle',
       message: null,
@@ -712,39 +746,68 @@ it.each([
     coreDb,
     store,
     workspaceDb,
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     requestId: 'req_held',
     requestInputHash: 'sha256:held',
     reviewRequired: false,
     prepare: () => preparedWorkerTurn(false),
-    reservedTurnId: 'tu_held',
-    reserveTurn: () => ({ turnId: 'tu_held' }),
-    startWorker: admittedWorker(coreDb, store, 'req_held', sessionId, 'user_local', undefined, {
-      observe: () => {
-        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_held')).toMatchObject({
-          stage: 'running_worker',
-          workerSessionId: sessionId,
-          stopReason: null,
-        });
-      },
-      execute: async () => {
-        entered.resolve();
-        await release.promise;
-      },
-    }),
+    reservedTurnId: 'tu_00000000-0000-7dd2-9b14-67b4800ebb85',
+    reserveTurn: () => ({ turnId: 'tu_00000000-0000-7dd2-9b14-67b4800ebb85' }),
+    startWorker: admittedWorker(
+      coreDb,
+      store,
+      'req_held',
+      sessionId,
+      'usr_00000000-0000-7000-8000-000000000001',
+      undefined,
+      {
+        observe: () => {
+          expect(
+            getWorkerCheckpoint(
+              workspaceDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
+              'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
+            )
+          ).toMatchObject({
+            stage: 'running_worker',
+            workerSessionId: sessionId,
+            stopReason: null,
+          });
+        },
+        execute: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      }
+    ),
     awaitWorker: () => ({ stopReason: 'aborted' }),
   });
   try {
     await Promise.race([entered.promise, running]);
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_held')).toMatchObject({
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
+      )
+    ).toMatchObject({
       stage: 'running_worker',
       workerSessionId: sessionId,
     });
     release.resolve();
     await running;
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_held')).toMatchObject({
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
+      )
+    ).toMatchObject({
       stage: 'aborted',
       stopReason: 'aborted',
       workerSessionId: sessionId,
@@ -771,28 +834,28 @@ it.each([
     403
   );
   let launches = 0;
-  const sessionId = 'as_interrupted';
+  const sessionId = 'as_00000000-0000-74bb-aa9a-de1be4d761f4';
   try {
     await expect(
       runWorkerTurnLoop({
         coreDb,
         store,
         workspaceDb,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: 'req_interrupted',
         requestInputHash: 'sha256:interrupted',
         reviewRequired: false,
         prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'tu_interrupted',
-        reserveTurn: () => ({ turnId: 'tu_interrupted' }),
+        reservedTurnId: 'tu_00000000-0000-725e-ab73-6634f596ac13',
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-725e-ab73-6634f596ac13' }),
         startWorker: admittedWorker(
           coreDb,
           store,
           'req_interrupted',
           sessionId,
-          'user_local',
+          'usr_00000000-0000-7000-8000-000000000001',
           undefined,
           {
             execute: async (turnId) => {
@@ -800,8 +863,8 @@ it.each([
               const at = new Date().toISOString();
               store.createAgentSession({
                 id: sessionId,
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
                 agentId: createTestAgentSetup().manifest.id,
                 status: 'interrupted',
                 message: null,
@@ -818,8 +881,8 @@ it.each([
                 {
                   event: 'turn.completed',
                   requestId: 'req_interrupted',
-                  workspaceId: 'ws_demo',
-                  threadId: 'th_demo',
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
                   turnId,
                   data: { type: 'turn-completed', stopReason: 'aborted', turn: terminal },
                 },
@@ -832,7 +895,12 @@ it.each([
         awaitWorker: () => ({ stopReason: 'completed' }),
       })
     ).rejects.toBe(error);
-    const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_interrupted')!;
+    const checkpoint = getWorkerCheckpoint(
+      workspaceDb,
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'tu_00000000-0000-725e-ab73-6634f596ac13'
+    )!;
     expect(checkpoint).toMatchObject({
       stage: 'running_worker',
       stopReason: null,
@@ -840,8 +908,8 @@ it.each([
     });
     if (failure !== 'authority-denial') {
       const row = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: checkpoint.turnId,
       })[0]!;
       const correlation = attempts.schedulerExecutionCorrelation(row);
@@ -866,15 +934,23 @@ it.each([
     if (failure === 'incomplete-lease')
       coreDb.sqlite
         .prepare('UPDATE scheduler_execution_attempts SET agent_session_id=? WHERE turn_id=?')
-        .run('as_wrong', checkpoint.turnId);
+        .run('as_00000000-0000-7099-938c-16baf0c1baa4', checkpoint.turnId);
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     const reopenedCore = openCoreDb(coreDb.dataRoot);
-    const reopenedWorkspace = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    const reopenedWorkspace = openWorkspaceDb(
+      coreDb.dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     try {
       const reopenedStore = createDemoStore({ dataRoot: coreDb.dataRoot });
       expect(
-        getWorkerCheckpoint(reopenedWorkspace, 'ws_demo', 'th_demo', checkpoint.turnId)
+        getWorkerCheckpoint(
+          reopenedWorkspace,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          checkpoint.turnId
+        )
       ).toEqual(checkpoint);
       expect(
         resolveInterruptedWorkerRetryDecision(
@@ -899,7 +975,12 @@ it.each([
         })
       ).rejects.toMatchObject({ code: 'recovery_required' });
       expect(
-        getWorkerCheckpoint(reopenedWorkspace, 'ws_demo', 'th_demo', checkpoint.turnId)
+        getWorkerCheckpoint(
+          reopenedWorkspace,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          checkpoint.turnId
+        )
       ).toEqual(checkpoint);
       expect(launches).toBe(1);
     } finally {
@@ -924,30 +1005,49 @@ it('refuses mismatched callback lineage before acknowledgement or executor effec
         coreDb,
         store,
         workspaceDb,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: 'req_mismatch',
         requestInputHash: 'sha256:mismatch',
         reviewRequired: false,
         prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'tu_mismatch',
-        reserveTurn: () => ({ turnId: 'tu_mismatch' }),
+        reservedTurnId: 'tu_00000000-0000-7d96-b42c-d1bcafa20670',
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-7d96-b42c-d1bcafa20670' }),
         startWorker: ({ onAdmitted, ...input }) =>
-          admittedWorker(coreDb, store, 'req_mismatch', 'as_exact', 'user_local', undefined, {
-            observe: () => {
-              acknowledgements++;
-            },
-            execute: async () => {
-              launches++;
-            },
-          })({ ...input, onAdmitted: (turn, _session) => onAdmitted(turn, 'as_wrong') }),
+          admittedWorker(
+            coreDb,
+            store,
+            'req_mismatch',
+            'as_00000000-0000-7c7c-9c87-2e281beb00cd',
+            'usr_00000000-0000-7000-8000-000000000001',
+            undefined,
+            {
+              observe: () => {
+                acknowledgements++;
+              },
+              execute: async () => {
+                launches++;
+              },
+            }
+          )({
+            ...input,
+            onAdmitted: (turn, _session) =>
+              onAdmitted(turn, 'as_00000000-0000-7099-938c-16baf0c1baa4'),
+          }),
         awaitWorker: () => ({ stopReason: 'completed' }),
       })
     ).rejects.toMatchObject({ code: 'recovery_required' });
     expect(acknowledgements).toBe(0);
     expect(launches).toBe(0);
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_mismatch')).toMatchObject({
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7d96-b42c-d1bcafa20670'
+      )
+    ).toMatchObject({
       stage: 'preparing',
       workerSessionId: null,
       stopReason: null,
@@ -968,36 +1068,71 @@ it('late admission callbacks cannot erase or recreate a terminal checkpoint bind
       coreDb,
       store,
       workspaceDb,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: 'req_late',
       requestInputHash: 'sha256:late',
       reviewRequired: false,
       prepare: () => preparedWorkerTurn(false),
-      reservedTurnId: 'tu_late',
-      reserveTurn: () => ({ turnId: 'tu_late' }),
+      reservedTurnId: 'tu_00000000-0000-7b56-819e-feee751c1be8',
+      reserveTurn: () => ({ turnId: 'tu_00000000-0000-7b56-819e-feee751c1be8' }),
       startWorker: (input) => {
         callback = input.onAdmitted;
-        return admittedWorker(coreDb, store, 'req_late', 'as_late')(input);
+        return admittedWorker(
+          coreDb,
+          store,
+          'req_late',
+          'as_00000000-0000-74d5-8679-7772bcbbc47b'
+        )(input);
       },
       awaitWorker: () => ({ stopReason: 'completed' }),
     });
-    const before = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_late');
+    const before = getWorkerCheckpoint(
+      workspaceDb,
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'tu_00000000-0000-7b56-819e-feee751c1be8'
+    );
     expect(before).toMatchObject({
       stage: 'completed',
       stopReason: 'completed',
-      workerSessionId: 'as_late',
+      workerSessionId: 'as_00000000-0000-74d5-8679-7772bcbbc47b',
     });
-    expect(() => callback(store.getTurnById('tu_late'), 'as_late')).toThrow(
-      TurnStartValidationError
+    expect(() =>
+      callback(
+        store.getTurnById('tu_00000000-0000-7b56-819e-feee751c1be8'),
+        'as_00000000-0000-74d5-8679-7772bcbbc47b'
+      )
+    ).toThrow(TurnStartValidationError);
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7b56-819e-feee751c1be8'
+      )
+    ).toEqual(before);
+    clearWorkerCheckpoint(
+      workspaceDb,
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'tu_00000000-0000-7b56-819e-feee751c1be8'
     );
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_late')).toEqual(before);
-    clearWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_late');
-    expect(() => callback(store.getTurnById('tu_late'), 'as_late')).toThrow(
-      TurnStartValidationError
-    );
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_late')).toBeNull();
+    expect(() =>
+      callback(
+        store.getTurnById('tu_00000000-0000-7b56-819e-feee751c1be8'),
+        'as_00000000-0000-74d5-8679-7772bcbbc47b'
+      )
+    ).toThrow(TurnStartValidationError);
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7b56-819e-feee751c1be8'
+      )
+    ).toBeNull();
   } finally {
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
@@ -1016,22 +1151,27 @@ it('a late completion error preserves an already terminal checkpoint and its exa
         coreDb,
         store,
         workspaceDb,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: 'req_terminal',
         requestInputHash: 'sha256:terminal',
         reviewRequired: false,
         prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'tu_terminal',
-        reserveTurn: () => ({ turnId: 'tu_terminal' }),
-        startWorker: admittedWorker(coreDb, store, 'req_terminal', 'as_terminal'),
+        reservedTurnId: 'tu_00000000-0000-7356-ad77-7e36b7c4e23b',
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-7356-ad77-7e36b7c4e23b' }),
+        startWorker: admittedWorker(
+          coreDb,
+          store,
+          'req_terminal',
+          'as_00000000-0000-7fc9-a4b3-5d9a4fa54ed7'
+        ),
         awaitWorker: () => {
           terminal = updateWorkerCheckpoint(workspaceDb, {
-            authorityActor: { kind: 'user', id: 'user_local' },
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'tu_terminal',
+            authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-7356-ad77-7e36b7c4e23b',
             stage: 'completed',
             stopReason: 'completed',
           });
@@ -1039,13 +1179,18 @@ it('a late completion error preserves an already terminal checkpoint and its exa
         },
       })
     ).rejects.toBe(error);
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_terminal')).toEqual(
-      terminal!
-    );
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7356-ad77-7e36b7c4e23b'
+      )
+    ).toEqual(terminal!);
     expect(terminal!).toMatchObject({
       stage: 'completed',
       stopReason: 'completed',
-      workerSessionId: 'as_terminal',
+      workerSessionId: 'as_00000000-0000-7fc9-a4b3-5d9a4fa54ed7',
     });
   } finally {
     workspaceDb.sqlite.close();
@@ -1062,34 +1207,41 @@ it('removes only its live never-leased cancelled preparation and retains cancell
       coreDb,
       store,
       workspaceDb,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: 'req_independent',
       requestInputHash: 'sha256:independent',
       reviewRequired: false,
       prepare: () => preparedWorkerTurn(false),
-      reservedTurnId: 'tu_independent',
-      reserveTurn: () => ({ turnId: 'tu_independent' }),
+      reservedTurnId: 'tu_00000000-0000-75a0-878a-b5fb1687f8c1',
+      reserveTurn: () => ({ turnId: 'tu_00000000-0000-75a0-878a-b5fb1687f8c1' }),
       startWorker: () => {
         throw new TurnStartValidationError('recovery_required', 'Retain preparation.', 409);
       },
       awaitWorker: () => ({ stopReason: 'completed' }),
-    }).catch(() => getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_independent'));
+    }).catch(() =>
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-75a0-878a-b5fb1687f8c1'
+      )
+    );
     await expect(
       runWorkerTurnLoop({
         coreDb,
         store,
         workspaceDb,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: 'req_cancelled',
         requestInputHash: 'sha256:cancelled',
         reviewRequired: false,
         prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'tu_cancelled',
-        reserveTurn: () => ({ turnId: 'tu_cancelled' }),
+        reservedTurnId: 'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b',
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b' }),
         startWorker: cancelledWorker(coreDb, 'req_cancelled'),
         awaitWorker: () => {
           throw new Error('No worker outcome exists.');
@@ -1101,11 +1253,28 @@ it('removes only its live never-leased cancelled preparation and retains cancell
         .prepare('SELECT status FROM scheduler_admission_entries WHERE request_id=?')
         .get('req_cancelled')
     ).toEqual({ status: 'cancelled' });
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_cancelled')).toBeNull();
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_independent')).toEqual(
-      independent
-    );
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b'
+      )
+    ).toBeNull();
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-75a0-878a-b5fb1687f8c1'
+      )
+    ).toEqual(independent);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
     for (const table of ['worker_backend_sessions', 'worker_control_records'])
       expect(coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({
         count: 0,
@@ -1131,10 +1300,10 @@ function cancelledWorker(coreDb: CoreDb, requestId: string) {
       queueEntryId: `queue_cancel_${turnId}`,
       requestId,
       turnId,
-      threadId: 'th_demo',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       requestedAgentId: createTestAgentSetup().manifest.id,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turnInput: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
     });
     cancelSchedulerAdmissionEntry(coreDb, {
@@ -1163,15 +1332,15 @@ function cancelledLoopInput(
     coreDb,
     workspaceDb,
     store,
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     requestId: 'req_refusal',
     requestInputHash: 'sha256:refusal',
     reviewRequired: false,
     prepare: () => preparedWorkerTurn(false),
-    reservedTurnId: 'tu_refusal',
-    reserveTurn: () => ({ turnId: 'tu_refusal' }),
+    reservedTurnId: 'tu_00000000-0000-7952-9279-bc2b017e274b',
+    reserveTurn: () => ({ turnId: 'tu_00000000-0000-7952-9279-bc2b017e274b' }),
     startWorker: async (input) => {
       try {
         return cancelledWorker(coreDb, 'req_refusal')(input);
@@ -1213,14 +1382,14 @@ it.each([
     if (kind === 'lease') {
       const row = coreDb.sqlite
         .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id=?')
-        .get('tu_refusal') as { id: string };
+        .get('tu_00000000-0000-7952-9279-bc2b017e274b') as { id: string };
       coreDb.sqlite
         .prepare("UPDATE scheduler_admission_entries SET status='queued' WHERE queue_entry_id=?")
         .run(row.id);
       recordTestExecutionAttempt(coreDb, {
         entry: requireSchedulerAdmissionEntry(coreDb, row.id),
-        attemptId: 'attempt_refusal',
-        agentSessionId: 'as_refusal',
+        attemptId: 'attempt_00000000-0000-752d-b6ea-948c6ffce000',
+        agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
         inputRef: 'aepsnap_refusal',
         bindingRef: 'attempt-binding:refusal',
         sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
@@ -1232,22 +1401,31 @@ it.each([
     }
     if (kind === 'turn' || kind === 'global-turn') {
       const threadId =
-        kind === 'global-turn' ? store.createThread('ws_demo', 'Other owner').id : 'th_demo';
+        kind === 'global-turn'
+          ? store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other owner').id
+          : 'th_00000000-0000-7000-8000-000000000001';
       store.createTurn(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         threadId,
         'Contradictory execution',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         undefined,
-        { turnId: 'tu_refusal' }
+        { turnId: 'tu_00000000-0000-7952-9279-bc2b017e274b' }
       );
     }
     if (kind === 'input') {
-      const root = join(coreDb.dataRoot, 'workspaces/ws_demo/threads/th_demo/turns/tu_refusal');
+      const root = join(
+        coreDb.dataRoot,
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/turns/tu_00000000-0000-7952-9279-bc2b017e274b'
+      );
       mkdirSync(root, { recursive: true });
       writeFileSync(
         join(root, 'items.jsonl'),
-        JSON.stringify({ id: 'it_user_tu_refusal', type: 'user-message', text: 'Accepted input' })
+        JSON.stringify({
+          id: 'it_00000000-0000-79e5-b46f-51c3d69f418f',
+          type: 'user-message',
+          text: 'Accepted input',
+        })
       );
     }
     if (kind === 'session') {
@@ -1274,55 +1452,60 @@ it.each([
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'as_refusal',
+        agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
         agentSessionRuntimeBindingId: 'as-binding',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         timestamp: at,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       coreDb.sqlite
         .prepare('UPDATE agent_session_runtime_bindings SET current_turn_id=?')
-        .run('tu_refusal');
+        .run('tu_00000000-0000-7952-9279-bc2b017e274b');
     }
     if (kind === 'backend')
       coreDb.sqlite
         .prepare(`INSERT INTO worker_backend_sessions (
         attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, backend_kind, deployment_id,
         backend_session_id, staging_directory_ref, workspace_handoff_state, state, created_at, updated_at, origin_physical_epoch
-        ) VALUES ('lease_refusal', 'ws_demo', 'th_demo', 'tu_refusal', 'as_refusal', 'aepsnap_refusal', 'openshell', 'deployment',
+        ) VALUES ('lease_refusal', 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'as_00000000-0000-7c9b-868b-c8bf0628ce98', 'aepsnap_refusal', 'openshell', 'deployment',
         'backend', 'staging', 'pending', 'materializing', ?, ?, ?)`)
         .run(at, at, 'e'.repeat(64));
     if (kind === 'control')
       coreDb.sqlite
         .prepare(`INSERT INTO worker_control_records (
         workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, sequence, record_json, accepted_at
-        ) VALUES ('ws_demo', 'th_demo', 'tu_refusal', 'as_refusal', 'aepsnap_refusal', 'req_refusal', 'observe', 'key', 1, '{}', ?)`)
+        ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'as_00000000-0000-7c9b-868b-c8bf0628ce98', 'aepsnap_refusal', 'req_refusal', 'observe', 'key', 1, '{}', ?)`)
         .run(at);
     if (kind === 'runtime-evidence')
       workspaceDb.sqlite
         .prepare(`INSERT INTO runtime_evidence (
         runtime_evidence_id, workspace_id, thread_id, turn_id, placement, phase, summary, upload_manifest_json, download_manifest_json,
         outcome, evidence_bundle_ids_json, content_digests_json, required_features_json, created_at
-        ) VALUES ('rte_refusal', 'ws_demo', 'th_demo', 'tu_refusal', 'local', 'checkpoint', 'Contradiction', '[]', '[]', 'unknown', '[]', '[]', '[]', ?)`)
+        ) VALUES ('rte_refusal', 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'local', 'checkpoint', 'Contradiction', '[]', '[]', 'unknown', '[]', '[]', '[]', ?)`)
         .run(at);
     if (kind === 'changed-checkpoint')
       workspaceDb.sqlite
         .prepare(
-          "UPDATE worker_turn_checkpoints SET request_input_hash='sha256:changed' WHERE turn_id='tu_refusal'"
+          "UPDATE worker_turn_checkpoints SET request_input_hash='sha256:changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
         )
         .run();
     if (kind === 'changed-admission')
       coreDb.sqlite
         .prepare(
-          "UPDATE scheduler_admission_entries SET turn_input='changed' WHERE turn_id='tu_refusal'"
+          "UPDATE scheduler_admission_entries SET turn_input='changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
         )
         .run();
     if (kind === 'rollback')
       workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_removal
         BEFORE DELETE ON worker_turn_checkpoints BEGIN SELECT RAISE(ABORT, 'Workspace removal failure'); END`);
-    before = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_refusal');
+    before = getWorkerCheckpoint(
+      workspaceDb,
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'tu_00000000-0000-7952-9279-bc2b017e274b'
+    );
   });
   try {
     if (kind === 'rollback')
@@ -1340,10 +1523,17 @@ it.each([
       expect(
         coreDb.sqlite
           .prepare('SELECT turn_id FROM scheduler_execution_attempts WHERE turn_id = ?')
-          .all('tu_refusal')
-      ).toEqual([{ turn_id: 'tu_refusal' }]);
+          .all('tu_00000000-0000-7952-9279-bc2b017e274b')
+      ).toEqual([{ turn_id: 'tu_00000000-0000-7952-9279-bc2b017e274b' }]);
     }
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_refusal')).toEqual(before!);
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7952-9279-bc2b017e274b'
+      )
+    ).toEqual(before!);
     expect(before!).toMatchObject({ stage: 'preparing', workerSessionId: null, stopReason: null });
     expect(
       coreDb.sqlite
@@ -1352,9 +1542,17 @@ it.each([
     ).toEqual({ status: kind === 'cancellation-failed' ? 'queued' : 'cancelled' });
     if (kind === 'rollback') {
       const reopenedCore = openCoreDb(coreDb.dataRoot);
-      const reopenedWorkspace = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const reopenedWorkspace = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
-        const residual = getWorkerCheckpoint(reopenedWorkspace, 'ws_demo', 'th_demo', 'tu_refusal');
+        const residual = getWorkerCheckpoint(
+          reopenedWorkspace,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7952-9279-bc2b017e274b'
+        );
         expect(residual).toEqual(before!);
         await expect(
           classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -1364,9 +1562,14 @@ it.each([
             checkpoint: residual!,
           })
         ).rejects.toMatchObject({ code: 'recovery_required' });
-        expect(getWorkerCheckpoint(reopenedWorkspace, 'ws_demo', 'th_demo', 'tu_refusal')).toEqual(
-          before!
-        );
+        expect(
+          getWorkerCheckpoint(
+            reopenedWorkspace,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            'tu_00000000-0000-7952-9279-bc2b017e274b'
+          )
+        ).toEqual(before!);
       } finally {
         reopenedWorkspace.sqlite.close();
         reopenedCore.sqlite.close();
@@ -1381,7 +1584,14 @@ it.each([
           checkpoint: before!,
         })
       ).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_refusal')).toEqual(before!);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7952-9279-bc2b017e274b'
+        )
+      ).toEqual(before!);
     }
   } finally {
     workspaceDb.sqlite.close();
@@ -1397,7 +1607,10 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();
   const reopenedCore = openCoreDb(coreDb.dataRoot);
-  const reopenedWorkspace = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+  const reopenedWorkspace = openWorkspaceDb(
+    coreDb.dataRoot,
+    'ws_00000000-0000-7000-8000-000000000001'
+  );
   try {
     const replay = cancelledLoopInput(
       reopenedCore,
@@ -1411,7 +1624,14 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
     });
     expect(prepare).not.toHaveBeenCalled();
     expect(startWorker).not.toHaveBeenCalled();
-    expect(getWorkerCheckpoint(reopenedWorkspace, 'ws_demo', 'th_demo', 'tu_refusal')).toBeNull();
+    expect(
+      getWorkerCheckpoint(
+        reopenedWorkspace,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7952-9279-bc2b017e274b'
+      )
+    ).toBeNull();
     expect(
       reopenedCore.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
     ).toEqual({ count: 1 });
@@ -1422,8 +1642,8 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
 });
 
 it.each([
-  'user_other',
-  'user_local',
+  'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+  'usr_00000000-0000-7000-8000-000000000001',
 ])('an unrelated admission with the same request ID does not block or erase this reserved Turn (%s)', async (actorId) => {
   const coreDb = createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
@@ -1434,9 +1654,12 @@ it.each([
       backendId: 'nanohost',
       queueEntryId: 'queue_other',
       requestId: 'req_refusal',
-      turnId: 'tu_other',
-      threadId: actorId === 'user_local' ? 'th_other' : 'th_demo',
-      workspaceId: 'ws_demo',
+      turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481',
+      threadId:
+        actorId === 'usr_00000000-0000-7000-8000-000000000001'
+          ? 'th_00000000-0000-78ce-b458-8347d12d1da2'
+          : 'th_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       requestedAgentId: createTestAgentSetup().manifest.id,
       triggerActor: { kind: 'user', id: actorId },
       turnInput: serializeStructuredWorkerDelegationRequest(
@@ -1448,15 +1671,26 @@ it.each([
       workspaceId: unrelated.workspaceId,
     });
     const other = coreDb.sqlite
-      .prepare("SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_other'")
+      .prepare(
+        "SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_00000000-0000-7bf1-990f-799cdaa2a481'"
+      )
       .get();
     await expect(
       runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))
     ).rejects.toThrow();
-    expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_refusal')).toBeNull();
+    expect(
+      getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7952-9279-bc2b017e274b'
+      )
+    ).toBeNull();
     expect(
       coreDb.sqlite
-        .prepare("SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_other'")
+        .prepare(
+          "SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_00000000-0000-7bf1-990f-799cdaa2a481'"
+        )
         .get()
     ).toEqual(other);
     expect(
@@ -1490,17 +1724,27 @@ it('process loss after durable cancellation leaves preparation for fail-closed r
     },
   });
   await cancellation;
-  const before = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_refusal');
+  const before = getWorkerCheckpoint(
+    workspaceDb,
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'tu_00000000-0000-7952-9279-bc2b017e274b'
+  );
   expect(before).toMatchObject({ stage: 'preparing', workerSessionId: null, stopReason: null });
   expect(
     coreDb.sqlite
-      .prepare("SELECT status FROM scheduler_admission_entries WHERE turn_id='tu_refusal'")
+      .prepare(
+        "SELECT status FROM scheduler_admission_entries WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
+      )
       .get()
   ).toEqual({ status: 'cancelled' });
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();
   const reopenedCore = openCoreDb(coreDb.dataRoot);
-  const reopenedWorkspace = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+  const reopenedWorkspace = openWorkspaceDb(
+    coreDb.dataRoot,
+    'ws_00000000-0000-7000-8000-000000000001'
+  );
   try {
     await expect(
       classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -1510,11 +1754,21 @@ it('process loss after durable cancellation leaves preparation for fail-closed r
         checkpoint: before!,
       })
     ).rejects.toMatchObject({ code: 'recovery_required' });
-    expect(getWorkerCheckpoint(reopenedWorkspace, 'ws_demo', 'th_demo', 'tu_refusal')).toEqual(
-      before
-    );
+    expect(
+      getWorkerCheckpoint(
+        reopenedWorkspace,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7952-9279-bc2b017e274b'
+      )
+    ).toEqual(before);
 
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
   } finally {
     reopenedWorkspace.sqlite.close();
     reopenedCore.sqlite.close();
@@ -1529,7 +1783,11 @@ it('a changed reservation cannot overwrite the declared command Turn identity', 
     const input = cancelledLoopInput(coreDb, workspaceDb, store);
     const startWorker = vi.fn(input.startWorker);
     await expect(
-      runWorkerTurnLoop({ ...input, startWorker, reserveTurn: () => ({ turnId: 'tu_changed' }) })
+      runWorkerTurnLoop({
+        ...input,
+        startWorker,
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-78cc-bf54-1d1b079a2d9c' }),
+      })
     ).rejects.toMatchObject({ code: 'recovery_required' });
     expect(startWorker).not.toHaveBeenCalled();
     expect(

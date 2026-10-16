@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -17,6 +16,7 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -93,7 +93,7 @@ describe('runtime config reload API', () => {
     const workspaceConfigPath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'config',
       'workspace.jsonc'
     );
@@ -119,7 +119,9 @@ describe('runtime config reload API', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(store.getWorkspace('ws_demo').name).toBe('Reloaded Workspace');
+    expect(store.getWorkspace('ws_00000000-0000-7000-8000-000000000001').name).toBe(
+      'Reloaded Workspace'
+    );
   });
 
   it('keeps provider changes pending restart and exposes the live runtime status', async () => {
@@ -187,8 +189,8 @@ describe('runtime config reload API', () => {
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
     const agentSetup = createTestAgentSetup({
@@ -251,8 +253,8 @@ describe('runtime config reload API', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000301',
               input: 'Run with version one',
             }),
@@ -273,7 +275,10 @@ describe('runtime config reload API', () => {
             .get(turn.id)
         ).toEqual({ phase: 'closed' });
       });
-      const sessionsBeforeReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
+      const sessionsBeforeReload = store.listThreadAgentSessions(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
       expect(sessionsBeforeReload).toEqual([
         expect.objectContaining({ configVersion: 1, stale: false, status: 'idle' }),
       ]);
@@ -306,16 +311,27 @@ describe('runtime config reload API', () => {
       const dashboardRes = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+        body: JSON.stringify({
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        }),
       });
       const dashboard = await dashboardRes.json();
-      const sessionsAfterReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
+      const sessionsAfterReload = store.listThreadAgentSessions(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
 
       expect(dashboardRes.status, JSON.stringify(dashboard)).toBe(200);
       expect(JSON.stringify(dashboard)).not.toMatch(/agentSession/i);
       expect(sessionsAfterReload).toEqual(sessionsBeforeReload);
       expect(
-        store.listThreadTurns('ws_demo', 'th_demo').some((item) => item.status === 'interrupted')
+        store
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .some((item) => item.status === 'interrupted')
       ).toBe(false);
     } finally {
       coreDb.sqlite.close();
