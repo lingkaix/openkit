@@ -42,6 +42,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -785,7 +786,7 @@ describe('generic turn routes', () => {
       await setImmediate();
       const acceptedAt = turn.startedAt ?? new Date().toISOString();
       const requestItem = fixture.store.createItem({
-        id: `it_responsible_user_${turn.id}`,
+        id: testEntityId('it', `it_responsible_user_${turn.id}`),
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,

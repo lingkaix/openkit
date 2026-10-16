@@ -21,6 +21,7 @@ import {
   createAppWithWorkspaceAuthority,
 } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -546,10 +547,17 @@ describe('execution backend port through real Core coordination', () => {
         attemptId,
         agentSessionId: sessionId,
       });
-      await acquire(f.db, candidateFor(control, 'control-attempt', 'control-session'));
+      await acquire(
+        f.db,
+        candidateFor(
+          control,
+          testEntityId('attempt', 'control-attempt'),
+          testEntityId('as', 'control-session')
+        )
+      );
       expect(attempts(f.db)).toContainEqual(
         expect.objectContaining({
-          attempt_id: 'control-attempt',
+          attempt_id: testEntityId('attempt', 'control-attempt'),
           phase: 'open',
           turn_id: control.turnId,
         })
@@ -565,8 +573,10 @@ describe('execution backend port through real Core coordination', () => {
               );
         const candidate = candidateFor(
           entry,
-          `competing-${collision}`,
-          collision === 'session' ? String(held.agent_session_id) : `other-session-${collision}`
+          testEntityId('attempt', `competing-${collision}`),
+          collision === 'session'
+            ? String(held.agent_session_id)
+            : testEntityId('as', `other-session-${collision}`)
         );
         const before = attempts(f.db);
         expect(() => acquire(f.db, candidate)).toThrow(
@@ -587,7 +597,7 @@ describe('execution backend port through real Core coordination', () => {
       const close = attemptRecords.closeSchedulerExecutionAttemptWithoutEffects;
       expect(close).toBeTypeOf('function');
       await close(f.db, {
-        attemptId: 'control-attempt',
+        attemptId: testEntityId('attempt', 'control-attempt'),
         cause: 'turn-start-failed',
         noOutstandingEffects: true,
       });
@@ -738,7 +748,9 @@ describe('execution backend port through real Core coordination', () => {
       const original = f.effectCalls[0]!;
       const correlation = {
         ...original,
-        ...(kind === 'stale-attempt' ? { attemptId: 'stale-attempt' } : {}),
+        ...(kind === 'stale-attempt'
+          ? { attemptId: testEntityId('attempt', 'stale-attempt') }
+          : {}),
         ...(kind === 'wrong-operation' ? { operationId: 'wrong-operation' } : {}),
         ...(kind === 'wrong-backend' ? { backendId: 'other-backend' } : {}),
         ...(kind === 'wrong-binding' ? { bindingRef: 'other-binding' } : {}),

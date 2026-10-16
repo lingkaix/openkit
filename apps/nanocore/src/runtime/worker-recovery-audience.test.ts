@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -48,7 +50,7 @@ function recordReleasedRestartLease(
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease_${input.turnId}`,
+    attemptId: testEntityId('attempt', `lease_${input.turnId}`),
     agentSessionId: input.agentSessionId,
     inputRef: `aepsnap_${input.turnId}`,
     bindingRef: `lease-binding:lease_${input.turnId}`,
@@ -57,7 +59,7 @@ function recordReleasedRestartLease(
   });
   // This read-model fixture never invokes a backend; restart closes that whole no-effect attempt.
   closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
-    attemptId: `lease_${input.turnId}`,
+    attemptId: testEntityId('attempt', `lease_${input.turnId}`),
     cause: 'restart-before-effects',
     noOutstandingEffects: true,
   });

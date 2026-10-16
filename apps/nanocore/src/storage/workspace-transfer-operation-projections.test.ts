@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { deriveEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -17,6 +17,7 @@ import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -360,7 +361,7 @@ describe('Workspace JSON transfer cutover', () => {
       const response = await app.request(
         ...request(path, {
           sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          exportId: 'absent',
+          exportId: testEntityId('wsexp', 'absent'),
         })
       );
       expect(response.status, path).toBe(404);
@@ -615,7 +616,10 @@ describe('Workspace JSON transfer cutover', () => {
     const { exportId } = await exported.json();
     const workspaceDb = openWorkspaceDb(root, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      workspaceDb.sqlite.prepare(mutation).run(`cap_storage_export_${exportId}`);
+      const changed = workspaceDb.sqlite
+        .prepare(mutation)
+        .run(deriveEntityId('cap', ['storage_export', exportId]));
+      expect(changed.changes).toBeGreaterThan(0);
     } finally {
       workspaceDb.sqlite.close();
     }

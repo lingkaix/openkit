@@ -18,6 +18,7 @@ import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js'
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -1162,7 +1163,7 @@ describe('worker recovery materialization', () => {
       completedAt: '2026-09-04T00:00:00.000Z',
       createdAt: '2026-09-04T00:00:00.000Z',
       description: approval.description,
-      id: `it_worker_${decision}_request`,
+      id: testEntityId('it', `it_worker_${decision}_request`),
       kind: approval.kind,
       status: 'completed',
       threadId: turn.threadId,
@@ -1178,7 +1179,7 @@ describe('worker recovery materialization', () => {
       completedAt: '2026-09-04T00:01:00.000Z',
       createdAt: '2026-09-04T00:01:00.000Z',
       decision,
-      id: `it_worker_${decision}_decision`,
+      id: testEntityId('it', `it_worker_${decision}_decision`),
       decidedAt: '2026-09-04T00:01:00.000Z',
       status: 'completed',
       threadId: turn.threadId,

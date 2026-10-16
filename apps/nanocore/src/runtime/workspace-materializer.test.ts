@@ -3,6 +3,7 @@ import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -24,7 +25,7 @@ describe('workspace materializer records', () => {
     );
     const environmentPackage = resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'session_1',
+      agentSessionId: testEntityId('as', 'session_1'),
       triggerActor: turn.triggerActor,
       userId: 'usr_00000000-0000-7000-8000-000000000001',
       backend: {
@@ -100,7 +101,7 @@ describe('workspace materializer records', () => {
     const packageRootDigest = `sha256:${'a'.repeat(64)}`;
     const environmentPackage = resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'session_context_1',
+      agentSessionId: testEntityId('as', 'session_context_1'),
       triggerActor: turn.triggerActor,
       userId: 'usr_00000000-0000-7000-8000-000000000001',
       backend: {
@@ -235,7 +236,7 @@ describe('workspace materializer records', () => {
     );
     const environmentPackage = resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'session_source_1',
+      agentSessionId: testEntityId('as', 'session_source_1'),
       triggerActor: turn.triggerActor,
       userId: 'usr_00000000-0000-7000-8000-000000000001',
       backend: {

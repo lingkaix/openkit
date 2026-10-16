@@ -16,3 +16,7 @@ See [Policy Enforcement Mapping](../../../../docs/specs/20260703-policy_enforcem
 
 
 The accepted design replaces the Turn-pausing approval gate and the closed-source-AgentSession actionability rule with a pending request whose captured call executes after grant; [Policy Enforcement Mapping](../../../../docs/specs/20260703-policy_enforcement_mapping.md) and [Pending Requests](../../../../docs/specs/20260930-pending_requests.md) own that rule.
+
+Boot self-check decisions use independent canonical `pd` UUIDv7 identities. Their separate immutable boot/action correlation retains existing decisions and Audit across exact reopen/retry; ambiguity or missing linked evidence fails closed. Both decisions and their Audit publish within one Core SQLite transaction, without an external effect or a new boot lifecycle.
+
+`worker-git-read-maintenance.ts` maps one loaded finite Server assignment and immutable effect facts into the existing NGAC evaluator. It owns no storage or identity lifecycle. Missing, invalid, duplicate, inactive, expired or out-of-scope assignments supply no association; Workspace fixed roles cannot grant this Server operation. The configuration command records the resulting immutable Server PermissionDecision and linked initiating-human Audit before dispatch.

@@ -9,6 +9,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -27,6 +28,7 @@ function createLineageFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-child-lineage-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
   const app = createApp({ coreDb, dataRoot, store });
   const allowedWorkspace = store.createWorkspace('Allowed lineage Workspace');

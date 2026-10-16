@@ -12,6 +12,7 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -51,6 +52,7 @@ import {
 } from './workspace-export.js';
 import { loadWorkspaceFileRecords } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
+import { importVerifiedWorkspace } from './workspace-transfer-routes.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';
 
@@ -682,6 +684,73 @@ describe('workspace export route boundaries', () => {
 });
 
 describe('workspace import route handles', () => {
+  it.each([
+    'legacy',
+    'ws_00000000-0000-7000-8000-000000000001',
+  ])('refuses a verified portable PermissionDecision with invalid kind %s before Workspace publication', (decisionId) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-permission-kind-'));
+    const sourceWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const store = createBoundaryStore(dataRoot);
+    const coreDb = boundaryAuthority(dataRoot, sourceWorkspaceId);
+    const workspaceDb = openWorkspaceDb(dataRoot, sourceWorkspaceId);
+    try {
+      applyScopedMigrations(workspaceDb);
+      const input = minimalExportInput(join(dataRoot, 'verified-export'));
+      input.permissionDecisions = [
+        {
+          action: 'runtime.launch',
+          approvalId: null,
+          auditEventId: null,
+          contextSummary: {},
+          createdAt: timestamp,
+          decisionId,
+          enforcementPoint: 'worker.launch',
+          ownerScope: 'workspace',
+          policyEngineVersion: 'nanocore-policy:v1',
+          policySnapshotId: 'policy_source',
+          reasonCode: 'approved',
+          requiredApprovalKind: null,
+          resourceSummary: {},
+          result: 'allow',
+          subjectSummary: {},
+          workspaceId: sourceWorkspaceId,
+        },
+      ];
+      const verified = writeWorkspaceExportTree(input);
+      const beforeWorkspaces = store.listWorkspaces();
+      const beforePaths = readdirSync(join(dataRoot, 'workspaces')).sort();
+      const beforeDecisions = workspaceDb.sqlite
+        .prepare('SELECT * FROM permission_decisions')
+        .all();
+      let refusal: unknown;
+      try {
+        importVerifiedWorkspace({
+          authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          coreDb,
+          dataRoot,
+          requestId: '00000000-0000-4000-8000-000000000001',
+          store,
+          verified,
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(ZodError);
+      expect((refusal as ZodError).issues.some((issue) => issue.path.includes('decisionId'))).toBe(
+        true
+      );
+      expect(store.listWorkspaces()).toEqual(beforeWorkspaces);
+      expect(readdirSync(join(dataRoot, 'workspaces')).sort()).toEqual(beforePaths);
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM permission_decisions').all()).toEqual(
+        beforeDecisions
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('adds a missing root index while preserving imported reserved Markdown bytes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-okf-index-'));
     const store = createBoundaryStore(dataRoot);

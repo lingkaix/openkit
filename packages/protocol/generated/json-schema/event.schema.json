@@ -2049,6 +2049,10 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "goalId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "required": [
@@ -4257,6 +4261,10 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "goalId": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "required": [
@@ -6704,6 +6712,10 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "goalId": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "required": [
@@ -9633,6 +9645,10 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "goalId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "required": [

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +10,61 @@ import {
 } from './index.js';
 
 describe('server config schema', () => {
+  it('admits an explicit finite Worker Git-read maintenance assignment without changing omission', () => {
+    const assignment = {
+      responsibleUserId: allocateEntityId('usr'),
+      agentId: randomUUID(),
+      networkGrantId: 'git-read',
+      host: 'git.example.com',
+      port: 443,
+      protocol: 'rest',
+      repositoryPaths: ['/team/project.git'],
+      binaries: ['/usr/bin/git'],
+      validFrom: '2026-01-01T00:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      enabled: true,
+    };
+    expect(
+      OpenKitConfigSchema.safeParse({ policy: { workerGitReadMaintenance: [assignment] } }).success
+    ).toBe(true);
+    expect(OpenKitConfigSchema.parse({}).policy).toBeUndefined();
+    for (const change of [
+      { enabled: undefined },
+      { responsibleUserId: allocateEntityId('th') },
+      { responsibleUserId: randomUUID() },
+      { protocol: 'grpc' },
+      { port: 0 },
+      { host: '*.example.com' },
+      { host: 'git.example.com:443' },
+      { host: 'GIT.example.com' },
+      { host: 'git.example.com/path' },
+      { repositoryPaths: [] },
+      { repositoryPaths: ['/team/*'] },
+      { repositoryPaths: ['/team/../project.git'] },
+      { repositoryPaths: ['/team/%2fproject.git'] },
+      { repositoryPaths: ['/team/project.git?service=git-upload-pack'] },
+      { repositoryPaths: ['/team/project.git', '/team/project.git'] },
+      { binaries: ['git'] },
+      { binaries: ['/usr/bin/../bin/git'] },
+      { expiresAt: assignment.validFrom },
+      { validFrom: '2026-01-01T00:00:00+00:00' },
+      { action: 'arbitrary' },
+    ]) {
+      expect(
+        OpenKitConfigSchema.safeParse({
+          policy: { workerGitReadMaintenance: [{ ...assignment, ...change }] },
+        }).success,
+        JSON.stringify(change)
+      ).toBe(false);
+    }
+    expect(
+      OpenKitConfigSchema.safeParse({
+        policy: {
+          workerGitReadMaintenance: [assignment, { ...assignment, enabled: false }],
+        },
+      }).success
+    ).toBe(false);
+  });
   it('admits an authored positive Sandbox active-Turn bound with a default of twenty', () => {
     const nanohost = {
       bind: { host: '127.0.0.1', port: 9443 },

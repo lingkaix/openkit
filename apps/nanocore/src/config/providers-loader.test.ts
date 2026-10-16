@@ -4,13 +4,15 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ProviderProfileSchema } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { isEntityId } from '@openkit/protocol';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   assertConfiguredModelsHaveKnownContext,
@@ -29,7 +31,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'anthropic-worker-direct.provider.jsonc',
     id: 'anthropic',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-7830-8ac0-b5ad7c96fbc8',
   },
   {
     baseUrl: 'https://api.openai.com/v1',
@@ -37,7 +38,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'openai-default.provider.jsonc',
     id: 'openai',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-73c8-9c32-792694898d5d',
   },
   {
     baseUrl: 'https://openrouter.ai/api/v1',
@@ -45,7 +45,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'openrouter-default.provider.jsonc',
     id: 'openrouter',
     kind: 'gateway',
-    secretRef: 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0',
   },
   {
     baseUrl: 'https://api.x.ai/v1',
@@ -53,7 +52,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'xai-grok-default.provider.jsonc',
     id: 'xai',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-7957-886a-3a7ef2745044',
   },
   {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
@@ -61,7 +59,6 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     fileName: 'google-gemini-default.provider.jsonc',
     id: 'google',
     kind: 'direct',
-    secretRef: 'vault://vault_00000000-0000-7652-9153-59e509aca382',
   },
 ] as const;
 
@@ -71,7 +68,6 @@ const EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE = {
   fileName: 'openai-compatible-custom.provider.jsonc.example',
   id: 'openai-compatible-custom',
   kind: 'custom',
-  secretRef: 'vault://vault_00000000-0000-7b1d-88cb-f75d3058afdf',
 } as const;
 
 /**
@@ -204,8 +200,9 @@ describe('loadProviderProfiles', () => {
           kind: template.kind,
         })
       );
-      expect(profile?.secretRef).toBe(template.secretRef);
-      expect(parsed.secretRef).toBe(template.secretRef);
+      expect(profile?.secretRef?.startsWith('vault://')).toBe(true);
+      expect(isEntityId('vault', profile?.secretRef?.slice('vault://'.length))).toBe(true);
+      expect(parsed.secretRef).toBe(profile?.secretRef);
     }
 
     expect(existsSync(join(providersRoot, EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.fileName))).toBe(
@@ -225,9 +222,47 @@ describe('loadProviderProfiles', () => {
         id: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.id,
         kind: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.kind,
         models: ['custom-model'],
-        secretRef: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.secretRef,
       })
     );
+    expect(isEntityId('vault', String(exampleParsed.secretRef).slice('vault://'.length))).toBe(
+      true
+    );
+    expect(String(exampleParsed.secretRef).startsWith('vault://')).toBe(true);
+    const references = [...profiles.map((profile) => profile.secretRef), exampleParsed.secretRef];
+    expect(new Set(references).size).toBe(references.length);
+    expect(loadProviderProfiles(dataRoot)).toEqual(profiles);
+  });
+
+  it('preserves published Provider candidates when a missing template cannot allocate', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-template-entropy-'));
+    try {
+      ensureLayout(dataRoot);
+      const providersRoot = join(dataRoot, 'config', 'providers');
+      const missing = join(providersRoot, 'openai-default.provider.jsonc');
+      rmSync(missing);
+      const retained = readdirSync(providersRoot).map(
+        (name) => [name, readFileSync(join(providersRoot, name), 'utf8')] as const
+      );
+      const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
+        throw new Error('Synthetic Provider template entropy failure.');
+      });
+      try {
+        expect(() => ensureLayout(dataRoot)).toThrow(
+          'Synthetic Provider template entropy failure.'
+        );
+      } finally {
+        entropy.mockRestore();
+      }
+      expect(existsSync(missing)).toBe(false);
+      for (const [name, bytes] of retained)
+        expect(readFileSync(join(providersRoot, name), 'utf8')).toBe(bytes);
+      ensureLayout(dataRoot);
+      const profile = parseJsoncObject(readFileSync(missing, 'utf8'), 'provider');
+      expect(String(profile.secretRef).startsWith('vault://')).toBe(true);
+      expect(isEntityId('vault', String(profile.secretRef).slice('vault://'.length))).toBe(true);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('loads JSONC provider profiles from data/config/providers', () => {

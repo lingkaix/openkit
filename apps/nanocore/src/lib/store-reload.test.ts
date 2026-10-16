@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
@@ -12,7 +13,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-
 import {
   ItemSchema,
   KnowledgeEntrySchema,
@@ -22,8 +22,8 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-
 import { parseOkfDocument } from '../knowledge/okf.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { FsStore } from './store.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
@@ -83,7 +83,7 @@ function workspaceImportPayload(
     id: itemId,
     workspaceId,
     threadId,
-    turnId: `turn_${workspaceId}`,
+    turnId: testEntityId('tu', `turn_${workspaceId}`),
     type: 'user-message',
     actor: localActor,
     status: 'completed',
@@ -164,7 +164,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const firstItem = store.createItem({
-      id: `it_${firstTurn.id}`,
+      id: testEntityId('it', `it_${firstTurn.id}`),
       workspaceId: firstWorkspace.id,
       threadId: firstThread.id,
       turnId: firstTurn.id,
@@ -186,7 +186,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const secondItem = store.createItem({
-      id: `it_${secondTurn.id}`,
+      id: testEntityId('it', `it_${secondTurn.id}`),
       workspaceId: secondWorkspace.id,
       threadId: secondThread.id,
       turnId: secondTurn.id,
@@ -250,7 +250,7 @@ describe('FsStore canonical reload', () => {
     );
 
     store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -278,7 +278,7 @@ describe('FsStore canonical reload', () => {
     const thread = store.createThread(workspace.id, 'Append-only item thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Append item revisions', localActor);
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -344,7 +344,7 @@ describe('FsStore canonical reload', () => {
       knowledgeSourceContent
     );
     const userItem = store.createItem({
-      id: `it_user_${turn.id}`,
+      id: testEntityId('it', `it_user_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -356,7 +356,7 @@ describe('FsStore canonical reload', () => {
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
     store.createItem({
-      id: `it_assistant_${turn.id}`,
+      id: testEntityId('it', `it_assistant_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -379,7 +379,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: null,
     });
     const approvalRequestItem = store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -393,7 +393,7 @@ describe('FsStore canonical reload', () => {
       completedAt: userItem.completedAt,
     });
     const approvalDecisionItem = store.createItem({
-      id: `it_approval_decision_${turn.id}`,
+      id: testEntityId('it', `it_approval_decision_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -412,7 +412,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: approvalDecisionItem.completedAt,
     });
     const agentSession = store.createAgentSession({
-      id: `session_${thread.id}`,
+      id: testEntityId('as', `session_${thread.id}`),
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -423,7 +423,7 @@ describe('FsStore canonical reload', () => {
     });
     const artifactBody = '# Canonical artifact body\n\nOnly the content file owns these bytes.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -698,7 +698,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Reject canonical symlinks', localActor);
     const artifactBody = 'Canonical artifact body.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -783,7 +783,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: null,
     });
     const requestItem = store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -848,7 +848,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: null,
     });
     const requestItem = store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -863,7 +863,7 @@ describe('FsStore canonical reload', () => {
     });
 
     store.createItem({
-      id: `it_approval_decision_${turn.id}`,
+      id: testEntityId('it', `it_approval_decision_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -926,7 +926,7 @@ describe('FsStore canonical reload', () => {
     const approvalId = `ap_${turn.id}`;
 
     store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -993,7 +993,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1040,7 +1040,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1168,7 +1168,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1211,7 +1211,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1224,7 +1224,7 @@ describe('FsStore canonical reload', () => {
     });
     const artifactBody = 'Canonical artifact body.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1394,7 +1394,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Missing identity turn', localActor);
     const artifactBody = 'Artifact body.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1414,7 +1414,7 @@ describe('FsStore canonical reload', () => {
       updatedAt: turn.startedAt ?? timestamp,
     });
     const session = store.createAgentSession({
-      id: `as_${turn.id}`,
+      id: testEntityId('as', `as_${turn.id}`),
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,

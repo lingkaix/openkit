@@ -48,6 +48,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -521,7 +522,7 @@ describe('Worker environment App composition', () => {
       const administrationThread = store.createThread(
         privateWorkspace.id,
         'Administration',
-        'thread_worker_environment_app',
+        testEntityId('th', 'thread_worker_environment_app'),
         'administration',
         { privateOwnerUserId: USER_ID, visibility: 'private' }
       );
@@ -754,7 +755,7 @@ describe('Worker environment App composition', () => {
       const foreignThread = store.createThread(
         foreignHome.id,
         'Foreign administration',
-        'thread_foreign_administration',
+        testEntityId('th', 'thread_foreign_administration'),
         'administration',
         { visibility: 'private', privateOwnerUserId: foreignUserId }
       );
@@ -949,7 +950,7 @@ describe('Worker environment App composition', () => {
       const administrationThread = store.createThread(
         privateWorkspace.id,
         'Administration',
-        'thread_worker_environment_replacement',
+        testEntityId('th', 'thread_worker_environment_replacement'),
         'administration',
         { privateOwnerUserId: USER_ID, visibility: 'private' }
       );

@@ -15,6 +15,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
@@ -116,7 +117,7 @@ describe('Workspace Material app API', () => {
       const threadNotFoundPaths = [
         operationRequest('material.thread-read', {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'thread_missing',
+          threadId: testEntityId('th', 'thread_missing'),
         }),
         operationRequest('material.thread-read', {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

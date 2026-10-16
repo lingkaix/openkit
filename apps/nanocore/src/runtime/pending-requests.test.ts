@@ -13,6 +13,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
@@ -285,14 +286,18 @@ describe('pending requests', () => {
         freezeReadyOutcomes(db.sqlite, {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: 'delivery_count',
+          turnId: testEntityId('tu', 'delivery_count'),
           executor: 'worker',
           agentId: 'agent_demo',
           cause: 'carried',
           now: NOW,
         })
       ).toHaveLength(16);
-      const bytes = frozenPendingOutcomeInput(db.sqlite, 'delivery_count', trigger);
+      const bytes = frozenPendingOutcomeInput(
+        db.sqlite,
+        testEntityId('tu', 'delivery_count'),
+        trigger
+      );
       const value = JSON.parse(bytes);
       expect(value.triggerInput).toBe(trigger);
       expect(value.pendingOutcomes).toHaveLength(16);
@@ -302,7 +307,9 @@ describe('pending requests', () => {
       db.sqlite.close();
       const reopened = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(frozenPendingOutcomeInput(reopened.sqlite, 'delivery_count', trigger)).toBe(bytes);
+        expect(
+          frozenPendingOutcomeInput(reopened.sqlite, testEntityId('tu', 'delivery_count'), trigger)
+        ).toBe(bytes);
       } finally {
         reopened.sqlite.close();
       }
@@ -353,15 +360,15 @@ describe('pending requests', () => {
       });
       coreDb.sqlite
         .prepare(
-          `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('another-user', 'Shared viewer', 'viewer@example.invalid', 0, ?, ?, 'human', 'active')`
+          `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES (?, 'Shared viewer', 'viewer@example.invalid', 0, ?, ?, 'human', 'active')`
         )
-        .run(Date.now(), Date.now());
+        .run(testEntityId('usr', 'another-user'), Date.now(), Date.now());
       coreDb.sqlite
         .prepare(
-          `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'another-user', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
-        .run(NOW, NOW, NOW);
-      expect(preview('not for this viewer', 'another-user')).toMatchObject({
+        .run(testEntityId('usr', 'another-user'), NOW, NOW, NOW);
+      expect(preview('not for this viewer', testEntityId('usr', 'another-user'))).toMatchObject({
         status: 'unavailable',
       });
       const privateThread = store.createThread(
@@ -369,7 +376,7 @@ describe('pending requests', () => {
         'Private source',
         undefined,
         'conversation',
-        { visibility: 'private', privateOwnerUserId: 'another-user' }
+        { visibility: 'private', privateOwnerUserId: testEntityId('usr', 'another-user') }
       );
       expect(
         projectApprovalEffect({
@@ -379,17 +386,19 @@ describe('pending requests', () => {
           actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         })
       ).toMatchObject({ status: 'unavailable' });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE workspace_members SET status = 'removed', removed_at = '2026-10-01T00:00:00.000Z', updated_at = '2026-10-01T00:00:00.000Z', revision = 2 WHERE user_id = 'another-user'"
-        )
-        .run();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "UPDATE workspace_members SET status = 'removed', removed_at = '2026-10-01T00:00:00.000Z', updated_at = '2026-10-01T00:00:00.000Z', revision = 2 WHERE user_id = ?"
+          )
+          .run(testEntityId('usr', 'another-user')).changes
+      ).toBe(1);
       expect(
         projectApprovalEffect({
-          record: { ...record, responsibleUserId: 'another-user' },
+          record: { ...record, responsibleUserId: testEntityId('usr', 'another-user') },
           store,
           coreDb,
-          actor: { kind: 'session', userId: 'another-user' },
+          actor: { kind: 'session', userId: testEntityId('usr', 'another-user') },
         })
       ).toMatchObject({ status: 'unavailable' });
       expect(
@@ -1025,7 +1034,7 @@ describe('pending requests', () => {
     try {
       for (const id of ['good', 'bad']) {
         store.createItem({
-          id: `it_attention_${id}`,
+          id: testEntityId('it', `it_attention_${id}`),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,

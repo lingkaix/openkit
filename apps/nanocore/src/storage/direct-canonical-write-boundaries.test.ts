@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import {
   existsSync,
   mkdirSync,
@@ -12,11 +13,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-
 import { describe, expect, it, vi } from 'vitest';
-
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from '../runtime/feedback.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   readEncryptedFileVaultText,
   writeEncryptedFileVaultJsonAtomically,
@@ -322,7 +322,7 @@ describe('direct canonical write boundaries', () => {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -423,7 +423,7 @@ function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
     const thread = store.createThread(workspace.id, 'Feedback');
     const turn = store.createTurn(workspace.id, thread.id, 'Durable feedback', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
     const path = feedbackFilePath(store, store.getTurnById(turn.id));

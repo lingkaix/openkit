@@ -103,7 +103,7 @@ describe('workspace routes', () => {
     );
     const directBody = WorkspaceReadResponseSchema.parse(await directResponse.json());
     expect(directBody).toMatchObject({
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       membershipStatus: 'active',
       accessCause: 'membership',
     });

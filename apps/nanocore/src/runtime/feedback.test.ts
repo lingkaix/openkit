@@ -180,10 +180,15 @@ describe('turn feedback', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-replacement-'));
     try {
       const store = createDemoStore({ dataRoot });
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Feedback replacement', {
-        kind: 'user',
-        id: 'user_local',
-      });
+      const turn = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Feedback replacement',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
       const path = feedbackFilePath(store, store.getTurnById(turn.id));
       const entriesBefore = readdirSync(dirname(path)).sort();

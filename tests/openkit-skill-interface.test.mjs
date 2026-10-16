@@ -3424,7 +3424,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
     JSON.stringify({ masterKeyBase64 }),
     [
       responseModule(422, {
-        code: 'vault_00000000-0000-7609-aa1d-3cb4063f27ff',
+        code: 'vault_key_rejected',
         details: { masterKeyBase64 },
         message: `Rejected ${masterKeyBase64}`,
         protocolVersion: '0.4.0',

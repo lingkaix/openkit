@@ -957,7 +957,9 @@ describe('vault admin app API', () => {
         resource: 'vault:encrypted-file',
       });
       expect(JSON.stringify({ row, audit })).not.toContain(apiKey);
-      expect(JSON.stringify({ row, audit })).not.toContain('provider_failure');
+      expect(JSON.stringify({ row, audit })).not.toContain(
+        'vault_00000000-0000-71a0-b7d2-f1557ce8b9cf'
+      );
     } finally {
       coreDb.sqlite.close();
     }

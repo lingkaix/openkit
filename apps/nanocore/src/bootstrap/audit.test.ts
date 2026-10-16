@@ -101,7 +101,7 @@ describe('boot audit recorder', () => {
         expect.objectContaining({
           action: 'boot.start',
           category: 'system',
-          id: 'aud_00000000-0000-7a2d-9172-4c78148f36fe',
+          id: 'aud_d4426a3f-e83e-5c97-9471-b87b74bd0e72',
           outcome: 'succeeded',
           resource: 'server:boot:boot_start_test',
           severity: 'info',
@@ -184,7 +184,7 @@ describe('boot audit recorder', () => {
           action: 'boot.outcome',
           category: 'system',
           errorCode: 'boot_degraded',
-          id: 'aud_00000000-0000-7d23-90d9-17b1fbd9a570',
+          id: 'aud_16ab7e83-eb41-5091-a878-d798a5cca4d1',
           outcome: 'succeeded',
           resource: 'server:boot:boot_audit_test',
           severity: 'warning',
@@ -245,7 +245,7 @@ describe('boot audit recorder', () => {
         expect.objectContaining({
           action: 'boot.shutdown',
           category: 'system',
-          id: 'aud_00000000-0000-7e20-b048-57bc94b42f79',
+          id: 'aud_4c53f7f6-e79d-580a-b6f0-fb1cf968b333',
           outcome: 'succeeded',
           resource: 'server:boot:boot_shutdown_test',
           severity: 'info',

@@ -3918,8 +3918,14 @@ function assistantWiringFixture(
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  const actorUserId = memberCredential ? 'assistant-member' : 'user_local';
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const actorUserId = memberCredential
+    ? 'assistant-member'
+    : 'usr_00000000-0000-7000-8000-000000000001';
   if (memberCredential) {
     const timestamp = new Date().toISOString();
     coreDb.sqlite
@@ -3929,12 +3935,12 @@ function assistantWiringFixture(
       .run(actorUserId, Date.now(), Date.now());
     coreDb.sqlite
       .prepare(
-        "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)"
+        "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)"
       )
       .run(actorUserId, timestamp, timestamp, timestamp);
   }
   const thread = store.createThread(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     'Selected Skill command',
     undefined,
     'conversation',
@@ -3943,13 +3949,13 @@ function assistantWiringFixture(
   const imported = selected
     ? importWorkspaceSkill({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         id: 'alpha',
         displayName: 'Original selected metadata',
         expectedRevision: 0,
         activate: true,
         createdAt: '2026-10-15T00:00:00.000Z',
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         tree: [
           {
             kind: 'file',
@@ -3960,7 +3966,7 @@ function assistantWiringFixture(
       })
     : undefined;
   const catalogRevision = selected
-    ? loadWorkspaceResourceCatalog(dataRoot, 'ws_demo').revision
+    ? loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').revision
     : null;
   const createResponses = vi
     .fn<LLMGatewayProviderDispatcher['createResponses']>()
@@ -4012,8 +4018,11 @@ function assistantWiringFixture(
       ]),
       workspaceConfigs: [
         {
-          workspaceId: 'ws_demo',
-          path: join(dataRoot, 'workspaces/ws_demo/config/workspace.jsonc'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          path: join(
+            dataRoot,
+            'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
+          ),
           config: WorkspaceConfigSchema.parse({
             schemaVersion: 1,
             workspace: {
@@ -4029,7 +4038,7 @@ function assistantWiringFixture(
     ? createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: actorUserId,
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       })
     : undefined;
@@ -4049,7 +4058,7 @@ function assistantWiringFixture(
     app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           method: 'POST',
           headers: {
@@ -4064,7 +4073,7 @@ function assistantWiringFixture(
         }
       )
     );
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   return {
     app,
     actorUserId,
@@ -4081,7 +4090,7 @@ function assistantWiringFixture(
     submit,
     environments: () =>
       store
-        .listThreadTurns('ws_demo', thread.id)
+        .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
         .flatMap((turn) =>
           readWorkObservations(workspaceDb, { threadId: thread.id, turnId: turn.id })
         )
@@ -4155,7 +4164,12 @@ function observePrivateSkillInvocation(
 
 /** Observes content access while retaining the actual filesystem and catalog owners. */
 function observeSkillBodyReads(f: ReturnType<typeof assistantWiringFixture>) {
-  const snapshot = skillSnapshotPath(f.dataRoot, 'ws_demo', 'alpha', f.imported!.version.digest);
+  const snapshot = skillSnapshotPath(
+    f.dataRoot,
+    'ws_00000000-0000-7000-8000-000000000001',
+    'alpha',
+    f.imported!.version.digest
+  );
   const reads = [
     vi.spyOn(fs, 'readFileSync'),
     vi.spyOn(fs, 'openSync'),
@@ -4271,13 +4285,16 @@ describe('#144 real Assistant command wiring', () => {
           );
           const replacement = importWorkspaceSkill({
             dataRoot: f.dataRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             id: 'alpha',
             displayName: 'Replacement metadata',
-            expectedRevision: loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo').revision,
+            expectedRevision: loadWorkspaceResourceCatalog(
+              f.dataRoot,
+              'ws_00000000-0000-7000-8000-000000000001'
+            ).revision,
             activate: true,
             createdAt: '2026-10-16T00:00:00.000Z',
-            producer: { kind: 'user', id: 'user_local' },
+            producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             tree: [
               {
                 kind: 'file',
@@ -4288,7 +4305,7 @@ describe('#144 real Assistant command wiring', () => {
           });
           setWorkspaceSkillPin({
             dataRoot: f.dataRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             entryId: 'alpha',
             digest: replacement.version.digest,
             expectedRevision: replacement.catalog.revision,
@@ -4357,8 +4374,8 @@ describe('#144 real Assistant command wiring', () => {
         expect.objectContaining({
           kind: 'assistant-command',
           entryScope: 'conversation.submit',
-          actor: { kind: 'local', userId: 'user_local' },
-          workspaceId: 'ws_demo',
+          actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: f.thread.id,
           turnId: original.turn.id,
           requestId: f.requestId,
@@ -4375,29 +4392,33 @@ describe('#144 real Assistant command wiring', () => {
       expect(bodyReads().length).toBeGreaterThan(0);
       expect(f.createChatCompletion).not.toHaveBeenCalled();
       expect(f.environments()).toEqual(originalEnvironment);
-      const calls = listWorkspaceCapabilityCalls(f.workspaceDb, 'ws_demo').filter(
-        (call) => call.family === 'llm'
-      );
+      const calls = listWorkspaceCapabilityCalls(
+        f.workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      ).filter((call) => call.family === 'llm');
       expect(calls).toHaveLength(2);
       expect(new Set(calls.map((call) => call.id)).size).toBe(2);
-      const usage = listWorkspaceUsageRecords(f.workspaceDb, 'ws_demo');
+      const usage = listWorkspaceUsageRecords(
+        f.workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(usage).toHaveLength(2);
       expect(usage.map((row) => row.quantity).sort((a, b) => a - b)).toEqual([12, 17]);
       for (const call of calls) {
         expect(call).toMatchObject({
           requestId: null,
           status: 'succeeded',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: f.thread.id,
           turnId: original.turn.id,
         });
         expect(usage.filter((row) => row.capabilityCallId === call.id)).toEqual([
           expect.objectContaining({
             requestId: null,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: f.thread.id,
             turnId: original.turn.id,
-            responsibleUserId: 'user_local',
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
             providerRef: 'agent-openrouter',
           }),
         ]);
@@ -4410,24 +4431,30 @@ describe('#144 real Assistant command wiring', () => {
             action: 'capability.finish',
             capability_call_id: call.id,
             request_id: f.requestId,
-            workspace_id: 'ws_demo',
+            workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
             thread_id: f.thread.id,
             turn_id: original.turn.id,
             outcome: 'succeeded',
           }),
         ]);
       }
-      const turns = f.store.listThreadTurns('ws_demo', f.thread.id);
-      const items = f.store.listThreadItems('ws_demo', f.thread.id);
+      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
+      const items = f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
       const replay = await f.submit();
       expect(replay.status, await replay.clone().text()).toBe(200);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(original);
       expect(f.dispatchCount()).toBe(2);
       expect(native.invoked).toHaveBeenCalledOnce();
       expect(native.dispatched).toHaveBeenCalledOnce();
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(turns);
-      expect(f.store.listThreadItems('ws_demo', f.thread.id)).toEqual(items);
-      expect(listWorkspaceCapabilityCalls(f.workspaceDb, 'ws_demo')).toEqual(calls);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(turns);
+      expect(
+        f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(items);
+      expect(
+        listWorkspaceCapabilityCalls(f.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(calls);
       expect(f.environments()).toEqual(originalEnvironment);
       const publicViews = {
         response: originalBody,
@@ -4469,7 +4496,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.environments()).toEqual([]);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4490,11 +4517,16 @@ describe('#144 real Assistant command wiring', () => {
     const pending = f.submit();
     try {
       await admitted.promise;
-      const before = f.store.listThreadTurns('ws_demo', f.thread.id);
+      const before = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.thread.id
+      );
       const duplicate = f.submit();
       await setImmediate();
       expect(f.dispatchCount()).toBe(1);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(before);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(before);
       release.resolve();
       const [original, joined] = await Promise.all([pending, duplicate]);
       expect(original.status, await original.clone().text()).toBe(200);
@@ -4513,8 +4545,8 @@ describe('#144 real Assistant command wiring', () => {
     try {
       const first = await f.submit();
       expect(first.status, await first.clone().text()).toBe(200);
-      const turns = f.store.listThreadTurns('ws_demo', f.thread.id);
-      const items = f.store.listThreadItems('ws_demo', f.thread.id);
+      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
+      const items = f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
       expect(f.dispatchCount()).toBe(1);
       f.workspaceDb.sqlite
         .prepare('DELETE FROM idempotency_requests WHERE command_name = ? AND request_id = ?')
@@ -4526,8 +4558,12 @@ describe('#144 real Assistant command wiring', () => {
       expect(replay.status, await replay.clone().text()).toBe(409);
       expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
       expect(f.dispatchCount()).toBe(1);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(turns);
-      expect(f.store.listThreadItems('ws_demo', f.thread.id)).toEqual(items);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(turns);
+      expect(
+        f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(items);
     } finally {
       f.close();
     }
@@ -4555,20 +4591,24 @@ describe('#144 real Assistant command wiring', () => {
       const first = await f.submit();
       expect(first.status).toBeGreaterThanOrEqual(400);
       publication.mockRestore();
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual([
-        expect.objectContaining({ status }),
-      ]);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual([expect.objectContaining({ status })]);
       expect(f.store.listCommandRequests().filter((row) => row.requestId === f.requestId)).toEqual(
         []
       );
-      const turns = f.store.listThreadTurns('ws_demo', f.thread.id);
-      const items = f.store.listThreadItems('ws_demo', f.thread.id);
+      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
+      const items = f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
       const replay = await f.submit();
       expect(replay.status, await replay.clone().text()).toBe(409);
       expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
       expect(f.dispatchCount()).toBe(1);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(turns);
-      expect(f.store.listThreadItems('ws_demo', f.thread.id)).toEqual(items);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(turns);
+      expect(
+        f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(items);
     } finally {
       f.close();
     }
@@ -4580,7 +4620,10 @@ describe('#144 real Assistant command wiring', () => {
     try {
       const first = await f.submit();
       expect(first.status).toBeGreaterThanOrEqual(400);
-      const [failed] = f.store.listThreadTurns('ws_demo', f.thread.id);
+      const [failed] = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.thread.id
+      );
       expect(failed).toMatchObject({ status: 'failed' });
       expect(f.dispatchCount()).toBe(1);
       const replay = await f.submit();
@@ -4592,7 +4635,9 @@ describe('#144 real Assistant command wiring', () => {
       const result = SubmitConversationResponseSchema.parse(await retry.json());
       expect(result.turn.id).not.toBe(failed!.id);
       expect(f.dispatchCount()).toBe(2);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toHaveLength(2);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toHaveLength(2);
     } finally {
       f.close();
     }
@@ -4621,10 +4666,10 @@ describe('#144 real Assistant command wiring', () => {
   }) => {
     const f = assistantWiringFixture(true);
     const changed: Record<string, unknown> = {
-      actor: { kind: 'session', userId: 'user_local' },
-      workspaceId: 'another-workspace',
-      threadId: 'another-thread',
-      turnId: 'another-turn',
+      actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      workspaceId: testEntityId('ws', 'another-workspace'),
+      threadId: testEntityId('th', 'another-thread'),
+      turnId: testEntityId('tu', 'another-turn'),
       entryScope: 'chat.quick',
       requestId: '00000000-0000-4000-8000-000000001499',
       kind: 'unknown',
@@ -4721,17 +4766,20 @@ describe('#144 real Assistant command wiring', () => {
             .prepare(
               "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
             )
-            .run('ws_demo', f.actorUserId);
+            .run('ws_00000000-0000-7000-8000-000000000001', f.actorUserId);
         if (condition === 'audience')
-          Object.assign(f.store.getThread('ws_demo', f.thread.id), {
-            privateOwnerUserId: 'another-user',
+          Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
+            privateOwnerUserId: testEntityId('usr', 'another-user'),
           });
         if (condition === 'removed') {
-          const catalog = loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo');
+          const catalog = loadWorkspaceResourceCatalog(
+            f.dataRoot,
+            'ws_00000000-0000-7000-8000-000000000001'
+          );
           catalog.skills.entries[0]!.availability = 'removed';
           publishWorkspaceResourceCatalog({
             dataRoot: f.dataRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             catalog,
             expectedRevision: catalog.revision,
           });
@@ -4748,7 +4796,7 @@ describe('#144 real Assistant command wiring', () => {
         expect(
           f.coreDb.sqlite
             .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-            .get('ws_demo', f.actorUserId)
+            .get('ws_00000000-0000-7000-8000-000000000001', f.actorUserId)
         ).toMatchObject({ status: 'removed' });
         await expect(native.results[0]).rejects.toMatchObject({ code: 'workspace_access_denied' });
       }
@@ -4756,7 +4804,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(1);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4779,7 +4827,12 @@ describe('#144 real Assistant command wiring', () => {
     const native = observePrivateSkillInvocation();
     f.createResponses.mockImplementationOnce(async () => {
       const file = join(
-        skillSnapshotPath(f.dataRoot, 'ws_demo', 'alpha', f.imported!.version.digest),
+        skillSnapshotPath(
+          f.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'alpha',
+          f.imported!.version.digest
+        ),
         'SKILL.md'
       );
       if (condition === 'changed bytes') fs.writeFileSync(file, 'private-source-canary');
@@ -4902,7 +4955,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(1);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4924,17 +4977,24 @@ describe('#144 real Assistant command wiring', () => {
     const pending = f.submit();
     try {
       await entered.promise;
-      const [turn] = f.store.listThreadTurns('ws_demo', f.thread.id);
+      const [turn] = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.thread.id
+      );
       expect(turn).toBeDefined();
       const interrupt = await f.app.request(
         ...operationRequest(
           'turn.interrupt',
-          { workspaceId: 'ws_demo', threadId: f.thread.id, turnId: turn!.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: f.thread.id,
+            turnId: turn!.id,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId: f.thread.id,
               turnId: turn!.id,
               requestId: '00000000-0000-4000-8000-000000001498',
@@ -4953,7 +5013,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(1);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -5000,7 +5060,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.environments()).toHaveLength(condition === 'immutable conflict' ? 1 : 0);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -5016,8 +5076,8 @@ describe('#144 real Assistant command wiring', () => {
       .mockResolvedValueOnce(selectedSkillCall(f))
       .mockImplementationOnce(async (...args) => {
         const result = await final(...args);
-        Object.assign(f.store.getThread('ws_demo', f.thread.id), {
-          privateOwnerUserId: 'another-user',
+        Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
+          privateOwnerUserId: testEntityId('usr', 'another-user'),
         });
         return result;
       });
@@ -5029,7 +5089,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(2);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -5047,7 +5107,12 @@ describe('#144 real Assistant command wiring', () => {
       f.createResponses.mockImplementationOnce(async () => {
         const outside = join(f.dataRoot, 'outside-canary');
         const file = join(
-          skillSnapshotPath(f.dataRoot, 'ws_demo', 'alpha', f.imported!.version.digest),
+          skillSnapshotPath(
+            f.dataRoot,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'alpha',
+            f.imported!.version.digest
+          ),
           'SKILL.md'
         );
         fs.writeFileSync(outside, 'private-source-canary');

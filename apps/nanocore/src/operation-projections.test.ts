@@ -48,6 +48,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
@@ -463,7 +464,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
   });
   recordTestExecutionAttempt(f.coreDb, {
     entry,
-    attemptId: 'lease_operation',
+    attemptId: testEntityId('attempt', 'lease_operation'),
     agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     inputRef: environmentPackage.snapshotId,
     bindingRef: 'binding_operation',
@@ -1006,7 +1007,7 @@ describe('operation projection cutover', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-7f0b-950b-062b02380791',
-          agentSessionId: 'session_wrong',
+          agentSessionId: testEntityId('as', 'session_wrong'),
           packageSnapshotId: 'package_wrong',
         },
       };
@@ -1982,21 +1983,36 @@ function privateEngineFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  const thread = store.createThread('ws_demo', 'Private operation', undefined, 'conversation', {
-    visibility: 'private',
-    privateOwnerUserId: 'user_local',
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const turn = store.createTurn('ws_demo', thread.id, 'Private read', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const thread = store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Private operation',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    thread.id,
+    'Private read',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const controller = new AbortController();
   const context: AssistantOperationInvocationContext = {
     kind: 'assistant-command',
     entryScope: 'conversation.submit',
-    actor: { kind: 'local', userId: 'user_local' },
-    workspaceId: 'ws_demo',
+    actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: thread.id,
     turnId: turn.id,
     requestId: randomUUID(),
@@ -2162,7 +2178,10 @@ describe('#144 private native invocation and public exclusion', () => {
         invoke(
           'skill.read' as JsonOperationId,
           {},
-          { kind: 'public', actor: { kind: 'local', userId: 'user_local' } }
+          {
+            kind: 'public',
+            actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          }
         )
       ).rejects.toMatchObject({ code: 'unsupported_operation', status: 400 });
       expect(touched).not.toHaveBeenCalled();
@@ -2174,7 +2193,7 @@ describe('#144 private native invocation and public exclusion', () => {
   it('omits and refuses the private operation in remote MCP discovery and invocation', async () => {
     const f = await operationFixture();
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',

@@ -14,6 +14,7 @@ import {
 } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -152,11 +153,15 @@ it.each([
       services
     );
 
-    const completed = store.createThread(workspace.id, 'Completed note', `th_task_${randomUUID()}`);
+    const completed = store.createThread(
+      workspace.id,
+      'Completed note',
+      testEntityId('th', `th_task_${randomUUID()}`)
+    );
     const refused = store.createThread(
       workspace.id,
       'Cancelled attempt',
-      `th_task_${randomUUID()}`
+      testEntityId('th', `th_task_${randomUUID()}`)
     );
     for (const thread of [completed, refused]) {
       db.sqlite.transaction(() =>
@@ -184,7 +189,7 @@ it.each([
     const body = 'Verified note: the issue is closed.';
     const digest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
     const artifact = store.createArtifact({
-      id: `ar_${randomUUID()}`,
+      id: testEntityId('ar', `ar_${randomUUID()}`),
       workspaceId: workspace.id,
       threadId: completed.id,
       turnId: taskTurn.id,
@@ -256,7 +261,7 @@ it.each([
     const unrelated = store.createThread(
       workspace.id,
       'Unrelated visible Task',
-      `th_task_${randomUUID()}`
+      testEntityId('th', `th_task_${randomUUID()}`)
     );
     const unrelatedTurn = store.createTurn(workspace.id, unrelated.id, 'Unlinked note', {
       kind: 'user',
@@ -264,7 +269,7 @@ it.each([
     });
     const unrelatedArtifact = store.createArtifact({
       ...artifact,
-      id: `ar_${randomUUID()}`,
+      id: testEntityId('ar', `ar_${randomUUID()}`),
       threadId: unrelated.id,
       turnId: unrelatedTurn.id,
       origin: {
@@ -287,7 +292,7 @@ it.each([
     const privateThread = store.createThread(
       workspace.id,
       'Private origin',
-      `th_private_${randomUUID()}`,
+      testEntityId('th', `th_private_${randomUUID()}`),
       'conversation',
       { visibility: 'private', privateOwnerUserId }
     );
@@ -297,7 +302,7 @@ it.each([
     });
     const privateArtifact = store.createArtifact({
       ...artifact,
-      id: `ar_${randomUUID()}`,
+      id: testEntityId('ar', `ar_${randomUUID()}`),
       content: { format: 'markdown', body: privateBody },
       contentDigest: `sha256:${createHash('sha256').update(privateBody).digest('hex')}`,
       threadId: privateThread.id,
@@ -396,7 +401,7 @@ it.each([
               truncated: false,
               content: [
                 call('items', 'thread_items', { threadId: completed.id }),
-                call('terminal', 'tu_00000000-0000-77a7-a194-9ad9d8661498', {
+                call('terminal', 'turn_read', {
                   threadId: completed.id,
                   turnId: taskTurn.id,
                 }),
@@ -520,7 +525,7 @@ it.each([
     });
     expect(
       (
-        await read('tu_00000000-0000-77a7-a194-9ad9d8661498', {
+        await read('turn_read', {
           threadId: completed.id,
           turnId: failedTurn.id,
         })
@@ -534,7 +539,7 @@ it.each([
     });
     expect(
       (
-        await read('tu_00000000-0000-77a7-a194-9ad9d8661498', {
+        await read('turn_read', {
           threadId: completed.id,
           turnId: privateTurn.id,
         })
@@ -560,7 +565,7 @@ it.each([
     for (const [name, args] of [
       ['thread_items', { threadId: completed.id }],
       ['artifact_read', { artifactId: artifact.id }],
-      ['tu_00000000-0000-77a7-a194-9ad9d8661498', { threadId: completed.id, turnId: taskTurn.id }],
+      ['turn_read', { threadId: completed.id, turnId: taskTurn.id }],
       ['evidence_runtime_list', {}],
     ] as const)
       expect((await read(name, args)).output).toMatchObject({ code: 'workspace_access_denied' });

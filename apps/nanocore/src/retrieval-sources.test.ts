@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,7 @@ import {
 } from './retrieval-sources.js';
 import { openWorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 
 const stamp = '2026-10-15T00:00:00.000Z';
@@ -127,7 +129,10 @@ describe('canonical product retrieval adapters', () => {
     const other = store.createThread(workspace.id, 'Other');
     const shared = store.createThread(workspace.id, 'Shared');
     Object.assign(own, { visibility: 'private', privateOwnerUserId: actor.userId });
-    Object.assign(other, { visibility: 'private', privateOwnerUserId: 'other_user' });
+    Object.assign(other, {
+      visibility: 'private',
+      privateOwnerUserId: testEntityId('usr', 'other_user'),
+    });
     Object.assign(shared, { visibility: 'workspace' });
     delete (shared as unknown as Record<string, unknown>).privateOwnerUserId;
     for (const [thread, text] of [
@@ -214,7 +219,7 @@ describe('canonical product retrieval adapters', () => {
 /** Adds the canonical visible message owned by a Turn; createTurn alone stores no Item. */
 function message(store: FsStore, turn: ReturnType<FsStore['createTurn']>, text: string): void {
   store.createItem({
-    id: `it_${turn.id}`,
+    id: testEntityId('it', `it_${turn.id}`),
     workspaceId: turn.workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,

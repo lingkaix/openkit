@@ -1,11 +1,12 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ListServerPermissionDecisionsResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { isEntityId } from '@openkit/protocol';
+import { describe, expect, it, vi } from 'vitest';
 
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -143,47 +144,170 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it('records boot policy self-check allow and deny decisions', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
-    const coreDb = openCoreDb(dataRoot);
-
+  it('retains canonical boot decisions across exact retry and reopen with separate boot correlation', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-'));
+    let coreDb = openCoreDb(dataRoot);
+    const now = new Date('2026-07-05T00:00:00.000Z');
+    const kernel = loadBootPolicyKernel();
     try {
       applyMigrations(coreDb);
-
+      recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now });
+      const original = listServerPermissionDecisions(coreDb).sort((a, b) =>
+        a.action.localeCompare(b.action)
+      );
+      expect(
+        original.map((row) => ({
+          action: row.action,
+          result: row.result,
+          reasonCode: row.reasonCode,
+        }))
+      ).toEqual([
+        { action: 'api.call', result: 'allow', reasonCode: 'association-grant' },
+        { action: 'vault.use', result: 'deny', reasonCode: 'restriction' },
+      ]);
+      expect(
+        original.every(
+          (row) => isEntityId('pd', row.decisionId) && row.decisionId.split('_')[1]![14] === '7'
+        )
+      ).toBe(true);
+      expect(original.map((row) => row.contextSummary)).toEqual([
+        { boot: true, bootId: 'boot_policy_test' },
+        { boot: true, bootId: 'boot_policy_test' },
+      ]);
+      const auditCount = () =>
+        coreDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get();
+      const originalAuditCount = auditCount();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
       recordBootPolicySelfCheckDecisions({
         bootId: 'boot_policy_test',
         coreDb,
-        kernel: loadBootPolicyKernel(),
-        now: new Date('2026-07-05T00:00:00.000Z'),
+        kernel,
+        now: new Date('2026-07-05T00:01:00.000Z'),
       });
+      expect(
+        listServerPermissionDecisions(coreDb).sort((a, b) => a.action.localeCompare(b.action))
+      ).toEqual(original);
+      expect(auditCount()).toEqual(originalAuditCount);
+      recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_next', coreDb, kernel, now });
+      const next = listServerPermissionDecisions(coreDb);
+      expect(next).toHaveLength(4);
+      expect(new Set(next.map((row) => row.decisionId)).size).toBe(4);
+      expect(next.every((row) => isEntityId('pd', row.decisionId))).toBe(true);
+      const retained = coreDb.sqlite
+        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+        .all();
+      coreDb.sqlite
+        .prepare('DELETE FROM audit_events WHERE audit_event_id = ?')
+        .run(original[0]!.auditEventId);
+      expect(() =>
+        recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now })
+      ).toThrow('Boot policy self-check record is contradictory.');
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+      ).toEqual(retained);
+      coreDb.sqlite
+        .prepare('DELETE FROM permission_decisions WHERE decision_id = ?')
+        .run(original[0]!.decisionId);
+      const partialRows = coreDb.sqlite
+        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+        .all();
+      const partialAudits = coreDb.sqlite
+        .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+        .all();
+      expect(() =>
+        recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now })
+      ).toThrow('Boot policy self-check record is contradictory.');
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+      ).toEqual(partialRows);
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
+      ).toEqual(partialAudits);
+    } finally {
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 
-      const rows = coreDb.sqlite
-        .prepare(
-          'SELECT decision_id, action, result, reason_code FROM permission_decisions ORDER BY decision_id'
-        )
-        .all() as Array<{
-        action: string;
-        decision_id: string;
-        reason_code: string;
-        result: string;
-      }>;
-
-      expect(rows).toEqual([
-        {
-          action: 'api.call',
-          decision_id: 'boot_policy_test_policy_core_api_call',
-          reason_code: 'association-grant',
-          result: 'allow',
-        },
-        {
-          action: 'vault.use',
-          decision_id: 'boot_policy_test_policy_vault_use',
-          reason_code: 'restriction',
-          result: 'deny',
-        },
-      ]);
+  it.each([
+    ['outcome', 'denied'],
+    ['resource', 'permission:vault.use'],
+    ['actor_json', '{"kind":"user","userId":"usr_00000000-0000-7000-8000-000000000001"}'],
+    ['workspace_id', 'ws_00000000-0000-7000-8000-000000000001'],
+    ['thread_id', 'th_00000000-0000-7000-8000-000000000001'],
+    ['severity', 'warning'],
+    ['error_code', 'contradictory'],
+    ['occurred_at', '2026-07-05T00:01:00.000Z'],
+  ])('refuses boot retry with contradictory linked Audit %s without changing retained rows', (field, value) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-audit-'));
+    const coreDb = openCoreDb(dataRoot);
+    const input = {
+      bootId: 'boot_audit_contradiction',
+      coreDb,
+      kernel: loadBootPolicyKernel(),
+      now: new Date('2026-07-05T00:00:00.000Z'),
+    };
+    try {
+      applyMigrations(coreDb);
+      recordBootPolicySelfCheckDecisions(input);
+      const decision = listServerPermissionDecisions(coreDb).find(
+        (row) => row.action === 'api.call'
+      )!;
+      // The column comes only from the closed fixture table above.
+      coreDb.sqlite
+        .prepare(`UPDATE audit_events SET ${field} = ? WHERE audit_event_id = ?`)
+        .run(value, decision.auditEventId);
+      const decisions = coreDb.sqlite
+        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+        .all();
+      const audits = coreDb.sqlite
+        .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+        .all();
+      expect(() => recordBootPolicySelfCheckDecisions(input)).toThrow(
+        'Boot policy self-check record is contradictory.'
+      );
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+      ).toEqual(decisions);
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
+      ).toEqual(audits);
     } finally {
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes neither boot decision nor Audit when the second decision lacks entropy', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-entropy-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      const nativeEntropy = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+      const entropy = vi
+        .spyOn(globalThis.crypto, 'getRandomValues')
+        .mockImplementationOnce((value) => nativeEntropy(value))
+        .mockImplementationOnce((value) => nativeEntropy(value))
+        .mockImplementation(() => {
+          throw new Error('Synthetic boot entropy failure.');
+        });
+      try {
+        expect(() =>
+          recordBootPolicySelfCheckDecisions({
+            bootId: 'boot_entropy',
+            coreDb,
+            kernel: loadBootPolicyKernel(),
+          })
+        ).toThrow('Synthetic boot entropy failure.');
+      } finally {
+        entropy.mockRestore();
+      }
+      expect(coreDb.sqlite.prepare('SELECT * FROM permission_decisions').all()).toEqual([]);
+      expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -273,22 +397,24 @@ describe('permission decision recorder', () => {
         result: string;
       }>;
 
-      expect(rows).toEqual([
-        {
-          approval_id: 'ap_policy_1',
-          decision_id: 'pd_00000000-0000-7d59-952b-a37801be80df',
-          reason_code: 'approval_required',
-          required_approval_kind: 'permission',
-          result: 'require_approval',
-        },
-        {
-          approval_id: null,
-          decision_id: 'pd_00000000-0000-7d04-af43-41da70aefdc8',
-          reason_code: 'higher_authority_required',
-          required_approval_kind: null,
-          result: 'require_escalation',
-        },
-      ]);
+      expect(rows).toEqual(
+        [
+          {
+            approval_id: 'ap_policy_1',
+            decision_id: 'pd_00000000-0000-7d59-952b-a37801be80df',
+            reason_code: 'approval_required',
+            required_approval_kind: 'permission',
+            result: 'require_approval',
+          },
+          {
+            approval_id: null,
+            decision_id: 'pd_00000000-0000-7d04-af43-41da70aefdc8',
+            reason_code: 'higher_authority_required',
+            required_approval_kind: null,
+            result: 'require_escalation',
+          },
+        ].sort((left, right) => left.decision_id.localeCompare(right.decision_id))
+      );
     } finally {
       coreDb.sqlite.close();
     }

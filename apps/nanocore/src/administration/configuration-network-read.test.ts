@@ -64,6 +64,7 @@ function readFixture(
     read: vi.fn(),
     schema: vi.fn(),
     propose: vi.fn(),
+    applyDelegated: vi.fn(),
   });
   return {
     files,

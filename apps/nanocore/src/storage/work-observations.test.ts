@@ -18,6 +18,7 @@ import {
   workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
@@ -857,7 +858,7 @@ process.kill(process.pid, 'SIGKILL');`,
   });
 
   it('rejects unknown semantics and forged publication edges while omitting unowned metadata', () => {
-    const row = { ...model(), turnId: 'turn', v: 1, seq: 1 };
+    const row = { ...model(), turnId: testEntityId('tu', 'turn'), v: 1, seq: 1 };
     expect(() => parseWorkObservationRecord({ ...row, type: 'unowned.fact' })).toThrow(
       /Unsupported/
     );

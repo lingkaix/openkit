@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -67,7 +68,7 @@ function insertWorkerAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_events_1',
+    attemptId: testEntityId('attempt', 'lease_events_1'),
     agentSessionId: lineage.agentSessionId,
     inputRef: lineage.packageSnapshotId,
     bindingRef: 'lease-binding:events-1',
@@ -104,7 +105,7 @@ function createFinalStatusAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_events_final_status',
+    attemptId: testEntityId('attempt', 'lease_events_final_status'),
     agentSessionId: lineage.agentSessionId,
     inputRef: lineage.packageSnapshotId,
     bindingRef: 'lease-binding:events-final-status',
@@ -157,7 +158,7 @@ describe('worker final-status token binding', () => {
       sequence: 8,
     });
     markSchedulerExecutionAttemptClosing(coreDb, {
-      attemptId: 'lease_events_final_status',
+      attemptId: testEntityId('attempt', 'lease_events_final_status'),
       now: () => '2026-07-15T00:00:04.000Z',
       cause: 'worker-final-status',
     });
@@ -363,7 +364,7 @@ describe('durable worker final-status wait', () => {
 
     try {
       const completion = waitForWorkerControlFinalStatus(coreDb, {
-        attemptId: 'lease_events_1',
+        attemptId: testEntityId('attempt', 'lease_events_1'),
         lineage,
       });
       let settled = false;
@@ -411,7 +412,7 @@ describe('durable worker final-status wait', () => {
 
     await expect(
       waitForWorkerControlFinalStatus(coreDb, {
-        attemptId: 'lease_events_1',
+        attemptId: testEntityId('attempt', 'lease_events_1'),
         lineage,
       })
     ).rejects.toThrow('expired before durable final status');
@@ -426,7 +427,7 @@ describe('durable worker final-status wait', () => {
     });
     await expect(
       waitForWorkerControlFinalStatus(coreDb, {
-        attemptId: 'lease_events_1',
+        attemptId: testEntityId('attempt', 'lease_events_1'),
         lineage,
       })
     ).resolves.toEqual({

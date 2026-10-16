@@ -12,6 +12,7 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -59,7 +60,7 @@ describe('scheduler admission thread audience', () => {
         queueEntryId,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId,
-        turnId: `turn_${queueEntryId}`,
+        turnId: testEntityId('tu', `turn_${queueEntryId}`),
         turnInput: `Admission for ${threadId}.`,
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',

@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
 import { coreDbPath, workspaceDbPath } from './fs-layout';
@@ -563,7 +564,7 @@ describe('database setup', () => {
   it('applies the User and Workspace setup sections idempotently', () => {
     const dataRoot = createDataRoot();
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'workspace_1');
+    const workspaceDb = openWorkspaceDb(dataRoot, testEntityId('ws', 'workspace_1'));
 
     try {
       applyScopedMigrations(userDb);
@@ -924,11 +925,11 @@ describe('native Drizzle migrate', () => {
       insert('agent_session_runtime_bindings', {
         agent_session_runtime_binding_id: 'retained-binding',
         harness_instance_id: 'retained-harness',
-        agent_session_id: 'retained-session',
-        workspace_id: 'retained-workspace',
-        thread_id: 'retained-thread',
-        current_turn_id: 'retained-turn',
-        current_attempt_id: 'retained-attempt',
+        agent_session_id: testEntityId('as', 'retained-session'),
+        workspace_id: testEntityId('ws', 'retained-workspace'),
+        thread_id: testEntityId('th', 'retained-thread'),
+        current_turn_id: testEntityId('tu', 'retained-turn'),
+        current_attempt_id: testEntityId('attempt', 'retained-attempt'),
         native_handle_digest: 'a'.repeat(64),
         next_turn_sequence: 3,
       });
@@ -940,10 +941,10 @@ describe('native Drizzle migrate', () => {
       const before = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
       const indices = names.map((name) => sqlite.pragma(`index_list(${name})`));
       const binding = readNanoHostThreadAgentSessionBinding(coreDb, {
-        workspaceId: 'retained-workspace',
-        threadId: 'retained-thread',
+        workspaceId: testEntityId('ws', 'retained-workspace'),
+        threadId: testEntityId('th', 'retained-thread'),
       });
-      expect(binding).toEqual({ agentSessionId: 'retained-session' });
+      expect(binding).toEqual({ agentSessionId: testEntityId('as', 'retained-session') });
       expect(() =>
         sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
       ).toThrow();
@@ -960,8 +961,8 @@ describe('native Drizzle migrate', () => {
       expect(names.map((name) => sqlite.pragma(`index_list(${name})`))).toEqual(indices);
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
-          workspaceId: 'retained-workspace',
-          threadId: 'retained-thread',
+          workspaceId: testEntityId('ws', 'retained-workspace'),
+          threadId: testEntityId('th', 'retained-thread'),
         })
       ).toEqual(binding);
       applyNativeScopeMigrations(sqlite, 'core', folder);

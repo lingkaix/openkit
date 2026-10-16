@@ -12,6 +12,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -105,7 +106,7 @@ function fixture(
       },
     ];
     store.createItem({
-      id: `it_${requestId}`,
+      id: testEntityId('it', `it_${requestId}`),
       ...common,
       turnId: turn.id,
       type: 'user-input-request',

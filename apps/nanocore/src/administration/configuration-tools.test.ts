@@ -35,6 +35,7 @@ describe('administration configuration Tools', () => {
       read: vi.fn(),
       schema: vi.fn(),
       propose: vi.fn(),
+      applyDelegated: vi.fn(),
     });
     expect(tools[0].inputSchema).toEqual({
       additionalProperties: false,
@@ -125,6 +126,7 @@ describe('administration configuration Tools', () => {
       read: vi.fn(),
       schema: vi.fn(),
       propose: vi.fn(),
+      applyDelegated: vi.fn(),
     });
 
     const schema = await tools[1].execute(
@@ -133,5 +135,15 @@ describe('administration configuration Tools', () => {
     );
     expect(JSON.stringify(schema.content)).toContain('OpenKit agent config');
     expect(JSON.stringify(schema.content)).toContain('pullPolicy');
+    const body = JSON.parse((schema.content[0] as { text: string }).text);
+    expect(body.gitReadCorrection).toMatchObject({
+      additionalProperties: false,
+      required: ['targetFamily', 'targetId', 'expectedRevision', 'failure', 'changes'],
+      properties: { changes: { additionalProperties: false } },
+    });
+    expect(Object.keys(body.gitReadCorrection.properties.changes.properties)).toEqual([
+      'networkGrantId',
+      'rules',
+    ]);
   });
 });

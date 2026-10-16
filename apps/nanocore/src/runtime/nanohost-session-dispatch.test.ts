@@ -14,6 +14,7 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
@@ -264,8 +265,8 @@ describe('authoritative NanoHost session dispatch', () => {
       const liveInput = {
         purpose: 'artifact-submission',
         submissionRequestId: 'submission-1',
-        turnId: 'turn-1',
-        agentSessionId: 'session-1',
+        turnId: testEntityId('tu', 'turn-1'),
+        agentSessionId: testEntityId('as', 'session-1'),
         packageSnapshotId: 'package-1',
         leaseId: 'lease-1',
         backendSessionId: 'backend-1',
@@ -967,13 +968,13 @@ describe('authoritative NanoHost session dispatch', () => {
       if (state !== 'draining')
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: 'agent-session-ack',
+          agentSessionId: testEntityId('as', 'agent-session-ack'),
           agentSessionRuntimeBindingId: 'agent-session-binding-ack',
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-ack',
-          threadId: 'thread-ack',
+          threadId: testEntityId('th', 'thread-ack'),
           timestamp: '2098-08-21T00:00:00.000Z',
-          workspaceId: 'workspace-ack',
+          workspaceId: testEntityId('ws', 'workspace-ack'),
         });
       queueNanoHostHarnessOperation(coreDb, {
         body:
@@ -981,17 +982,17 @@ describe('authoritative NanoHost session dispatch', () => {
             ? {
                 adapterId: 'codex',
                 agentSessionCompatibilityKey: 'c'.repeat(64),
-                agentSessionId: 'agent-session-ack',
+                agentSessionId: testEntityId('as', 'agent-session-ack'),
                 agentSessionRuntimeBindingId: 'agent-session-binding-ack',
                 effectiveSetupGeneration: 1,
                 resume: null,
-                threadId: 'thread-ack',
-                workspaceId: 'workspace-ack',
+                threadId: testEntityId('th', 'thread-ack'),
+                workspaceId: testEntityId('ws', 'workspace-ack'),
               }
             : state === 'draining'
               ? {}
               : {
-                  agentSessionId: 'agent-session-ack',
+                  agentSessionId: testEntityId('as', 'agent-session-ack'),
                   agentSessionRuntimeBindingId: 'agent-session-binding-ack',
                 },
         harnessInstanceId: 'harness-ack',

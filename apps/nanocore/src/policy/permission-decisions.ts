@@ -4,6 +4,7 @@ import {
   ActorRefSchema,
   type AuditEvent,
   allocateEntityId,
+  isEntityId,
   RequestIdSchema,
   TimestampSchema,
 } from '@openkit/protocol';
@@ -919,52 +920,112 @@ function permissionDecisionDb(input: RecordProductPermissionDecisionInput): Core
 }
 
 /**
- * Records the boot policy kernel baseline allow and deny decisions.
+ * Records independent boot baseline decisions once per retained boot/action correlation.
+ * Exact retry verifies immutable facts and linked Audit; ambiguity fails closed.
  *
  * @param input Boot policy self-check recording input.
  */
 export function recordBootPolicySelfCheckDecisions(
   input: RecordBootPolicySelfCheckDecisionsInput
 ): void {
-  const coreApiRequest = {
-    process: 'process:nanocore',
-    operation: 'api.call',
-    target: 'object:nanocore',
-  };
-  const vaultUseRequest = {
-    process: 'process:nanocore',
-    operation: 'vault.use',
-    target: 'object:baseline-vault-secret',
-  };
-
-  recordPermissionDecision({
-    coreDb: input.coreDb,
-    decisionId: `${input.bootId}_policy_core_api_call`,
-    ownerScope: 'server',
-    policyDecision: input.kernel.evaluate(coreApiRequest),
-    policyEngineVersion: 'policy-kernel:v1',
-    policySnapshotId: 'policy_snapshot_boot_baseline',
-    subjectSummary: { id: coreApiRequest.process, kind: 'process' },
-    action: coreApiRequest.operation,
-    resourceSummary: { id: coreApiRequest.target, kind: 'core-api' },
-    contextSummary: { boot: true },
-    enforcementPoint: 'boot.policy.self_check',
-    ...(input.now ? { now: input.now } : {}),
-  });
-  recordPermissionDecision({
-    coreDb: input.coreDb,
-    decisionId: `${input.bootId}_policy_vault_use`,
-    ownerScope: 'server',
-    policyDecision: input.kernel.evaluate(vaultUseRequest),
-    policyEngineVersion: 'policy-kernel:v1',
-    policySnapshotId: 'policy_snapshot_boot_baseline',
-    subjectSummary: { id: vaultUseRequest.process, kind: 'process' },
-    action: vaultUseRequest.operation,
-    resourceSummary: { id: vaultUseRequest.target, kind: 'vault-reference' },
-    contextSummary: { boot: true },
-    enforcementPoint: 'boot.policy.self_check',
-    ...(input.now ? { now: input.now } : {}),
-  });
+  const requests = [
+    { operation: 'api.call', target: 'object:nanocore', resourceKind: 'core-api' },
+    {
+      operation: 'vault.use',
+      target: 'object:baseline-vault-secret',
+      resourceKind: 'vault-reference',
+    },
+  ] as const;
+  // Both decisions and Audit share this existing Core authority and rollback boundary.
+  input.coreDb.sqlite.transaction(() => {
+    const existingRows = input.coreDb.sqlite
+      .prepare(`SELECT * FROM permission_decisions
+      WHERE owner_scope = 'server' AND enforcement_point = 'boot.policy.self_check'
+        AND json_extract(context_summary_json, '$.bootId') = ?`)
+      .all(input.bootId) as PermissionDecisionRow[];
+    if (existingRows.length !== 0 && existingRows.length !== requests.length)
+      throw new Error('Boot policy self-check record is contradictory.');
+    for (const request of requests) {
+      const process = 'process:nanocore';
+      const policyDecision = input.kernel.evaluate({
+        process,
+        operation: request.operation,
+        target: request.target,
+      });
+      const existing = existingRows.filter((row) => row.action === request.operation);
+      if (existingRows.length > 0 && existing.length !== 1)
+        throw new Error('Boot policy self-check record is contradictory.');
+      const row = existing[0];
+      if (row) {
+        const linkedAudit = input.coreDb.sqlite
+          .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+          .get(row.audit_event_id) as Record<string, unknown> | undefined;
+        // Compare the known immutable core and leave additive storage columns untouched.
+        const expectedAudit = {
+          audit_event_id: row.audit_event_id,
+          permission_decision_id: row.decision_id,
+          workspace_id: null,
+          protocol_version: null,
+          thread_id: null,
+          turn_id: null,
+          item_id: null,
+          capability_call_id: null,
+          vault_grant_id: null,
+          request_id: null,
+          actor_json: null,
+          subject_json: null,
+          agent_id: null,
+          agent_session_id: null,
+          category: 'approval',
+          action: 'permission.decision',
+          resource: `permission:${request.operation}`,
+          resource_revision: null,
+          outcome: permissionAuditOutcome(row.result),
+          severity: permissionAuditSeverity(row.result),
+          summary: `Permission decision ${row.result}: ${request.operation}`,
+          error_code: null,
+          created_at: row.created_at,
+          occurred_at: row.created_at,
+        };
+        if (
+          !isEntityId('pd', row.decision_id) ||
+          row.decision_id.split('_')[1]?.[14] !== '7' ||
+          row.workspace_id !== null ||
+          row.policy_engine_version !== 'policy-kernel:v1' ||
+          row.policy_snapshot_id !== 'policy_snapshot_boot_baseline' ||
+          row.result !== mapPolicyEffect(policyDecision.effect) ||
+          row.reason_code !== (policyDecision.reasons[0]?.code ?? 'unknown') ||
+          row.required_approval_kind !== null ||
+          row.approval_id !== null ||
+          optionalStringField(JSON.parse(row.subject_summary_json), 'id') !== process ||
+          optionalStringField(JSON.parse(row.subject_summary_json), 'kind') !== 'process' ||
+          optionalStringField(JSON.parse(row.resource_summary_json), 'id') !== request.target ||
+          optionalStringField(JSON.parse(row.resource_summary_json), 'kind') !==
+            request.resourceKind ||
+          JSON.parse(row.context_summary_json).boot !== true ||
+          !isEntityId('aud', row.audit_event_id) ||
+          !linkedAudit ||
+          Object.entries(expectedAudit).some(([key, value]) => linkedAudit[key] !== value)
+        )
+          throw new Error('Boot policy self-check record is contradictory.');
+        continue;
+      }
+      recordPermissionDecision({
+        coreDb: input.coreDb,
+        decisionId: allocateEntityId('pd'),
+        ownerScope: 'server',
+        policyDecision,
+        policyEngineVersion: 'policy-kernel:v1',
+        policySnapshotId: 'policy_snapshot_boot_baseline',
+        subjectSummary: { id: process, kind: 'process' },
+        action: request.operation,
+        resourceSummary: { id: request.target, kind: request.resourceKind },
+        contextSummary: { boot: true, bootId: input.bootId },
+        enforcementPoint: 'boot.policy.self_check',
+        ...(input.now ? { now: input.now } : {}),
+      });
+    }
+  })();
 }
 
 /**

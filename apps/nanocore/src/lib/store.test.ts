@@ -9,7 +9,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-
 import { AgentSessionSchema, RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
@@ -19,6 +18,7 @@ import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { parseCanonicalWorkspaceHistory } from '../storage/workspace-file-records.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { FsStore } from './store.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -111,7 +111,7 @@ function createImportedArtifact(
   const contentDigest = claimedDigest ?? artifactDigest(body);
 
   return store.createArtifact({
-    id: `ar_${requestId}`,
+    id: testEntityId('ar', `ar_${requestId}`),
     workspaceId,
     threadId: null,
     turnId: null,
@@ -143,13 +143,17 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const conversation = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Conversation'
+      'Conversation',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const administration = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Administration',
       'th_00000000-0000-7624-b3fa-287b4af56d2a',
-      'administration'
+      'administration',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
 
     expect(conversation.entryPath).toBe('conversation');
@@ -161,7 +165,10 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Attribution ownership'
+      'Attribution ownership',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const turn = store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -288,7 +295,10 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Turn timestamp ownership'
+      'Turn timestamp ownership',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const beforeDefault = Date.now();
     const defaultTurn = store.createTurn(
@@ -318,7 +328,10 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Reserved approval identity'
+      'Reserved approval identity',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const turn = store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',

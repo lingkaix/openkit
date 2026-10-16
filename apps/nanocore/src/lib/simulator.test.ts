@@ -37,6 +37,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -1217,7 +1218,7 @@ describe('SimulatedTurnExecutor', () => {
     expect(store.getTurnById(turn.id)).toMatchObject({
       agentId: selectedAgentSetup.manifest.id,
       agentProfileId: 'review',
-      agentSessionId: `session_sim_turn_${turn.id}`,
+      agentSessionId: testEntityId('as', `session_sim_turn_${turn.id}`),
     });
     expect(store.getAgentSession(`session_sim_turn_${turn.id}`).agentId).toBe(
       selectedAgentSetup.manifest.id

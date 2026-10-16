@@ -24,6 +24,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -577,7 +578,7 @@ describe('central Workspace operation authorizer', () => {
     ).toBeNull();
     recordTestExecutionAttempt(fixture.coreDb, {
       entry,
-      attemptId: 'lease_worker_admin',
+      attemptId: testEntityId('attempt', 'lease_worker_admin'),
       agentSessionId: 'as_00000000-0000-7bbb-87ab-08921157e60d',
       inputRef: 'snapshot_worker_admin',
       bindingRef: 'lease-token:worker-admin',
@@ -1602,7 +1603,7 @@ describe('canonical administration Workspace admission', () => {
     const originals = patches.map(([table]) => Object.getOwnPropertyDescriptor(table, id)!);
     const expected = {
       identityId: 'fixture-host',
-      deploymentId: 'fixture-deployment',
+      deploymentId: testEntityId('dep', 'fixture-deployment'),
       connectionGeneration: 1,
       predecessorFenced: true,
       ready: true,

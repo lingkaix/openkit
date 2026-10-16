@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
@@ -32,6 +33,7 @@ import {
   workspaceDeletionRecoveryExportId,
 } from './storage/workspace-transfer-routes.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -208,6 +210,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
 
   try {
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Deletion fixture');
     const app = createApp({
@@ -228,7 +231,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: timestamp,
-      id: 'session_workspace_deletion_blocker',
+      id: testEntityId('as', 'session_workspace_deletion_blocker'),
       message: null,
       status: 'busy',
       threadId: thread.id,
@@ -334,7 +337,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
       code: 'workspace_deletion_in_progress',
     });
 
-    store.updateAgentSession('session_workspace_deletion_blocker', {
+    store.updateAgentSession(testEntityId('as', 'session_workspace_deletion_blocker'), {
       status: 'closed',
       updatedAt: new Date().toISOString(),
     });
@@ -416,8 +419,8 @@ it.each([
              staging_directory_ref, workspace_handoff_state, state,
              physical_cleaned_at, created_at, updated_at
            ) VALUES (
-             'lease_deletion_backend', ?, 'thread_deletion_backend',
-             'tu_00000000-0000-7578-82f0-b9b0663a3388', 'session_deletion_backend',
+             'attempt_00000000-0000-7000-8000-000000000971', ?, 'th_00000000-0000-7000-8000-000000000971',
+             'tu_00000000-0000-7578-82f0-b9b0663a3388', 'as_00000000-0000-7000-8000-000000000971',
              'package_deletion_backend', 'test', 'deployment_deletion_backend',
              'backend_deletion_backend', 'target_deletion_backend', ?,
              '{"imageRef":"openkit/test:deletion"}', 'sandbox_deletion_backend',
@@ -501,9 +504,9 @@ function insertDeletionQuiescenceLease(
   turnId: string;
 } {
   const timestamp = new Date().toISOString();
-  const threadId = input.threadId ?? `thread_${input.suffix}`;
-  const turnId = input.turnId ?? `turn_${input.suffix}`;
-  const agentSessionId = input.agentSessionId ?? `session_${input.suffix}`;
+  const threadId = input.threadId ?? testEntityId('th', `thread_${input.suffix}`);
+  const turnId = input.turnId ?? testEntityId('tu', `turn_${input.suffix}`);
+  const agentSessionId = input.agentSessionId ?? testEntityId('as', `session_${input.suffix}`);
   const packageSnapshotId = input.packageSnapshotId ?? `package_${input.suffix}`;
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -518,7 +521,7 @@ function insertDeletionQuiescenceLease(
   });
   const attempt = recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease_${input.suffix}`,
+    attemptId: testEntityId('attempt', `lease_${input.suffix}`),
     agentSessionId,
     inputRef: packageSnapshotId,
     bindingRef: `sandbox_${input.suffix}`,
@@ -572,7 +575,7 @@ function insertDeletionQuiescenceBackend(
        )`
     )
     .run(
-      `lease_${input.suffix}`,
+      testEntityId('attempt', `lease_${input.suffix}`),
       input.workspaceId,
       input.threadId,
       input.turnId,
@@ -601,7 +604,7 @@ async function closeDeletionQuiescenceAttempt(
   suffix: string
 ): Promise<void> {
   const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
-    attemptId: `lease_${suffix}`,
+    attemptId: testEntityId('attempt', `lease_${suffix}`),
     cause: 'turn-failed',
   });
   const correlation = schedulerExecutionCorrelation(attempt);
@@ -693,15 +696,15 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
         .prepare(
           `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
            FROM scheduler_execution_attempts
-           WHERE attempt_id LIKE 'lease_cleaned_failed_%'
-           ORDER BY attempt_id`
+           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
+           ORDER BY rowid`
         )
-        .all()
+        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
     ).toEqual(
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
         phase: 'closed',
-        fenceRef: `self-check:lease_${suffix}`,
+        fenceRef: `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
       }))
     );
     expect(
@@ -709,10 +712,10 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
         .prepare(
           `SELECT state, physical_cleaned_at AS physicalCleanedAt
            FROM worker_backend_sessions
-           WHERE attempt_id LIKE 'lease_cleaned_failed_%'
-           ORDER BY attempt_id`
+           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
+           ORDER BY rowid`
         )
-        .all()
+        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
     ).toEqual(suffixes.map(() => ({ physicalCleanedAt, state: 'cleaned' })));
   } finally {
     coreDb.sqlite.close();
@@ -791,15 +794,18 @@ it('keeps deletion fenced when one of five failed attempts remains closing witho
         .prepare(
           `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
            FROM scheduler_execution_attempts
-           WHERE attempt_id LIKE 'lease_sibling_%'
-           ORDER BY attempt_id`
+           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
+           ORDER BY rowid`
         )
-        .all()
+        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
     ).toEqual(
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
         phase: suffix === 'sibling_unproved' ? 'closing' : 'closed',
-        fenceRef: suffix === 'sibling_unproved' ? null : `self-check:lease_${suffix}`,
+        fenceRef:
+          suffix === 'sibling_unproved'
+            ? null
+            : `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
       }))
     );
   } finally {
@@ -886,10 +892,10 @@ it.each([
           .prepare(
             'SELECT phase, fence_ref AS fenceRef, disposition, terminal_cause AS cause FROM scheduler_execution_attempts WHERE attempt_id = ?'
           )
-          .get(`lease_${fixture.suffix}`)
+          .get(testEntityId('attempt', `lease_${fixture.suffix}`))
       ).toEqual({
         phase: 'closed',
-        fenceRef: `self-check:lease_${fixture.suffix}`,
+        fenceRef: `self-check:${testEntityId('attempt', `lease_${fixture.suffix}`)}`,
         disposition: 'unknown',
         cause: 'turn-failed',
       });
@@ -897,23 +903,26 @@ it.each([
     if (fixture.backend === 'missing') {
       coreDb.sqlite
         .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
-        .run(`lease_${fixture.suffix}`);
+        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
     } else if (fixture.backend === 'mismatched-thread') {
       coreDb.sqlite
         .prepare('UPDATE worker_backend_sessions SET thread_id = ? WHERE attempt_id = ?')
-        .run(`thread_other_${fixture.suffix}`, `lease_${fixture.suffix}`);
+        .run(
+          testEntityId('th', `thread_other_${fixture.suffix}`),
+          testEntityId('attempt', `lease_${fixture.suffix}`)
+        );
     } else if (fixture.backend === 'physical-cleaned') {
       coreDb.sqlite
         .prepare(
           "UPDATE worker_backend_sessions SET state = 'physical-cleaned' WHERE attempt_id = ?"
         )
-        .run(`lease_${fixture.suffix}`);
+        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
     } else if (fixture.backend === 'cleaned-without-timestamp') {
       coreDb.sqlite
         .prepare(
           'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
         )
-        .run(`lease_${fixture.suffix}`);
+        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
     }
     const app = createApp({
       coreDb,
@@ -955,7 +964,7 @@ it.each([
            FROM scheduler_execution_attempts
            WHERE attempt_id = ?`
         )
-        .get(`lease_${fixture.suffix}`)
+        .get(testEntityId('attempt', `lease_${fixture.suffix}`))
     ).toEqual({
       recoveryState: 'needs-evidence',
       phase: fixture.leaseStatus === 'failed' ? 'closed' : 'closing',
@@ -1226,10 +1235,10 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       closureId: `wsclose_delete_${requestId}`,
       commandReceiptKey: 'workspace-delete-receipt',
       phase: 'cleaned',
-      recoveryExportId: `wsexp_delete_${requestId}`,
+      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
       recoveryExportManifestDigest: 'export-digest',
       stagingRelativePath: workspaceDeletionStagingRelativePath(deletedWorkspace.id, requestId),
-      terminalAuditEventId: 'workspace-delete-audit',
+      terminalAuditEventId: testEntityId('aud', 'workspace-delete-audit'),
     });
     const mutationAdmission = new WorkspaceMutationAdmission();
 
@@ -1518,7 +1527,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     const deletion = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
     expect(deletion).toMatchObject({
       phase: 'cleaned',
-      recoveryExportId: `wsexp_delete_${requestId}`,
+      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
       recoveryExportManifestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
     const exportRoot = join(
@@ -1551,6 +1560,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
 
   try {
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Terminal deletion fixture');
     const app = createApp({
@@ -1644,7 +1654,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       },
     });
     const completedRequest = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
-    expect(completedRequest.recoveryExportId).toBe(`wsexp_delete_${requestId}`);
+    expect(completedRequest.recoveryExportId).toBe(deriveEntityId('wsexp', ['delete', requestId]));
     expect(completedRequest.closureId).toBe(`wsclose_delete_${requestId}`);
     const workspaceExportsRoot = join(dataRoot, 'server', 'exports', 'workspaces', workspace.id);
     expect(existsSync(join(workspaceExportsRoot, priorExport.exportId))).toBe(false);

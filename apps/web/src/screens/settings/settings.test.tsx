@@ -2122,7 +2122,7 @@ describe('Gateway (board 20)', () => {
     expect(await screen.findByText('Poisoned app')).toBeInTheDocument();
     const rendered = document.body.textContent ?? '';
     expect(rendered).not.toContain(POISON_SECRET);
-    expect(rendered).not.toContain('vault-reference-should-never-render');
+    expect(rendered).not.toContain(poisonedAccount.vaultReferenceId);
     expect(rendered).not.toContain('raw-provider-id-should-never-render');
     expect(rendered).not.toContain('raw-quota-should-never-render');
   });

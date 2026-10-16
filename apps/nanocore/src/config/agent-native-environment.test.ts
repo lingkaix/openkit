@@ -20,6 +20,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -130,7 +131,9 @@ describe('Agent public native environment administration', () => {
       })
     );
     f.admit();
-    expect(() => f.service.view({ kind: 'session', userId: 'foreign' }, f.fileId)).toThrow();
+    expect(() =>
+      f.service.view({ kind: 'session', userId: testEntityId('usr', 'foreign') }, f.fileId)
+    ).toThrow();
     expect(f.service.view(actor, f.fileId)).toMatchObject({
       defaults: values,
       desired: { values: { DEFAULT: 'image', EMPTY: '' } },
@@ -174,14 +177,14 @@ describe('Agent public native environment administration', () => {
     const thread = f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Visible',
-      'native-visible'
+      'th_00000000-0000-7000-8000-000000000002'
     );
     const hidden = f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private sibling',
-      'native-hidden',
+      'th_00000000-0000-7000-8000-000000000003',
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'foreign' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002' }
     );
     const now = '2026-10-01T00:00:00.000Z';
     f.db.sqlite
@@ -207,7 +210,7 @@ describe('Agent public native environment administration', () => {
     const environment = f.service.view(actor, f.fileId).desired;
     expect(() =>
       openNanoHostAgentSessionBinding(f.db, {
-        agentSessionId: 'as-wrong-image',
+        agentSessionId: 'as_00000000-0000-7000-8000-000000000004',
         agentSessionRuntimeBindingId: 'binding-wrong-image',
         agentSessionCompatibilityKey: 'c'.repeat(64),
         effectiveSetupGeneration: 1,
@@ -224,7 +227,7 @@ describe('Agent public native environment administration', () => {
     ).toThrow('measured Sandbox');
     for (const row of [thread, hidden])
       openNanoHostAgentSessionBinding(f.db, {
-        agentSessionId: `as-${row.id}`,
+        agentSessionId: testEntityId('as', `as_${row.id.slice(3)}`),
         agentSessionRuntimeBindingId: `binding-${row.id}`,
         agentSessionCompatibilityKey: 'c'.repeat(64),
         effectiveSetupGeneration: 1,
@@ -246,7 +249,7 @@ describe('Agent public native environment administration', () => {
     const body = {
       adapterId: 'pi',
       agentSessionCompatibilityKey: 'c'.repeat(64),
-      agentSessionId: `as-${thread.id}`,
+      agentSessionId: testEntityId('as', `as_${thread.id.slice(3)}`),
       agentSessionRuntimeBindingId: `binding-${thread.id}`,
       effectiveSetupGeneration: 1,
       resume: null,
@@ -361,7 +364,7 @@ describe('Agent public native environment administration', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).overrides).toEqual({ EMPTY: '' });
     expect(readFileSync(f.path, 'utf8')).not.toContain('inert request metadata');
-    viewer = { kind: 'session', userId: 'foreign' };
+    viewer = { kind: 'session', userId: testEntityId('usr', 'foreign') };
     expect(
       (
         await app.request(

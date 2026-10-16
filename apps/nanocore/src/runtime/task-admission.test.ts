@@ -19,6 +19,7 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
@@ -154,7 +155,7 @@ it.each([
             updatedAt: at,
           });
           store.createItem({
-            id: `it_user_${turnId}`,
+            id: testEntityId('it', `it_user_${turnId}`),
             workspaceId: ws.id,
             threadId: input.threadId,
             turnId,

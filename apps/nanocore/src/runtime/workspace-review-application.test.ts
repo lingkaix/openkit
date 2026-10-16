@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -18,6 +19,7 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -223,7 +225,7 @@ describe('workspace review application', () => {
     applyScopedMigrations(workspaceDb);
     try {
       const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
-        artifactId: `ar_filesystem_lineage_${suffix}`,
+        artifactId: testEntityId('ar', `ar_filesystem_lineage_${suffix}`),
         changeSet,
         patchPayload: null,
         review: {

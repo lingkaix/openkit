@@ -620,39 +620,55 @@ function AccountControls({
     onSuccess: onAccountsChanged,
   });
   const login = useMutation({
+    onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
       client.operations['provider-subscription.account-login-start']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
         mode: 'device_code',
       }),
-    onSuccess: (next) => {
-      queryClient.setQueryData(statusKey, next);
+    onSuccess: (next, _variables, origin) => {
+      // Account transitions remove this query; late responses cannot populate its replacement.
+      if (
+        origin &&
+        queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }) === origin
+      )
+        queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },
   });
   const cancel = useMutation({
+    onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
       client.operations['provider-subscription.account-login-cancel']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
         interactionId: live.interactionId as string,
       }),
-    onSuccess: (next) => {
-      queryClient.setQueryData(statusKey, next);
+    onSuccess: (next, _variables, origin) => {
+      if (
+        origin &&
+        queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }) === origin
+      )
+        queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },
   });
   const logout = useMutation({
+    onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
       client.operations['provider-subscription.account-logout']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
       }),
-    onSuccess: (next) => {
-      queryClient.setQueryData(statusKey, next);
+    onSuccess: (next, _variables, origin) => {
+      if (
+        origin &&
+        queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }) === origin
+      )
+        queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },

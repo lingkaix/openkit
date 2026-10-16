@@ -1,9 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
@@ -22,6 +20,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
@@ -95,7 +94,7 @@ function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> 
     workspaceId: workspace.id,
   });
   const reserved = reserveWorkerStorageAttachment(coreDb, {
-    agentSessionId: 'session_1',
+    agentSessionId: testEntityId('as', 'session_1'),
     authorizeContributor: () => true,
     expectedRevision: created.revision,
     layout: LAYOUT,
@@ -160,29 +159,29 @@ function addOtherMember(fixture: Fixture): void {
     .prepare(
       `INSERT INTO users (
         id, display_name, email, email_verified, created_at, updated_at, kind, status
-      ) VALUES ('user_other', 'Other Member', 'other@example.com', false, ?, ?, 'human', 'active')`
+      ) VALUES (?, 'Other Member', 'other@example.com', false, ?, ?, 'human', 'active')`
     )
-    .run(now, now);
+    .run(testEntityId('usr', 'user_other'), now, now);
   fixture.coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
         workspace_id, user_id, status, access_level, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+      ) VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
     )
-    .run(fixture.workspaceId, NOW, NOW, NOW);
+    .run(fixture.workspaceId, testEntityId('usr', 'user_other'), NOW, NOW, NOW);
 }
 
 /** Prepares a live shared attachment so another authorized caller can contribute during inspection. */
 function prepareConcurrentContributor(fixture: Fixture): () => void {
   addOtherMember(fixture);
   const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: 'session_status',
+    agentSessionId: testEntityId('as', 'session_status'),
     authorizeContributor: () => true,
     expectedRevision: fixture.binding.revision,
     layout: LAYOUT,
     purpose: 'work',
-    responsibleUserId: 'user_local',
+    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     runtimeTargetId: 'target_1',
     storageRef: fixture.binding.storageRef,
     threadId: fixture.threadId,
@@ -203,7 +202,7 @@ function prepareConcurrentContributor(fixture: Fixture): () => void {
       expectedRevision: fixture.binding.revision,
       layout: LAYOUT,
       purpose: 'work',
-      responsibleUserId: 'user_other',
+      responsibleUserId: testEntityId('usr', 'user_other'),
       storageRef: fixture.binding.storageRef,
       threadId: thread.id,
       workspaceId: fixture.workspaceId,
@@ -220,7 +219,7 @@ describe('Worker environment operations', () => {
       requestedAgentId: 'agent-codex',
       threadId: fixture.threadId,
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      turnId: 'turn-queued-storage-work',
+      turnId: testEntityId('tu', 'turn-queued-storage-work'),
       turnInput: 'Continue existing work.',
       workerStorageChoice: {
         expectedRevision: fixture.binding.revision,
@@ -347,7 +346,7 @@ describe('Worker environment operations', () => {
     const inaccessible = fixture.store.createThread(
       fixture.workspaceId,
       'Other private conversation',
-      'thread_private_other',
+      testEntityId('th', 'thread_private_other'),
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
@@ -382,7 +381,7 @@ describe('Worker environment operations', () => {
     const ownPrivate = fixture.store.createThread(
       fixture.workspaceId,
       'Own private conversation',
-      'thread_private_own',
+      testEntityId('th', 'thread_private_own'),
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001', visibility: 'private' }
     );
@@ -431,7 +430,7 @@ describe('Worker environment operations', () => {
     fixture.store.createThread(
       fixture.workspaceId,
       'Other private conversation',
-      'thread_private_source',
+      testEntityId('th', 'thread_private_source'),
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
@@ -672,7 +671,7 @@ describe('Worker environment operations', () => {
             kind: 'token',
             tokenId: 'token_admin_local',
             tokenScope: 'server-admin',
-            userId: 'user_local',
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
           };
 
     const result = await fixture.operations
@@ -708,7 +707,7 @@ describe('Worker environment operations', () => {
       inspectStorage: async ({ authorize, binding }) => {
         fixture.coreDb.sqlite
           .prepare(
-            `UPDATE workspace_members SET status = ?, removed_at = ? WHERE workspace_id = ? AND user_id = 'user_local'`
+            `UPDATE workspace_members SET status = ?, removed_at = ? WHERE workspace_id = ? AND user_id = 'usr_00000000-0000-7000-8000-000000000001'`
           )
           .run('removed', NOW, fixture.workspaceId);
         await Promise.resolve();
@@ -725,9 +724,11 @@ describe('Worker environment operations', () => {
       },
     });
     addOtherMember(fixture);
-    fixture.coreDb.sqlite
-      .prepare(`UPDATE workspace_registry SET owner_user_id = 'user_other' WHERE workspace_id = ?`)
-      .run(fixture.workspaceId);
+    expect(
+      fixture.coreDb.sqlite
+        .prepare('UPDATE workspace_registry SET owner_user_id = ? WHERE workspace_id = ?')
+        .run(testEntityId('usr', 'user_other'), fixture.workspaceId).changes
+    ).toBe(1);
 
     const status = await fixture.operations.status(
       { actor: fixture.actor, workspaceId: fixture.workspaceId },

@@ -17,6 +17,7 @@ import { withTurnModelCapture } from '../llm/model-capture.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 
 const databases: WorkspaceDb[] = [];
 const roots: string[] = [];
@@ -781,7 +782,7 @@ describe('internal Agent Gateway provider', () => {
           gatewayCapabilities: {},
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
       usageEndpoint: 'responses',
       onDispatch,
     });
@@ -873,7 +874,7 @@ describe('internal Agent Gateway provider', () => {
           gatewayCapabilities: {},
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
       usageEndpoint: 'responses',
     });
     const result = await runInternalAgentLoop(
@@ -922,7 +923,7 @@ describe('internal Agent Gateway provider', () => {
           gatewayCapabilities: {},
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
       usageEndpoint: 'responses',
     });
     const invalidCalls = [
@@ -997,7 +998,7 @@ describe('internal Agent Gateway provider', () => {
       resolveLogicalModel: () => logicalModel,
       dispatcher: { createResponses },
       resolveGatewayProvider,
-      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
       usageEndpoint: 'responses',
     });
     await expect(
@@ -1408,7 +1409,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
                 model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
               },
             }) as never,
-          promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+          promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
           usageEndpoint: 'responses',
         });
         const pending = provider(request()).then(
@@ -1467,7 +1468,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
             model: { tool_call: id === 'backup', limit: { context: 64_000, output: 8_000 } },
           },
         }) as never,
-      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
       usageEndpoint: 'responses',
     });
     await expect(provider(request())).resolves.toMatchObject({
@@ -1508,7 +1509,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
           gatewayCapabilities: { responses: 'native' },
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
       usageEndpoint: 'responses',
     });
     await expect(provider(request())).rejects.toThrow('Gateway returned invalid Tool arguments.');
@@ -1578,7 +1579,7 @@ describe('Round 2 internal-role exhaustion cause', () => {
               model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
             },
           }) as never,
-        promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+        promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
         usageEndpoint: 'responses',
       });
       const pending = provider(request()).catch((error: unknown) => error);
@@ -1828,7 +1829,10 @@ describe('internal rolling context Gateway boundary', () => {
       resolveLogicalModel,
       dispatcher: { createResponses },
       resolveGatewayProvider: resolveGatewayProvider as never,
-      promptCacheScope: { sessionId: 'rolling-context', workspaceId: 'workspace' },
+      promptCacheScope: {
+        sessionId: 'rolling-context',
+        workspaceId: testEntityId('ws', 'workspace'),
+      },
       usageEndpoint: 'responses',
     });
     return { provider, createResponses, resolveLogicalModel, resolveGatewayProvider };
@@ -2184,7 +2188,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
       expect.objectContaining({
         requestId: storedRequestId,
         capabilityCallId: calls[0]!.id,
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         threadId: f.capture.threadId,
         turnId: f.capture.turnId,
         quantity: 12,

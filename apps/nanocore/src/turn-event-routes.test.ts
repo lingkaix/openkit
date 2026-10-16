@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FsStore } from './lib/store.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 
 /**
  * Parses a complete SSE response body into JSON event payloads.
@@ -47,7 +48,7 @@ function createReplayTurn(
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const assistantItem = store.createItem({
-    id: `it_assistant_${turn.id}`,
+    id: testEntityId('it', `it_assistant_${turn.id}`),
     workspaceId,
     threadId: thread.id,
     turnId: turn.id,
@@ -192,7 +193,7 @@ describe('turn event routes', () => {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const assistantItem = store.createItem({
-      id: `it_assistant_${turn.id}`,
+      id: testEntityId('it', `it_assistant_${turn.id}`),
       workspaceId,
       threadId: thread.id,
       turnId: turn.id,
@@ -289,7 +290,7 @@ describe('turn event routes', () => {
     const threadId = thread.id;
     const turnId = turn.id;
     store.createItem({
-      id: `it_assistant_${turnId}`,
+      id: testEntityId('it', `it_assistant_${turnId}`),
       workspaceId,
       threadId,
       turnId,
@@ -308,7 +309,7 @@ describe('turn event routes', () => {
         turnId,
         data: {
           type: 'item-delta',
-          itemId: `it_assistant_${turnId}`,
+          itemId: testEntityId('it', `it_assistant_${turnId}`),
           itemType: 'assistant-message',
           deltaKind: 'text-delta',
           delta: `Overflow ${index}`,

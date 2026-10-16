@@ -9,6 +9,7 @@ import { openWorkspaceDb, verifyAndMigrateExistingScopedDatabases } from '../sto
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -506,7 +507,7 @@ describe('post-terminal write admission', () => {
     const turn = seedTurn(store, 'completed');
     const item = statusItem(
       turn,
-      `it_task_goal_goal_1_${turn.id}`,
+      testEntityId('it', `it_task_goal_goal_1_${turn.id}`),
       'Escalate because the work is a Goal.'
     );
     expect(store.createItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION).summary).toBe(

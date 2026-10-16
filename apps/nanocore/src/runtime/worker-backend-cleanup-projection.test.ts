@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   listWorkspaceRuntimeEvidence,
   recordWorkerBackendTeardownEvidence,
@@ -78,7 +79,7 @@ function cleanupInput(environmentPackage: ReturnType<typeof recordTestAgentEnvir
     environmentPackage,
     packageSnapshotId: 'aepsnap_turn_cleanup_projection_as_cleanup_projection',
     placement: 'local' as const,
-    threadId: 'thread_cleanup_projection',
+    threadId: testEntityId('th', 'thread_cleanup_projection'),
     turnId: 'tu_00000000-0000-762f-9b7d-284155b49ed8',
     workerImage: 'openkit/worker-codex:dev',
     workspaceHandoffState: 'complete' as const,

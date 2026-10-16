@@ -30,6 +30,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -113,8 +114,9 @@ function createBaseFixture(): BaseFixture {
   const administrationThread = store.createThread(
     privateWorkspace.id,
     'Administration',
-    'thread_administration',
-    'administration'
+    testEntityId('th', 'thread_administration'),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: ACTOR.userId }
   );
   return {
     administrationThreadId: administrationThread.id,
@@ -164,12 +166,12 @@ function candidatePair(
   declaration: WorkerEnvironmentAuthoredCandidateArtifact['declaration'] = DECLARATION
 ): ReadWorkerEnvironmentResolvedCandidate {
   const authoredCandidate = {
-    artifactId: 'artifact_authored_environment',
+    artifactId: testEntityId('ar', 'artifact_authored_environment'),
     artifactVersion: 1 as const,
     contentDigest: CANDIDATE_DIGEST,
   };
   const resolvedCandidate = {
-    artifactId: 'artifact_resolved_environment',
+    artifactId: testEntityId('ar', 'artifact_resolved_environment'),
     artifactVersion: 1 as const,
     contentDigest: `sha256:${'e'.repeat(64)}`,
   };
@@ -805,7 +807,7 @@ function createResidentFixture(): ResidentFixture {
     workspaceId: workspace.id,
   });
   const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: 'agent_session_activation',
+    agentSessionId: testEntityId('as', 'agent_session_activation'),
     authorizeContributor: () => true,
     expectedRevision: created.revision,
     layout: LAYOUT,
@@ -860,12 +862,12 @@ function createResidentFixture(): ResidentFixture {
          effective_setup_generation, native_handle_state, lifecycle_state,
          next_turn_sequence, cleanup_state, created_at, updated_at, image_digest
        ) VALUES (
-         'binding_activation', 'harness_activation', 'agent_session_activation',
+         'binding_activation', 'harness_activation', ?,
          ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?,
          'sha256:${'a'.repeat(64)}'
        )`
     )
-    .run(workspace.id, thread.id, NOW, NOW);
+    .run(testEntityId('as', 'agent_session_activation'), workspace.id, thread.id, NOW, NOW);
   return {
     ...fixture,
     bindingRevision: attached.revision,

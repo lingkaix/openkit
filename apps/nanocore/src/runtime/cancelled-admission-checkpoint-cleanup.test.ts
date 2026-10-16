@@ -21,6 +21,7 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -164,16 +165,16 @@ function writeStartFailureLease(
   });
   createSchedulerExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease_${input.turnId}`,
+    attemptId: testEntityId('attempt', `lease_${input.turnId}`),
     preparationInput: { admission: entry },
   });
   bindSchedulerExecutionAttemptSession(coreDb, {
-    attemptId: `lease_${input.turnId}`,
-    agentSessionId: `as_${input.turnId}`,
+    attemptId: testEntityId('attempt', `lease_${input.turnId}`),
+    agentSessionId: testEntityId('as', `as_${input.turnId}`),
   });
   // No preparation or backend operation occurred in this missing-Turn fixture.
   closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
-    attemptId: `lease_${input.turnId}`,
+    attemptId: testEntityId('attempt', `lease_${input.turnId}`),
     cause: 'turn-start-failed',
     noOutstandingEffects: true,
   });
@@ -428,7 +429,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
     },
   ])('preserves a checkpoint with $mutate', async ({ mutate, reason }) => {
     const fixture = createFixture();
-    const turnId = `turn_preserve_${mutate}`;
+    const turnId = testEntityId('tu', `turn_preserve_${mutate}`);
     const requestId = `0190f4c8-0000-7000-8000-0000000005${mutate.length}`;
     if (mutate !== 'provenance' && mutate !== 'live-lease' && mutate !== 'multiple-leases') {
       writeCancelledAdmission(fixture.coreDb, {
@@ -453,7 +454,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
            SET phase = 'open', terminal_cause = NULL, recovery_state = NULL
            WHERE attempt_id = ?`
         )
-        .run(`lease_${turnId}`);
+        .run(testEntityId('attempt', `lease_${turnId}`));
     }
     if (mutate === 'multiple-leases') {
       fixture.coreDb.sqlite
@@ -462,11 +463,14 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
              attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
              preparation_input_json, phase, disposition, terminal_cause, created_at, updated_at
            )
-           SELECT 'lease_extra_' || turn_id, queue_entry_id, backend_id, workspace_id, thread_id,
+           SELECT ?, queue_entry_id, backend_id, workspace_id, thread_id,
                   turn_id, preparation_input_json, phase, disposition, terminal_cause, created_at, updated_at
            FROM scheduler_execution_attempts WHERE attempt_id = ?`
         )
-        .run(`lease_${turnId}`);
+        .run(
+          testEntityId('attempt', `lease_extra_${turnId}`),
+          testEntityId('attempt', `lease_${turnId}`)
+        );
     }
     writeFailedCheckpoint(fixture.workspaceDb, {
       contextDigest: mutate === 'runtime' ? 'sha256:context' : null,
@@ -556,7 +560,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   it('keeps a matching expired receipt during dry-run and apply', async () => {
     for (const apply of [false, true]) {
       const fixture = createFixture();
-      const turnId = `turn_receipt_${apply}`;
+      const turnId = testEntityId('tu', `turn_receipt_${apply}`);
       const requestId = '0190f4c8-0000-7000-8000-000000000991';
       const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
       writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -631,7 +635,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     'refused',
   ] as const)('preserves an unrelated pending approval during %s', async (mode) => {
     const fixture = createFixture();
-    const turnId = `turn_history_${mode}`;
+    const turnId = testEntityId('tu', `turn_history_${mode}`);
     const requestId = '0190f4c8-0000-7000-8000-000000000994';
     const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
     if (mode !== 'refused') {
@@ -650,7 +654,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       completedAt: null,
       createdAt: timestamp,
       description: 'Independent history',
-      id: `it_req_${unrelated.id}`,
+      id: testEntityId('it', `it_req_${unrelated.id}`),
       kind: 'permission',
       status: 'in_progress',
       threadId: fixture.threadId,
@@ -995,7 +999,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const requestId = '0190f4c8-0000-7000-8000-000000001004';
     writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
     writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
-    const sessionId = `as_${identity.turnId}`;
+    const sessionId = testEntityId('as', `as_${identity.turnId}`);
     fixture.store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-09-22T00:00:00.000Z',
@@ -1093,7 +1097,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     ['missing Item history', 'missing-items'],
   ] as const)('blocks cleanup when unrelated published history has %s', async (_label, kind) => {
     const fixture = createFixture();
-    const identity = identityFor(fixture, `turn_corrupt_${kind}`);
+    const identity = identityFor(fixture, testEntityId('tu', `turn_corrupt_${kind}`));
     const requestId = '0190f4c8-0000-7000-8000-000000001099';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
     writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
