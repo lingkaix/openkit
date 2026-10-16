@@ -3,16 +3,21 @@ import {
   type ActorRef,
   type KnowledgeNotebookAdmission,
   KnowledgeNotebookAdmissionSchema,
+  type KnowledgeOwnerScope,
 } from '@openkit/protocol';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
-import type { FsStore } from '../lib/store.js';
+import {
+  recordServerAuditEvent,
+  recordUserAuditEvent,
+  recordWorkspaceAuditEvent,
+} from '../audit-events.js';
+import type { CommandRequestScope, FsStore } from '../lib/store.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument, updateOkfFrontmatter, validateOpenKitKnowledgeProfile } from './okf.js';
@@ -39,16 +44,18 @@ export interface NotebookUpdate {
 }
 
 /** Exact commit result reconstructed from immutable content and existing completion evidence. */
-export interface NotebookPublication {
+export interface NotebookPublication<
+  Scope extends KnowledgeOwnerScope = Extract<KnowledgeOwnerScope, { kind: 'workspace' }>,
+> {
   readonly outcome: 'published';
-  readonly ownerScope: { readonly kind: 'workspace'; readonly workspaceId: string };
+  readonly ownerScope: Scope;
   readonly baseRevision: string;
   readonly notebookRevision: string;
   readonly changedPageIds: readonly string[];
   readonly receiptRef: {
     readonly operation: NotebookPublicationOperation;
     readonly requestId: string;
-    readonly ownerScope: NotebookPublication['ownerScope'];
+    readonly ownerScope: Scope;
   };
 }
 
@@ -82,15 +89,47 @@ export interface NotebookPublicationDependencies {
   readonly revalidate: () => NotebookPublicationAdmission;
 }
 
+/** Trusted database owner; no page metadata or request path selects this value. */
+export type NotebookPublicationOwner =
+  | { readonly kind: 'workspace'; readonly workspaceDb: WorkspaceDb }
+  | { readonly kind: 'user'; readonly userDb: UserDb }
+  | { readonly kind: 'server'; readonly coreDb: CoreDb };
+
+/** One common publisher; native adapters own current scope, source and policy admission. */
+export type ScopedNotebookPublicationDependencies = Omit<
+  NotebookPublicationDependencies,
+  'workspaceDb'
+> & {
+  readonly owner: NotebookPublicationOwner;
+};
+
+/** Owner-free edit bytes; the trusted native adapter supplies the owner separately. */
+export type NotebookEdit = Omit<NotebookUpdate, 'workspaceId'>;
+
+/** Derives the exact durable owner from the existing database handle. */
+function notebookOwnerScope(owner: NotebookPublicationOwner): KnowledgeOwnerScope {
+  return owner.kind === 'workspace'
+    ? { kind: 'workspace', workspaceId: owner.workspaceDb.workspaceId }
+    : owner.kind === 'user'
+      ? { kind: 'user', userId: owner.userDb.userId }
+      : { kind: 'server' };
+}
+
 /** A direct human edit cannot inherit or invent a content-bound human Review label. */
 export function humanPageBytes(path: string, content: string, workspaceId: string): string {
+  return humanNotebookPageBytes(path, content, { kind: 'workspace', workspaceId });
+}
+
+/** Normalizes direct human attribution only after the exact native owner profile matches. */
+function humanNotebookPageBytes(
+  path: string,
+  content: string,
+  ownerScope: KnowledgeOwnerScope
+): string {
   const parsed = parseOkfDocument({ path, content });
   if (!parsed.ok) throw new NotebookError('invalid_request');
   if (parsed.document.reserved) return content;
-  const profile = validateOpenKitKnowledgeProfile(parsed.document, {
-    kind: 'workspace',
-    workspaceId,
-  });
+  const profile = validateOpenKitKnowledgeProfile(parsed.document, ownerScope);
   if (profile.conformance !== 'OpenKit-profile-valid') throw new NotebookError('invalid_request');
   return parsed.document.frontmatter.review_state === 'user-authored'
     ? content
@@ -106,11 +145,44 @@ export function readWorkspaceNotebookAdmissions(
   request: Pick<NotebookUpdate, 'workspaceId' | 'requestId'>,
   action: string
 ): KnowledgeNotebookAdmission[] {
-  const rows = dependencies.workspaceDb.sqlite
+  if (dependencies.workspaceDb.workspaceId !== request.workspaceId)
+    throw new NotebookError('recovery_required');
+  return readNotebookAdmissions(
+    {
+      ...dependencies,
+      owner: { kind: 'workspace', workspaceDb: dependencies.workspaceDb },
+    },
+    request,
+    action
+  );
+}
+
+/** Reads only one exact owner's existing admission/completion Audit rows. */
+function readNotebookAdmissions(
+  dependencies: Pick<
+    ScopedNotebookPublicationDependencies,
+    'owner' | 'producer' | 'command' | 'reviewedCandidate'
+  >,
+  request: Pick<NotebookEdit, 'requestId'>,
+  action: string
+): KnowledgeNotebookAdmission[] {
+  const ownerScope = notebookOwnerScope(dependencies.owner);
+  const db =
+    dependencies.owner.kind === 'workspace'
+      ? dependencies.owner.workspaceDb
+      : dependencies.owner.kind === 'user'
+        ? dependencies.owner.userDb
+        : dependencies.owner.coreDb;
+  const rows = db.sqlite
     .prepare(
-      'SELECT notebook_admission_json AS admission FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ? AND outcome = ?'
+      'SELECT notebook_admission_json AS admission FROM audit_events WHERE workspace_id IS ? AND request_id = ? AND action = ? AND outcome = ?'
     )
-    .all(request.workspaceId, request.requestId, action, 'succeeded') as {
+    .all(
+      ownerScope.kind === 'workspace' ? ownerScope.workspaceId : null,
+      request.requestId,
+      action,
+      'succeeded'
+    ) as {
     admission: string | null;
   }[];
   return rows
@@ -118,8 +190,7 @@ export function readWorkspaceNotebookAdmissions(
       try {
         const parsed = KnowledgeNotebookAdmissionSchema.parse(JSON.parse(admission ?? 'null'));
         if (
-          parsed.ownerScope.kind !== 'workspace' ||
-          parsed.ownerScope.workspaceId !== request.workspaceId ||
+          !isDeepStrictEqual(parsed.ownerScope, ownerScope) ||
           parsed.requestId !== request.requestId
         )
           throw new NotebookError('recovery_required');
@@ -149,11 +220,26 @@ export function readWorkspaceNotebookAdmissionRevision(
   request: NotebookUpdate,
   evidence: KnowledgeNotebookAdmission
 ) {
+  return readNotebookAdmissionRevision(dependencies, request, evidence, {
+    kind: 'workspace',
+    workspaceId: request.workspaceId,
+  });
+}
+
+/** Binds existing Audit evidence to the exact immutable candidate and trusted owner. */
+function readNotebookAdmissionRevision(
+  dependencies: Pick<
+    NotebookPublicationDependencies,
+    'notebook' | 'producer' | 'command' | 'reviewedCandidate'
+  >,
+  request: NotebookEdit,
+  evidence: KnowledgeNotebookAdmission,
+  ownerScope: KnowledgeOwnerScope
+) {
   const candidate = dependencies.notebook.readRevision(evidence.candidateRevision);
   const inputDigest = commandInputHash(dependencies.command?.input ?? request);
   if (
-    evidence.ownerScope.kind !== 'workspace' ||
-    evidence.ownerScope.workspaceId !== request.workspaceId ||
+    !isDeepStrictEqual(evidence.ownerScope, ownerScope) ||
     evidence.requestId !== request.requestId ||
     evidence.inputDigest !== inputDigest ||
     candidate.parentRevision !== request.baseRevision ||
@@ -186,18 +272,42 @@ export async function publishWorkspaceNotebook(
   if (dependencies.workspaceDb.workspaceId !== request.workspaceId)
     throw new NotebookError('recovery_required');
   const ownerScope = { kind: 'workspace', workspaceId: request.workspaceId } as const;
+  const publication = await publishNotebook(
+    {
+      ...dependencies,
+      owner: { kind: 'workspace', workspaceDb: dependencies.workspaceDb },
+    },
+    request
+  );
+  return { ...publication, ownerScope, receiptRef: { ...publication.receiptRef, ownerScope } };
+}
+
+/** Publishes through the one existing Git CAS, Audit and command receipt sequence for the trusted database owner. */
+export async function publishNotebook(
+  dependencies: ScopedNotebookPublicationDependencies,
+  request: NotebookEdit
+): Promise<NotebookPublication<KnowledgeOwnerScope>> {
+  const ownerScope = notebookOwnerScope(dependencies.owner);
   const operation = dependencies.command?.name ?? OPERATION;
   const commandInput = dependencies.command?.input ?? request;
   const inputDigest = commandInputHash(commandInput);
   const actor =
     dependencies.actor ?? (dependencies.producer.kind === 'user' ? dependencies.producer : null);
   if (!actor) throw new NotebookError('invalid_request');
-  const scope = { workspaceId: request.workspaceId, actorId: actor.id };
+  const scope: CommandRequestScope =
+    ownerScope.kind === 'workspace'
+      ? { workspaceId: ownerScope.workspaceId, actorId: actor.id }
+      : ownerScope.kind === 'user'
+        ? { userId: ownerScope.userId, actorId: actor.id }
+        : { coreId: 'server', actorId: actor.id };
   dependencies.revalidate();
 
-  const project = (revision: string, evidence: KnowledgeNotebookAdmission): NotebookPublication => {
+  const project = (
+    revision: string,
+    evidence: KnowledgeNotebookAdmission
+  ): NotebookPublication<KnowledgeOwnerScope> => {
     if (revision !== evidence.candidateRevision) throw new NotebookError('recovery_required');
-    const candidate = readWorkspaceNotebookAdmissionRevision(dependencies, request, evidence);
+    const candidate = readNotebookAdmissionRevision(dependencies, request, evidence, ownerScope);
     // A saved unpublished candidate is not a completed publication.
     dependencies.notebook.history({ revision, limit: 1 });
     const base = dependencies.notebook.readRevision(request.baseRevision);
@@ -208,7 +318,7 @@ export async function publishWorkspaceNotebook(
         expected[path] =
           dependencies.reviewedCandidate || base.files[path] === content
             ? content
-            : humanPageBytes(path, content, request.workspaceId);
+            : humanNotebookPageBytes(path, content, ownerScope);
     }
     if (
       Object.keys(expected).length !== Object.keys(candidate.files).length ||
@@ -233,7 +343,14 @@ export async function publishWorkspaceNotebook(
 
   return runIdempotentCommand({
     store: dependencies.store,
-    workspaceDb: dependencies.workspaceDb,
+    ...(dependencies.owner.kind === 'workspace'
+      ? { workspaceDb: dependencies.owner.workspaceDb }
+      : {
+          receiptDb:
+            dependencies.owner.kind === 'user'
+              ? dependencies.owner.userDb
+              : dependencies.owner.coreDb,
+        }),
     inflightCommands: dependencies.inflightCommands,
     command: operation,
     requestId: request.requestId,
@@ -243,12 +360,12 @@ export async function publishWorkspaceNotebook(
     responseId: (result) => result.notebookRevision,
     replay: (receipt) => {
       dependencies.revalidate();
-      const admitted = readWorkspaceNotebookAdmissions(
+      const admitted = readNotebookAdmissions(
         dependencies,
         request,
         'knowledge.notebook.admit'
       ).find((event) => event.candidateRevision === receipt.response.id);
-      const completed = readWorkspaceNotebookAdmissions(dependencies, request, operation).find(
+      const completed = readNotebookAdmissions(dependencies, request, operation).find(
         (event) => event.candidateRevision === receipt.response.id
       );
       if (
@@ -261,13 +378,13 @@ export async function publishWorkspaceNotebook(
       return project(receipt.response.id, admitted);
     },
     execute: () => {
-      for (const prior of readWorkspaceNotebookAdmissions(
+      for (const prior of readNotebookAdmissions(
         dependencies,
         request,
         'knowledge.notebook.admit'
       )) {
         if (prior.inputDigest !== inputDigest) throw new IdempotencyKeyConflictError();
-        readWorkspaceNotebookAdmissionRevision(dependencies, request, prior);
+        readNotebookAdmissionRevision(dependencies, request, prior, ownerScope);
         let published = false;
         try {
           dependencies.notebook.history({ revision: prior.candidateRevision, limit: 1 });
@@ -292,7 +409,7 @@ export async function publishWorkspaceNotebook(
           files[path] =
             dependencies.reviewedCandidate || base.files[path] === content
               ? content
-              : humanPageBytes(path, content, request.workspaceId);
+              : humanNotebookPageBytes(path, content, ownerScope);
       }
       const check = (facts: NotebookPublicationAdmission) =>
         validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
@@ -361,19 +478,27 @@ export async function publishWorkspaceNotebook(
         authority,
         sourceReferences: [...validated.sourceReferences],
       };
-      const audit = (action: string) =>
-        recordWorkspaceAuditEvent({
-          workspaceDb: dependencies.workspaceDb,
-          workspaceId: request.workspaceId,
+      const audit = (action: string): void => {
+        const event = {
           requestId: request.requestId,
           actor,
-          category: 'knowledge',
+          category: 'knowledge' as const,
           action,
-          outcome: 'succeeded',
+          outcome: 'succeeded' as const,
           resource: `knowledge-notebook:${candidateRevision}`,
           notebookAdmission: evidence,
           summary: 'Notebook publication evidence retained.',
-        });
+        };
+        if (dependencies.owner.kind === 'workspace')
+          recordWorkspaceAuditEvent({
+            ...event,
+            workspaceDb: dependencies.owner.workspaceDb,
+            workspaceId: dependencies.owner.workspaceDb.workspaceId,
+          });
+        else if (dependencies.owner.kind === 'user')
+          recordUserAuditEvent({ ...event, userDb: dependencies.owner.userDb });
+        else recordServerAuditEvent({ ...event, coreDb: dependencies.owner.coreDb });
+      };
       if (dependencies.reviewedCandidate) {
         const retained = dependencies.notebook.retainedCandidate(
           dependencies.reviewedCandidate.proposalId
@@ -384,7 +509,7 @@ export async function publishWorkspaceNotebook(
         )
           throw new NotebookError('conflict');
         // Verify the retained candidate before recording its human decision or advancing the ref.
-        readWorkspaceNotebookAdmissionRevision(dependencies, request, evidence);
+        readNotebookAdmissionRevision(dependencies, request, evidence, ownerScope);
         const retainedFiles = dependencies.notebook.readRevision(candidateRevision).files;
         if (
           Object.keys(retainedFiles).length !== Object.keys(files).length ||

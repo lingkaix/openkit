@@ -26,7 +26,7 @@ export type ScopedNotebookTarget =
   | { readonly kind: 'server' };
 
 /** Trusted native authentication and canonical Core authority, never notebook metadata or model arguments. */
-interface ScopedNotebookContext {
+export interface ScopedNotebookContext {
   readonly coreDb: CoreDb;
   readonly actor: Actor | undefined;
   readonly target: ScopedNotebookTarget;
