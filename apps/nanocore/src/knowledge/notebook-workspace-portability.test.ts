@@ -74,7 +74,7 @@ function source() {
       { kind: 'workspace', workspaceId: workspace.id }
     ),
     updates: { custom: { preserve: ['one', 'two'] } },
-  });
+  }).replace(/^openkit_entry_(?:id|kind):.*\n/gm, '');
   const baseRevision = notebook.publishedRevision();
   const revision = notebook.prepare({
     baseRevision,
@@ -226,6 +226,9 @@ describe('canonical Notebook Workspace portability', () => {
     });
     const original = parseOkfDocument({ path: 'notes/portable.md', content: f.content });
     expect(page.ok && original.ok).toBe(true);
+    expect(original.document?.frontmatter).not.toHaveProperty('openkit_entry_id');
+    expect(original.document?.frontmatter).not.toHaveProperty('openkit_entry_kind');
+    expect(page.document?.conceptId).toBe('notes/portable');
     expect(page.document?.body).toBe(original.document?.body);
     expect(page.document?.frontmatter).toMatchObject({
       scope: { kind: 'workspace', workspaceId: imported.workspace.id },

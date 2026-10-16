@@ -3901,12 +3901,16 @@ function assertPortableKnowledgePagesMatch(
 
   for (const [path, content] of pages) {
     const parsed = parseOkfDocument({ path, content });
-    const entryId = parsed.document
-      ? stringFrontmatterField(parsed.document, 'openkit_entry_id')
-      : null;
-    if (!entryId) {
-      continue;
-    }
+    if (!parsed.ok) throw new Error('Portable Knowledge Page is invalid.');
+    if (parsed.document.reserved) continue;
+    if (
+      Object.hasOwn(parsed.document.frontmatter, 'openkit_entry_id') &&
+      typeof parsed.document.frontmatter.openkit_entry_id !== 'string'
+    )
+      throw new Error('Portable Knowledge Page has an invalid managed identity.');
+    const entryId =
+      stringFrontmatterField(parsed.document, 'openkit_entry_id') ??
+      path.slice('knowledge/pages/'.length, -3);
     if (matchedIds.has(entryId) || path !== `knowledge/pages/${entryId}.md`) {
       throw new Error(`Portable Knowledge Page identity is ambiguous: ${entryId}`);
     }
