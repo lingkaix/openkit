@@ -26,6 +26,11 @@ before(async () => {
     new URL('../../skills/openkit-secrets.mjs', import.meta.url),
     path.join(retainedCheckout, 'skills', 'openkit-secrets.mjs')
   );
+  await fs.mkdir(path.join(retainedCheckout, 'containers'), { mode: 0o700 });
+  await fs.copyFile(
+    new URL('../../containers/images.json', import.meta.url),
+    path.join(retainedCheckout, 'containers', 'images.json')
+  );
   await fs.symlink(
     await fs.realpath(new URL('../../node_modules', import.meta.url)),
     path.join(retainedCheckout, 'node_modules'),
