@@ -27,8 +27,10 @@ import { readWorkObservations } from '../storage/work-observations.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { assembleAssistantCommandRun, runAssistantCommand } from './assistant-command-run.js';
 import {
+  AssistantSkillReadInputSchema,
   AssistantSkillResourceError,
   assembleAssistantSkillResources,
+  createAssistantSkillReadTool,
 } from './assistant-skill-resources.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import type { AgentMessage, AgentTool } from './internal-agent-loop.js';
@@ -121,6 +123,7 @@ async function fixture(selected = true, description?: string) {
     coreDb,
     store,
     actor,
+    requestId,
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
@@ -161,11 +164,10 @@ async function fixture(selected = true, description?: string) {
     },
     { role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] },
   ];
-  // P12 may wrap invocation, but the exact retained Skill closure must still execute.
-  const execute = vi.fn((...args: Parameters<AgentTool['execute']>) =>
-    resources.tool.execute(...args)
-  );
-  const tools: AgentTool[] = [{ ...resources.tool, execute }];
+  // This supplied fake invoker tests P05 projection and retained reads, not P12 native invocation.
+  const skillTool = testSkillTool(resources, scope);
+  const execute = vi.fn((...args: Parameters<AgentTool['execute']>) => skillTool.execute(...args));
+  const tools: AgentTool[] = [{ ...skillTool, execute }];
   const assembly = await assembleAssistantCommandRun({ resources, messages, tools });
   const createResponses = vi.fn<Dispatch>().mockResolvedValue(response());
   const gateway: RunInput['gateway'] = {
@@ -199,6 +201,7 @@ async function fixture(selected = true, description?: string) {
     turn,
     imported,
     resources,
+    skillTool,
     messages,
     tools,
     execute,
@@ -209,6 +212,25 @@ async function fixture(selected = true, description?: string) {
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+/** Local fake invocation for supplier tests; P12 must separately prove its real native binding. */
+function testSkillTool(
+  resources: Awaited<ReturnType<typeof assembleAssistantSkillResources>>,
+  scope: { actor: Actor; workspaceId: string; threadId: string; turnId: string; requestId: string }
+) {
+  return createAssistantSkillReadTool(async (input, execution) =>
+    resources.read(AssistantSkillReadInputSchema.parse(input), {
+      actor: scope.actor,
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      requestId: scope.requestId,
+      kind: 'assistant-command',
+      entryScope: 'conversation.submit',
+      signal: execution.signal,
+    })
+  );
+}
 
 /** Reads canonical evidence, which must exist before the external model dispatcher is reached. */
 function environments(f: Fixture) {
@@ -277,7 +299,7 @@ describe('ordinary Assistant command assembly', () => {
     const f = await fixture(true, attack);
     const suppliedMessages = structuredClone(f.messages);
     f.messages.push({ role: 'user', content: [{ type: 'text', text: 'Late mutation.' }] });
-    f.tools.push({ ...f.resources.tool, name: 'unadmitted.tool' });
+    f.tools.push({ ...f.skillTool, name: 'unadmitted.tool' });
 
     expect(f.assembly.systemPrompt).toBe(assembleBuiltInSystemPrompt('quick-chat'));
     expect(f.assembly.systemPrompt).not.toContain('Selected metadata name');
@@ -351,7 +373,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
             {
               name: 'skill.read',
               inputSchemaDigest: createHash('sha256')
-                .update(JSON.stringify(f.resources.tool.inputSchema))
+                .update(JSON.stringify(f.skillTool.inputSchema))
                 .digest('hex'),
             },
           ],
@@ -460,7 +482,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const f = await fixture();
     f.createResponses.mockResolvedValueOnce(skillCall(f));
     f.execute.mockImplementationOnce(async (...args) => {
-      const result = await f.resources.tool.execute(...args);
+      const result = await f.skillTool.execute(...args);
       expect(result.isError).not.toBe(true);
       if (condition === 'downgraded')
         f.coreDb.sqlite
@@ -643,7 +665,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const assembly = await assembleAssistantCommandRun({
       resources,
       messages: f.messages,
-      tools: [resources.tool],
+      tools: [testSkillTool(resources, f)],
     });
     f.createResponses.mockClear();
 

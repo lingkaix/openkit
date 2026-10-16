@@ -62,7 +62,7 @@ export interface AssistantCommandRunInput {
 /**
  * Freezes one ordinary command's canonical window, Tool closures and selected Skill evidence.
  *
- * The entry owns admission and Operation Invocation wrappers. Its fixed Tool array must include the prepared skill.read closure, directly or through its trusted invocation wrapper. Resource metadata is untrusted user context, separate from the built-in System Prompt and canonical admission tuple.
+ * The entry owns admission and native Operation Invocation. Its fixed Tool array must include the definition-derived skill.read projection bound to native invocation of the original retained handler. Resource metadata is untrusted user context, separate from the built-in System Prompt and canonical admission tuple.
  *
  * @param input Original selected resources, authorized canonical messages and complete ordinary Tools.
  * @returns Fixed transient assembly for the admitted Turn, with no durable lifecycle of its own.
