@@ -255,9 +255,10 @@ function createFixture() {
 
 let fixture: ReturnType<typeof createFixture>;
 
+// Real database and Workspace initialization can exceed the default hook bound on shared CI hosts.
 beforeEach(() => {
   fixture = createFixture();
-});
+}, 30_000);
 
 afterEach(() => {
   fixture.coreDb.sqlite.close();
