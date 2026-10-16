@@ -715,14 +715,20 @@ describe('Skill catalog lifecycle', () => {
   it('requires complete external retention admission before purging only unreferenced bytes', () => {
     const f = fixture();
     try {
+      let admitted = false;
       const input = {
         ...f,
         digest: f.imported.version.digest,
         entryId: f.imported.version.entryId,
         expectedRevision: f.imported.catalog.revision,
         retainedReferences: null,
+        admitDeletion: () => {
+          expect(existsSync(skillSnapshotPath(f.dataRoot, f.workspaceId, f.imported.version.entryId, f.imported.version.digest))).toBe(true);
+          admitted = true;
+        },
       };
       expect(() => purgeWorkspaceSkillVersion(input)).toThrow(CatalogRetentionError);
+      expect(admitted).toBe(false);
       try {
         purgeWorkspaceSkillVersion(input);
       } catch (error) {
@@ -746,11 +752,13 @@ describe('Skill catalog lifecycle', () => {
           retainedReferences: ['aep:fixture_retained'],
         })
       ).toThrow(CatalogRetentionError);
+      expect(admitted).toBe(false);
       const purged = purgeWorkspaceSkillVersion({
         ...input,
         expectedRevision: second.catalog.revision,
         retainedReferences: [],
       });
+      expect(admitted).toBe(true);
       expect(readWorkspaceSkillVersion(input)).toEqual({
         ...f.imported.version,
         contentState: 'purged',

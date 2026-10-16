@@ -214,7 +214,8 @@ export function createSkillManagementCommands(
           const summary = `Skill command from ${previous ?? 'none'} to ${version ?? 'none'}.`;
           const resource = `skill:${input.skillId}${version ? `@${version}` : ''}`;
           const base = { dataRoot: root(), workspaceId: input.workspaceId, entryId: input.skillId, expectedRevision: input.expectedRevision };
-          audit(workspaceDb, operation, input, context, resource, catalog.revision, summary, true);
+          const admit = () => audit(workspaceDb, operation, input, context, resource, catalog.revision, summary, true);
+          if (operation !== 'catalog.skill-purge') admit();
           let next: ResourceCatalogDocument;
           if (operation === 'catalog.skill-select' && 'expectedCurrentDigest' in input) {
             next = selectWorkspaceSkillDefault({ ...base, digest: input.digest, expectedCurrentDigest: input.expectedCurrentDigest });
@@ -224,7 +225,7 @@ export function createSkillManagementCommands(
             next = removeWorkspaceSkill(base);
           } else if (operation === 'catalog.skill-purge' && 'digest' in input && input.digest !== null) {
             const selected = { workspaceId: input.workspaceId, entryId: input.skillId, digest: input.digest };
-            next = purgeWorkspaceSkillVersion({ ...base, digest: input.digest, retainedReferences: hooks.retainedSkillReferences?.(selected) ?? null });
+            next = purgeWorkspaceSkillVersion({ ...base, digest: input.digest, retainedReferences: hooks.retainedSkillReferences?.(selected) ?? null, admitDeletion: admit });
           } else {
             throw new CatalogIntegrityError('Skill command input does not match its operation.');
           }

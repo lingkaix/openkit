@@ -614,6 +614,8 @@ export function removeWorkspaceSkill(input: {
 
 /** Purges only after complete reference admission by the existing external retention owners. */
 export function purgeWorkspaceSkillVersion(input: {
+  /** Persists required native deletion admission after reference checks and before any deletion. */
+  readonly admitDeletion?: () => void;
   readonly dataRoot: string;
   readonly digest: string;
   readonly entryId: string;
@@ -660,6 +662,7 @@ export function purgeWorkspaceSkillVersion(input: {
       references.push(`plugin_version:${version.entryId}/${version.digest}`);
   }
   if (references.length > 0) throw new CatalogRetentionError(references);
+  input.admitDeletion?.();
   const path = skillSnapshotPath(input.dataRoot, input.workspaceId, input.entryId, input.digest);
   try {
     ensureCanonicalDirectory(dirname(path), 0o777);
