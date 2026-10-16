@@ -9,7 +9,9 @@ import { FsStore } from '../lib/store.js';
 import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { allocateRetrievalTraceId, readRetrievalTrace } from '../storage/retrieval-traces.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { readWorkspacePortableFileState } from '../storage/workspace-portable-file-state.js';
 import {
@@ -171,6 +173,72 @@ describe('canonical Notebook Workspace portability', () => {
         repositoryPath: join(f.root, 'knowledge', 'notebook.git'),
       }).publishedRevision()
     ).toBe(f.revision);
+  });
+
+  it('remints a retained current-revision Knowledge selection into the imported Notebook', async () => {
+    const f = source();
+    const thread = f.store.createThread(f.workspace.id, 'Portable trace', undefined, 'conversation', {
+      visibility: 'workspace',
+    });
+    const selected = await retrieveWorkspaceKnowledge({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspace.id,
+      caller: 'app-api',
+      query: 'Exact portable note',
+      limit: 1,
+      pinnedReferences: [{ scopeId: `page/workspace/${f.workspace.id}`, objectId: 'notes/portable' }],
+      access: {
+        store: f.store,
+        coreDb: f.coreDb,
+        actor: { kind: 'user', id: LOCAL_USER_ID },
+        requestActor: { kind: 'local', userId: LOCAL_USER_ID },
+        outputThreadId: thread.id,
+      },
+      traceId: allocateRetrievalTraceId(),
+    });
+    expect(selected.selected).toEqual([
+      expect.objectContaining({ revision: f.revision, contentDigest: `sha256:${createHash('sha256').update(f.content).digest('hex')}` }),
+    ]);
+    expect(selected.retrievalTraceRef).toBeDefined();
+    const exported = createVerifiedWorkspaceExport({
+      authorityUserId: LOCAL_USER_ID,
+      authorityActor: { kind: 'user', id: LOCAL_USER_ID },
+      requestActor: { kind: 'local', userId: LOCAL_USER_ID },
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(f.dataRoot, workspaceId),
+      store: f.store,
+      workspaceId: f.workspace.id,
+    });
+    const target = deployment();
+    const imported = importVerifiedWorkspace({
+      authorityUserId: LOCAL_USER_ID,
+      coreDb: target.coreDb,
+      dataRoot: target.dataRoot,
+      requestId: randomUUID(),
+      store: target.store,
+      verified: exported.verified,
+    });
+    const importedThread = target.store.listThreads(imported.workspace.id).find((entry) => entry.name === thread.name);
+    expect(importedThread).toBeDefined();
+    const targetRoot = join(target.dataRoot, 'workspaces', imported.workspace.id);
+    const notebook = new KnowledgeNotebook({ repositoryPath: join(targetRoot, 'knowledge', 'notebook.git') });
+    const revision = notebook.publishedRevision();
+    const page = notebook.readRevision(revision).files['notes/portable.md']!;
+    const trace = readRetrievalTrace(targetRoot, {
+      scopeId: `retrieval-trace/thread/${imported.workspace.id}/${importedThread!.id}`,
+      objectId: selected.retrievalTraceRef!.objectId,
+    });
+    expect(trace).toMatchObject({
+      notebookRevision: revision,
+      selected: [{
+        reference: { scopeId: `page/workspace/${imported.workspace.id}`, objectId: 'notes/portable' },
+        revision,
+        contentDigest: `sha256:${createHash('sha256').update(page).digest('hex')}`,
+      }],
+    });
+    expect(page).toContain('Exact Unicode body: 漢字.');
+    expect(exported.verified.manifest.knowledgeNotebookRevision).toBe(f.revision);
   });
 
   it('retains published and unpublished Git content and existing Audit in the ordinary same-deployment backup', async () => {
