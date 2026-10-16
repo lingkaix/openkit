@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -19,6 +19,7 @@ import { loadWorkspaceResourceCatalog, readWorkspaceSkillSnapshot } from './reso
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) close();
 });
 const tree = [
@@ -271,5 +272,72 @@ describe('native Artifact-origin Skill candidates', () => {
     const replay = await call(f, 'catalog.skill-candidate-submit', f.input);
     expect(replay.status, await replay.clone().text()).toBe(401);
     expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(before);
+  });
+
+  it.each([
+    'rejected',
+    'withdrawn',
+  ] as const)('records a real human %s decision without activation', async (disposition) => {
+    const f = fixture();
+    const response = await call(f, 'catalog.skill-candidate-submit', f.input);
+    expect(response.status, await response.clone().text()).toBe(201);
+    const submitted = await response.json();
+    const input = {
+      workspaceId: f.workspace.id,
+      candidateId: submitted.candidate.id,
+      expectedRevision: submitted.revision,
+      requestId: randomUUID(),
+      ...(disposition === 'rejected' ? { decision: disposition, expectedCurrentDigest: null } : {}),
+    };
+    const operation =
+      disposition === 'rejected'
+        ? 'catalog.skill-candidate-decide'
+        : 'catalog.skill-candidate-withdraw';
+    const decision = await call(f, operation, input);
+    expect(decision.status, await decision.clone().text()).toBe(200);
+    const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+    expect(catalog.skills.candidates[0]).toMatchObject({
+      disposition,
+      decision: { actor: { kind: 'user', id: 'user_local' } },
+    });
+    expect(catalog.skills.entries[0]?.currentDigest).toBeNull();
+    expect(catalog.skills.pins).toEqual([]);
+    expect((await call(f, operation, input)).status).toBe(200);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(
+      catalog.revision
+    );
+  });
+
+  it.each([
+    'both',
+    'neither',
+  ] as const)('refuses %s candidate input alternatives before candidate effects', async (choice) => {
+    const f = fixture();
+    const { artifact: _artifact, ...base } = f.input;
+    const response = await call(
+      f,
+      'catalog.skill-candidate-submit',
+      choice === 'both' ? { ...f.input, tree } : base
+    );
+    expect(response.status, await response.clone().text()).toBe(400);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(0);
+  });
+
+  it('reports an interrupted receipt without replaying a completed catalog effect', async () => {
+    const f = fixture();
+    vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(() => {
+      throw new Error('Synthetic receipt failure.');
+    });
+    const response = await call(f, 'catalog.skill-candidate-submit', f.input);
+    expect(response.status, await response.clone().text()).toBe(409);
+    expect((await response.json()).code).toBe('recovery_required');
+    const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+    expect(catalog.skills.candidates).toHaveLength(1);
+    expect(catalog.skills.entries[0]?.currentDigest).toBeNull();
+    const retry = await call(f, 'catalog.skill-candidate-submit', f.input);
+    expect(retry.status, await retry.clone().text()).toBe(409);
+    expect((await retry.json()).code).toBe('recovery_required');
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(catalog);
+    expect(f.store.listCommandRequests()).toEqual([]);
   });
 });

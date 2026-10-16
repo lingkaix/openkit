@@ -13,7 +13,10 @@ import { createNanoHostOperationImplementations } from './auth/nanohost-operatio
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { createCallerOperationImplementations } from './caller-operation-implementations.js';
-import { createCatalogOperationImplementations } from './catalog/catalog-operations.js';
+import {
+  createCatalogOperationImplementations,
+  prepareCatalogSkillDecision,
+} from './catalog/catalog-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
@@ -159,7 +162,10 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),
     createAgentOperationImplementations(dependencies),
     createWorkerOperationImplementations(dependencies),
-    createCatalogOperationImplementations(dependencies),
+    createCatalogOperationImplementations(dependencies, {
+      prepareSkillDecision: (input, context) =>
+        prepareCatalogSkillDecision(dependencies, input, context),
+    }),
     createVaultOperationImplementations(dependencies),
     createAppSearchOperationImplementations(dependencies),
     createEnvironmentOperationImplementations(dependencies),
