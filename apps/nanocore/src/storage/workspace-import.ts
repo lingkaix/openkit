@@ -60,6 +60,7 @@ import {
   AuditEventIdSchema,
   AuditEventSchema,
   allocateEntityId,
+  deriveEntityId,
   CapabilityCallIdSchema,
   CapabilityCallSchema,
   type EntityKind,
@@ -135,6 +136,7 @@ import {
 import {
   RECURRING_PORTABLE_FEATURE,
   readRecurringPortableFiles,
+  remapRecurringPortableHistory,
 } from './recurring-portable-history.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
@@ -654,6 +656,12 @@ export interface WorkspaceImportSnapshot {
   lightAppRecords: unknown[];
   /** Portable Generative UI presentation rows. */
   generativePresentations: Record<string, unknown>[];
+  /** Inert recurring definition ids allocated once per source definition in this import. */
+  recurringScheduleIds: Map<string, string>;
+  /** Inert occurrence ids derived under the imported definition and unchanged nominal instant. */
+  recurringOccurrenceIds: Map<string, string>;
+  /** Inert expired-range ids allocated once per source range in this import. */
+  recurringRangeIds: Map<string, string>;
   /** Imported presentation ids keyed by source id. */
   presentationIds: Map<string, string>;
   /** Imported thread ids keyed by source id. */
@@ -921,8 +929,12 @@ export function readWorkspaceImportSnapshot(
     completeRuntimeOriginPackages: new Set(),
     knowledgeIds: new Set(),
     presentationIds: new Map(),
+    recurringScheduleIds: new Map(),
+    recurringOccurrenceIds: new Map(),
+    recurringRangeIds: new Map(),
   };
   const canonical = readCanonicalImportState(context);
+  let recurringHistory: string | null = null;
   if (input.verified.manifest.requiredFeatures.includes(RECURRING_PORTABLE_FEATURE)) {
     const recurring = readRecurringPortableFiles(context.files, {
       workspaceId: report.exportedWorkspaceId,
@@ -934,14 +946,27 @@ export function readWorkspaceImportSnapshot(
         })
       ),
     });
-    // P14 owns import allocation. Do not drop history or create a private identifier formatter.
-    // Replace this bounded refusal with the shared allocate/derive API when P14 lands.
     if (
       recurring.schedules.length ||
       recurring.occurrences.length ||
       recurring.expiredRanges.length
-    )
-      throw new Error('Recurring import requires approved shared identity allocation.');
+    ) {
+      context.recurringScheduleIds = allocateImportedEntityIds('auto', recurring.schedules.map((row) => row.id));
+      context.recurringOccurrenceIds = new Map(recurring.occurrences.map((row) => [
+        row.id,
+        deriveEntityId('occ', [requiredMapValue(context.recurringScheduleIds, row.scheduleId, 'recurring schedule'), row.scheduledAt]),
+      ]));
+      context.recurringRangeIds = allocateImportedEntityIds('range', recurring.expiredRanges.map((row) => row.id));
+      // Existing canonical Thread/Turn maps supply history references; no live Core authority is created.
+      recurringHistory = JSON.stringify(remapRecurringPortableHistory(recurring, {
+        workspaceId: context.targetWorkspaceId,
+        scheduleIds: context.recurringScheduleIds,
+        occurrenceIds: context.recurringOccurrenceIds,
+        rangeIds: context.recurringRangeIds,
+        threadIds: context.threadIds,
+        turnIds: context.turnIds,
+      }));
+    }
   }
   const retrievalTraces = readRetrievalTraceImportState(context);
   const workerRuntime = readWorkerRuntimeControlState(context);
@@ -972,12 +997,10 @@ export function readWorkspaceImportSnapshot(
         : {}),
     })
   );
-  const portableFileState = readPortableImportState(
-    context,
-    workResources.workerContextPackageFiles,
-    knowledge,
-    retrievalTraces.files
-  );
+  const portableFileState = {
+    ...readPortableImportState(context, workResources.workerContextPackageFiles, knowledge, retrievalTraces.files),
+    recurringHistory,
+  };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
 
   return {
@@ -1814,7 +1837,13 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
           : null,
         workspaceId: context.targetWorkspaceId,
         resource:
-          parsed.resource === `workspace:${report.exportedWorkspaceId}`
+          ['recurring.schedule.create', 'recurring.schedule.edit', 'recurring.schedule.pause', 'recurring.schedule.resume', 'recurring.schedule.delete'].includes(parsed.action)
+            ? requiredMapValue(context.recurringScheduleIds, parsed.resource ?? '', 'recurring schedule Audit subject')
+            : parsed.action === 'recurring.occurrence.terminal'
+              ? requiredMapValue(context.recurringOccurrenceIds, parsed.resource ?? '', 'recurring occurrence Audit subject')
+              : parsed.action === 'recurring.expired-range.record'
+                ? requiredMapValue(context.recurringRangeIds, parsed.resource ?? '', 'recurring range Audit subject')
+                : parsed.resource === `workspace:${report.exportedWorkspaceId}`
             ? `workspace:${context.targetWorkspaceId}`
             : parsed.resource?.startsWith('goal-review:')
               ? `goal-review:${parsed.resource.slice('goal-review:'.length)}`

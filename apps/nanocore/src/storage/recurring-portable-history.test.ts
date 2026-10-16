@@ -220,6 +220,12 @@ describe('recurring portable history', () => {
 
   it('imports the three-file graph as reminted inert history through the real snapshot reader', () => {
     const { schedule, occurrence } = acceptedHistory();
+    // One long-interval range exercises all three portable families without expanding missed work.
+    store.updateAutomation(localUserId, schedule.id, { expectedRevision: 2, status: 'paused' });
+    store.updateAutomation(localUserId, schedule.id, { expectedRevision: 3, intervalSeconds: 3600 });
+    store.updateAutomation(localUserId, schedule.id, { expectedRevision: 4, status: 'active', scheduledAt: '2026-10-16T01:00:00.000Z' });
+    instant = '2026-10-16T04:00:00.000Z';
+    store.collectScanCandidates(instant);
     const turns = retainedTurns();
     const history = exportRecurringPortableHistory(coreDb, workspace.id, null, turns);
     const verified = writeWorkspaceExportTree({
@@ -266,21 +272,36 @@ describe('recurring portable history', () => {
     ]);
     expect(imported.turns).toHaveLength(1);
     expect(imported.turns[0]!.id).not.toBe(occurrence.turnId);
-    expect(graph.occurrences).toEqual([
+    expect(graph.occurrences).toHaveLength(history.occurrences.length);
+    const importedAccepted = graph.occurrences.find((row: { originRequestId: string }) => row.originRequestId === occurrence.requestId);
+    expect(importedAccepted).toMatchObject({
+      id: deriveEntityId('occ', [graph.schedules[0].id, occurrence.scheduledAt]),
+      scheduleId: graph.schedules[0].id,
+      originRequestId: occurrence.requestId,
+      originQueueEntryId: occurrence.queueEntryId,
+      originTurnId: occurrence.turnId,
+      turnId: imported.turns[0]!.id,
+      snapshot: { threadId: imported.threads[0]!.id },
+    });
+    expect(importedAccepted.id).not.toBe(occurrence.id);
+    for (const row of graph.occurrences)
+      expect(row.id).toBe(deriveEntityId('occ', [graph.schedules[0].id, row.scheduledAt]));
+    expect(graph.expiredRanges).toEqual([
       expect.objectContaining({
-        id: expect.not.stringMatching(occurrence.id),
+        id: expect.not.stringMatching(history.expiredRanges[0]!.id),
         scheduleId: graph.schedules[0].id,
-        originRequestId: occurrence.requestId,
-        originQueueEntryId: occurrence.queueEntryId,
-        originTurnId: occurrence.turnId,
-        turnId: imported.turns[0]!.id,
-        snapshot: expect.objectContaining({ threadId: imported.threads[0]!.id }),
+        count: 3,
+        firstScheduledAt: '2026-10-16T01:00:00.000Z',
+        lastScheduledAt: '2026-10-16T03:00:00.000Z',
+        snapshot: expect.objectContaining({ threadId: imported.threads[0]!.id, originActor: schedule.actor }),
       }),
     ]);
+    expect(imported.auditEvents.find((event) => event.action === 'recurring.expired-range.record'))
+      .toMatchObject({ resource: graph.expiredRanges[0].id, actor: schedule.actor });
     expect(
       imported.auditEvents.find((event) => event.action === 'recurring.occurrence.terminal')
     ).toMatchObject({
-      resource: graph.occurrences[0].id,
+      resource: importedAccepted.id,
       actor: schedule.actor,
       requestId: occurrence.requestId,
       threadId: imported.threads[0]!.id,
