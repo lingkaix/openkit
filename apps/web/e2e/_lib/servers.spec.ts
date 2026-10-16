@@ -14,7 +14,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
@@ -152,35 +152,21 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       expectedBindingState: 'not_bound',
       requestId: randomUUID(),
     });
-    const targets = await client.operations['conversation.targets']({
-      workspaceId,
-      threadId: thread.id,
-    });
-    const target = targets.targets.find((candidate) => candidate.kind === 'warm-worker');
-    expect(target?.availability).toBe('available');
+    // Material binding is explicit to this Thread; direct Task entry executes there.
     const requestId = randomUUID();
-    const response = await request.post(`${stack.coreUrl}/api/app/operations/conversation.submit`, {
+    const response = await request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
       headers: { 'x-openkit-request-id': requestId },
       data: {
         workspaceId,
         threadId: thread.id,
-        targetRef: target!.targetRef,
         input: 'Create a summary from the exact first release revision.',
         requestId,
       },
     });
     expect(response.status(), await response.text()).toBe(202);
-    const submission = SubmitConversationResponseSchema.parse(await response.json());
-    const taskThreadId = submission.receivingThreadId;
-    expect(taskThreadId).not.toBe(thread.id);
-    expect(submission.receivingWorkspaceId).toBe(workspaceId);
-    expect(submission.turn.threadId).toBe(taskThreadId);
-    expect(
-      await client.operations['thread.read']({ workspaceId, threadId: taskThreadId })
-    ).toMatchObject({
-      id: taskThreadId,
-      parentThreadId: thread.id,
-    });
+    const submission = StartTaskModeResponseSchema.parse(await response.json());
+    const taskThreadId = thread.id;
+    expect(submission.turn).toMatchObject({ workspaceId, threadId: taskThreadId });
     const selector = { workspaceId, threadId: taskThreadId, turnId: submission.turn.id };
     let completed = false;
     for await (const event of client.core.subscribeTurnEvents(selector)) {

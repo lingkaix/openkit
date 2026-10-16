@@ -1,4 +1,8 @@
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import {
+  StartTaskModeResponseSchema,
+  SubmitConversationResponseSchema,
+} from '@openkit/app-api-schemas';
+import { createRequestId } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -37,7 +41,25 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
+  const handoffResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
+  );
   await page.getByRole('button', { name: /^Send message$/ }).click();
+  const response = await handoffResponse;
+  expect(response.status(), await response.text()).toBe(202);
+  const origin = response.request().postDataJSON() as { workspaceId: string; threadId: string };
+  const handoff = SubmitConversationResponseSchema.parse(await response.json());
+  expect(handoff.receivingWorkspaceId).toBe(origin.workspaceId);
+  expect(handoff.receivingThreadId).not.toBe(origin.threadId);
+  expect(handoff.turn.threadId).toBe(handoff.receivingThreadId);
+  expect(
+    await getJson('/api/app/operations/thread.read', {
+      workspaceId: origin.workspaceId,
+      threadId: handoff.receivingThreadId,
+    })
+  ).toMatchObject({ id: handoff.receivingThreadId, parentThreadId: origin.threadId });
   await expect(page.getByRole('heading', { name: 'Story thread' })).toBeVisible({
     timeout: 15_000,
   });
@@ -206,52 +228,37 @@ async function materialRevision(
 }
 
 /**
- * Starts one visible Task Turn and observes its emitted question after ordinary Turn completion.
+ * Admits direct Task work in the explicitly bound Thread and observes its terminal question.
  *
  * @param page Browser page connected to the isolated Web app.
- * @param threadId Originating Thread of this handoff.
+ * @param threadId Explicitly bound Thread that owns the Task Turn.
  * @param input Exact user-visible Task request.
- * @returns Receiving Thread after a 202 response, visible question, and verified terminal Turn.
- * @throws When browser submission, the Task response, question rendering, or terminal proof fails.
+ * @returns Resolves after a 202 response, visible question, and verified terminal Turn.
+ * @throws When Task admission, question rendering, or terminal proof fails.
  */
-async function startTaskTurn(page: Page, threadId: string, input: string): Promise<string> {
-  await page.goto(`${stack?.webUrl}/tasks/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
-  await page.getByRole('textbox', { name: 'Message' }).fill(input);
-  const turnResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
-  );
-  await page.getByRole('button', { name: /^Send message$/ }).click();
-  const response = await turnResponse;
+async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
+  if (!stack) throw new Error('The isolated Web stack is not running.');
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const requestId = createRequestId();
+  const response = await page.request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
+    headers: { 'x-openkit-request-id': requestId },
+    data: { workspaceId, threadId, input, requestId },
+  });
   const responseBody = await response.text();
   expect(response.status(), `Task Turn start response: ${responseBody}`).toBe(202);
-  const submission = SubmitConversationResponseSchema.parse(JSON.parse(responseBody));
-  const receivingThreadId = submission.receivingThreadId;
-  expect(receivingThreadId).not.toBe(threadId);
-  expect(submission.receivingWorkspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
-  expect(submission.turn.threadId).toBe(receivingThreadId);
-  expect(
-    await getJson('/api/app/operations/thread.read', {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: receivingThreadId,
-    })
-  ).toMatchObject({ id: receivingThreadId, parentThreadId: threadId });
+  const submission = StartTaskModeResponseSchema.parse(JSON.parse(responseBody));
+  expect(submission.turn).toMatchObject({ workspaceId, threadId });
+  await page.goto(`${stack.webUrl}/tasks/${workspaceId}/${threadId}`);
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText("Couldn't send that message. Try again.")).toHaveCount(0);
   const turn = await getJson<{ status: string; contextPackageDigest: string | null }>(
     '/api/app/operations/turn.read',
-    {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: receivingThreadId,
-      turnId: submission.turn.id,
-    }
+    { workspaceId, threadId, turnId: submission.turn.id }
   );
   expect(turn.status).toBe('completed');
   expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
-  return receivingThreadId;
 }
 
 /**
@@ -267,7 +274,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const browserRuntimeErrors: string[] = [];
   page.on('pageerror', (error) => browserRuntimeErrors.push(error.message));
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
-  let threadId = 'th_00000000-0000-7000-8000-000000000001';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
   const revisionOneContent = '# Release note\n\nRevision one.';
   const revisionTwoContent =
     '# Release note\n\nRevision two, saved after revision one was delivered.';
@@ -285,11 +292,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     threadMaterial.getByText('Queued revision', { exact: true }).locator('..').locator('dd')
   ).toHaveText(revisionOne.revisionId);
 
-  threadId = await startTaskTurn(
-    page,
-    threadId,
-    'Create a summary from the exact first release revision.'
-  );
+  await startTaskTurn(page, threadId, 'Create a summary from the exact first release revision.');
   const materialProjectionResponse = page.waitForResponse((response) => {
     if (
       response.request().method() !== 'POST' ||
@@ -382,7 +385,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
   await stack.restartCore();
-  threadId = await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
+  await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
   const secondAnswerResponse = page.waitForResponse(isQuestionAnswerResponse);
