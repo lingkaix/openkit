@@ -14,10 +14,12 @@ import {
 import { OperationError } from '../operation-error.js';
 import {
   CatalogConflictError,
+  CatalogContentUnavailableError,
   CatalogForbiddenError,
   CatalogInputError,
   CatalogIntegrityError,
   CatalogNotFoundError,
+  CatalogRetentionError,
   type CatalogTreeFile,
   createWorkspaceMcpConfig,
   decideWorkspaceSkillCandidate,
@@ -26,16 +28,46 @@ import {
   loadWorkspaceResourceCatalog,
   McpBindingValidationError,
   materializeCatalogTree,
+  purgeWorkspaceSkillVersion,
+  removeWorkspaceSkill,
+  type SkillCandidateDecisionContext,
   selectWorkspaceMcpVersion,
   selectWorkspaceSkillDefault,
   setWorkspaceSkillPin,
   submitWorkspaceSkillCandidate,
   updateWorkspaceMcpBinding,
 } from './resource-catalog.js';
+import {
+  diffWorkspaceSkillVersions,
+  readWorkspaceSkillContent,
+  readWorkspaceSkillVersion,
+} from './skill-inspection.js';
 
-/** Joins the thirteen catalog definitions to immutable supply and compare-and-set publication; no transport or second catalog authority. */
+/** Existing Audit and retention owners supply authority; absent proof blocks the affected effect. */
+export interface CatalogOperationHooks {
+  /** Publishes current authenticated decision evidence through the existing Audit owner. */
+  readonly prepareSkillDecision?: (
+    input: {
+      readonly candidateId: string;
+      readonly decision: 'promoted' | 'rejected' | 'withdrawn';
+      readonly expectedRevision: number;
+      readonly requestId: string;
+      readonly workspaceId: string;
+    },
+    context: AdmittedOperationContext
+  ) => SkillCandidateDecisionContext;
+  /** Complete current external reference causes; null means the owner cannot establish them. */
+  readonly retainedSkillReferences?: (input: {
+    readonly digest: string;
+    readonly entryId: string;
+    readonly workspaceId: string;
+  }) => readonly string[] | null;
+}
+
+/** Joins catalog definitions to immutable supply and compare-and-set publication under existing admission owners. */
 export function createCatalogOperationImplementations(
-  dependencies: OperationInvocationDependencies
+  dependencies: OperationInvocationDependencies,
+  hooks: CatalogOperationHooks = {}
 ) {
   const root = () => {
     const value = dependencies.dataRoot ?? dependencies.store?.getDataRoot();
@@ -62,6 +94,93 @@ export function createCatalogOperationImplementations(
         return { items: loadWorkspaceResourceCatalog(root(), input.workspaceId).skills.entries };
       } catch (error) {
         catalogFailure(error, 'skill_catalog_list_failed');
+      }
+    },
+    'catalog.skill-version-list': (input) => {
+      try {
+        const catalog = loadWorkspaceResourceCatalog(root(), input.workspaceId);
+        if (!catalog.skills.entries.some((entry) => entry.id === input.skillId))
+          throw new CatalogNotFoundError('Skill not found.');
+        return {
+          items: catalog.skills.versions
+            .filter((version) => version.entryId === input.skillId)
+            .map(publicSkillVersion),
+        };
+      } catch (error) {
+        catalogFailure(error, 'skill_version_list_failed');
+      }
+    },
+    'catalog.skill-version-read': (input) => {
+      try {
+        return {
+          version: publicSkillVersion(
+            readWorkspaceSkillVersion({
+              dataRoot: root(),
+              digest: input.digest,
+              entryId: input.skillId,
+              workspaceId: input.workspaceId,
+            })
+          ),
+        };
+      } catch (error) {
+        catalogFailure(error, 'skill_version_read_failed');
+      }
+    },
+    'catalog.skill-content-read': (input) => {
+      try {
+        return readWorkspaceSkillContent({
+          dataRoot: root(),
+          digest: input.digest,
+          entryId: input.skillId,
+          path: input.path,
+          workspaceId: input.workspaceId,
+        });
+      } catch (error) {
+        catalogFailure(error, 'skill_content_read_failed');
+      }
+    },
+    'catalog.skill-diff': (input) => {
+      try {
+        return diffWorkspaceSkillVersions({
+          dataRoot: root(),
+          baseDigest: input.baseDigest,
+          candidateDigest: input.candidateDigest,
+          entryId: input.skillId,
+          workspaceId: input.workspaceId,
+        });
+      } catch (error) {
+        catalogFailure(error, 'skill_diff_failed');
+      }
+    },
+    'catalog.skill-remove': (input) => {
+      try {
+        const catalog = removeWorkspaceSkill({
+          dataRoot: root(),
+          entryId: input.skillId,
+          expectedRevision: input.expectedRevision,
+          workspaceId: input.workspaceId,
+        });
+        return { revision: catalog.revision };
+      } catch (error) {
+        catalogFailure(error, 'skill_remove_failed');
+      }
+    },
+    'catalog.skill-purge': (input) => {
+      try {
+        const version = {
+          digest: input.digest,
+          entryId: input.skillId,
+          workspaceId: input.workspaceId,
+        };
+        const catalog = purgeWorkspaceSkillVersion({
+          ...version,
+          dataRoot: root(),
+          expectedRevision: input.expectedRevision,
+          retainedReferences: hooks.retainedSkillReferences?.(version) ?? null,
+        });
+        return { revision: catalog.revision };
+      } catch (error) {
+        catalogFailure(error, 'skill_purge_failed');
       }
     },
     'catalog.skill-import': (input, context) => {
@@ -100,6 +219,7 @@ export function createCatalogOperationImplementations(
           expectedRevision: input.expectedRevision,
           producer: { id: publicOperationActor(context).userId, kind: 'user' },
           summary: input.summary,
+          submitter: { id: publicOperationActor(context).userId, kind: 'user' },
           tree: catalogTree(input.tree),
           workspaceId: input.workspaceId,
         });
@@ -112,12 +232,17 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'skill_candidate_failed');
       }
     },
-    'catalog.skill-candidate-decide': (input) => {
+    'catalog.skill-candidate-decide': (input, context) => {
       try {
+        if (!hooks.prepareSkillDecision)
+          throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
         const catalog = decideWorkspaceSkillCandidate({
           candidateId: input.candidateId,
           dataRoot: root(),
           decision: input.decision,
+          decisionContext: hooks.prepareSkillDecision(input, context),
+          configurationOwner: true,
+          expectedCurrentDigest: input.expectedCurrentDigest,
           expectedRevision: input.expectedRevision,
           workspaceId: input.workspaceId,
         });
@@ -127,11 +252,29 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'skill_candidate_decision_failed');
       }
     },
+    'catalog.skill-candidate-withdraw': (input, context) => {
+      try {
+        if (!hooks.prepareSkillDecision)
+          throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
+        const catalog = decideWorkspaceSkillCandidate({
+          candidateId: input.candidateId,
+          dataRoot: root(),
+          decision: 'withdrawn',
+          decisionContext: hooks.prepareSkillDecision({ ...input, decision: 'withdrawn' }, context),
+          expectedRevision: input.expectedRevision,
+          workspaceId: input.workspaceId,
+        });
+        return { revision: catalog.revision };
+      } catch (error) {
+        catalogFailure(error, 'skill_candidate_withdraw_failed');
+      }
+    },
     'catalog.skill-select': (input) => {
       try {
         const catalog = selectWorkspaceSkillDefault({
           dataRoot: root(),
           digest: input.digest,
+          expectedCurrentDigest: input.expectedCurrentDigest,
           entryId: input.skillId,
           expectedRevision: input.expectedRevision,
           workspaceId: input.workspaceId,
@@ -147,6 +290,7 @@ export function createCatalogOperationImplementations(
         const catalog = setWorkspaceSkillPin({
           dataRoot: root(),
           digest: input.digest,
+          expectedPinDigest: input.expectedPinDigest,
           entryId: input.skillId,
           expectedRevision: input.expectedRevision,
           workspaceId: input.workspaceId,
@@ -297,7 +441,11 @@ function summarizeCatalog(catalog: ReturnType<typeof loadWorkspaceResourceCatalo
       pinDigest: catalog.skills.pins.find((pin) => pin.entryId === entry.id)?.digest ?? null,
       versions: catalog.skills.versions
         .filter((version) => version.entryId === entry.id)
-        .map((version) => ({ createdAt: version.createdAt, digest: version.digest })),
+        .map((version) => ({
+          contentState: version.contentState,
+          createdAt: version.createdAt,
+          digest: version.digest,
+        })),
     })),
   };
 }
@@ -331,19 +479,22 @@ function mcpEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatalog>) {
   });
 }
 
-/** Projects a Skill version without producer or provenance internals. */
+/** Projects exact immutable metadata without retained descriptive annotations. */
 function publicSkillVersion(version: ReturnType<typeof importWorkspaceSkill>['version']) {
   return {
+    contentState: version.contentState,
     createdAt: version.createdAt,
     digest: version.digest,
     digestFormat: version.digestFormat,
     entryId: version.entryId,
     inventory: version.inventory,
+    producer: version.producer,
+    provenance: version.provenance,
     publisherVersion: version.publisherVersion,
   };
 }
 
-/** Projects a Skill candidate without producer internals. */
+/** Projects candidate lineage and its exact retained decision. */
 function publicSkillCandidate(
   candidate: ReturnType<typeof submitWorkspaceSkillCandidate>['candidate']
 ) {
@@ -351,9 +502,12 @@ function publicSkillCandidate(
     baseDigest: candidate.baseDigest,
     candidateDigest: candidate.candidateDigest,
     createdAt: candidate.createdAt,
+    decision: candidate.decision,
     disposition: candidate.disposition,
     entryId: candidate.entryId,
     id: candidate.id,
+    producer: candidate.producer,
+    submitter: candidate.submitter,
     summary: candidate.summary,
   };
 }
@@ -381,7 +535,16 @@ function catalogFailure(error: unknown, code: string): never {
   if (error instanceof OperationError) throw error;
   if (error instanceof CatalogConflictError)
     throw new OperationError('conflict', error.message, 409, { cause: error });
-  if (error instanceof CatalogNotFoundError || error instanceof CatalogInputError)
+  if (error instanceof CatalogRetentionError)
+    throw new OperationError('resource_retained', error.message, 409, {
+      cause: error,
+      details: { references: error.references },
+    });
+  if (error instanceof CatalogContentUnavailableError)
+    throw new OperationError('resource_unavailable', error.message, 503, { cause: error });
+  if (error instanceof CatalogInputError)
+    throw new OperationError('invalid_request', error.message, 400, { cause: error });
+  if (error instanceof CatalogNotFoundError)
     throw new OperationError(code, error.message, 404, { cause: error });
   if (error instanceof CatalogForbiddenError)
     throw new OperationError('catalog_forbidden', error.message, 403, { cause: error });
