@@ -83,7 +83,7 @@ export function createSkillManagementCommands(
       actor: context.actorRef,
       action: `${operation}${admission ? '.admit' : ''}`,
       resource,
-      resourceRevision: revision,
+      resourceRevision: revision > 0 ? revision : null,
       outcome: 'succeeded',
       summary,
     });

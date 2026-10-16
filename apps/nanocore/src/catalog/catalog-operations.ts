@@ -108,7 +108,7 @@ export function prepareCatalogSkillDecision(
       actor: context.actorRef,
       action: `${input.operation}.admit`,
       resource: `skill-candidate:${input.candidateId}`,
-      resourceRevision: input.expectedRevision,
+      resourceRevision: input.expectedRevision > 0 ? input.expectedRevision : null,
       outcome: 'succeeded',
       summary: `Human Skill candidate ${input.decision} admission.`,
     });
@@ -608,7 +608,7 @@ export function createCatalogOperationImplementations(
                 : {}),
               action: 'catalog.skill-candidate-submit.admit',
               resource: `skill:${input.skillId}@${admitted.digest}`,
-              resourceRevision: input.expectedRevision,
+              resourceRevision: input.expectedRevision > 0 ? input.expectedRevision : null,
               outcome: 'succeeded',
               summary: `Skill candidate admission from ${input.baseDigest ?? 'none'} to ${admitted.digest}.`,
             });
