@@ -90,6 +90,14 @@ For selected-Worker `conversation.submit`, that limit applies to the assembled p
 
 For a declared MCP id, discover `catalog.shared-mcp-list` for the selected Workspace. Its entries report Server tool rules, local disablement and same-id local collisions without exposing endpoints, grants or secrets. A local inactive entry or removed tombstone still suppresses the shared entry. An authorized Workspace configuration caller can use `catalog.shared-mcp-set-disabled` with the current catalog revision to disable or restore that Workspace's projection. Select a registered Agent that declares the intended id; this does not grant permission for a tool effect. Keep the existing exact tool approval and current authority checks. Server configuration and credential changes belong to the [administrator procedure](nanocore-operations.en.md#administer-server-shared-mcp-supply).
 
+## Request credential-use authority
+
+Open **Workspace → Vault → Credential-use requests**. Select a conversation Thread and enter the existing reference ID with exact supported use bounds. The request accepts no secret value. Server shared-MCP requests require administrator metadata access. Worker-visible GitHub environment use is a separate explicit path; it cannot substitute for Gateway-only use.
+
+The responsible user or an eligible administrator can inspect the complete captured effect, deny it or withdraw it. Only a currently eligible administrator can approve this administrative grant issue. If complete effect detail is unavailable, approval stays disabled while deny and withdrawal remain available. Approval does not create a grant. An administrator uses **Issue approved grant**, then inspects the actual grant ID and binds it explicitly through the owning MCP or Agent configuration.
+
+The panel labels requested terms, actual grant, deciding actor, claim/disposition and decision delivery separately. After an uncertain result, refresh requests and inspect current grant inventory and Audit before another effect. Narrowing creates a replacement grant and requires an explicit binding update. Plans, successful backend resolution, completed delivery receipts and completed upstream work prove different facts. See [the credential-use procedure](nanocore-operations.en.md#request-and-review-credential-use) for the same App API, remote MCP and administrator CLI operations.
+
 ## Knowledge Guidance
 
 Load this reference for knowledge sources, observations, claims, conflicts, retrieval, bounded context preparation, proposals, repair, or knowledge health.

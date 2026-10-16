@@ -57,6 +57,7 @@ import { createWorkspaceTransferOperationImplementations } from './storage/works
 import { createThreadOperationImplementations } from './thread-operation-implementations.js';
 import { createTurnOperationImplementations } from './turn-operation-implementations.js';
 import type { TurnStartDependencies } from './turn-routes.js';
+import { checkVaultGrantCommandIntent } from './vault/vault-grant-requests.js';
 import { createVaultOperationImplementations } from './vault/vault-operation-implementations.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environments/worker-environment-operation-implementations.js';
@@ -206,6 +207,10 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createPendingRequestOperationImplementations({
       ...dependencies.pendingRequestServices!,
       store: dependencies.store!,
+      checkCommandIntent: (sqlite, record, actor) => {
+        checkVaultGrantCommandIntent(dependencies, record, actor);
+        dependencies.pendingRequestServices?.checkCommandIntent?.(sqlite, record, actor);
+      },
     }),
     createNanoHostOperationImplementations({
       coreDb: dependencies.coreDb,

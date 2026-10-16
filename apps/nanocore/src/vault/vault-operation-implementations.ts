@@ -22,11 +22,14 @@ import { OperationError } from '../operation-error.js';
 import { readVaultReferenceId } from '../providers/vault-credential-resolver.js';
 import { listExportableVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listExportableVaultInjectionReceipts } from '../vault-injection-receipts.js';
+import { isServerMcpReference } from './server-mcp-authority.js';
 import { recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
+import { createVaultGrantRequestImplementations } from './vault-grant-requests.js';
 import {
   createVaultGrant,
   getVaultGrant,
   listExportableWorkspaceVaultGrants,
+  listVaultGrants,
   narrowVaultGrant,
   revokeVaultGrant,
   VaultGrantNarrowingError,
@@ -63,7 +66,12 @@ const administrationStates = new WeakMap<
 export function createVaultOperationImplementations(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'coreDb' | 'dataRoot' | 'repositoryWorkspaceDb' | 'store' | 'vaultUnlockState'
+    | 'coreDb'
+    | 'dataRoot'
+    | 'repositoryWorkspaceDb'
+    | 'store'
+    | 'vaultUnlockState'
+    | 'pendingRequestServices'
   >
 ) {
   const { coreDb, dataRoot, repositoryWorkspaceDb, vaultUnlockState } = dependencies;
@@ -421,7 +429,29 @@ export function createVaultOperationImplementations(
     }
   }
 
+  /** Retained Server shared-MCP history stays scoped to the current supported reference family. */
+  function serverMcpGrantIds(): string[] {
+    if (!coreDb) return vaultFailure('Core DB is not available.', 'not_found', 404);
+    return listVaultGrants(coreDb)
+      .filter(
+        (grant) =>
+          grant.ownerScope === 'server' &&
+          isServerMcpReference(getVaultReference(coreDb, grant.vaultReferenceId))
+      )
+      .map((grant) => grant.grantId);
+  }
+
   return {
+    ...createVaultGrantRequestImplementations(dependencies),
+    'vault.server-mcp-injection-plan-list': () => ({
+      items: listExportableVaultInjectionPlans(coreDb!, serverMcpGrantIds()),
+    }),
+    'vault.server-mcp-injection-receipt-list': () => ({
+      items: listExportableVaultInjectionReceipts(
+        coreDb!,
+        listExportableVaultInjectionPlans(coreDb!, serverMcpGrantIds()).map((plan) => plan.planId)
+      ),
+    }),
     'vault.status': () => {
       return vaultAdminStatus();
     },

@@ -47,6 +47,7 @@ export * from './storage.js';
 export { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 export * from './task-mode.js';
 export * from './vault-admin.js';
+export * from './vault-grant-requests.js';
 export * from './vault-injection.js';
 export * from './vault-operations.js';
 export * from './vault-use.js';
