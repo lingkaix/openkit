@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   CatalogInputError,
   catalogDocumentPath,
@@ -55,9 +56,9 @@ function fixture(content: string) {
       dataRoot,
       expectedRevision: 0,
       install: true,
-      producer: { id: 'user_local', kind: 'user' as const },
+      producer: { id: testEntityId('usr', 'user_local'), kind: 'user' as const },
       treeRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: testEntityId('ws', 'ws_demo'),
     },
   };
 }
@@ -79,7 +80,7 @@ describe('captured PluginVersion source', () => {
       expect(
         readWorkspaceSkillContent({
           dataRoot: f.dataRoot,
-          workspaceId: 'ws_demo',
+          workspaceId: testEntityId('ws', 'ws_demo'),
           entryId: version.entryId,
           digest: version.digest,
           path: 'SKILL.md',
@@ -97,11 +98,19 @@ describe('captured PluginVersion source', () => {
     const f = fixture('# Missing required Skill metadata');
     try {
       expect(() => importWorkspacePlugin(f.input)).toThrow(CatalogInputError);
-      expect(loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo').revision).toBe(0);
-      expect(existsSync(catalogDocumentPath(f.dataRoot, 'ws_demo'))).toBe(false);
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, testEntityId('ws', 'ws_demo')).revision).toBe(
+        0
+      );
+      expect(existsSync(catalogDocumentPath(f.dataRoot, testEntityId('ws', 'ws_demo')))).toBe(
+        false
+      );
       // The existing read path creates empty layout directories, which carry no catalog authority.
       for (const kind of ['plugin-snapshots', 'skill-snapshots']) {
-        expect(readdirSync(join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog', kind))).toEqual([]);
+        expect(
+          readdirSync(
+            join(f.dataRoot, 'workspaces', testEntityId('ws', 'ws_demo'), 'catalog', kind)
+          )
+        ).toEqual([]);
       }
     } finally {
       rmSync(f.dataRoot, { recursive: true, force: true });

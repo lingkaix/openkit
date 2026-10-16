@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import {
@@ -42,33 +43,32 @@ function fixture(
   const coreDb = openCoreDb(dataRoot);
   cleanups.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const privateOwnerUserId = options.privateOwner === 'self' ? userId : options.privateOwner;
   const store = new FsStore({ dataRoot });
   const workspace = options.personal
-    ? store.ensureQuickChatWorkspace('user_local')
+    ? store.ensureQuickChatWorkspace(userId)
     : store.createWorkspace('Synthetic native Skill');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const thread = store.createThread(
     workspace.id,
     'Synthetic producing work',
     undefined,
     'conversation',
-    options.privateOwner
-      ? { visibility: 'private', privateOwnerUserId: options.privateOwner }
-      : { visibility: 'workspace' }
+    privateOwnerUserId ? { visibility: 'private', privateOwnerUserId } : { visibility: 'workspace' }
   );
   const turn = store.createTurn(
     workspace.id,
     thread.id,
     'Prepare a candidate only.',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: userId },
     null,
     { agentId: 'ag_synthetic_native' }
   );
   const body = JSON.stringify(tree);
   const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
   const artifact = store.createArtifact({
-    id: 'ar_native_candidate',
+    id: allocateEntityId('ar'),
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
@@ -90,7 +90,7 @@ function fixture(
     updatedAt: '2026-10-16T00:00:00Z',
   });
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: userId,
     scope: options.administrator ? 'server-admin' : 'workspace',
     workspaceIds: options.administrator ? [] : [workspace.id],
     expiresAt: '2099-01-01T00:00:00Z',
@@ -114,7 +114,7 @@ function fixture(
     summary: 'Synthetic native submission.',
     artifact: { artifactId: artifact.id, version: artifact.version, contentDigest },
   };
-  return { app, artifact, coreDb, dataRoot, input, store, thread, token, turn, workspace };
+  return { app, artifact, coreDb, dataRoot, input, store, thread, token, turn, userId, workspace };
 }
 
 /** Crosses the real HTTP/native admission boundary with the current retained bearer. */
@@ -142,7 +142,7 @@ describe('native Artifact-origin Skill candidates', () => {
       disposition: 'proposed',
       decision: null,
       producer: { kind: 'agent', id: 'ag_synthetic_native' },
-      submitter: { kind: 'user', id: 'user_local' },
+      submitter: { kind: 'user', id: f.userId },
     });
     let catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
     expect(catalog.skills.entries[0]?.currentDigest).toBeNull();
@@ -176,7 +176,7 @@ describe('native Artifact-origin Skill candidates', () => {
     catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
     expect(catalog.skills.candidates[0]?.decision?.actor).toEqual({
       kind: 'user',
-      id: 'user_local',
+      id: f.userId,
     });
     expect(catalog.skills.entries[0]?.currentDigest).toBe(submitted.candidate.candidateDigest);
     const pin = await call(f, 'catalog.skill-pin', {
@@ -216,7 +216,7 @@ describe('native Artifact-origin Skill candidates', () => {
         workspaceDb.sqlite
           .prepare('SELECT actor_json AS actor FROM audit_events WHERE audit_event_id = ?')
           .get(catalog.skills.candidates[0]!.decision!.auditRef)
-      ).toEqual({ actor: JSON.stringify({ kind: 'user', id: 'user_local' }) });
+      ).toEqual({ actor: JSON.stringify({ kind: 'user', id: f.userId }) });
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -232,7 +232,7 @@ describe('native Artifact-origin Skill candidates', () => {
   ] as const)('refuses %s before candidate effects', async (reason) => {
     const f = fixture({
       ...(reason.includes('private')
-        ? { privateOwner: reason === 'foreign-private' ? 'user_other' : 'user_local' }
+        ? { privateOwner: reason === 'foreign-private' ? allocateEntityId('usr') : 'self' }
         : {}),
       administrator: reason === 'administrator-private' || reason === 'foreign-workspace',
     });
@@ -243,7 +243,7 @@ describe('native Artifact-origin Skill candidates', () => {
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
         workspaceId: other.id,
-        ownerUserId: 'user_local',
+        ownerUserId: f.userId,
       });
       f.input.workspaceId = other.id;
     }
@@ -256,7 +256,7 @@ describe('native Artifact-origin Skill candidates', () => {
   });
 
   it('keeps own-private input in its owner-only personal Workspace', async () => {
-    const f = fixture({ personal: true, privateOwner: 'user_local' });
+    const f = fixture({ personal: true, privateOwner: 'self' });
     const response = await call(f, 'catalog.skill-candidate-submit', f.input);
     expect(response.status, await response.clone().text()).toBe(201);
     expect(
@@ -298,7 +298,7 @@ describe('native Artifact-origin Skill candidates', () => {
     const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
     expect(catalog.skills.candidates[0]).toMatchObject({
       disposition,
-      decision: { actor: { kind: 'user', id: 'user_local' } },
+      decision: { actor: { kind: 'user', id: f.userId } },
     });
     expect(catalog.skills.entries[0]?.currentDigest).toBeNull();
     expect(catalog.skills.pins).toEqual([]);

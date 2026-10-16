@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digestOpenKitTree, hashOpenKitTreeEntries } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   projectWorkspaceCatalogExport,
   reconstructImportedWorkspaceCatalog,
@@ -49,8 +50,8 @@ function fixture() {
   const input = {
     createdAt: '2026-10-16T00:00:00.000Z',
     dataRoot,
-    producer: { id: 'user_local', kind: 'user' as const },
-    workspaceId: 'ws_demo',
+    producer: { id: testEntityId('usr', 'user_local'), kind: 'user' as const },
+    workspaceId: testEntityId('ws', 'ws_demo'),
   };
   const imported = importWorkspaceSkill({
     ...input,
@@ -488,7 +489,7 @@ describe('Skill catalog lifecycle', () => {
         candidateId: submitted.candidate.id,
         decision: 'withdrawn' as const,
         decisionContext: {
-          actor: { id: 'another_user', kind: 'user' as const },
+          actor: { id: testEntityId('usr', 'another_user'), kind: 'user' as const },
           auditRef: 'audit_fixture_withdrawal',
           decidedAt: '2026-10-16T00:01:00.000Z',
         },
@@ -790,15 +791,19 @@ describe('Skill catalog lifecycle', () => {
         new Map(exported.payloads.map((payload) => [payload.path, payload.payload]))
       );
       writeImportedWorkspaceCatalog(
-        join(f.dataRoot, 'workspaces', 'ws_imported'),
+        join(f.dataRoot, 'workspaces', testEntityId('ws', 'ws_imported')),
         imported,
         exported.payloads.map((payload) => payload.payload)
       );
-      expect(loadWorkspaceResourceCatalog(f.dataRoot, 'ws_imported').skills.versions).toEqual(
-        purged.skills.versions
-      );
+      expect(
+        loadWorkspaceResourceCatalog(f.dataRoot, testEntityId('ws', 'ws_imported')).skills.versions
+      ).toEqual(purged.skills.versions);
       expect(() =>
-        readWorkspaceSkillContent({ ...input, workspaceId: 'ws_imported', path: 'SKILL.md' })
+        readWorkspaceSkillContent({
+          ...input,
+          workspaceId: testEntityId('ws', 'ws_imported'),
+          path: 'SKILL.md',
+        })
       ).toThrow(CatalogContentUnavailableError);
       const restored = importWorkspaceSkill({
         ...f,
@@ -807,7 +812,7 @@ describe('Skill catalog lifecycle', () => {
         displayName: 'Alpha',
         expectedRevision: purged.revision,
         createdAt: '2026-10-16T00:02:00.000Z',
-        producer: { id: 'user_restore', kind: 'user' },
+        producer: { id: testEntityId('usr', 'user_restore'), kind: 'user' },
         tree: tree('# Original'),
       });
       expect(restored.version).toEqual(f.imported.version);

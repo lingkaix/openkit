@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { importWorkspaceSkill, loadWorkspaceResourceCatalog } from './resource-catalog.js';
 
 it('retains first source identity with exact bytes and does not invent Git lineage for uploads', () => {
@@ -9,11 +10,11 @@ it('retains first source identity with exact bytes and does not invent Git linea
   try {
     const base = {
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: testEntityId('ws', 'ws_demo'),
       id: 'ecosystem-example',
       displayName: 'Ecosystem Example',
       activate: false,
-      producer: { kind: 'user' as const, id: 'user_local' },
+      producer: { kind: 'user' as const, id: testEntityId('usr', 'user_local') },
       createdAt: '2026-10-16T00:00:00Z',
       tree: [
         {

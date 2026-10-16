@@ -30,12 +30,12 @@ function fixture(
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b5-projections-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('B5 projection');
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    ownerUserId: userId,
     workspaceId: workspace.id,
   });
   const app = createApp({
@@ -54,7 +54,7 @@ function fixture(
     ...(getBootReadiness ? { getBootReadiness } : {}),
     agentManifests: [createTestAgentSetup().manifest],
   });
-  return { app, coreDb, dataRoot, workspace, store };
+  return { app, coreDb, dataRoot, userId, workspace, store };
 }
 
 /** Posts complete logical input through the real operation admission and native owner. */
@@ -109,7 +109,7 @@ describe('B5 catalog operation projections', () => {
           tree: tree('# Proof'),
         },
       });
-      expect(imported.status).toBe(201);
+      expect(imported.status, await imported.clone().text()).toBe(201);
       const skill = await imported.json();
       expect(skill.entry.currentDigest).toBe(skill.version.digest);
       const list = await call(f, 'catalog.skill-list', { workspaceId: f.workspace.id });
@@ -264,7 +264,7 @@ describe('B5 catalog operation projections', () => {
         expectedRevision: 0,
         requestId: crypto.randomUUID(),
       });
-      expect(imported.status).toBe(201);
+      expect(imported.status, await imported.clone().text()).toBe(201);
       const original = await imported.json();
       const identity = {
         workspaceId: f.workspace.id,
@@ -274,7 +274,7 @@ describe('B5 catalog operation projections', () => {
       const read = await call(f, 'catalog.skill-version-read', identity);
       expect(read.status).toBe(200);
       expect(await read.json()).toEqual({ version: original.version });
-      expect(original.version.producer).toEqual({ id: 'user_local', kind: 'user' });
+      expect(original.version.producer).toEqual({ id: f.userId, kind: 'user' });
       const listed = await call(f, 'catalog.skill-version-list', {
         workspaceId: f.workspace.id,
         skillId: 'proof',
@@ -562,7 +562,7 @@ function mutations(workspaceId: string) {
     },
     'catalog.skill-candidate-withdraw': {
       workspaceId,
-      candidateId: 'candidate',
+      candidateId: testEntityId('cand', 'candidate'),
       expectedRevision: 0,
       requestId,
     },
@@ -729,7 +729,7 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
       },
       token.secret
     );
-    expect(imported.status).toBe(201);
+    expect(imported.status, await imported.clone().text()).toBe(201);
     const host = await call(
       f,
       'catalog.mcp-create',

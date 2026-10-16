@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   projectWorkspaceCatalogExport,
   reconstructImportedWorkspaceCatalog,
@@ -342,9 +343,9 @@ describe('workspace resource catalog', () => {
         dataRoot,
         expectedRevision: 0,
         install: true,
-        producer: { id: 'user_original', kind: 'user' },
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' },
         treeRoot: packageRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
       const original = first.catalog.skills.versions[0]!;
       expect.soft(original.provenance).toEqual({
@@ -375,11 +376,11 @@ describe('workspace resource catalog', () => {
         dataRoot,
         expectedRevision: first.catalog.revision,
         install: true,
-        producer: { id: 'user_later', kind: 'user' },
+        producer: { id: testEntityId('usr', 'user_later'), kind: 'user' },
         treeRoot: packageRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
-      const reopened = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, testEntityId('ws', 'ws_demo'));
       expect(second.version.digest).not.toBe(first.version.digest);
       expect(second.version.members).toEqual(first.version.members);
       expect(reopened.plugins.versions).toEqual([first.version, second.version]);
@@ -412,9 +413,9 @@ describe('workspace resource catalog', () => {
         dataRoot,
         expectedRevision: 0,
         install: true,
-        producer: { id: 'user_original', kind: 'user' },
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' },
         treeRoot: packageRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
       const original = imported.catalog.skills.versions[0]!;
       const selected = selectWorkspaceSkillDefault({
@@ -422,14 +423,14 @@ describe('workspace resource catalog', () => {
         digest: original.digest,
         entryId: original.entryId,
         expectedRevision: imported.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
       const pinned = setWorkspaceSkillPin({
         dataRoot,
         digest: original.digest,
         entryId: original.entryId,
         expectedRevision: selected.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
       const producer = { id: 'agent_improver', kind: 'agent' as const };
       const submitted = submitWorkspaceSkillCandidate({
@@ -443,9 +444,9 @@ describe('workspace resource catalog', () => {
         tree: skillTree(
           '---\nname: alpha\ndescription: Explain the improved version.\n---\n# Improved Alpha\n'
         ),
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
-      const reopened = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, testEntityId('ws', 'ws_demo'));
       const improved = reopened.skills.versions.find(
         (version) => version.digest === submitted.candidate.candidateDigest
       )!;
@@ -497,11 +498,11 @@ describe('workspace resource catalog', () => {
         dataRoot,
         displayName: 'Alpha',
         expectedRevision: 0,
-        producer: { id: 'user_original', kind: 'user' },
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' },
         tree,
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
-      const path = catalogDocumentPath(dataRoot, 'ws_demo');
+      const path = catalogDocumentPath(dataRoot, testEntityId('ws', 'ws_demo'));
       const retained = annotateCatalogHistory(original.catalog);
       writeFileSync(path, JSON.stringify(retained));
       const repeated = importWorkspaceSkill({
@@ -513,9 +514,9 @@ describe('workspace resource catalog', () => {
         id: original.version.entryId,
         producer: { id: 'agent_later', kind: 'agent' },
         tree,
-        workspaceId: 'ws_demo',
+        workspaceId: testEntityId('ws', 'ws_demo'),
       });
-      const reopened = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, testEntityId('ws', 'ws_demo'));
       expect.soft(repeated.version).toEqual(original.version);
       expect.soft(repeated.version).toEqual(repeated.catalog.skills.versions[0]);
       expect(reopened.skills.versions).toEqual([original.version]);

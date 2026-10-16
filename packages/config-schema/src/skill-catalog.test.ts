@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   EMPTY_RESOURCE_CATALOG,
@@ -5,6 +6,9 @@ import {
   ResourceCatalogDocumentViewSchema,
   SkillVersionRecordSchema,
 } from './resource-catalog.js';
+
+const userId = allocateEntityId('usr');
+const submitterId = allocateEntityId('usr');
 
 /** Historical candidate metadata without current decision authority. */
 function candidateCatalog() {
@@ -20,7 +24,7 @@ function candidateCatalog() {
           disposition: 'rejected',
           entryId: 'alpha',
           evidenceRefs: [],
-          id: 'candidate_fixture',
+          id: allocateEntityId('cand'),
           producer: { id: 'agent_fixture', kind: 'agent' },
           summary: 'Historical candidate.',
         },
@@ -37,7 +41,7 @@ describe('Skill decision lineage', () => {
       digestFormat: 'openkit-tree-v1',
       entryId: 'alpha',
       inventory: [],
-      producer: { id: 'user_fixture', kind: 'user' },
+      producer: { id: userId, kind: 'user' },
       provenance: {},
     };
     expect(SkillVersionRecordSchema.parse(version).contentState).toBe('retained');
@@ -56,24 +60,24 @@ describe('Skill decision lineage', () => {
   it('preserves decision annotations at the owner and strips them from public projections', () => {
     const input = candidateCatalog();
     const decision = {
-      actor: { id: 'user_fixture', kind: 'user', futureAnnotation: 'actor description' },
+      actor: { id: userId, kind: 'user', futureAnnotation: 'actor description' },
       auditRef: 'audit_fixture',
       decidedAt: '2026-10-16T00:01:00.000Z',
       futureAnnotation: 'decision description',
     };
     Object.assign(input.skills.candidates[0]!, { decision });
     Object.assign(input.skills.candidates[0]!, {
-      submitter: { id: 'user_submitter', kind: 'user', futureAnnotation: 'submitter description' },
+      submitter: { id: submitterId, kind: 'user', futureAnnotation: 'submitter description' },
     });
     const retained = parseResourceCatalogDocument(input);
     expect(retained.skills.candidates[0]?.decision).toEqual(decision);
     const view = ResourceCatalogDocumentViewSchema.parse(retained);
     expect(view.skills.candidates[0]?.decision).toEqual({
-      actor: { id: 'user_fixture', kind: 'user' },
+      actor: { id: userId, kind: 'user' },
       auditRef: 'audit_fixture',
       decidedAt: '2026-10-16T00:01:00.000Z',
     });
-    expect(view.skills.candidates[0]?.submitter).toEqual({ id: 'user_submitter', kind: 'user' });
+    expect(view.skills.candidates[0]?.submitter).toEqual({ id: submitterId, kind: 'user' });
     Object.assign(decision.actor, { kind: 'unknown-authority' });
     expect(() => parseResourceCatalogDocument(input)).toThrow();
     Object.assign(decision.actor, { kind: 'user' });

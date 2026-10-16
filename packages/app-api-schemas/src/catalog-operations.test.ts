@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 import { CATALOG_OPERATION_DEFINITIONS } from './catalog-operations.js';
@@ -46,7 +47,10 @@ describe('Agent, Worker and resource catalog definitions', () => {
         expectedCurrentDigest: digest,
         expectedRevision: 1,
       },
-      'catalog.skill-candidate-withdraw': { candidateId: 'candidate_proof', expectedRevision: 1 },
+      'catalog.skill-candidate-withdraw': {
+        candidateId: allocateEntityId('cand'),
+        expectedRevision: 1,
+      },
       'catalog.skill-select': {
         skillId: 'proof',
         digest,

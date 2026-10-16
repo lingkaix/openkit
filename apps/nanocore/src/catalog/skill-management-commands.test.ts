@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -10,15 +11,14 @@ import {
   compactWorkspaceEvidenceBundles,
   recordWorkspaceEvidenceBundle,
 } from '../evidence-bundles.js';
-import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { FsStore } from '../lib/store.js';
+import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   type CatalogTreeFile,
@@ -53,10 +53,10 @@ function fixture() {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
   });
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Skill management');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   cleanup.push(() => {
     if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
@@ -67,7 +67,7 @@ function fixture() {
     workspaceId: workspace.id,
     id: 'management-example',
     displayName: 'Management Example',
-    producer: { kind: 'user' as const, id: LOCAL_USER_ID },
+    producer: { kind: 'user' as const, id: userId },
     createdAt: '2026-10-16T00:00:00Z',
   };
   const first = importWorkspaceSkill({
@@ -96,6 +96,7 @@ function fixture() {
     );
   return {
     dataRoot,
+    userId,
     coreDb,
     store,
     workspace,
@@ -161,12 +162,12 @@ describe('native Skill management command evidence', () => {
     const thread = f.store.createThread(f.workspace.id, 'Retained Skill input');
     const turn = f.store.createTurn(f.workspace.id, thread.id, 'Use retained Skill', {
       kind: 'user',
-      id: LOCAL_USER_ID,
+      id: f.userId,
     });
     const snapshot = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup({ skillIds: ['management-example'] }),
-      agentSessionId: 'as_skill_retention',
+      agentSessionId: allocateEntityId('as'),
       backend: { kind: 'openshell' },
       coreDb: f.coreDb,
       createdAt: '2026-10-16T00:00:00.000Z',
@@ -332,7 +333,7 @@ describe('native Skill management command evidence', () => {
         (event) =>
           event.outcome === 'succeeded' &&
           event.actor?.kind === 'user' &&
-          event.actor.id === LOCAL_USER_ID &&
+          event.actor.id === f.userId &&
           event.resourceRevision === 3
       )
     ).toBe(true);

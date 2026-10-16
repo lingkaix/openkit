@@ -382,7 +382,7 @@ describe('resource catalog operations', () => {
           }
         )
       );
-      expect(imported.status).toBe(201);
+      expect(imported.status, await imported.clone().text()).toBe(201);
       const importedBody = ImportSkillResponseSchema.parse(await imported.json());
       expect(importedBody.entry.id).toBe('repo-guidelines');
       expect(importedBody.version.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
