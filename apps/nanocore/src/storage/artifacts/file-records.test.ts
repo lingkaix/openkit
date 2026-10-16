@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { allocateEntityId, type ArtifactSchema } from '@openkit/protocol';
+import { type ArtifactSchema, allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { publishArtifactFileRecord } from '../workspace-file-records.js';

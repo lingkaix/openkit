@@ -223,7 +223,9 @@ describe('remote MCP App endpoint', () => {
         }
       }
       expect(native).not.toHaveBeenCalled();
-      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifactsBefore);
+      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(
+        artifactsBefore
+      );
       expect(existsSync(join(f.dataRoot, 'server', 'files', 'workspace-archive-requests'))).toBe(
         false
       );

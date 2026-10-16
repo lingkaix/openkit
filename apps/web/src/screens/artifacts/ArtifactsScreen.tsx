@@ -156,6 +156,7 @@ export function ArtifactsScreen() {
   const unavailableArtifact = Boolean(catalogAuthorized && requestedArtifactId && !selectedId);
 
   // Workspace identity is the reset trigger even though its bytes are not rendered here.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clear workspace-bound form and command state on selection change
   useEffect(() => {
     setImporting(false);
     setTitle('');
@@ -169,6 +170,7 @@ export function ArtifactsScreen() {
   }, [workspaceId]);
 
   // Access-denied list refetch keeps TanStack cache; fail closed until a later list success.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: drop cached selection and mutation projections only on typed denial
   useEffect(() => {
     if (!listDenied) {
       if (artifacts.isSuccess) setListDeniedUntilSettled(false);
@@ -188,6 +190,7 @@ export function ArtifactsScreen() {
     }
   }, [listDenied, artifacts.isSuccess]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: drop introduction draft when the listed selection identity changes
   useEffect(() => {
     introduceArtifact.reset();
     setThreadId('');
