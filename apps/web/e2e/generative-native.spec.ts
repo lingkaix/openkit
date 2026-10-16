@@ -392,6 +392,26 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
         actions: [],
       }
     );
+    // This fixture created no Worker process or external stream. Its awaited native calls and revoked route are complete; cancel the modeled Turn and release only that local attempt before normal Core boot.
+    store.updateTurn(turn.id, { status: 'cancelled', completedAt: new Date().toISOString() });
+    const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+      attemptId: attempt.attemptId,
+      cause: 'local-capability-fixture-ended',
+    });
+    expect(
+      attempts.closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation: attempts.schedulerExecutionCorrelation(closing),
+        proof: {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        },
+        fenceRef: 'local-capability-fixture:no-worker-process',
+      }).phase
+    ).toBe('closed');
   } finally {
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
