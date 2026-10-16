@@ -4,13 +4,16 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  listPortableWorkspaceAuditEvents,
   listServerAuditEvents,
   listWorkspaceAuditEvents,
   recordServerAuditEvent,
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
+import { AutomationStore } from './lib/automation-store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /**
  * Creates an isolated data root for audit event tests.
@@ -58,6 +61,64 @@ describe('workspace audit events', () => {
         .run('{"kind":"unsupported"}', foreign.id);
       expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo', coreDb)).toEqual([recurring, local]);
       expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([local]);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('exports only exact recurring actions with retained subjects before decoding Core content', () => {
+    const dataRoot = createDataRoot();
+    const coreDb = openCoreDb(dataRoot);
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    try {
+      applyMigrations(coreDb);
+      applyScopedMigrations(workspaceDb);
+      const schedules = new AutomationStore(
+        coreDb,
+        new WorkspaceMutationAdmission(),
+        () => '2026-10-16T00:00:00.000Z'
+      );
+      const schedule = schedules.createAutomation('user_local', {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        name: 'Portable',
+        prompt: 'Inspect',
+        intervalSeconds: 5,
+      });
+      const created = listServerAuditEvents(coreDb)[0]!;
+      expect(created).toMatchObject({ action: 'recurring.schedule.create', resource: schedule.id });
+      const local = recordWorkspaceAuditEvent({
+        workspaceDb,
+        workspaceId: 'ws_demo',
+        action: 'workspace.inspect',
+        outcome: 'succeeded',
+        summary: 'Local history.',
+      });
+      for (const [workspaceId, action, resource] of [
+        ['ws_foreign', 'recurring.schedule.create', schedule.id],
+        ['ws_demo', 'deployment.access', schedule.id],
+        ['ws_demo', 'recurring.schedule.create', 'auto_missing'],
+        ['ws_demo', 'recurring.occurrence.terminal', schedule.id],
+      ]) {
+        const excluded = recordServerAuditEvent({
+          coreDb,
+          workspaceId,
+          action: action!,
+          resource,
+          outcome: 'succeeded',
+          summary: 'Excluded Core source.',
+        });
+        coreDb.sqlite
+          .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
+          .run('{"kind":"unsupported"}', excluded.id);
+      }
+      expect(listPortableWorkspaceAuditEvents(workspaceDb, 'ws_demo', coreDb)).toEqual([
+        created,
+        local,
+      ]);
+      expect(listPortableWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([local]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

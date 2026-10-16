@@ -92,7 +92,7 @@ export class AutomationStore {
       this.coreDb.sqlite
         .transaction(() => {
           this.writeSchedule(record, true);
-          this.auditDefinition(record, userId, 'created');
+          this.auditDefinition(record, userId, 'create');
           return record;
         })
         .immediate()
@@ -151,7 +151,7 @@ export class AutomationStore {
           this.auditDefinition(
             updated,
             userId,
-            status === 'active' ? 'resumed' : status === 'paused' ? 'paused' : 'edited'
+            status === 'active' ? 'resume' : status === 'paused' ? 'pause' : 'edit'
           );
           return updated;
         })
@@ -176,7 +176,7 @@ export class AutomationStore {
             deletedAt: timestamp,
           };
           this.writeSchedule(deleted);
-          this.auditDefinition(deleted, userId, 'deleted');
+          this.auditDefinition(deleted, userId, 'delete');
         })
         .immediate()
     );
@@ -507,7 +507,7 @@ export class AutomationStore {
       workspaceId: schedule.workspaceId,
       actor: schedule.actor,
       threadId: schedule.threadId,
-      action: 'recurring.range.expired',
+      action: 'recurring.expired-range.record',
       resource: record.id,
       resourceRevision: schedule.revision,
       outcome: 'failed',
@@ -569,9 +569,10 @@ export class AutomationStore {
       workspaceId: occurrence.workspaceId,
       actor: occurrence.snapshot.actor,
       threadId: occurrence.snapshot.threadId,
-      turnId: occurrence.turnId,
+      // Core acceptance reserves a Turn identity; it does not prove canonical file publication.
+      turnId: null,
       requestId: occurrence.requestId,
-      action: `recurring.occurrence.${state}`,
+      action: 'recurring.occurrence.terminal',
       resource: occurrence.id,
       outcome:
         state === 'admission-accepted'
@@ -599,7 +600,11 @@ export class AutomationStore {
   }
 
   /** Attributes a definition mutation to its actual caller in the same Core transaction. */
-  private auditDefinition(schedule: AutomationRecord, userId: string, action: string): void {
+  private auditDefinition(
+    schedule: AutomationRecord,
+    userId: string,
+    action: 'create' | 'edit' | 'pause' | 'resume' | 'delete'
+  ): void {
     recordServerAuditEvent({
       coreDb: this.coreDb,
       workspaceId: schedule.workspaceId,

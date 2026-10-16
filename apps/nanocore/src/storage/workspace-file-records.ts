@@ -929,7 +929,8 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
         }
         const turnsRoot = join(threadsRoot, threadId, 'turns');
         for (const turnId of listDirectoryNames(turnsRoot)) {
-          readPublishedTurnRecord(turnsRoot, workspaceId, threadId, turnId);
+          if (!readPublishedTurnRecord(dataRoot, workspaceId, threadId, turnId))
+            return { status: 'unreadable' };
           turns.push({ threadId, turnId, workspaceId });
         }
       }
@@ -943,21 +944,26 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
 /**
  * Validates one published Turn and its Item log without rewriting canonical files.
  *
- * @param turnsRoot Thread turns directory.
+ * @param dataRoot Data root containing the exact owning Workspace.
  * @param workspaceId Owning Workspace id.
  * @param threadId Owning Thread id.
  * @param turnId Turn directory id.
+ * @returns Validated canonical Turn, or null when either required publication file is missing.
  * @throws Error when the Turn schema, lineage, or Item history cannot be read.
  */
-function readPublishedTurnRecord(
-  turnsRoot: string,
+export function readPublishedTurnRecord(
+  dataRoot: string,
   workspaceId: string,
   threadId: string,
   turnId: string
-): void {
+): Turn | null {
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+  assertSafeWorkspacePathSegment(threadId, 'Thread id');
+  assertSafeWorkspacePathSegment(turnId, 'Turn id');
+  const turnsRoot = join(dataRoot, 'workspaces', workspaceId, 'threads', threadId, 'turns');
   const turnPath = join(turnsRoot, turnId, 'turn.json');
   if (!existsSync(turnPath)) {
-    throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
+    return null;
   }
   const rawTurn = readJson(turnPath) as Record<string, unknown>;
   if (rawTurn.items !== undefined && (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)) {
@@ -981,10 +987,10 @@ function readPublishedTurnRecord(
   }
   const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
   if (!existsSync(itemsPath)) {
-    throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
+    return null;
   }
   const items = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
-  TurnReaderSchema.parse({ ...turnWithoutItems, items });
+  return TurnReaderSchema.parse({ ...turnWithoutItems, items });
 }
 
 /**
@@ -1295,7 +1301,7 @@ function loadWorkspace(
       const turnPath = join(turnsRoot, turnId, 'turn.json');
 
       if (!existsSync(turnPath)) {
-        throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
+        return null;
       }
 
       const rawTurn = readJson(turnPath) as Record<string, unknown>;
@@ -1326,7 +1332,7 @@ function loadWorkspace(
 
       const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
       if (!existsSync(itemsPath)) {
-        throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
+        return null;
       }
 
       const loadedItems = loadItemRevisions(itemsPath, workspaceId, threadId, turnId);

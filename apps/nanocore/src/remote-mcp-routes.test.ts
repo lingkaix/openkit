@@ -619,7 +619,9 @@ describe('remote MCP App endpoint', () => {
       );
       expect(deleted.isError).not.toBe(true);
       expect(JSON.parse(deleted.content[0].text)).toBeNull();
-      expect(f.automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([]);
+      expect(f.automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([
+        f.automationStore.getAutomation(automation.id),
+      ]);
       expect(f.automationStore.getAutomation(automation.id)).toMatchObject({
         status: 'deleted',
         actor: automation.actor,

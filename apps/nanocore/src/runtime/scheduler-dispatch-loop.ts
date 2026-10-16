@@ -116,6 +116,7 @@ export interface SchedulerDispatchLoopResult {
           | 'thread-busy'
           | 'backend-busy'
           | 'entry-publication-pending'
+          | 'recovery-required'
           | 'max-dispatches';
       }
     | { status: 'denied'; entry: SchedulerAdmissionEntryRecord };
@@ -155,6 +156,7 @@ export async function runSchedulerDispatchLoop(
     return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
   const unpublishedQueueEntryIds = new Set<string>();
+  let recurringRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     const entry = findNextDispatchableSchedulerAdmissionEntry(
       input.coreDb,
@@ -165,11 +167,13 @@ export async function runSchedulerDispatchLoop(
         startedTurns,
         terminalResult: {
           status: 'queued',
-          reason: unpublishedQueueEntryIds.size
-            ? 'entry-publication-pending'
-            : listQueuedSchedulerAdmissionEntries(input.coreDb).length
-              ? 'thread-busy'
-              : 'no-queued-entry',
+          reason: recurringRecoveryRequired
+            ? 'recovery-required'
+            : unpublishedQueueEntryIds.size
+              ? 'entry-publication-pending'
+              : listQueuedSchedulerAdmissionEntries(input.coreDb).length
+                ? 'thread-busy'
+                : 'no-queued-entry',
         },
       };
     if (claims.has(entry.queueEntryId))
@@ -190,6 +194,8 @@ export async function runSchedulerDispatchLoop(
     // An incomplete cross-store publication fences only its own request/Thread. Continue
     // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
     if (!schedulerEntryPublicationComplete(input, entry)) {
+      if (findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId))
+        recurringRecoveryRequired = true;
       unpublishedQueueEntryIds.add(entry.queueEntryId);
       count--;
       continue;

@@ -103,13 +103,13 @@ afterEach(() => {
 });
 
 describe('serialized recurring scanner', () => {
-  it('uses one five-second timer, admits only to the existing queue, and never creates or launches a Turn', async () => {
+  it('uses one five-second timer and publishes the fixed pending Turn once after queue admission', async () => {
     const { db, store, schedules, schedule, start } = fixture();
     const createTurn = vi.spyOn(store, 'createTurn');
     const { service, setTimer } = start();
     await service.runOnce();
     expect(setTimer).toHaveBeenCalledWith(expect.any(Function), 5000);
-    expect(createTurn).not.toHaveBeenCalled();
+    expect(createTurn).toHaveBeenCalledTimes(1);
     const occurrence = schedules.listHistory(schedule.id).items[0]!.record;
     expect(occurrence).toMatchObject({
       state: 'admission-accepted',

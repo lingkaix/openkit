@@ -96,7 +96,9 @@ describe('fixed-interval automation operations', () => {
     expect(edited.status).toBe(200);
     expect(await edited.json()).toMatchObject({ revision: 4, prompt: 'Updated input' });
     expect((await request('delete', { automationId: schedule.id })).status).toBe(204);
-    expect(await (await request('list', {})).json()).toEqual({ items: [] });
+    expect(await (await request('list', {})).json()).toEqual({
+      items: [automationStore.getAutomation(schedule.id)],
+    });
     expect(automationStore.getAutomation(schedule.id).status).toBe('deleted');
   });
 

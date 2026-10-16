@@ -177,7 +177,9 @@ describe('migrated execution route retirement', () => {
         ).toBeNull();
       } else if (operation === 'automation.delete') {
         expect(await canonical.text()).toBe('');
-        expect(automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([]);
+        expect(automationStore.listAuthorizedAutomations(['ws_demo'])).toEqual([
+          automationStore.getAutomation(automation.id),
+        ]);
         expect(automationStore.getAutomation(automation.id)).toMatchObject({
           status: 'deleted',
           actor: automation.actor,

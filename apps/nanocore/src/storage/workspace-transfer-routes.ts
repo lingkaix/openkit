@@ -21,7 +21,7 @@ import { asApiError } from '../api-errors.js';
 import { listExportableArtifactReviews } from '../artifact-reviews.js';
 import {
   importWorkspaceAuditEvents,
-  listWorkspaceAuditEvents,
+  listPortableWorkspaceAuditEvents,
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
@@ -551,7 +551,7 @@ function collectWorkspaceExportRows(
       const workspaceMaterialRows = listExportableWorkspaceMaterialRows(workspaceDb);
       return {
         artifactReviews: listExportableArtifactReviews(workspaceDb),
-        auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
+        auditEvents: listPortableWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
         agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
           workspaceId

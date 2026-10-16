@@ -105,7 +105,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
       },
     ]);
     const audit = readFileSync(join(root, 'records', 'core-audit-events.jsonl'), 'utf8');
-    expect(audit).toContain('recurring.range.expired');
+    expect(audit).toContain('recurring.expired-range.record');
     for (const table of [
       'recurring_schedules',
       'recurring_occurrences',

@@ -369,7 +369,9 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
     responsibleUserId: 'user_creator',
   });
   expect(store.getOccurrence(occurrence!.id)).toEqual(accepted);
-  expect(store.listAuthorizedAutomations([definition.workspaceId])).toEqual([]);
+  expect(store.listAuthorizedAutomations([definition.workspaceId])).toEqual([
+    store.getAutomation(schedule.id),
+  ]);
   expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
   expect(() =>
     store.updateAutomation('user_creator', schedule.id, {
@@ -386,7 +388,7 @@ it('commits every definition and terminal transition with its Workspace AuditEve
   expect(
     db.sqlite.prepare('SELECT action, actor_json, workspace_id FROM audit_events').get()
   ).toMatchObject({
-    action: 'recurring.schedule.created',
+    action: 'recurring.schedule.create',
     actor_json: JSON.stringify({ kind: 'user', id: 'user_creator' }),
     workspace_id: definition.workspaceId,
   });
@@ -410,12 +412,13 @@ it('commits every definition and terminal transition with its Workspace AuditEve
   expect(
     db.sqlite
       .prepare(
-        "SELECT action, actor_json FROM audit_events WHERE action = 'recurring.occurrence.admission-accepted'"
+        "SELECT action, actor_json, turn_id FROM audit_events WHERE action = 'recurring.occurrence.terminal'"
       )
       .get()
   ).toEqual({
-    action: 'recurring.occurrence.admission-accepted',
+    action: 'recurring.occurrence.terminal',
     actor_json: JSON.stringify(schedule.actor),
+    turn_id: null,
   });
 });
 
