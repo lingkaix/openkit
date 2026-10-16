@@ -1,4 +1,5 @@
-import type { KnowledgeEntry } from '@openkit/protocol';
+import type { KnowledgeEntrySchema } from '@openkit/protocol';
+import type { z } from 'zod';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import {
   parseOwnedKnowledgeEntry,
@@ -15,6 +16,8 @@ import {
   readWorkspaceNotebookAdmissions,
 } from './notebook-publication.js';
 
+type KnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
+
 /** Existing entry commands are convenience projections of the one fixed-base notebook publisher. */
 export type NotebookEntryEdit = {
   readonly workspaceId: string;
@@ -27,13 +30,13 @@ export type NotebookEntryEdit = {
       readonly kind: KnowledgeEntry['kind'];
       readonly title: string;
       readonly content: string;
-      readonly sourceReferences?: readonly string[];
+      readonly sourceReferences?: readonly string[] | undefined;
     }
   | {
       readonly operation: 'knowledge.update';
       readonly knowledgeEntryId: string;
-      readonly title?: string;
-      readonly content?: string;
+      readonly title?: string | undefined;
+      readonly content?: string | undefined;
     }
 );
 

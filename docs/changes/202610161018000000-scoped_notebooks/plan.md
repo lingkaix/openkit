@@ -4,9 +4,9 @@ status: in-progress
 ---
 # Scoped Knowledge Notebooks
 
-## Intent Revision 1
+## Intent Revision 2
 
-The engineer assigned P20 to lane L-AK after P19. Implement ordinary Knowledge, personal Memory, immutable Skill versions and the authorized parts of the BWM first loop. Real BWM acceptance requires B01 business inputs; synthetic examples cannot satisfy it. This work grants no host administration or release publication.
+The engineer assigned P20 to lane L-AK after P19. Implement ordinary Knowledge, personal Memory, immutable Skill versions and the authorized parts of the BWM first loop. The engineer ruling of 2026-10-16 15:40Z requires BWM first-loop implementation now with synthetic and fake-backed regressions; B01 business inputs are not a build prerequisite. No BWM acceptance occurs now. The engineer adds ideas on 2026-10-17, and acceptance follows that work. Synthetic regressions never establish real-use acceptance. This work grants no host administration or release publication.
 
 ## Accepted Owners
 
@@ -22,7 +22,7 @@ The first regression uses real Git objects and refs in a temporary notebook: fix
 
 ## Next Action
 
-Read the affected storage, validation, retrieval and command owners. Establish the lowest-sufficient regression for immutable content/history and conflict handling, then implement that seam and integrate all current page producers and consumers. Preserve source and current authority at each read and publication. Record missing B01 inputs separately while ordinary work proceeds.
+Read the affected storage, validation, retrieval and command owners. Establish the lowest-sufficient regression for immutable content/history and conflict handling, then implement that seam and integrate all current page producers and consumers. Preserve source and current authority at each read and publication. Build the BWM loop with synthetic and fake-backed inputs while keeping its later engineer acceptance separate.
 
 
 ## Bounded History And Candidate Validation
@@ -49,3 +49,7 @@ Canonical Workspace page reads and boot projection now select Git revisions, and
 The retained create/update commands now project explicit fixed-base input into the same Git/Audit/receipt publisher. Creation selects a stable concept path; an exact completed retry reconstructs its original entry from the named immutable commit after later edits. A previous unpublished admission must agree with that commit before an unchanged explicit retry can continue. Service timestamps are recovered from the exact admitted candidate rather than regenerated as new intent. The original command owns the sole receipt; no nested knowledge.notebook.update receipt is created. Current source disclosure and publication policy remain native requirements.
 
 The Web keeps the selected notebook revision in each add/edit draft and in an exact unknown-outcome retry. Background refreshes cannot silently move that base. A new editor regression captures this race; existing Knowledge fixtures now carry the public revision field. The native entry probe stopped at stale built input declarations before publication, so it does not establish the intended behavior failure. Matching dependency builds, Protocol/schema tests, native publication/initializer/component suites and typecheck are queued on the current source. Protected Review, destructive removal, history/restore, source-filtered native list and Source endpoints, pinned index/S39, portability/offline activation and full feature gates remain incomplete. This is backed-up integration work, not a landable feature.
+
+## Engineer Rulings Of 2026-10-16 15:40Z
+
+Versioned Skill import must accept ordinary ecosystem repositories without repackaging, using the source, discovery, frontmatter and provenance conventions of vercel-labs/skills. Port the required MIT-licensed logic with its notice rather than running its CLI at runtime; OpenKit keeps exact content, current authority, Review, Audit and delivery ownership. The Skill owner records the exact import contract. BWM implementation proceeds now, with no acceptance claim. No ci.yml dispatch or pull request is permitted for these lane features; express landing uses local gates.
