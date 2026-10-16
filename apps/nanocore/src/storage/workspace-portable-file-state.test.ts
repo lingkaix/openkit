@@ -738,7 +738,13 @@ describe('workspace portable file state', () => {
     );
     const originalTrace = readFileSync(tracePath, 'utf8');
     const selectedRevision = notebook.publishedRevision();
-    expect(result.selected).toEqual([expect.objectContaining({ content: page.content })]);
+    expect(result.selected).toEqual([
+      expect.objectContaining({
+        reference: { scopeId: `page/workspace/${workspaceId}`, objectId: page.id },
+        contentDigest: `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`,
+        revision: selectedRevision,
+      }),
+    ]);
     expect(readWorkspaceKnowledgePage(workspaceRoot, page.id)).toBe(pageBytes);
     const restrictedRevision = publishFixturePages(notebook, {
       [`${page.id}.md`]: updateOkfFrontmatter({
