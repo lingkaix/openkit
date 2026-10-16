@@ -9,17 +9,19 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createPdfFixture } from '../test-support/pdf-fixture.js';
 import { processVisionView } from './vision-view.js';
 
-const observations = vi.hoisted(() => ({ decodes: 0 }));
+const observations = vi.hoisted(() => ({ decodes: 0, rasterArguments: [] as string[][] }));
 vi.mock('node:child_process', async (original) => {
   const actual = await original<typeof import('node:child_process')>();
   return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => {
     if ((args[1] as string[]).includes('jpeg:-')) observations.decodes += 1;
+    if ((args[1] as string[]).includes('/usr/bin/pdftoppm') && (args[1] as string[]).includes('-jpeg')) observations.rasterArguments.push([...(args[1] as string[])]);
     return actual.spawn(...args);
   } };
 });
 const roots: string[] = [];
 afterEach(async () => {
   observations.decodes = 0;
+  observations.rasterArguments.length = 0;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -34,8 +36,13 @@ function png(width: number, height: number, declaredWidth = width): Buffer {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(declaredWidth); header.writeUInt32BE(height, 4);
   header[8] = 8; header[9] = 2;
-  const pixels = Buffer.alloc((width * 3 + 1) * height, 64);
-  for (let row = 0; row < height; row += 1) pixels[row * (width * 3 + 1)] = 0;
+  const pixels = Buffer.alloc((width * 3 + 1) * height);
+  for (let row = 0; row < height; row += 1) {
+    for (let column = 0; column < width; column += 1) {
+      const value = 16 + column * 24 + row * 4;
+      pixels.fill(value, row * (width * 3 + 1) + 1 + column * 3, row * (width * 3 + 1) + 4 + column * 3);
+    }
+  }
   return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', header), chunk('IDAT', deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))]);
 }
 
@@ -75,6 +82,10 @@ it('returns an actual isolated bounded JPEG crop with separate original and deli
   const output = join(f.root, 'observed.jpg');
   await writeFile(output, result.bytes);
   expect(execFileSync('/usr/bin/identify', ['-format', '%wx%h', output], { encoding: 'utf8' })).toBe('3x2');
+  const decoded = execFileSync('/usr/bin/convert', [output, '-depth', '8', 'gray:-']);
+  expect(decoded.length).toBe(6);
+  for (const [index, expected] of [44, 68, 92, 48, 72, 96].entries())
+    expect(Math.abs(decoded[index]! - expected)).toBeLessThanOrEqual(5);
   expect(observations.decodes).toBe(1);
   expect(f.reserved()).toBe(0);
 }, 30_000);
@@ -97,5 +108,8 @@ it('renders only the requested PDF page and preserves its original raster crop c
     crop: { left: 20, top: 30, width: 8, height: 6 },
     delivered: { width: 8, height: 6, mediaType: 'image/jpeg' },
   });
+  const launch = observations.rasterArguments[0]!;
+  const executable = launch.indexOf('/usr/bin/pdftoppm');
+  expect(launch.slice(executable + 1)).toEqual(['-f', '2', '-l', '2', '-singlefile', '-r', '72', '-x', '20', '-y', '30', '-W', '8', '-H', '6', '-jpeg', '/input.pdf']);
   expect(f.reserved()).toBe(0);
 }, 30_000);
