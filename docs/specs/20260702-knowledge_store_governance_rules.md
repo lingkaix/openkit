@@ -5,7 +5,7 @@ kind: concept
 ---
 # Knowledge Store Governance Rules
 
-Implementation note: the accepted V1 validation, source, maintenance-record, create-only proposal review and application, unchanged-page reversal, and S39-only worker-delivery boundaries are implemented. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority; scoped ownership, Git notebook publication and bounded learning are accepted extensions that remain Not Started.
+Implementation note: the accepted V1 validation, source, maintenance-record, Proposal/Review evidence and S39-only worker-delivery boundaries exist. Unactivated Git Notebook publication, Review and bounded reversal components are described in the Current Implementation Projection below; this is not feature activation or acceptance. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority.
 
 ## Summary
 
