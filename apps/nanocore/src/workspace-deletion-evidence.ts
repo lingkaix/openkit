@@ -49,6 +49,7 @@ const CLOSURE_RECORD_PATHS = [
   'records/vault-use.jsonl',
   'records/usage-aggregates.jsonl',
   'records/evidence-manifests.jsonl',
+  RECURRING_HISTORY_PATH,
 ] as const;
 
 /** Durable record families whose legal holds block Workspace deletion. */
@@ -340,12 +341,9 @@ export function verifyWorkspaceDeletionClosure(input: {
       )
       .map((bundle) => bundle.id)
   );
-  const includesRecurringHistory = manifest.requiredFeatures.includes(RECURRING_HISTORY_FEATURE);
-  assertClosureShape(input.closureRoot, retainedEvidenceIds, includesRecurringHistory);
-  if (includesRecurringHistory) {
-    const text = readFileSync(join(input.closureRoot, RECURRING_HISTORY_PATH), 'utf8');
-    validateRecurringClosureHistory(text, input.workspaceId);
-  }
+  assertClosureShape(input.closureRoot, retainedEvidenceIds);
+  const text = readFileSync(join(input.closureRoot, RECURRING_HISTORY_PATH), 'utf8');
+  validateRecurringClosureHistory(text, input.workspaceId);
   return { ...manifest, manifestDigest: digestText(manifestText) };
 }
 
@@ -461,11 +459,7 @@ function listRegularFiles(root: string): string[] {
   return files;
 }
 
-function assertClosureShape(
-  root: string,
-  retainedEvidenceIds: ReadonlySet<string>,
-  includesRecurringHistory: boolean
-): void {
+function assertClosureShape(root: string, retainedEvidenceIds: ReadonlySet<string>): void {
   const rootNames = new Set(readdirSync(root).sort());
   const expectedRootNames = new Set([
     'records',
@@ -481,17 +475,13 @@ function assertClosureShape(
   const recordsRoot = join(root, 'records');
   assertCanonicalDirectory(recordsRoot);
   const recordNames = new Set(readdirSync(recordsRoot).map((name) => `records/${name}`));
-  const expectedRecordPaths = [
-    ...CLOSURE_RECORD_PATHS,
-    ...(includesRecurringHistory ? [RECURRING_HISTORY_PATH] : []),
-  ];
   if (
-    recordNames.size !== expectedRecordPaths.length ||
-    expectedRecordPaths.some((path) => !recordNames.has(path))
+    recordNames.size !== CLOSURE_RECORD_PATHS.length ||
+    CLOSURE_RECORD_PATHS.some((path) => !recordNames.has(path))
   ) {
     throw new Error('Workspace deletion closure record set is incomplete or extended.');
   }
-  for (const path of expectedRecordPaths) {
+  for (const path of CLOSURE_RECORD_PATHS) {
     const stat = lstatSync(join(root, path));
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error('Workspace deletion closure records must be regular files.');
