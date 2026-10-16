@@ -1,9 +1,13 @@
-import { testEntityId } from '../test-support/entity-ids.js';
 import { describe, expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ExpiredOccurrenceRangeSchema, readRecurringSchedule } from './recurring-records.js';
 
 const monthlyUtc = { zone: 'UTC' as const, dayOfMonth: 28, hour: 9, minute: 0, second: 0 };
-const actor = { kind: 'automation' as const, id: testEntityId('auto', 'schedule'), responsibleUserId: testEntityId('usr', 'creator') };
+const actor = {
+  kind: 'automation' as const,
+  id: testEntityId('auto', 'schedule'),
+  responsibleUserId: testEntityId('usr', 'creator'),
+};
 const range = {
   id: testEntityId('range', 'range'),
   scheduleId: testEntityId('auto', 'schedule'),
@@ -28,7 +32,9 @@ describe('retained recurring timing core', () => {
       { firstScheduledAt: '2027-04-28T09:00:00.000Z' },
       { snapshot: { ...range.snapshot, monthlyUtc: { ...monthlyUtc, hour: 10 } } },
       { snapshot: { ...range.snapshot, monthlyUtc: undefined } },
-      { snapshot: { ...range.snapshot, actor: { ...actor, id: testEntityId('auto', 'different') } } },
+      {
+        snapshot: { ...range.snapshot, actor: { ...actor, id: testEntityId('auto', 'different') } },
+      },
       { intervalSeconds: 5 },
       { requiredFeatures: ['unknown-monthly-semantics'] },
     ])

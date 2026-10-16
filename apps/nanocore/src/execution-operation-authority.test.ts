@@ -1,6 +1,3 @@
-import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
-import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from './test-support/demo-store.js';
-import { testEntityId } from './test-support/entity-ids.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +18,9 @@ import {
 } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -37,7 +36,11 @@ describe('execution operation authority', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: FIXTURE_LOCAL_USER_ID });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: DEMO_WORKSPACE_ID,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+    });
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
     const automation = automationStore.createAutomation(testEntityId('usr', 'user_other'), {
@@ -47,10 +50,16 @@ describe('execution operation authority', () => {
       threadId: DEMO_THREAD_ID,
       prompt: 'Work',
     });
-    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Private queue', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: testEntityId('usr', 'user_other'),
-    });
+    const thread = store.createThread(
+      DEMO_WORKSPACE_ID,
+      'Private queue',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: testEntityId('usr', 'user_other'),
+      }
+    );
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_admin',

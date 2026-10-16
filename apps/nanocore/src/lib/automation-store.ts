@@ -1,4 +1,3 @@
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import {
   AutomationCadenceSchema,
   type AutomationRecord,
@@ -8,6 +7,7 @@ import {
   type UpdateAutomationRequest,
   UpdateAutomationRequestSchema,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import {
   createSchedulerAdmissionEntry,

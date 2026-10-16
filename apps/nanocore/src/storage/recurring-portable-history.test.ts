@@ -1,16 +1,16 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listSqliteAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type CoreDb, openCoreDb } from './db.js';
-import { testEntityId } from '../test-support/entity-ids.js';
-import { deriveEntityId } from '@openkit/protocol';
 import { applyMigrations } from './migrate.js';
 import {
   exportRecurringPortableHistory,
@@ -168,7 +168,12 @@ describe('recurring portable history', () => {
     const maps = {
       workspaceId: testEntityId('ws', 'ws_target'),
       scheduleIds: new Map([[schedule.id, testEntityId('auto', 'auto_target')]]),
-      occurrenceIds: new Map([[occurrence.id, deriveEntityId('occ', [testEntityId('auto', 'auto_target'), occurrence.scheduledAt])]]),
+      occurrenceIds: new Map([
+        [
+          occurrence.id,
+          deriveEntityId('occ', [testEntityId('auto', 'auto_target'), occurrence.scheduledAt]),
+        ],
+      ]),
       rangeIds: new Map<string, string>(),
       threadIds: new Map([[thread.id, testEntityId('th', 'th_target')]]),
       turnIds: new Map([[occurrence.turnId!, testEntityId('tu', 'tu_target')]]),
@@ -193,7 +198,12 @@ describe('recurring portable history', () => {
       snapshot: { threadId: testEntityId('th', 'th_target'), originActor: schedule.actor },
     });
     expect(
-      exportRecurringPortableHistory(undefined, testEntityId('ws', 'ws_target'), JSON.stringify(imported), [])
+      exportRecurringPortableHistory(
+        undefined,
+        testEntityId('ws', 'ws_target'),
+        JSON.stringify(imported),
+        []
+      )
     ).toEqual(imported);
     expect(() => remapRecurringPortableHistory(source, { ...maps, turnIds: new Map() })).toThrow(
       'Turn import mapping'
@@ -222,8 +232,15 @@ describe('recurring portable history', () => {
     const { schedule, occurrence } = acceptedHistory();
     // One long-interval range exercises all three portable families without expanding missed work.
     store.updateAutomation(localUserId, schedule.id, { expectedRevision: 2, status: 'paused' });
-    store.updateAutomation(localUserId, schedule.id, { expectedRevision: 3, intervalSeconds: 3600 });
-    store.updateAutomation(localUserId, schedule.id, { expectedRevision: 4, status: 'active', scheduledAt: '2026-10-16T01:00:00.000Z' });
+    store.updateAutomation(localUserId, schedule.id, {
+      expectedRevision: 3,
+      intervalSeconds: 3600,
+    });
+    store.updateAutomation(localUserId, schedule.id, {
+      expectedRevision: 4,
+      status: 'active',
+      scheduledAt: '2026-10-16T01:00:00.000Z',
+    });
     instant = '2026-10-16T04:00:00.000Z';
     store.collectScanCandidates(instant);
     const turns = retainedTurns();
@@ -273,7 +290,9 @@ describe('recurring portable history', () => {
     expect(imported.turns).toHaveLength(1);
     expect(imported.turns[0]!.id).not.toBe(occurrence.turnId);
     expect(graph.occurrences).toHaveLength(history.occurrences.length);
-    const importedAccepted = graph.occurrences.find((row: { originRequestId: string }) => row.originRequestId === occurrence.requestId);
+    const importedAccepted = graph.occurrences.find(
+      (row: { originRequestId: string }) => row.originRequestId === occurrence.requestId
+    );
     expect(importedAccepted).toMatchObject({
       id: deriveEntityId('occ', [graph.schedules[0].id, occurrence.scheduledAt]),
       scheduleId: graph.schedules[0].id,
@@ -293,11 +312,15 @@ describe('recurring portable history', () => {
         count: 3,
         firstScheduledAt: '2026-10-16T01:00:00.000Z',
         lastScheduledAt: '2026-10-16T03:00:00.000Z',
-        snapshot: expect.objectContaining({ threadId: imported.threads[0]!.id, originActor: schedule.actor }),
+        snapshot: expect.objectContaining({
+          threadId: imported.threads[0]!.id,
+          originActor: schedule.actor,
+        }),
       }),
     ]);
-    expect(imported.auditEvents.find((event) => event.action === 'recurring.expired-range.record'))
-      .toMatchObject({ resource: graph.expiredRanges[0].id, actor: schedule.actor });
+    expect(
+      imported.auditEvents.find((event) => event.action === 'recurring.expired-range.record')
+    ).toMatchObject({ resource: graph.expiredRanges[0].id, actor: schedule.actor });
     expect(
       imported.auditEvents.find((event) => event.action === 'recurring.occurrence.terminal')
     ).toMatchObject({

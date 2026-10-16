@@ -1,5 +1,3 @@
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 // openkit-test-platform: posix
 import {
   cpSync,
@@ -15,13 +13,14 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../test-support/local-user.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';

@@ -1,6 +1,3 @@
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
-import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from '../test-support/demo-store.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,10 +31,10 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
@@ -642,7 +639,12 @@ describe('scheduler dispatch loop', () => {
       const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
       // Assemble HTTP before the fault: no later ordinary Workspace write may publish the stale cache.
       const app = createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
-      const published = readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId);
+      const published = readPublishedTurnFileRecords(
+        root,
+        DEMO_WORKSPACE_ID,
+        thread.id,
+        entry.turnId
+      );
       expect(published?.turn).toMatchObject({ agentId: manifest.id, status: 'pending' });
       const turnRoot = join(
         root,
@@ -672,9 +674,9 @@ describe('scheduler dispatch loop', () => {
         agentId: 'other-worker',
         status: 'pending',
       });
-      expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)).toEqual(
-        published
-      );
+      expect(
+        readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
+      ).toEqual(published);
       const update = vi.spyOn(store, 'updateTurn');
       if (consumer === 'dispatch-then-cancel') {
         expect(
@@ -702,10 +704,12 @@ describe('scheduler dispatch loop', () => {
       expect(update).not.toHaveBeenCalled();
       expect(executor.prepareCalls).toEqual([]);
       expect(executor.calls).toEqual([]);
-      expect(recurringTurnPublicationIssue(store, entry)).toBe(testEntityId('tu', 'turn_contradictory'));
-      expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)).toEqual(
-        published
+      expect(recurringTurnPublicationIssue(store, entry)).toBe(
+        testEntityId('tu', 'turn_contradictory')
       );
+      expect(
+        readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
+      ).toEqual(published);
       expect(
         ['turn.json', 'items.jsonl'].map((file) => readFileSync(join(turnRoot, file)))
       ).toEqual(originalBytes);
@@ -757,7 +761,15 @@ describe('scheduler dispatch loop', () => {
     const initialCreate = vi.spyOn(store, 'createTurn').mockImplementationOnce((...args) => {
       if (fault === 'before-publication') throw new Error('Interrupted initial publication');
       const turn = originalCreate(...args);
-      const path = join(root, 'workspaces', DEMO_WORKSPACE_ID, 'threads', thread.id, 'turns', turn.id);
+      const path = join(
+        root,
+        'workspaces',
+        DEMO_WORKSPACE_ID,
+        'threads',
+        thread.id,
+        'turns',
+        turn.id
+      );
       if (fault === 'cached-only') rmSync(path, { recursive: true, force: true });
       if (fault === 'contradictory') {
         const metadata = JSON.parse(readFileSync(join(path, 'turn.json'), 'utf8'));
@@ -1357,15 +1369,20 @@ describe('scheduler dispatch loop', () => {
       const overlap = await runSchedulerDispatchLoop(dispatch);
       expect(overlap.startedTurns).toEqual([]);
       expect(executor.prepareCalls).toHaveLength(1);
-      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).status).toBe('pending');
       expect(
-        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).agentSessionId
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).status
+      ).toBe('pending');
+      expect(
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second')))
+          .agentSessionId
       ).toBeUndefined();
       expect(executionAttempts(coreDb)).toHaveLength(1);
       gate.resolve();
       const admitted = await first;
       expect((await runSchedulerDispatchLoop(dispatch)).startedTurns).toEqual([]);
-      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).status).toBe('pending');
+      expect(
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_image_second'))).status
+      ).toBe('pending');
       expect(executor.prepareCalls).toHaveLength(1);
       await closeOwnedExecutionAttempt(coreDb, store, {
         attemptId: admitted.startedTurns[0]!.dispatch.attempt.attemptId,
@@ -1539,7 +1556,9 @@ describe('scheduler dispatch loop', () => {
       if (failureStage === 'queue-race') {
         const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
         turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-          expect(preparation.turn.id).toBe(testEntityId('tu', testEntityId('tu', 'turn_foreign_race')));
+          expect(preparation.turn.id).toBe(
+            testEntityId('tu', testEntityId('tu', 'turn_foreign_race'))
+          );
           const prepared = await prepare(ownerStore, preparation);
           cancelSchedulerAdmissionEntry(coreDb, {
             queueEntryId: 'queue_foreign_race',
@@ -1726,7 +1745,9 @@ describe('scheduler dispatch loop', () => {
       };
     } else {
       turnExecutor.prepareAgentSessionForTurn = async (_store, preparation) => {
-        expect(preparation.turn.id).toBe(testEntityId('tu', testEntityId('tu', 'turn_other_failure')));
+        expect(preparation.turn.id).toBe(
+          testEntityId('tu', testEntityId('tu', 'turn_other_failure'))
+        );
         throw failure;
       };
     }
@@ -2212,7 +2233,8 @@ describe('scheduler dispatch loop', () => {
         runSchedulerDispatchLoop({
           agentManifests: [manifest],
           coreDb,
-          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_cancelled_followup')),
+          createAgentSessionId: () =>
+            testEntityId('as', testEntityId('as', 'as_cancelled_followup')),
           createAttemptId: () => 'attempt_00000000-0000-72af-8c2e-1e6ef35d16c4',
 
           gatewayConfig: createTestGatewayConfig(),
@@ -2574,7 +2596,9 @@ describe('scheduler dispatch loop', () => {
           status: 'denied',
         }),
       ]);
-      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_revoked_dispatch'))).status).toBe('pending');
+      expect(
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_revoked_dispatch'))).status
+      ).toBe('pending');
       expect(executionAttempts(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -2664,7 +2688,9 @@ describe('scheduler dispatch loop', () => {
       expect(executionAttempts(coreDb)).toMatchObject([
         { phase: 'closed', disposition: 'not_accepted', operation_id: null },
       ]);
-      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_admin_race'))).status).toBe('failed');
+      expect(
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_admin_race'))).status
+      ).toBe('failed');
       expect(turnExecutor.calls).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -2768,7 +2794,8 @@ describe('scheduler dispatch loop', () => {
           gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
-          createAgentSessionId: () => testEntityId('as', testEntityId('as', 'as_replacement_successor')),
+          createAgentSessionId: () =>
+            testEntityId('as', testEntityId('as', 'as_replacement_successor')),
           createAttemptId: () => 'attempt_00000000-0000-7ff4-8557-71fde470b861',
 
           maxDispatches: 1,
@@ -2785,12 +2812,12 @@ describe('scheduler dispatch loop', () => {
 
       expect(observed).toMatchObject({ startedTurns: [], terminalResult: expected });
       expect(replacementCloseEffects).toBe(0);
-      expect(store.getAgentSession(testEntityId('as', testEntityId('as', 'as_replacement_predecessor')))).toMatchObject(
-        {
-          stale: false,
-          status: 'idle',
-        }
-      );
+      expect(
+        store.getAgentSession(testEntityId('as', testEntityId('as', 'as_replacement_predecessor')))
+      ).toMatchObject({
+        stale: false,
+        status: 'idle',
+      });
       expect(
         store
           .listThreadAgentSessions(
@@ -2847,7 +2874,9 @@ describe('scheduler dispatch loop', () => {
 
       expect(result.startedTurns).toHaveLength(1);
       expect(result.terminalResult).toEqual({ status: 'queued', reason: 'max-dispatches' });
-      expect(result.startedTurns[0]?.handle.turn.id).toBe(testEntityId('tu', testEntityId('tu', 'turn_loop_1')));
+      expect(result.startedTurns[0]?.handle.turn.id).toBe(
+        testEntityId('tu', testEntityId('tu', 'turn_loop_1'))
+      );
       expect(turnExecutor.calls[0]?.context?.sessionCompatibilityKey).toMatch(
         /^sha256:[a-f0-9]{64}$/
       );
@@ -2995,7 +3024,10 @@ describe('scheduler dispatch loop', () => {
       expect(result.startedTurns[0]?.dispatch.entry.queueEntryId).toBe('queue_later_dispatchable');
       expect(result.startedTurns[0]?.dispatch.entry.threadId).toBe(laterThread.id);
       expect(turnExecutor.prepareCalls).toEqual([
-        { threadId: laterThread.id, turnId: testEntityId('tu', testEntityId('tu', 'turn_later_dispatchable')) },
+        {
+          threadId: laterThread.id,
+          turnId: testEntityId('tu', testEntityId('tu', 'turn_later_dispatchable')),
+        },
       ]);
       expect(turnExecutor.calls).toEqual([
         expect.objectContaining({
@@ -3081,7 +3113,9 @@ describe('scheduler dispatch loop', () => {
         )?.phase
       ).toBe('closed');
       expect(turnExecutor.calls).toEqual([]);
-      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_commit_failed')))).toMatchObject({
+      expect(
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_commit_failed')))
+      ).toMatchObject({
         status: 'failed',
         error: { message: 'prepared AgentSession changed' },
       });
@@ -3171,9 +3205,12 @@ describe('scheduler dispatch loop', () => {
         executionAttempts(coreDb).find(
           (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7caa-ba8c-5f2dc3830e32'
         )
-      ).toMatchObject({ agent_session_id: testEntityId('as', testEntityId('as', 'as_live_continuity')) });
+      ).toMatchObject({
+        agent_session_id: testEntityId('as', testEntityId('as', 'as_live_continuity')),
+      });
       expect(
-        store.getAgentSession(testEntityId('as', testEntityId('as', 'as_live_continuity'))).sessionCompatibilityKey
+        store.getAgentSession(testEntityId('as', testEntityId('as', 'as_live_continuity')))
+          .sessionCompatibilityKey
       ).toBe(sessionCompatibilityKey);
       expect(turnExecutor.calls[0]?.context).toMatchObject({
         agentSessionId: testEntityId('as', testEntityId('as', 'as_live_continuity')),
@@ -3266,7 +3303,9 @@ describe('scheduler dispatch loop', () => {
         turnExecutor,
       });
       const firstLease = coreDb.sqlite
-        .prepare(`SELECT attempt_id AS leaseId FROM scheduler_execution_attempts WHERE ${testEntityId('tu', 'turn_id')} = ?`)
+        .prepare(
+          `SELECT attempt_id AS leaseId FROM scheduler_execution_attempts WHERE ${testEntityId('tu', 'turn_id')} = ?`
+        )
         .get(first.turn.id) as { leaseId: string };
       await closeOwnedExecutionAttempt(coreDb, store, {
         attemptId: firstLease.leaseId,
@@ -3447,7 +3486,9 @@ describe('scheduler dispatch loop', () => {
           agentManifests: [agentManifest()],
         })
       ).rejects.toBe(refusal);
-      expect(store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_terminal_busy'))).status).toBe('failed');
+      expect(
+        store.getTurnById(testEntityId('tu', testEntityId('tu', 'turn_terminal_busy'))).status
+      ).toBe('failed');
       expect(
         schedulerRecords.requireSchedulerAdmissionEntry(coreDb, 'queue_terminal_busy').status
       ).toBe('admitted');

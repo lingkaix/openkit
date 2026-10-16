@@ -65,7 +65,9 @@ describe('canonical entity identifiers', () => {
     const pair = ['auto_01890f3e-0000-7000-8000-000000000001', '2026-10-16T00:00:00.000Z'];
     // Independent Python stdlib uuid.uuid5 vectors over the accepted namespaces and JSON names.
     expect(deriveEntityId('occ', pair)).toBe('occ_704590bf-947f-5c92-897f-41a8bc16fa85');
-    expect(deriveEntityId('tu', ['recurring', ...pair])).toBe('tu_1326df3f-cb8b-5364-af47-4c767958f239');
+    expect(deriveEntityId('tu', ['recurring', ...pair])).toBe(
+      'tu_1326df3f-cb8b-5364-af47-4c767958f239'
+    );
   });
   it('retains the deletion-request recovery export identity with its complete immutable input', () => {
     const requestId = '0190f4c8-0000-4000-8000-000000000001';

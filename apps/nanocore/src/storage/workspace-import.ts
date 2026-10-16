@@ -60,9 +60,9 @@ import {
   AuditEventIdSchema,
   AuditEventSchema,
   allocateEntityId,
-  deriveEntityId,
   CapabilityCallIdSchema,
   CapabilityCallSchema,
+  deriveEntityId,
   type EntityKind,
   ItemSchema,
   KnowledgeEntrySchema,
@@ -656,12 +656,6 @@ export interface WorkspaceImportSnapshot {
   lightAppRecords: unknown[];
   /** Portable Generative UI presentation rows. */
   generativePresentations: Record<string, unknown>[];
-  /** Inert recurring definition ids allocated once per source definition in this import. */
-  recurringScheduleIds: Map<string, string>;
-  /** Inert occurrence ids derived under the imported definition and unchanged nominal instant. */
-  recurringOccurrenceIds: Map<string, string>;
-  /** Inert expired-range ids allocated once per source range in this import. */
-  recurringRangeIds: Map<string, string>;
   /** Imported presentation ids keyed by source id. */
   presentationIds: Map<string, string>;
   /** Imported thread ids keyed by source id. */
@@ -833,6 +827,12 @@ interface ImportRemintContext {
   completeRuntimeOriginPackages: Set<string>;
   /** Canonical knowledge ids retained by the imported workspace. */
   knowledgeIds: Set<string>;
+  /** Inert recurring definition ids allocated once per source definition in this import. */
+  recurringScheduleIds: Map<string, string>;
+  /** Inert occurrence ids derived under the imported definition and unchanged nominal instant. */
+  recurringOccurrenceIds: Map<string, string>;
+  /** Inert expired-range ids allocated once per source range in this import. */
+  recurringRangeIds: Map<string, string>;
   /** Imported presentation ids keyed by source id. */
   presentationIds: Map<string, string>;
 }
@@ -951,21 +951,34 @@ export function readWorkspaceImportSnapshot(
       recurring.occurrences.length ||
       recurring.expiredRanges.length
     ) {
-      context.recurringScheduleIds = allocateImportedEntityIds('auto', recurring.schedules.map((row) => row.id));
-      context.recurringOccurrenceIds = new Map(recurring.occurrences.map((row) => [
-        row.id,
-        deriveEntityId('occ', [requiredMapValue(context.recurringScheduleIds, row.scheduleId, 'recurring schedule'), row.scheduledAt]),
-      ]));
-      context.recurringRangeIds = allocateImportedEntityIds('range', recurring.expiredRanges.map((row) => row.id));
+      context.recurringScheduleIds = allocateImportedEntityIds(
+        'auto',
+        recurring.schedules.map((row) => row.id)
+      );
+      context.recurringOccurrenceIds = new Map(
+        recurring.occurrences.map((row) => [
+          row.id,
+          deriveEntityId('occ', [
+            requiredMapValue(context.recurringScheduleIds, row.scheduleId, 'recurring schedule'),
+            row.scheduledAt,
+          ]),
+        ])
+      );
+      context.recurringRangeIds = allocateImportedEntityIds(
+        'range',
+        recurring.expiredRanges.map((row) => row.id)
+      );
       // Existing canonical Thread/Turn maps supply history references; no live Core authority is created.
-      recurringHistory = JSON.stringify(remapRecurringPortableHistory(recurring, {
-        workspaceId: context.targetWorkspaceId,
-        scheduleIds: context.recurringScheduleIds,
-        occurrenceIds: context.recurringOccurrenceIds,
-        rangeIds: context.recurringRangeIds,
-        threadIds: context.threadIds,
-        turnIds: context.turnIds,
-      }));
+      recurringHistory = JSON.stringify(
+        remapRecurringPortableHistory(recurring, {
+          workspaceId: context.targetWorkspaceId,
+          scheduleIds: context.recurringScheduleIds,
+          occurrenceIds: context.recurringOccurrenceIds,
+          rangeIds: context.recurringRangeIds,
+          threadIds: context.threadIds,
+          turnIds: context.turnIds,
+        })
+      );
     }
   }
   const retrievalTraces = readRetrievalTraceImportState(context);
@@ -998,7 +1011,12 @@ export function readWorkspaceImportSnapshot(
     })
   );
   const portableFileState = {
-    ...readPortableImportState(context, workResources.workerContextPackageFiles, knowledge, retrievalTraces.files),
+    ...readPortableImportState(
+      context,
+      workResources.workerContextPackageFiles,
+      knowledge,
+      retrievalTraces.files
+    ),
     recurringHistory,
   };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
@@ -1836,37 +1854,54 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
           ? requiredMapValue(vaultGrantIds, parsed.vaultGrantId, 'vault grant')
           : null,
         workspaceId: context.targetWorkspaceId,
-        resource:
-          ['recurring.schedule.create', 'recurring.schedule.edit', 'recurring.schedule.pause', 'recurring.schedule.resume', 'recurring.schedule.delete'].includes(parsed.action)
-            ? requiredMapValue(context.recurringScheduleIds, parsed.resource ?? '', 'recurring schedule Audit subject')
-            : parsed.action === 'recurring.occurrence.terminal'
-              ? requiredMapValue(context.recurringOccurrenceIds, parsed.resource ?? '', 'recurring occurrence Audit subject')
-              : parsed.action === 'recurring.expired-range.record'
-                ? requiredMapValue(context.recurringRangeIds, parsed.resource ?? '', 'recurring range Audit subject')
-                : parsed.resource === `workspace:${report.exportedWorkspaceId}`
-            ? `workspace:${context.targetWorkspaceId}`
-            : parsed.resource?.startsWith('goal-review:')
-              ? `goal-review:${parsed.resource.slice('goal-review:'.length)}`
-              : parsed.resource?.startsWith('goal-verification:')
-                ? `goal-verification:${parsed.resource.slice('goal-verification:'.length)}`
-                : parsed.resource?.startsWith('goal-task:')
-                  ? `goal-task:${parsed.resource.slice('goal-task:'.length)}`
-                  : parsed.resource?.startsWith('goal:')
-                    ? `goal:${parsed.resource.slice('goal:'.length)}`
-                    : parsed.resource?.startsWith('worker-checkpoint:')
-                      ? `worker-checkpoint:${requiredMapValue(
-                          workerCheckpointIds,
-                          parsed.resource.slice('worker-checkpoint:'.length),
-                          'worker checkpoint'
-                        )}`
-                      : parsed.resource?.startsWith('vault:') &&
-                          vaultReferenceIds.has(parsed.resource.slice('vault:'.length))
-                        ? `vault:${requiredMapValue(
-                            vaultReferenceIds,
-                            parsed.resource.slice('vault:'.length),
-                            'vault reference'
-                          )}`
-                        : parsed.resource,
+        resource: [
+          'recurring.schedule.create',
+          'recurring.schedule.edit',
+          'recurring.schedule.pause',
+          'recurring.schedule.resume',
+          'recurring.schedule.delete',
+        ].includes(parsed.action)
+          ? requiredMapValue(
+              context.recurringScheduleIds,
+              parsed.resource ?? '',
+              'recurring schedule Audit subject'
+            )
+          : parsed.action === 'recurring.occurrence.terminal'
+            ? requiredMapValue(
+                context.recurringOccurrenceIds,
+                parsed.resource ?? '',
+                'recurring occurrence Audit subject'
+              )
+            : parsed.action === 'recurring.expired-range.record'
+              ? requiredMapValue(
+                  context.recurringRangeIds,
+                  parsed.resource ?? '',
+                  'recurring range Audit subject'
+                )
+              : parsed.resource === `workspace:${report.exportedWorkspaceId}`
+                ? `workspace:${context.targetWorkspaceId}`
+                : parsed.resource?.startsWith('goal-review:')
+                  ? `goal-review:${parsed.resource.slice('goal-review:'.length)}`
+                  : parsed.resource?.startsWith('goal-verification:')
+                    ? `goal-verification:${parsed.resource.slice('goal-verification:'.length)}`
+                    : parsed.resource?.startsWith('goal-task:')
+                      ? `goal-task:${parsed.resource.slice('goal-task:'.length)}`
+                      : parsed.resource?.startsWith('goal:')
+                        ? `goal:${parsed.resource.slice('goal:'.length)}`
+                        : parsed.resource?.startsWith('worker-checkpoint:')
+                          ? `worker-checkpoint:${requiredMapValue(
+                              workerCheckpointIds,
+                              parsed.resource.slice('worker-checkpoint:'.length),
+                              'worker checkpoint'
+                            )}`
+                          : parsed.resource?.startsWith('vault:') &&
+                              vaultReferenceIds.has(parsed.resource.slice('vault:'.length))
+                            ? `vault:${requiredMapValue(
+                                vaultReferenceIds,
+                                parsed.resource.slice('vault:'.length),
+                                'vault reference'
+                              )}`
+                            : parsed.resource,
       });
     }
   );

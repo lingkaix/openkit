@@ -1,4 +1,3 @@
-import { testEntityId } from './test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +9,7 @@ import { FsStore } from './lib/store.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -112,7 +112,9 @@ describe('fixed-interval automation operations', () => {
       { ...input, responsibleUserId: testEntityId('usr', 'user_substitute') },
     ])
       expect((await request('create', invalid)).status).toBe(400);
-    expect((await request('create', { ...input, threadId: testEntityId('th', 'th_missing') })).status).toBe(404);
+    expect(
+      (await request('create', { ...input, threadId: testEntityId('th', 'th_missing') })).status
+    ).toBe(404);
     const schedule = await (await request('create', input)).json();
     expect(
       (
@@ -243,7 +245,10 @@ it('attributes a member edit to the actual caller while preserving the responsib
       effectiveRole: 'editor',
       policyOperation: 'workspace.configure',
     },
-    resolvedLineage: { workspaceId: input.workspaceId, ownerUserId: testEntityId('usr', 'user_creator') },
+    resolvedLineage: {
+      workspaceId: input.workspaceId,
+      ownerUserId: testEntityId('usr', 'user_creator'),
+    },
   } as const;
   const edited = await operations['automation.update'](
     { automationId: schedule.id, expectedRevision: 1, name: 'Updated by member' },
@@ -254,5 +259,7 @@ it('attributes a member edit to the actual caller while preserving the responsib
     db.sqlite
       .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edited'")
       .get()
-  ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_member') }) });
+  ).toEqual({
+    actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_member') }),
+  });
 });

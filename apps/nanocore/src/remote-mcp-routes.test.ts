@@ -1,6 +1,3 @@
-import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
-import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from './test-support/demo-store.js';
-import { testEntityId } from './test-support/entity-ids.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,7 +15,6 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './test-support/local-user.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -36,7 +32,9 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import * as materialOwners from './workspace-materials.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
@@ -202,7 +200,13 @@ describe('remote MCP App endpoint', () => {
             {
               operation,
               ...(tool === 'call'
-                ? { input: { workspaceId: DEMO_WORKSPACE_ID, exportId: 'absent', requestId: randomUUID() } }
+                ? {
+                    input: {
+                      workspaceId: DEMO_WORKSPACE_ID,
+                      exportId: 'absent',
+                      requestId: randomUUID(),
+                    },
+                  }
                 : {}),
             },
             admin.secret
@@ -301,10 +305,16 @@ describe('remote MCP App endpoint', () => {
   ] as const)('preserves the known %s scheduler refusal through HTTP and MCP without changing queue rows', async (target) => {
     const f = await fixture();
     const bearer = f.token();
-    const thread = f.store.createThread(DEMO_WORKSPACE_ID, 'Private queue', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: testEntityId('usr', 'user_other'),
-    });
+    const thread = f.store.createThread(
+      DEMO_WORKSPACE_ID,
+      'Private queue',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: testEntityId('usr', 'user_other'),
+      }
+    );
     for (const [queueEntryId, workspaceId] of [
       ['queue_private', DEMO_WORKSPACE_ID],
       ['queue_foreign', testEntityId('ws', 'ws_foreign')],
@@ -389,7 +399,9 @@ describe('remote MCP App endpoint', () => {
         responsibleUserId: testEntityId('usr', 'user_remote_mcp'),
         intent: 'Prepare a reviewed design',
       });
-      expect(f.store.getThread(DEMO_WORKSPACE_ID, created.goal.threadId).visibility).toBe('workspace');
+      expect(f.store.getThread(DEMO_WORKSPACE_ID, created.goal.threadId).visibility).toBe(
+        'workspace'
+      );
       expect(wake).toHaveBeenCalledExactlyOnceWith(DEMO_WORKSPACE_ID, created.goal.goalId);
     } finally {
       f.coreDb.sqlite.close();
@@ -420,7 +432,11 @@ describe('remote MCP App endpoint', () => {
       'call',
       {
         operation: 'thread.create',
-        input: { workspaceId: DEMO_WORKSPACE_ID, name: 'Blocked MCP Thread', requestId: randomUUID() },
+        input: {
+          workspaceId: DEMO_WORKSPACE_ID,
+          name: 'Blocked MCP Thread',
+          requestId: randomUUID(),
+        },
       },
       token.secret
     );
@@ -457,11 +473,19 @@ describe('remote MCP App endpoint', () => {
         ['vault.provider-api-key-set', { providerId: 'provider-b6', apiKey: 'synthetic-b6-key' }],
         [
           'vault.secret-create',
-          { workspaceId: DEMO_WORKSPACE_ID, secretKind: 'github-token', material: 'synthetic-b6-material' },
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            secretKind: 'github-token',
+            material: 'synthetic-b6-material',
+          },
         ],
         [
           'vault.secret-rotate',
-          { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6', material: 'synthetic-b6-next' },
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            referenceId: 'vault_b6',
+            material: 'synthetic-b6-next',
+          },
         ],
         ['vault.secret-revoke', { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6' }],
         ['vault.grant-create', { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6' }],
@@ -573,7 +597,9 @@ describe('remote MCP App endpoint', () => {
         const mcp = await f.call('call', { operation, input }, token.secret);
         expect(mcp.isError).toBe(true);
         expect(JSON.parse(mcp.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
-        expect(f.automationStore.listAuthorizedAutomations([DEMO_WORKSPACE_ID])).toEqual([automation]);
+        expect(f.automationStore.listAuthorizedAutomations([DEMO_WORKSPACE_ID])).toEqual([
+          automation,
+        ]);
         expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry')).toEqual(beforeRetry);
         expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_cancel')).toEqual(beforeCancel);
         expect(f.store.getTurnById(turn.id)).toEqual(beforeTurn);
@@ -683,10 +709,19 @@ describe('remote MCP App endpoint', () => {
     for (const [operation, input] of [
       ['workspace.create', { name: 'Blocked' }],
       ['workspace.update', { workspaceId: DEMO_WORKSPACE_ID, name: 'Blocked' }],
-      ['thread.update', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, name: 'Blocked' }],
+      [
+        'thread.update',
+        { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, name: 'Blocked' },
+      ],
       ['thread.archive', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID }],
-      ['turn.start', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, input: 'Blocked' }],
-      ['turn.interrupt', { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, turnId: turn.id }],
+      [
+        'turn.start',
+        { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, input: 'Blocked' },
+      ],
+      [
+        'turn.interrupt',
+        { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, turnId: turn.id },
+      ],
       ['turn.feedback', { turnId: turn.id, rating: 'good', note: 'Blocked' }],
       ['chat.quick', { input: 'Blocked' }],
     ] as const) {
@@ -1062,7 +1097,9 @@ describe('remote MCP App endpoint', () => {
         appDb.sqlite
           .prepare("SELECT actor_json FROM audit_events WHERE action = 'kernel.records.create'")
           .get()
-      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_remote_mcp') }) });
+      ).toEqual({
+        actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_remote_mcp') }),
+      });
     } finally {
       appDb.sqlite.close();
     }
@@ -1119,7 +1156,9 @@ describe('remote MCP App endpoint', () => {
     expect(refused.isError).toBe(true);
     expect(JSON.parse(refused.content[0].text).code).toBe('workspace_access_denied');
     expect(
-      listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', { schemaRevision: 1 }).items
+      listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', {
+        schemaRevision: 1,
+      }).items
     ).toHaveLength(0);
     revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
     expect((await f.message('tools/list', {}, token.secret)).status).toBe(401);
@@ -1272,7 +1311,9 @@ describe('remote MCP App endpoint', () => {
     });
     expect((await malformed.json()).error).toBeDefined();
     expect(
-      listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', { schemaRevision: 1 }).items
+      listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', {
+        schemaRevision: 1,
+      }).items
     ).toHaveLength(0);
   });
 });
@@ -1414,7 +1455,9 @@ it('refuses user.disable through MCP closed product admission without changing t
         },
       },
     });
-    const before = f.coreDb.sqlite.prepare(`SELECT * FROM users WHERE id = '${FIXTURE_LOCAL_USER_ID}'`).get();
+    const before = f.coreDb.sqlite
+      .prepare(`SELECT * FROM users WHERE id = '${FIXTURE_LOCAL_USER_ID}'`)
+      .get();
     const requestId = randomUUID();
     const result = await f.call(
       'call',
@@ -1423,9 +1466,9 @@ it('refuses user.disable through MCP closed product admission without changing t
     );
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
-    expect(f.coreDb.sqlite.prepare(`SELECT * FROM users WHERE id = '${FIXTURE_LOCAL_USER_ID}'`).get()).toEqual(
-      before
-    );
+    expect(
+      f.coreDb.sqlite.prepare(`SELECT * FROM users WHERE id = '${FIXTURE_LOCAL_USER_ID}'`).get()
+    ).toEqual(before);
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')

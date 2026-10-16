@@ -1,5 +1,3 @@
-import { testEntityId } from '../test-support/entity-ids.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +8,7 @@ import { FsStore } from '../lib/store.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { RecurringPreparation } from '../storage/recurring-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -179,7 +178,13 @@ describe('serialized recurring scanner', () => {
         .prepare(`INSERT INTO workspace_members
         (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
         VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
-        .run(workspace.id, testEntityId('usr', 'user_replacement'), timestamp, timestamp, timestamp);
+        .run(
+          workspace.id,
+          testEntityId('usr', 'user_replacement'),
+          timestamp,
+          timestamp,
+          timestamp
+        );
       db.sqlite
         .prepare(`UPDATE workspace_registry SET owner_user_id = ?, revision = revision + 1, updated_at = ?
         WHERE workspace_id = ?`)

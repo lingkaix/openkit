@@ -1,4 +1,3 @@
-import { testEntityId } from '../../../../nanocore/src/test-support/entity-ids.js';
 import type { CoreClient } from '@openkit/core-client';
 import { ItemSchema, ProductTurnSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -6,6 +5,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { testEntityId } from '../../../../nanocore/src/test-support/entity-ids.js';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { useWorkspaceStore } from '../workspace-store';

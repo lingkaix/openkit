@@ -1,5 +1,5 @@
-import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import { describe, expect, it } from 'vitest';
+import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import {
   AutomationCadenceSchema,
   CreateAutomationRequestSchema,

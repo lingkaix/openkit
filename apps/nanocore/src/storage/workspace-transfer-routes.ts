@@ -17,7 +17,13 @@ import {
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import { type ActorRef, type Item, allocateEntityId, deriveEntityId, isEntityId } from '@openkit/protocol';
+import {
+  type ActorRef,
+  allocateEntityId,
+  deriveEntityId,
+  type Item,
+  isEntityId,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
 import {

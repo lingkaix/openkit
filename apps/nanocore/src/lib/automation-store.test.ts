@@ -1,4 +1,3 @@
-import { testEntityId } from '../test-support/entity-ids.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +13,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { AutomationMutationError, AutomationStore } from './automation-store.js';
@@ -68,7 +68,11 @@ describe('durable fixed-interval recurrence', () => {
     const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
     expect(schedule).toMatchObject({
       status: 'paused',
-      actor: { kind: 'automation', id: schedule.id, responsibleUserId: testEntityId('usr', 'user_creator') },
+      actor: {
+        kind: 'automation',
+        id: schedule.id,
+        responsibleUserId: testEntityId('usr', 'user_creator'),
+      },
     });
     db.sqlite.close();
     const reopened = openCoreDb(root);
@@ -463,9 +467,14 @@ it('uses the shared Workspace fence for definition changes and admission', async
     'fenced'
   );
   expect(() =>
-    store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, { expectedRevision: 2, status: 'paused' })
+    store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
+      expectedRevision: 2,
+      status: 'paused',
+    })
   ).toThrow('fenced');
-  expect(() => store.deleteAutomation(testEntityId('usr', 'user_creator'), schedule.id)).toThrow('fenced');
+  expect(() => store.deleteAutomation(testEntityId('usr', 'user_creator'), schedule.id)).toThrow(
+    'fenced'
+  );
   expect(store.getOccurrence(occurrence!.id)).toMatchObject({ state: 'pending', attempts: [] });
 });
 
@@ -687,7 +696,10 @@ it('orders actual fixed and monthly live frontiers before the shared 128 schedul
       scheduledAt: '2020-01-28T09:00:00.000Z',
     });
   }
-  const fixed = store.createAutomation(testEntityId('usr', 'user_creator'), { ...definition, intervalSeconds: 3600 });
+  const fixed = store.createAutomation(testEntityId('usr', 'user_creator'), {
+    ...definition,
+    intervalSeconds: 3600,
+  });
   store.updateAutomation(testEntityId('usr', 'user_creator'), fixed.id, {
     expectedRevision: 1,
     status: 'active',
@@ -910,7 +922,10 @@ it('selects a live monthly instant ahead of more than 128 expired-only fixed pre
   setTime('2020-01-28T09:00:00.000Z');
   db.sqlite.transaction(() => {
     for (let index = 0; index < 129; index++) {
-      const old = store.createAutomation(testEntityId('usr', 'user_creator'), { ...definition, intervalSeconds: 86400 });
+      const old = store.createAutomation(testEntityId('usr', 'user_creator'), {
+        ...definition,
+        intervalSeconds: 86400,
+      });
       store.updateAutomation(testEntityId('usr', 'user_creator'), old.id, {
         expectedRevision: 1,
         status: 'active',

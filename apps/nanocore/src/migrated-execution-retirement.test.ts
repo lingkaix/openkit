@@ -1,11 +1,8 @@
-import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
-import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from './test-support/demo-store.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationHttpPath } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './test-support/local-user.js';
 import { AutomationStore } from './lib/automation-store.js';
 import {
   createSchedulerAdmissionEntry,
@@ -15,7 +12,8 @@ import {
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -37,7 +35,11 @@ describe('migrated execution route retirement', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: FIXTURE_LOCAL_USER_ID });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: DEMO_WORKSPACE_ID,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+    });
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
     const automation = automationStore.createAutomation(FIXTURE_LOCAL_USER_ID, {
@@ -93,7 +95,11 @@ describe('migrated execution route retirement', () => {
         { expectedRevision: 1, name: 'Updated' },
       ],
       'automation.delete': ['DELETE', `/api/app/automations/${automation.id}`, undefined],
-      'scheduler.list': ['GET', `/api/app/workspaces/${DEMO_WORKSPACE_ID}/scheduler/admissions`, undefined],
+      'scheduler.list': [
+        'GET',
+        `/api/app/workspaces/${DEMO_WORKSPACE_ID}/scheduler/admissions`,
+        undefined,
+      ],
       'scheduler.retry': [
         'POST',
         `/api/app/workspaces/${DEMO_WORKSPACE_ID}/scheduler/admissions/queue_retirement/retry`,

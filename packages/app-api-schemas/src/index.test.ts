@@ -1,16 +1,18 @@
-import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from '../../../apps/nanocore/src/test-support/demo-store.js';
-import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WorkspaceMcpCredentialBindingSchema } from '@openkit/config-schema/mcp-credentials';
-
 import {
   SubscriptionProviderIdSchema as ConfigSubscriptionProviderIdSchema,
   ProviderSubscriptionAccountSlotIdSchema,
 } from '@openkit/config-schema/provider-subscription';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import {
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+} from '../../../apps/nanocore/src/test-support/demo-store.js';
+import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 
 import * as appApiSchemas from './index.js';
 import {
@@ -4978,7 +4980,11 @@ describe('app api schemas', () => {
         threadId: DEMO_THREAD_ID,
         intervalSeconds: 60,
         responsibleUserId: testEntityId('usr', 'user_creator'),
-        actor: { kind: 'automation', id: 'auto_1', responsibleUserId: testEntityId('usr', 'user_creator') },
+        actor: {
+          kind: 'automation',
+          id: 'auto_1',
+          responsibleUserId: testEntityId('usr', 'user_creator'),
+        },
         revision: 1,
         nextScheduledAt: null,
         greatestAccountedScheduledAt: null,

@@ -1,6 +1,9 @@
-import { DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from '../../../apps/nanocore/src/test-support/demo-store.js';
-import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import { describe, expect, it } from 'vitest';
+import {
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+} from '../../../apps/nanocore/src/test-support/demo-store.js';
+import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
