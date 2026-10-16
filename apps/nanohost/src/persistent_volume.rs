@@ -193,9 +193,20 @@ pub struct PersistentVolumeStore {
 }
 
 impl PersistentVolumeStore {
-    /// Opens the fixed production store and rejects unsafe existing roots.
-    pub fn open(docker_socket: PathBuf) -> Result<Self, &'static str> {
-        Self::open_at(PathBuf::from(PERSISTENT_VOLUME_ROOT), docker_socket, 0)
+    /// Opens the production store after the complete prior epoch is proved absent.
+    pub fn open_after_epoch_fence(docker_socket: PathBuf) -> Result<Self, &'static str> {
+        Self::open_at_after_epoch_fence(PathBuf::from(PERSISTENT_VOLUME_ROOT), docker_socket, 0)
+    }
+
+    /// Opens one store and releases old attachment hints under the caller's complete prior-writer absence proof.
+    fn open_at_after_epoch_fence(
+        root: PathBuf,
+        docker_socket: PathBuf,
+        owner_uid: u32,
+    ) -> Result<Self, &'static str> {
+        let mut store = Self::open_at(root, docker_socket, owner_uid)?;
+        store.release_fenced_attachments()?;
+        Ok(store)
     }
 
     fn open_at(
@@ -521,7 +532,7 @@ impl PersistentVolumeStore {
     }
 
     /// Releases every attachment only after the complete prior epoch is proved absent.
-    pub fn release_fenced_attachments(&mut self) -> Result<(), &'static str> {
+    fn release_fenced_attachments(&mut self) -> Result<(), &'static str> {
         let entries = fs::read_dir(&self.root).map_err(|_| "persistent storage root unreadable")?;
         for entry in entries {
             let entry = entry.map_err(|_| "persistent storage root unreadable")?;
@@ -2827,6 +2838,101 @@ pub(crate) mod tests {
         assert_eq!(
             fs::read(volume.join("retained.txt")).unwrap(),
             b"retained work"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Retiring disposable roots cannot leave an old attachment blocking the fenced successor.
+    #[test]
+    fn fenced_open_after_epoch_root_retirement_allows_retained_successor() {
+        let root = temporary_root();
+        let state = root.join("state");
+        let runtime = root.join("runtime");
+        fs::create_dir_all(state.join("epoch")).unwrap();
+        fs::create_dir(&runtime).unwrap();
+        fs::write(state.join("epoch/state"), b"prior epoch state").unwrap();
+        fs::write(runtime.join("member-state"), b"prior runtime state").unwrap();
+        let retained_root = root.join("retained");
+        let store = test_store(&retained_root);
+        let (association, volume) = stored_association(&store, "storage-one", "sandbox-old", 3);
+        fs::write(volume.join("retained.txt"), b"retained worker bytes").unwrap();
+        let mut expected = store.read_metadata(&association).unwrap();
+        assert_eq!(expected.state, "attached");
+        assert!(expected.attachment.is_some());
+        drop(store);
+
+        // No epoch members are started by this fixture; the complete old writer group is absent.
+        fs::rename(&state, root.join("prior-state")).unwrap();
+        fs::rename(&runtime, root.join("prior-runtime")).unwrap();
+        fs::create_dir(&state).unwrap();
+        fs::create_dir(&runtime).unwrap();
+        assert_eq!(fs::read_dir(&state).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&runtime).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(root.join("prior-state/epoch/state")).unwrap(),
+            b"prior epoch state"
+        );
+        assert_eq!(
+            fs::read(root.join("prior-runtime/member-state")).unwrap(),
+            b"prior runtime state"
+        );
+        let mut reopened = PersistentVolumeStore::open_at_after_epoch_fence(
+            retained_root,
+            runtime.join("docker.sock"),
+            unsafe { libc::geteuid() },
+        )
+        .expect("fenced startup must reopen the retained store independently of disposable roots");
+        assert_eq!(
+            fs::read(volume.join("retained.txt")).unwrap(),
+            b"retained worker bytes"
+        );
+        expected.attachment = None;
+        expected.state = "available".into();
+        assert_eq!(
+            reopened.read_metadata(&association).unwrap(),
+            expected,
+            "fenced startup must release only the old attachment and preserve retained lineage"
+        );
+
+        let layout = ImageStorageLayout {
+            digest: digest('a'),
+            family: expected.family.clone(),
+            version: expected.version.clone(),
+            uid: expected.uid,
+            gid: expected.gid,
+            working_directory: "/tmp/openkit-bootstrap".into(),
+            os: expected.os.clone(),
+            architecture: expected.architecture.clone(),
+            targets: vec!["/workspace".into()],
+            environment_defaults: parse_environment_defaults(None).unwrap(),
+        };
+        let request = StorageAttachmentRequest {
+            storage_ref: expected.storage_ref.clone(),
+            scope_digest: expected.scope_digest.clone(),
+            attachment_generation: 4,
+            layout_digest: layout.layout_digest(),
+            targets: vec![StorageTargetBinding {
+                target: expected.targets[0].target.clone(),
+                volume_ref: expected.targets[0].volume_ref.clone(),
+            }],
+        };
+        let mounts = reopened
+            .attach("sandbox-next", &request, &layout)
+            .expect("the freshly admitted successor must reuse the retained initialized volume");
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].target, "/workspace");
+        assert_eq!(mounts[0].source, volume);
+        expected.attachment_generation = 4;
+        expected.state = "attached".into();
+        expected.attachment = Some(StoredAttachment {
+            extensions: serde_json::Map::new(),
+            generation: 4,
+            sandbox_id: "sandbox-next".into(),
+        });
+        assert_eq!(reopened.read_metadata(&association).unwrap(), expected);
+        assert_eq!(
+            fs::read(volume.join("retained.txt")).unwrap(),
+            b"retained worker bytes"
         );
         fs::remove_dir_all(root).unwrap();
     }
