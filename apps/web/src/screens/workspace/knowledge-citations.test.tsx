@@ -251,9 +251,11 @@ describe('Knowledge Manager answer citations', () => {
       });
     });
 
-    expect(fixture.queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_ID))).toContainEqual(
-      PAGE
-    );
+    expect(
+      fixture.queryClient.getQueryData<{ items: (typeof PAGE)[] }>(
+        workspaceKeys.knowledge(WORKSPACE_ID)
+      )?.items
+    ).toContainEqual(PAGE);
     await waitFor(() => expect(within(manager).queryByRole('link')).not.toBeInTheDocument());
     expect(within(manager).getByText('Current content unavailable.')).toBeVisible();
   });
