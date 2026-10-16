@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
+import { type FileStorageAdmission } from './artifacts/file-admission.js';
+import { reserveCanonicalFileWrite, withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
 import { PassThrough, Readable } from 'node:stream';
 import { createZstdCompress } from 'node:zlib';
 import {
@@ -1410,11 +1411,13 @@ export function registerWorkspaceTransferRoutes({
   app,
   coreDb,
   dataRoot,
+  fileAdmission,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
+  readonly fileAdmission: FileStorageAdmission;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'workspace.archive-download', (c) => {
@@ -1482,7 +1485,7 @@ export function registerWorkspaceTransferRoutes({
 
     let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
     try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot);
+      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
       const store = requestStore(c);
       const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
       if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
@@ -1531,7 +1534,7 @@ export function registerWorkspaceTransferRoutes({
 
     let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
     try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot);
+      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
       const store = requestStore(c);
       const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
       if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
@@ -1542,14 +1545,14 @@ export function registerWorkspaceTransferRoutes({
         );
       }
       return c.json(
-        importVerifiedWorkspace({
+        withCanonicalFileWriteAdmission(fileAdmission, () => importVerifiedWorkspace({
           authorityUserId: c.get('actor').userId,
           coreDb,
           dataRoot,
           requestId,
           store,
           verified,
-        })
+        }))
       );
     } catch {
       return asApiError(
