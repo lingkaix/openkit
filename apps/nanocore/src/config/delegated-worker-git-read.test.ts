@@ -251,7 +251,7 @@ function fixture(repositoryCount = 1) {
     files,
     reload,
     runtimeConfig: () => manager.current(),
-    repositoryWorkspaceDb: () => workspaceDb,
+    repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, 'ws_demo'),
     inflightCommands: new WeakMap(),
   };
   const service = createAdministrationConfiguration(options);
