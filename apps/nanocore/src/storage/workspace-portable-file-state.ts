@@ -6,6 +6,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -19,6 +20,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import type { z } from 'zod';
+import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
   appendCanonicalTextFile,
@@ -736,7 +738,7 @@ function readWorkerContextPackageFiles(
         throw new Error(`Portable worker Context Package tree is incomplete: ${turnPath}.`);
       }
       files.set(tracePath, readCanonicalTextFile(join(turnDirectory, 'context-package.json')));
-      for (const entry of readTextTree(root, packagePath, true)) {
+      for (const entry of readTextTree(root, packagePath, true, `${packagePath}/originals/`)) {
         files.set(...entry);
       }
     }
@@ -782,7 +784,8 @@ function assertWorkerContextPackageFiles(files: ReadonlyMap<string, string>): vo
 function readTextTree(
   root: string,
   relativeDirectory: string,
-  recursive: boolean
+  recursive: boolean,
+  originalPrefix?: string
 ): ReadonlyMap<string, string> {
   const directory = workspaceDirectory(root, relativeDirectory, false);
   const files = new Map<string, string>();
@@ -803,7 +806,9 @@ function readTextTree(
         assertCanonicalDirectory(path);
         visit(path, relativePath);
       } else if (entry.isFile()) {
-        files.set(relativePath, readCanonicalTextFile(path));
+        // Original snapshots are copied and verified as binary files by the export owner.
+        if (!originalPrefix || !relativePath.startsWith(originalPrefix))
+          files.set(relativePath, readCanonicalTextFile(path));
       } else {
         throw new Error(`Portable workspace tree contains an invalid entry: ${path}.`);
       }
@@ -858,21 +863,46 @@ function writeText(root: string, relativePath: string, content: string, replace:
   if (exists) {
     readCanonicalTextFile(path);
   }
-  const descriptor = openSync(
-    path,
-    constants.O_WRONLY |
-      constants.O_CREAT |
-      constants.O_NOFOLLOW |
-      (exists ? constants.O_TRUNC : constants.O_EXCL),
-    0o600
-  );
+  const byteLength = Buffer.byteLength(content, 'utf8');
+  const reservation = reserveCanonicalFileWrite(byteLength);
+  let descriptor: number | undefined;
+  let release = true;
+  let opened = false;
   try {
+    descriptor = openSync(
+      path,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_NOFOLLOW |
+        (exists ? constants.O_TRUNC : constants.O_EXCL),
+      0o600
+    );
+    opened = true;
+    release = false;
     if (!fstatSync(descriptor).isFile()) {
       throw new Error(`Portable workspace path must be a regular file: ${path}.`);
     }
     writeFileSync(descriptor, content);
-  } finally {
+    reservation?.recordWritten(byteLength);
     closeSync(descriptor);
+    descriptor = undefined;
+    reservation?.assertAvailable();
+    release = true;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+      descriptor = undefined;
+    }
+    // This writer owns only unpublished staging files. Failed cleanup keeps its reservation.
+    if (opened) rmSync(path, { force: true });
+    release = true;
+    throw error;
+  } finally {
+    try {
+      if (descriptor !== undefined) closeSync(descriptor);
+    } finally {
+      if (release) reservation?.release();
+    }
   }
 }
 
