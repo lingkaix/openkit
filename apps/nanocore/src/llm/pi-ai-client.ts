@@ -1186,7 +1186,7 @@ export class PiAiGatewayClient {
       options.samplingParams = { parallel_tool_calls: request.parallel_tool_calls };
     this.applyRequestPayloadOverlay(options, model, maxTokens, request.parallel_tool_calls);
     applyCodexTransport(options, model, transport);
-    this.bindFinalRequestAdmission(options, provider, model, transport);
+    this.bindFinalRequestAdmission(options, model, transport);
     this.bindRawOutput(options, model, transport);
     return options;
   }
@@ -1354,7 +1354,7 @@ export class PiAiGatewayClient {
         envelope.output = envelope.output.toSorted((left, right) => left.index - right.index);
       };
     applyCodexTransport(options, selectedModel, transport);
-    this.bindFinalRequestAdmission(options, provider, selectedModel, transport);
+    this.bindFinalRequestAdmission(options, selectedModel, transport);
     this.bindRawOutput(options, selectedModel, transport);
     return options;
   }
@@ -1362,7 +1362,6 @@ export class PiAiGatewayClient {
   /** Admits the final stock payload without changing its identity, overlays, transport or raw observer. */
   private bindFinalRequestAdmission(
     options: StreamOptions & Record<string, unknown>,
-    provider: ResolvedLLMProviderConfig,
     model: Model<string>,
     transport: LLMGatewayTransportContext
   ): void {
@@ -1373,23 +1372,34 @@ export class PiAiGatewayClient {
       const overlaid = await previous?.(payload, selected);
       const finalPayload = overlaid === undefined ? payload : overlaid;
       const record = readRecord(finalPayload);
-      const generation = readRecord(record?.config ?? record?.generationConfig ?? record?.generation_config);
+      const generation = readRecord(
+        record?.config ?? record?.generationConfig ?? record?.generation_config
+      );
+      const inference = readRecord(record?.inferenceConfig);
       const caps = [
-        options.maxTokens ?? model.maxTokens,
         record?.max_output_tokens,
         record?.max_completion_tokens,
         record?.max_tokens,
+        record?.maxTokens,
         generation?.maxOutputTokens,
-      ].filter((value): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
+        inference?.maxTokens,
+      ].filter(
+        (value): value is number =>
+          typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+      );
       await raceProviderWithSignal(
-        () => Promise.resolve(admit({
-          providerId: provider.id,
-          modelId: selected.id,
-          api: selected.api,
-          payload: finalPayload,
-          outputReserveTokens: Math.max(...caps),
-          codexTurnState: options.headers?.['x-codex-turn-state'],
-        }, options.signal)),
+        () =>
+          Promise.resolve(
+            admit(
+              {
+                payload: finalPayload,
+                outputReserveTokens:
+                  caps.length > 0 ? Math.max(...caps) : (options.maxTokens ?? model.maxTokens),
+                codexTurnState: options.headers?.['x-codex-turn-state'],
+              },
+              options.signal
+            )
+          ),
         options.signal
       );
       return finalPayload;

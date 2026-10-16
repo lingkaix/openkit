@@ -1,12 +1,14 @@
 import { operationToolName } from '@openkit/app-api-schemas';
-import { admitModelRequest, ModelRequestAdmissionError } from '../context/model-request-admission.js';
-
 import {
   type CapabilityAuditLineage,
   finishCapabilityCall,
   type GatewayCallContext,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import {
+  admitModelRequest,
+  ModelRequestAdmissionError,
+} from '../context/model-request-admission.js';
 import { LogicalModelRoutesExhaustedError } from '../llm/gateway-execution.js';
 import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
@@ -160,12 +162,17 @@ export function createInternalAgentGatewayProvider(
             providerModel
           ).limit;
           const maxOutputTokens = options.logicalModel.contract?.output ?? limits?.output;
-          const contextWindowTokens = limits?.context === undefined
-            ? undefined
-            : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context);
+          const contextWindowTokens =
+            limits?.context === undefined
+              ? undefined
+              : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context);
           // Refuse an obviously oversized assembled window before stock preparation; final overlays are checked below.
           admitModelRequest({
-            payload: { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
+            payload: {
+              instructions: request.systemPrompt,
+              input: providerInput,
+              tools: providerTools,
+            },
             contextWindowTokens,
             outputReserveTokens: maxOutputTokens ?? 0,
           });

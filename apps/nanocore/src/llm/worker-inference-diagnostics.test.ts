@@ -544,3 +544,41 @@ it('blocks Provider access before execution when native stop coverage is absent'
   expect((await f.post(false)).status).toBe(503);
   expect(f.dispatch).not.toHaveBeenCalled();
 });
+
+it.each([
+  { endpoint: 'responses', stream: false },
+  { endpoint: 'chat/completions', stream: false },
+  { endpoint: 'responses', stream: true },
+  { endpoint: 'chat/completions', stream: true },
+])('returns actionable context overflow without retry or private details: %j', async ({
+  endpoint,
+  stream,
+}) => {
+  const f = fixture();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const failure = Object.assign(new Error('private-context-canary'), {
+    failure: { kind: 'context_overflow', settled: true, status: 400 },
+  });
+  if (stream) f.dispatch.mockResolvedValue(failedStream(failure, endpoint));
+  else f.dispatch.mockRejectedValue(failure);
+  const response = await f.post(stream, endpoint);
+  expect(response.status).toBe(stream ? 200 : 400);
+  const expected = {
+    code: 'gateway_context_overflow',
+    type: 'provider_error',
+    message: 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.',
+  };
+  if (stream) {
+    const body = await response.text();
+    const terminal = body
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)))
+      .find((frame) => frame.error || frame.response?.error);
+    expect(terminal?.error ?? terminal?.response?.error).toMatchObject(expected);
+    expect(body).toContain('[DONE]');
+    expect(body).not.toContain('private-context-canary');
+  } else expect(await response.json()).toEqual({ error: expected });
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
+  expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'gateway_context_overflow' }]);
+});

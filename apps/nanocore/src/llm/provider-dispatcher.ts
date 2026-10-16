@@ -45,9 +45,6 @@ export interface LLMGatewayTransportContext {
   /** Trusted admission after stock serialization and native overlays; it never replaces the payload. */
   readonly finalRequestAdmission?: (
     request: {
-      readonly providerId: string;
-      readonly modelId: string;
-      readonly api: string;
       readonly payload: unknown;
       readonly outputReserveTokens: number;
       readonly codexTurnState?: string | undefined;

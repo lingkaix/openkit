@@ -1628,7 +1628,10 @@ function createGatewayTerminalErrorSse(
     errorCode ?? publicGatewayFailureCode(normalized.code, 'gateway_stream_failed');
   const payload = {
     error: {
-      message: failureMessage ?? gatewayProviderFailureMessage(publicCode),
+      message:
+        publicCode === 'gateway_context_overflow'
+          ? gatewayProviderFailureMessage(publicCode)
+          : (failureMessage ?? gatewayProviderFailureMessage(publicCode)),
       type: normalized.type,
       code: publicCode,
       endpoint,
@@ -1712,7 +1715,7 @@ function gatewayProviderFailureMessage(code: string): string {
     case 'gateway_provider_rate_limited':
       return 'Provider rate limit exceeded.';
     case 'gateway_context_overflow':
-      return 'Provider context limit exceeded.';
+      return 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.';
     case 'gateway_provider_request_invalid':
       return 'Provider rejected the request.';
     case 'gateway_provider_unavailable':

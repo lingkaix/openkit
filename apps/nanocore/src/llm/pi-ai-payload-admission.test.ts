@@ -5,8 +5,8 @@ import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { admitModelRequest } from '../context/model-request-admission.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { OpenAICompatibleResponsesRequest } from './openai-compatible-client.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
@@ -110,21 +110,34 @@ async function fixture(api: 'responses' | 'chat' | 'codex' | 'custom' = 'respons
     apiKey: credential,
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     models: [modelId],
-    modelMetadata: { [modelId]: { modalities: { input: ['text', 'image'] }, limit: { context: 131072, output: 8192 } } },
+    modelMetadata: {
+      [modelId]: {
+        modalities: { input: ['text', 'image'] },
+        limit: { context: 131072, output: 8192 },
+      },
+    },
     requiresApiKey: true,
     gatewayCapabilities: {
       chatCompletions: api === 'chat' ? 'native' : 'bridged',
       responses: api === 'chat' ? 'bridged' : 'native',
     },
   };
-  return { client: new PiAiGatewayClient({ models }), model: { ...model, id: modelId }, provider, bodies, wire, states };
+  return {
+    client: new PiAiGatewayClient({ models }),
+    model: { ...model, id: modelId },
+    provider,
+    bodies,
+    wire,
+    states,
+  };
 }
-
 
 /** Holds the real serializer before its HTTP request starts. */
 function gate() {
   let release!: () => void;
-  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   return { pending, release };
 }
 
@@ -132,34 +145,73 @@ const input: OpenAICompatibleResponsesRequest = {
   model: '',
   instructions: 'Preserve complete system instructions.',
   input: [{ role: 'user', content: [{ type: 'input_text', text: '漢字 JSON {"selected":true}' }] }],
-  tools: [{ type: 'function', name: 'read', description: 'Read exact bytes.', parameters: { type: 'object', properties: { path: { type: 'string' } } }, strict: false }],
+  tools: [
+    {
+      type: 'function',
+      name: 'read',
+      description: 'Read exact bytes.',
+      parameters: { type: 'object', properties: { path: { type: 'string' } } },
+      strict: false,
+    },
+  ],
   max_output_tokens: 32,
   parallel_tool_calls: false,
 };
 
 describe('final payload local admission', () => {
-  it.each(['responses', 'chat', 'codex', 'custom'] as const)('awaits the final %s payload and preserves the actual wire without a network counter', async (api) => {
+  it.each([
+    'responses',
+    'chat',
+    'codex',
+    'custom',
+  ] as const)('awaits the final %s payload and preserves the actual wire without a network counter', async (api) => {
     const f = await fixture(api);
     const held = gate();
     const entered = gate();
     let captured: AdmissionInput | undefined;
-    const request = { ...input, model: f.model.id, ...(api === 'chat' ? {} : { input: [...(input.input as unknown[]), { role: 'user', content: [{ type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' }] }] }) };
+    const request = {
+      ...input,
+      model: f.model.id,
+      ...(api === 'chat'
+        ? {}
+        : {
+            input: [
+              ...(input.input as unknown[]),
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'input_image',
+                    image_url:
+                      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
+                  },
+                ],
+              },
+            ],
+          }),
+    };
     const completion = f.client.createResponses(f.provider, request, undefined, {
       codexTurnState: api === 'codex' ? 'retained-native-state' : undefined,
       finalRequestAdmission: async (final) => {
         captured = final;
-        admitModelRequest({ payload: final.payload, continuity: final.codexTurnState, contextWindowTokens: 131072, outputReserveTokens: final.outputReserveTokens });
+        admitModelRequest({
+          payload: final.payload,
+          continuity: final.codexTurnState,
+          contextWindowTokens: 131072,
+          outputReserveTokens: final.outputReserveTokens,
+        });
         entered.release();
         await held.pending;
       },
     });
     await entered.pending;
     expect(f.bodies).toEqual([]);
-    expect(captured).toMatchObject({ modelId: f.model.id, outputReserveTokens: 32 });
+    expect(captured).toMatchObject({ outputReserveTokens: 32 });
     held.release();
     await completion;
     expect(f.bodies).toHaveLength(1);
     expect(f.bodies[0]).toEqual(captured!.payload);
+    expect(f.bodies[0]).toHaveProperty('model', f.model.id);
     expect(f.wire[0]).toContain('Preserve complete system instructions.');
     expect(f.wire[0]).toContain('漢字 JSON');
     expect(f.wire[0]).toContain('Read exact bytes.');
@@ -173,9 +225,16 @@ describe('final payload local admission', () => {
 
   it('refuses an oversized final overlaid payload before the real HTTP request', async () => {
     const f = await fixture();
-    await expect(f.client.createResponses(f.provider, { ...input, model: f.model.id }, undefined, {
-      finalRequestAdmission: (final) => admitModelRequest({ payload: final.payload, contextWindowTokens: 4096, outputReserveTokens: final.outputReserveTokens }),
-    })).rejects.toThrow();
+    await expect(
+      f.client.createResponses(f.provider, { ...input, model: f.model.id }, undefined, {
+        finalRequestAdmission: (final) =>
+          admitModelRequest({
+            payload: final.payload,
+            contextWindowTokens: 4096,
+            outputReserveTokens: final.outputReserveTokens,
+          }),
+      })
+    ).rejects.toThrow();
     expect(f.bodies).toEqual([]);
   });
 });
