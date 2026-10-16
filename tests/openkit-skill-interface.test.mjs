@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
+  chmodSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -13,6 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
@@ -3027,6 +3030,158 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
     assert.equal(JSON.parse(result.stdout).error.code, 'vault_mutation_failed');
     assert.ok(!result.stdout.includes(material));
     assert.ok(!result.stderr.includes(material));
+  }
+});
+
+test('the bundled CLI stages one local Skill in the caller and uploads only its exact tree', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-local-skill-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, 'source');
+  const selected = join(source, 'skills', 'sample');
+  mkdirSync(join(selected, 'empty'), { recursive: true });
+  const header = Buffer.from(
+    '\uFEFF---\r\nname: Original Name\r\ndescription: Keep authored bytes.\r\n---\r\nOriginal instructions.\r\n'
+  );
+  const script = Buffer.from('#!/bin/sh\nprintf "authored\\n"\n');
+  writeFileSync(join(selected, 'SKILL.md'), header);
+  writeFileSync(join(selected, 'run.sh'), script);
+  chmodSync(join(selected, 'run.sh'), 0o751);
+  const executable = join(root, 'openkit');
+  cpSync(cliPath, executable);
+  const input = {
+    workspaceId: 'ws_demo',
+    requestId: '00000000-0000-4000-8000-000000000021',
+    expectedRevision: 3,
+    activate: false,
+    id: 'local-skill',
+    displayName: 'Retained display',
+    source,
+    sourceSubpath: 'skills/sample',
+    sourceSkillName: 'Original Name',
+  };
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'catalog.skill-import');
+  assert.deepEqual(operation.inputSchema.parse(input), input);
+  assert.equal(operation.inputSchema.safeParse({ ...input, hostPath: source }).success, false);
+  assert.equal(
+    operation.inputSchema.safeParse({ ...input, tree: [{ kind: 'directory', path: 'empty' }] })
+      .success,
+    false
+  );
+  const requests = [];
+  const response = {
+    revision: 4,
+    entry: {
+      id: input.id,
+      displayName: input.displayName,
+      description: null,
+      availability: 'available',
+      currentDigest: null,
+    },
+    version: {
+      entryId: input.id,
+      digest: `sha256:${'a'.repeat(64)}`,
+      digestFormat: 'openkit-tree-v1',
+      contentState: 'retained',
+      createdAt: '2026-10-17T00:00:00.000Z',
+      inventory: [],
+      producer: { kind: 'user', id: 'fixture-user' },
+      publisherVersion: null,
+      provenance: {
+        baseDigest: null,
+        pluginMemberKey: null,
+        pluginVersionDigest: null,
+        sourceCommit: null,
+        sourceSubpath: null,
+        uploadedSourceId: null,
+      },
+    },
+  };
+  const server = createServer(async (request, reply) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push({
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+    });
+    reply.writeHead(201, { 'content-type': 'application/json' });
+    reply.end(JSON.stringify(response));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise((resolve, reject) => {
+        server.closeAllConnections();
+        server.close((error) => (error ? reject(error) : resolve()));
+      })
+  );
+  const env = {
+    OPENKIT_NANOCORE_URL: `http://127.0.0.1:${server.address().port}`,
+    OPENKIT_NANOCORE_TOKEN: '',
+  };
+  const args = ['ops', 'call', 'catalog.skill-import', '--input', '-'];
+  const result = await runCli(args, env, JSON.stringify(input), [], undefined, executable);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/app/operations/catalog.skill-import');
+  assert.equal(requests[0].method, 'POST');
+  assert.equal(requests[0].headers['x-openkit-client-channel'], 'openkit-cli');
+  assert.equal(requests[0].headers['x-openkit-client-source'], 'agent-skill');
+  assert.deepEqual(
+    {
+      ...requests[0].body,
+      tree: requests[0].body.tree?.toSorted((left, right) =>
+        Buffer.compare(Buffer.from(left.path), Buffer.from(right.path))
+      ),
+    },
+    {
+      workspaceId: input.workspaceId,
+      requestId: input.requestId,
+      expectedRevision: input.expectedRevision,
+      activate: input.activate,
+      id: input.id,
+      displayName: input.displayName,
+      tree: [
+        {
+          kind: 'file',
+          path: 'SKILL.md',
+          executable: false,
+          contentBase64: header.toString('base64'),
+        },
+        { kind: 'directory', path: 'empty' },
+        {
+          kind: 'file',
+          path: 'run.sh',
+          executable: true,
+          contentBase64: script.toString('base64'),
+        },
+      ],
+    }
+  );
+  assert.equal(JSON.stringify(requests[0].body).includes(source), false);
+  for (const failed of [
+    { ...input, sourceSubpath: 'skills/missing' },
+    { ...input, unknownField: true },
+  ]) {
+    const rejected = await runCli(args, env, JSON.stringify(failed), [], undefined, executable);
+    assert.equal(rejected.code, 2, rejected.stdout + rejected.stderr);
+    assert.equal(
+      requests.length,
+      1,
+      'Local source/schema failures must not contact the import endpoint.'
+    );
+    assert.equal(rejected.stdout.includes(source), false);
+  }
+  for (const source of ['https://example.invalid/skill.zip', 'https://github.com/example/skills']) {
+    const remote = operation.inputSchema.parse({ ...input, source });
+    const forwarded = [];
+    await operation.handler(
+      { client: { operations: { 'catalog.skill-import': async (body) => forwarded.push(body) } } },
+      remote
+    );
+    assert.deepEqual(forwarded, [remote]);
   }
 });
 
