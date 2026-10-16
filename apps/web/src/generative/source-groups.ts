@@ -41,6 +41,8 @@ export function useGenerativeSourceGroups(
   });
   const [verified, setVerified] = useState<ReadonlyMap<string, GenerativeTextSource>>(new Map());
   useEffect(() => {
+    // Ordinary history needs no asynchronous grouping commit; active IDs already exclude old matches.
+    if (admitted.length === 0) return;
     let current = true;
     void Promise.all(
       admitted.map(async ({ item, presentation }) => {
