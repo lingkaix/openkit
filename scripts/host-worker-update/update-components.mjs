@@ -178,9 +178,16 @@ export async function updateComponents(target, params, evidenceDir, io) {
             if (error instanceof ComponentUpdateStop) throw error;
             if (
               error?.code === 'operator-identity-unavailable' &&
-              ['machine-binding', 'app-helper-identity', 'canonical-docker-posture', 'app-web-attribution'].includes(error.operatorReason)
+              [
+                'machine-binding',
+                'app-helper-identity',
+                'canonical-docker-posture',
+                'app-web-attribution',
+              ].includes(error.operatorReason)
             )
-              throw new ComponentUpdateStop(`Component update: App prerequisite unavailable (${error.operatorReason}); inspect the protected deployment and installed helper before any new effect.`);
+              throw new ComponentUpdateStop(
+                `Component update: App prerequisite unavailable (${error.operatorReason}); inspect the protected deployment and installed helper before any new effect.`
+              );
             throw new ComponentUpdateStop(
               'Component update: App observation or effect unavailable; inspect its saved request before any new effect.'
             );
