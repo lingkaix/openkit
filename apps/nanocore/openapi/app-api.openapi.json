@@ -24786,6 +24786,25 @@
                   "contentDigest"
                 ],
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "answer"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2097152
+                  }
+                },
+                "required": [
+                  "kind",
+                  "text"
+                ],
+                "additionalProperties": false
               }
             ]
           },
@@ -95725,5 +95744,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:3e345170e230d2a68c18403b2ba004a08f49b56597a4d242c1612cbde25b668e"
+  "x-openkit-source-digest": "sha256:c74fe545f4aad613086bc6ee333631766dc6dd5a815c5ea18133908fcbf7deed"
 }
