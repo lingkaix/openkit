@@ -177,16 +177,24 @@ describe('canonical Notebook Workspace portability', () => {
 
   it('remints a retained current-revision Knowledge selection into the imported Notebook', async () => {
     const f = source();
-    const thread = f.store.createThread(f.workspace.id, 'Portable trace', undefined, 'conversation', {
-      visibility: 'workspace',
-    });
+    const thread = f.store.createThread(
+      f.workspace.id,
+      'Portable trace',
+      undefined,
+      'conversation',
+      {
+        visibility: 'workspace',
+      }
+    );
     const selected = await retrieveWorkspaceKnowledge({
       dataRoot: f.dataRoot,
       workspaceId: f.workspace.id,
       caller: 'app-api',
       query: 'Exact portable note',
       limit: 1,
-      pinnedReferences: [{ scopeId: `page/workspace/${f.workspace.id}`, objectId: 'notes/portable' }],
+      pinnedReferences: [
+        { scopeId: `page/workspace/${f.workspace.id}`, objectId: 'notes/portable' },
+      ],
       access: {
         store: f.store,
         coreDb: f.coreDb,
@@ -197,7 +205,10 @@ describe('canonical Notebook Workspace portability', () => {
       traceId: allocateRetrievalTraceId(),
     });
     expect(selected.selected).toEqual([
-      expect.objectContaining({ revision: f.revision, contentDigest: `sha256:${createHash('sha256').update(f.content).digest('hex')}` }),
+      expect.objectContaining({
+        revision: f.revision,
+        contentDigest: `sha256:${createHash('sha256').update(f.content).digest('hex')}`,
+      }),
     ]);
     expect(selected.retrievalTraceRef).toBeDefined();
     const exported = createVerifiedWorkspaceExport({
@@ -219,10 +230,14 @@ describe('canonical Notebook Workspace portability', () => {
       store: target.store,
       verified: exported.verified,
     });
-    const importedThread = target.store.listThreads(imported.workspace.id).find((entry) => entry.name === thread.name);
+    const importedThread = target.store
+      .listThreads(imported.workspace.id)
+      .find((entry) => entry.name === thread.name);
     expect(importedThread).toBeDefined();
     const targetRoot = join(target.dataRoot, 'workspaces', imported.workspace.id);
-    const notebook = new KnowledgeNotebook({ repositoryPath: join(targetRoot, 'knowledge', 'notebook.git') });
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
+    });
     const revision = notebook.publishedRevision();
     const page = notebook.readRevision(revision).files['notes/portable.md']!;
     const trace = readRetrievalTrace(targetRoot, {
@@ -231,11 +246,16 @@ describe('canonical Notebook Workspace portability', () => {
     });
     expect(trace).toMatchObject({
       notebookRevision: revision,
-      selected: [{
-        reference: { scopeId: `page/workspace/${imported.workspace.id}`, objectId: 'notes/portable' },
-        revision,
-        contentDigest: `sha256:${createHash('sha256').update(page).digest('hex')}`,
-      }],
+      selected: [
+        {
+          reference: {
+            scopeId: `page/workspace/${imported.workspace.id}`,
+            objectId: 'notes/portable',
+          },
+          revision,
+          contentDigest: `sha256:${createHash('sha256').update(page).digest('hex')}`,
+        },
+      ],
     });
     expect(page).toContain('Exact Unicode body: 漢字.');
     expect(exported.verified.manifest.knowledgeNotebookRevision).toBe(f.revision);
