@@ -43,6 +43,7 @@ const SOURCE_B = {
 };
 const PAGE = {
   id: 'reading-room',
+  contentDigest: `sha256:${'a'.repeat(64)}`,
   kind: 'preference' as const,
   title: 'Reading room opening hours',
   content: CONTENT,
@@ -207,6 +208,8 @@ describe('Add knowledge registered Source relationship', () => {
     await waitFor(() => expect(creates).toHaveLength(1));
     expect(creates[0]).toEqual({
       workspaceId: WORKSPACE_A,
+      baseRevision: 'notebook-fixture-revision',
+      knowledgePageId: expect.any(String),
       kind: 'preference',
       title: PAGE.title,
       content: CONTENT,

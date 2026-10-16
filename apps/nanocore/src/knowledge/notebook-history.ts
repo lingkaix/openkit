@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import {
   type KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+  KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES,
   RestoreKnowledgeNotebookResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -38,6 +39,42 @@ type Selection = {
   pageIds?: readonly string[] | undefined;
 };
 type Change = { path: string; before: string | null; after: string | null };
+
+/** Bound display text without changing retained bytes or using a partial destructive confirmation. */
+function boundedDiff(changes: Change[], requireComplete: boolean) {
+  const bytes = changes.reduce(
+    (size, { before, after }) =>
+      size + Buffer.byteLength(before ?? '') + Buffer.byteLength(after ?? ''),
+    0
+  );
+  const truncated = bytes > KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES;
+  if (truncated && requireComplete)
+    throw new OperationError(
+      'invalid_request',
+      'Selected Notebook diff exceeds the 64 KiB display limit. Select fewer pages.',
+      400
+    );
+  let remaining = KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES;
+  const prefix = (text: string | null): string | null => {
+    if (text === null) return null;
+    const bytes = Buffer.from(text);
+    let end = Math.min(bytes.length, remaining);
+    // An output prefix must end between UTF-8 code points, not inside continuation bytes.
+    while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+    remaining -= end;
+    return bytes.subarray(0, end).toString('utf8');
+  };
+  return {
+    truncated,
+    changes: truncated
+      ? changes.map(({ path, before, after }) => ({
+          path,
+          before: prefix(before),
+          after: prefix(after),
+        }))
+      : changes,
+  };
+}
 
 /** One immutable inventory pair, with bodies obtained only through the current canonical reader. */
 class AuthorizedHistory {
@@ -187,12 +224,15 @@ export function createNotebookHistoryOperations(
         baseRevision: input.baseRevision,
         fromRevision: input.fromRevision,
         forRestore: input.forRestore === true,
-        changes: open(input.workspaceId, context).diff(input, input.forRestore),
+        ...boundedDiff(
+          open(input.workspaceId, context).diff(input, input.forRestore),
+          input.forRestore === true
+        ),
       })),
     'knowledge.notebook.restore': async (input, context) =>
       run(async () => {
         const history = open(input.workspaceId, context);
-        const changes = history.diff(input, true);
+        const { changes } = boundedDiff(history.diff(input, true), true);
         const actor = context.actorRef;
         const {
           runtimeConfigManager,

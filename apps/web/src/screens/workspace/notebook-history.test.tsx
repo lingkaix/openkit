@@ -19,10 +19,11 @@ const timestamp = '2026-10-16T00:00:00.000Z';
 const clients: QueryClient[] = [];
 
 /** Real hooks and public Core client replace only HTTP, including one unknown restore result. */
-function renderNotebook({ deferDiff = false } = {}) {
+function renderNotebook({ deferDiff = false, truncatedDiff = false } = {}) {
   const restores: Array<Record<string, unknown>> = [];
   const diffs: Array<Record<string, unknown>> = [];
   let currentRevision = BASE;
+  let historyDenied = false;
   let resolveOldDiff: (() => void) | undefined;
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const path = new URL(String(input)).pathname;
@@ -80,6 +81,16 @@ function renderNotebook({ deferDiff = false } = {}) {
       case operationHttpPath('attention.list'):
         return Response.json({ items: [] });
       case operationHttpPath('knowledge.notebook.history'):
+        if (historyDenied)
+          return Response.json({
+            notebookRevision: currentRevision,
+            nextRevision: null,
+            revisions: [currentRevision, FROM].map((revision) => ({
+              revision,
+              parentRevision: null,
+              availability: 'unavailable',
+            })),
+          });
         return Response.json({
           notebookRevision: currentRevision,
           nextRevision: null,
@@ -105,6 +116,11 @@ function renderNotebook({ deferDiff = false } = {}) {
         });
       case operationHttpPath('knowledge.notebook.diff'):
         diffs.push(body);
+        if (historyDenied)
+          return Response.json(
+            { code: 'workspace_access_denied', message: 'Knowledge page is unavailable.' },
+            { status: 403 }
+          );
         if (deferDiff && body.workspaceId === WORKSPACE)
           return new Promise<Response>((resolve) => {
             resolveOldDiff = () =>
@@ -113,6 +129,7 @@ function renderNotebook({ deferDiff = false } = {}) {
                   baseRevision: body.baseRevision,
                   fromRevision: body.fromRevision,
                   forRestore: Boolean(body.forRestore),
+                  truncated: truncatedDiff && !body.forRestore,
                   changes: [
                     {
                       path: 'notes/one.md',
@@ -127,6 +144,7 @@ function renderNotebook({ deferDiff = false } = {}) {
           baseRevision: body.baseRevision,
           fromRevision: body.fromRevision,
           forRestore: Boolean(body.forRestore),
+          truncated: truncatedDiff && !body.forRestore,
           changes: [
             {
               path: 'notes/one.md',
@@ -136,7 +154,7 @@ function renderNotebook({ deferDiff = false } = {}) {
                 : 'review_state: accepted\nEarlier exact text.',
             },
             { path: 'notes/obsolete.md', before: 'Obsolete exact text.', after: null },
-          ],
+          ].filter((change) => !body.pageIds || body.pageIds.includes(change.path.slice(0, -3))),
         });
       case operationHttpPath('knowledge.notebook.restore'): {
         const requestId = new Headers(init?.headers).get('x-openkit-request-id');
@@ -178,6 +196,9 @@ function renderNotebook({ deferDiff = false } = {}) {
     restores,
     diffs,
     queryClient,
+    denyHistory: () => {
+      historyDenied = true;
+    },
     hasDeferredDiff: () => Boolean(resolveOldDiff),
     resolveOldDiff: () => resolveOldDiff?.(),
   };
@@ -192,6 +213,43 @@ afterEach(() => {
 });
 
 describe('Notebook history and restore', () => {
+  it('labels a truncated display and requests a complete preview only for the selected pages', async () => {
+    const user = userEvent.setup();
+    const f = renderNotebook({ truncatedDiff: true });
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    expect(await screen.findByText(/This diff is truncated/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Review restore' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: /notes\/obsolete.md/ }));
+    await user.click(screen.getByRole('button', { name: 'Prepare restore' }));
+    await screen.findByRole('region', { name: 'Restored notes/one.md' });
+    expect(f.diffs.at(-1)).toMatchObject({ forRestore: true, pageIds: ['notes/one'] });
+    expect(screen.queryByText(/This diff is truncated/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Restored notes/obsolete.md' })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review restore' })).toBeEnabled();
+    expect(f.restores).toHaveLength(0);
+  });
+
+  it('withholds a cached diff when refreshed history and current page access become unavailable', async () => {
+    const user = userEvent.setup();
+    const f = renderNotebook();
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    await screen.findByRole('region', { name: 'Historical notes/one.md' });
+    f.denyHistory();
+    await user.click(screen.getByRole('button', { name: 'Refresh history' }));
+    await waitFor(() => expect(screen.getAllByText('Unavailable revision')).toHaveLength(2));
+    expect(
+      screen.queryByRole('region', { name: 'Historical notes/one.md' })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Current exact text.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Prepare restore' })).not.toBeInTheDocument();
+    await waitFor(() => expect(f.diffs).toHaveLength(2));
+    expect(f.restores).toHaveLength(0);
+  });
+
   it('shows exact normalized changes and removal before confirmation, then retries the identical command after an unknown result', async () => {
     const user = userEvent.setup();
     const f = renderNotebook();
