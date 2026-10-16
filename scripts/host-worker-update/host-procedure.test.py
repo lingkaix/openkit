@@ -236,6 +236,7 @@ class ProcedureTests(unittest.TestCase):
             with self.assertRaises(MODULE.ProcedureRefusal) as caught:
                 self.invoke(value, digest)
         self.assertNotIn("PRIVATE", str(caught.exception))
+        self.assertEqual(caught.exception.reason, "controlled-start")
         self.assertEqual(sum(event[0] == "start" for event in events), 1)
         self.assertFalse(any(event[0] == "finalize" for event in events))
 
@@ -246,6 +247,16 @@ class ProcedureTests(unittest.TestCase):
                                  digest, controlled_process=STAMP)
         self.assertEqual(result["controlledEffectiveStateDigest"], "f" * 64)
         self.assertFalse(any(event[0] == "start" for event in events))
+
+    def test_runtime_prerequisite_refusal_has_only_a_closed_local_cause(self):
+        """A failed volatile-runtime check identifies its phase without host text."""
+        value, digest, events, _ = self.scenario("preflight")
+        with mock.patch.object(MODULE, "_volatile_run", side_effect=OSError("PRIVATE_HOST_PATH")):
+            with self.assertRaises(MODULE.ProcedureRefusal) as caught:
+                self.invoke(value, digest)
+        self.assertEqual(caught.exception.reason, "runtime-directory")
+        self.assertNotIn("PRIVATE", str(caught.exception))
+        self.assertEqual(events, [])
 
     def test_pre_install_check_refusal_prevents_installer(self):
         """A zero-exit conflicting disposition is still an owned refusal."""

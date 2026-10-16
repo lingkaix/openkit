@@ -8,8 +8,16 @@ const credential = { token: 'synthetic-operator-value' };
 
 test('explicit target and public operation selection precede credential use', async () => {
   let reads = 0;
-  const resolve = () => { reads++; return credential; };
-  for (const target of ['http://staging.example.test', origin + '/path', origin + '#x', 'https://a2']) {
+  const resolve = () => {
+    reads++;
+    return credential;
+  };
+  for (const target of [
+    'http://staging.example.test',
+    origin + '/path',
+    origin + '#x',
+    'https://a2',
+  ]) {
     assert.throws(() => createOperatorApi(target, { resolve }));
   }
   const io = createOperatorApi(origin, { resolve });
@@ -23,9 +31,16 @@ test('request uses the exact endpoint, existing credential and no redirect or re
     resolve: () => credential,
     fetch: async (url, options) => {
       calls.push({ url, options });
-      return Response.json({ ready: false, identityId: 'synthetic-nanohost', deploymentId: 'synthetic-deployment',
-        connectionGeneration: 1, observedAt: '2026-10-16T11:30:00.000Z', freshEmpty: false,
-        predecessorFenced: false, physicalEpoch: null });
+      return Response.json({
+        ready: false,
+        identityId: 'synthetic-nanohost',
+        deploymentId: 'synthetic-deployment',
+        connectionGeneration: 1,
+        observedAt: '2026-10-16T11:30:00.000Z',
+        freshEmpty: false,
+        predecessorFenced: false,
+        physicalEpoch: null,
+      });
     },
   });
   const result = await io.call('nanohost.runtime-target', {});
@@ -33,8 +48,10 @@ test('request uses the exact endpoint, existing credential and no redirect or re
   assert.equal(calls.length, 1);
   assert.equal(new URL(calls[0].url).origin, origin);
   assert.equal(calls[0].options.redirect, 'error');
-  assert.equal(new Headers(calls[0].options.headers).get('authorization'),
-    'Bearer ' + credential.token);
+  assert.equal(
+    new Headers(calls[0].options.headers).get('authorization'),
+    'Bearer ' + credential.token
+  );
   assert.ok(calls[0].options.signal instanceof AbortSignal);
 });
 
@@ -42,7 +59,10 @@ test('authentication, transport and parser failures expose no remote text and ne
   for (const failure of ['credential', 'fetch', 'response', 'shape']) {
     let requests = 0;
     const io = createOperatorApi(origin, {
-      resolve: () => { if (failure === 'credential') throw Error('PRIVATE_CREDENTIAL'); return credential; },
+      resolve: () => {
+        if (failure === 'credential') throw Error('PRIVATE_CREDENTIAL');
+        return credential;
+      },
       fetch: async () => {
         requests++;
         if (failure === 'fetch') throw Error('PRIVATE_TRANSPORT');
@@ -62,8 +82,12 @@ test('authentication, transport and parser failures expose no remote text and ne
 test('stream output limit stops collection, cancels input and retains no partial JSON', async () => {
   let cancelled = false;
   const stream = new ReadableStream({
-    pull(controller) { controller.enqueue(new Uint8Array(4_194_305)); },
-    cancel() { cancelled = true; },
+    pull(controller) {
+      controller.enqueue(new Uint8Array(4_194_305));
+    },
+    cancel() {
+      cancelled = true;
+    },
   });
   const io = createOperatorApi(origin, {
     resolve: () => credential,
@@ -97,7 +121,10 @@ test('retained reads cannot call secret or effect operations through annotations
   let fetched = false;
   const io = createOperatorApi(origin, {
     resolve: () => credential,
-    fetch: async () => { fetched = true; throw Error(); },
+    fetch: async () => {
+      fetched = true;
+      throw Error();
+    },
   });
   await assert.rejects(io.call('provider-account.import', {}), /Operator API unavailable/);
   assert.equal(fetched, false);

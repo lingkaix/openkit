@@ -14,15 +14,22 @@ const unavailable = 'Operator process unavailable; inspect before any new effect
 export function runBoundedProcess(executable, args, options) {
   return new Promise((resolve, reject) => {
     const { input, timeoutMs, maxStdoutBytes, maxStderrBytes, signal, env } = options;
-    if (signal?.aborted || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 ||
-      ![maxStdoutBytes, maxStderrBytes].every((n) => Number.isSafeInteger(n) && n >= 0)) {
+    if (
+      signal?.aborted ||
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      ![maxStdoutBytes, maxStderrBytes].every((n) => Number.isSafeInteger(n) && n >= 0)
+    ) {
       reject(Error(unavailable));
       return;
     }
     const started = performance.now();
     const child = spawn(executable, args, { detached: true, env, stdio: ['pipe', 'pipe', 'pipe'] });
-    const stdout = [], stderr = [];
-    let outputBytes = 0, errorBytes = 0, settled = false;
+    const stdout = [],
+      stderr = [];
+    let outputBytes = 0,
+      errorBytes = 0,
+      settled = false;
     const cleanup = () => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', fail);
@@ -34,7 +41,11 @@ export function runBoundedProcess(executable, args, options) {
       // This group contains only this invocation's local child and descendants.
       // Killing SSH cannot prove the remote operation's outcome.
       if (child.pid) {
-        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
       }
       child.stdin.destroy();
       child.stdout.destroy();
@@ -65,8 +76,13 @@ export function runBoundedProcess(executable, args, options) {
       if (performance.now() - started >= timeoutMs || exitSignal !== null) return fail();
       settled = true;
       cleanup();
-      resolve({ exitCode, signal: exitSignal, timedOut: false,
-        stdout: Buffer.concat(stdout, outputBytes), stderr: Buffer.concat(stderr, errorBytes) });
+      resolve({
+        exitCode,
+        signal: exitSignal,
+        timedOut: false,
+        stdout: Buffer.concat(stdout, outputBytes),
+        stderr: Buffer.concat(stderr, errorBytes),
+      });
     });
     if (signal?.aborted) return fail();
     child.stdin.end(input);
