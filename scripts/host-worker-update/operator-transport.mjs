@@ -8,6 +8,7 @@ const inspectionCommand = ['/usr/lib/openkit/nanohost', 'inspect'];
 function sshArguments(alias, command) {
   return [
     '-T',
+    '-x',
     '-o',
     'BatchMode=yes',
     '-o',
@@ -26,10 +27,17 @@ function sshArguments(alias, command) {
 
 /** Collect bounded bytes, never truncate into success or retain a remote diagnostic. */
 async function inspectProcess(alias, input, signal) {
-  const result = await runBoundedProcess('ssh',
-    sshArguments(alias, 'sudo -n /usr/lib/openkit/nanohost inspect'), {
-      input, signal, timeoutMs: 10_000, maxStdoutBytes: 16_384, maxStderrBytes: 256,
-    });
+  const result = await runBoundedProcess(
+    'ssh',
+    sshArguments(alias, 'sudo -n /usr/lib/openkit/nanohost inspect'),
+    {
+      input,
+      signal,
+      timeoutMs: 10_000,
+      maxStdoutBytes: 16_384,
+      maxStderrBytes: 256,
+    }
+  );
   if (result.exitCode !== 0 || result.stderr.length !== 0) throw Error(unavailable);
   return result;
 }
