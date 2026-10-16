@@ -2103,23 +2103,196 @@ fn preprocessed_representation_preserves_source_and_fragment_provenance() {
     let doc = document("original.pdf", &original, content);
     let view = f.view("selected-source", vec![doc]);
     f.kernel.publish(view.clone(), None).unwrap();
-    let result = f.search(Mode::Exact, "needle", vec![view.clone()], 20);
-    assert!(!result.complete);
-    assert!(!result.coverage.representations_complete);
-    assert_eq!(result.coverage.reasons.get("partial"), Some(&1));
-    assert_eq!(result.hits.len(), 2);
-    for (hit, (start, end, page)) in result.hits.iter().zip([
-        (6, 12, "page:1"),
-        (20, 26, "page:2"),
-    ]) {
-        assert_eq!(hit.digest, digest(&original));
-        assert_eq!(hit.representation, "sidecar");
-        assert_eq!(hit.representation_digest, digest(text));
-        assert_eq!(hit.processor.as_deref(), Some("fixture-extractor-v1:fixed-output-profile"));
-        assert_eq!(hit.locator, Locator::Text { start, end, original: Some(page.into()) });
+    for mode in [Mode::Exact, Mode::Regex] {
+        let result = f.search(mode, "needle", vec![view.clone()], 20);
+        assert!(!result.complete);
+        assert!(!result.coverage.representations_complete);
+        assert_eq!(result.coverage.reasons.get("partial"), Some(&1));
+        assert_eq!(result.hits.len(), 2);
+        for (hit, (start, end, page)) in result
+            .hits
+            .iter()
+            .zip([(6, 12, "page:1"), (20, 26, "page:2")])
+        {
+            assert_eq!(hit.digest, digest(&original));
+            assert_eq!(hit.representation, "sidecar");
+            assert_eq!(hit.representation_digest, digest(text));
+            assert_eq!(
+                hit.processor.as_deref(),
+                Some("fixture-extractor-v1:fixed-output-profile")
+            );
+            assert_eq!(
+                hit.locator,
+                Locator::Text {
+                    start,
+                    end,
+                    original: Some(page.into())
+                }
+            );
+        }
     }
-    fs::write(f.root.path().join("representation.md"), b"different representation").unwrap();
+    let lexical = f.search(Mode::Lexical, "needle", vec![view.clone()], 20);
+    assert_eq!(lexical.hits.len(), 1);
+    assert_eq!(lexical.hits[0].digest, digest(&original));
+    assert_eq!(lexical.hits[0].representation_digest, digest(text));
+    assert_eq!(
+        lexical.hits[0].locator,
+        Locator::Text {
+            start: 0,
+            end: 13,
+            original: Some("page:1".into()),
+        }
+    );
+    assert!(!lexical.coverage.representations_complete);
+    let mut changed_processor = view.clone();
+    if let Content::Representation { processor, .. } = &mut changed_processor.documents[0].content {
+        processor.push_str(":changed-output-profile");
+    }
+    let mismatched = f.search(Mode::Exact, "needle", vec![changed_processor], 20);
+    assert!(mismatched.hits.is_empty());
+    assert!(!mismatched.complete);
+    // Same-length drift proves the digest check independently of the size check.
+    let mut changed = *text;
+    changed[0] = b'F';
+    fs::write(f.root.path().join("representation.md"), changed).unwrap();
+    for mode in [Mode::Exact, Mode::Regex, Mode::Lexical] {
+        let stale = f.search(mode, "needle", vec![view.clone()], 20);
+        assert!(stale.hits.is_empty());
+        assert!(!stale.coverage.representations_complete);
+    }
+    fs::remove_file(f.root.path().join("representation.md")).unwrap();
     let stale = f.search(Mode::Exact, "needle", vec![view], 20);
     assert!(stale.hits.is_empty());
     assert!(!stale.coverage.representations_complete);
+}
+
+/// A failed source representation leaves healthy neighbors searchable after publication.
+#[test]
+fn failed_source_representations_preserve_healthy_neighbors() {
+    let f = Fixture::new();
+    let missing = document(
+        "missing.pdf",
+        &[0, 255, 1],
+        Content::Representation {
+            path: "missing.txt".into(),
+            digest: digest(b"x"),
+            size: 1,
+            processor: "fixture-extractor-v1".into(),
+            fragments: vec![RepresentationFragment {
+                start: 0,
+                end: 1,
+                locator: "page:1".into(),
+            }],
+            complete: true,
+        },
+    );
+    fs::write(f.root.path().join("invalid.txt"), [255]).unwrap();
+    let mut invalid = document("invalid.pdf", &[0, 255, 2], missing.content.clone());
+    if let Content::Representation {
+        path, digest: hash, ..
+    } = &mut invalid.content
+    {
+        *path = "invalid.txt".into();
+        *hash = digest(&[255]);
+    }
+    let healthy = f.text("healthy", "needle");
+    let view = f.view("neighbors", vec![missing, invalid, healthy]);
+    f.kernel.publish(view.clone(), None).unwrap();
+    let restarted = Kernel::new(f.root.path(), f.store.path()).unwrap();
+    for mode in [Mode::Exact, Mode::Regex, Mode::Lexical] {
+        let result = restarted
+            .search(Query {
+                mode,
+                query: "needle".into(),
+                scopes: vec![view.clone()],
+                limit: 20,
+            })
+            .expect("failed representations must not invalidate a healthy scope");
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].key.id, "healthy");
+        assert_eq!(result.coverage.stopped_work, 2);
+        assert!(!result.coverage.representations_complete);
+        assert!(!result.complete);
+    }
+}
+
+/// Empty extracted text remains a valid representation without proving original-body absence.
+#[test]
+fn empty_source_representation_keeps_original_identity_and_partial_coverage() {
+    let f = Fixture::new();
+    fs::write(f.root.path().join("empty.txt"), []).unwrap();
+    let mut doc = document(
+        "blank.pdf",
+        &[0, 255, 1],
+        Content::Representation {
+            path: "empty.txt".into(),
+            digest: digest(b""),
+            size: 0,
+            processor: "fixture-extractor-v1".into(),
+            fragments: vec![],
+            complete: false,
+        },
+    );
+    doc.title = "Visible title".into();
+    let view = f.view("empty", vec![doc]);
+    f.kernel.publish(view.clone(), None).unwrap();
+    let body = f.search(Mode::Exact, "needle", vec![view.clone()], 20);
+    assert!(body.hits.is_empty());
+    assert_eq!(body.coverage.searched_representations, 1);
+    assert!(!body.coverage.representations_complete);
+    assert_eq!(body.coverage.reasons.get("partial"), Some(&1));
+    let title = f.search(Mode::Lexical, "visible", vec![view], 20);
+    assert_eq!(title.hits.len(), 1);
+    assert_eq!(title.hits[0].digest, digest(&[0, 255, 1]));
+    assert_eq!(title.hits[0].representation_digest, digest(b""));
+    assert!(matches!(title.hits[0].locator, Locator::Title { .. }));
+    assert!(!title.complete);
+}
+
+/// Extracted text and fragment ceilings do not use the original binary's byte length.
+#[test]
+fn source_representation_bounds_are_independent_of_original_size() {
+    let f = Fixture::new();
+    let doc = document(
+        "original.pdf",
+        &[0, 255, 1],
+        Content::Representation {
+            path: "text.txt".into(),
+            digest: digest(b"bounded identity"),
+            size: 2_097_152,
+            processor: "fixture-extractor-v1".into(),
+            fragments: (0..256)
+                .map(|start| RepresentationFragment {
+                    start,
+                    end: start + 1,
+                    locator: format!("page:{start}"),
+                })
+                .collect(),
+            complete: false,
+        },
+    );
+    let mut view = f.view("bounds", vec![doc]);
+    validate_view(&view, true).unwrap();
+    if let Content::Representation { size, .. } = &mut view.documents[0].content {
+        *size = 2_097_153;
+    }
+    assert_eq!(
+        validate_view(&view, true).unwrap_err().code,
+        "invalid-request"
+    );
+    if let Content::Representation {
+        size, fragments, ..
+    } = &mut view.documents[0].content
+    {
+        *size = 2_097_152;
+        fragments.push(RepresentationFragment {
+            start: 256,
+            end: 257,
+            locator: "page:257".into(),
+        });
+    }
+    assert_eq!(
+        validate_view(&view, true).unwrap_err().code,
+        "invalid-request"
+    );
 }

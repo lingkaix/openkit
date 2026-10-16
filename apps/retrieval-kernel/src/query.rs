@@ -83,7 +83,13 @@ impl Kernel {
                 if matches!(record.document.content, Content::Unreadable) {
                     result.coverage.unsupported_bodies += 1;
                 }
-                if matches!(record.document.content, Content::Representation { complete: false, .. }) {
+                if matches!(
+                    record.document.content,
+                    Content::Representation {
+                        complete: false,
+                        ..
+                    }
+                ) {
                     result.coverage.representations_complete = false;
                     reason(&mut result.coverage, "partial");
                 }
@@ -628,7 +634,9 @@ fn hit(
         scope: pin.manifest.scope.clone(),
         revision: record.document.revision.clone(),
         digest: record.document.digest.clone(),
-        representation: if record.sidecar.is_some() || matches!(record.document.content, Content::Representation { .. }) {
+        representation: if record.sidecar.is_some()
+            || matches!(record.document.content, Content::Representation { .. })
+        {
             "sidecar"
         } else {
             "text"

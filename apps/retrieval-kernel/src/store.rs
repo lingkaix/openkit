@@ -36,7 +36,7 @@ pub(crate) struct Record {
     pub sidecar: Option<String>,
     pub units: Vec<Unit>,
 }
-/// A searchable unit preserves metadata boundaries; text has one canonical unit.
+/// A searchable unit preserves admitted text or identity metadata boundaries.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Unit {
     pub field: Option<String>,
@@ -140,7 +140,9 @@ impl Kernel {
                 || (record.sidecar.is_none()
                     && matches!(
                         record.document.content,
-                        Content::Text { .. } | Content::InlineText { .. } | Content::Representation { .. }
+                        Content::Text { .. }
+                            | Content::InlineText { .. }
+                            | Content::Representation { .. }
                     )
                     && record.units != text_units(&record.document))
             {
@@ -283,16 +285,16 @@ impl Kernel {
         let mut records = Vec::with_capacity(view.documents.len());
         let mut indexed_bytes = 0u64;
         for (number, document) in view.documents.into_iter().enumerate() {
-            let direct = matches!(
+            let searchable = matches!(
                 document.content,
-                Content::Text { .. } | Content::InlineText { .. }
+                Content::Text { .. } | Content::InlineText { .. } | Content::Representation { .. }
             );
-            let representation_digest = if direct {
-                document.digest.clone()
-            } else {
-                String::new()
+            let representation_digest = match &document.content {
+                Content::Representation { digest, .. } => digest.clone(),
+                _ if searchable => document.digest.clone(),
+                _ => String::new(),
             };
-            let units = if direct {
+            let units = if searchable {
                 text_units(&document)
             } else {
                 vec![]
@@ -339,11 +341,16 @@ impl Kernel {
                         let detected = detected_language(&mut source, &record.units, budget)?;
                         (source, detected)
                     }
-                    Content::Representation { path, digest, size, .. } => {
+                    Content::Representation {
+                        path, digest, size, ..
+                    } => {
                         let mut source = TextFile::new(open_source(&self.source, path)?, None)?;
                         let (actual_digest, actual_size, _) = inspect(&mut source, budget)?;
                         if actual_digest != *digest || actual_size != *size {
-                            return Err(error("conflict", "source representation integrity changed"));
+                            return Err(error(
+                                "conflict",
+                                "source representation integrity changed",
+                            ));
                         }
                         record.representation_digest = actual_digest;
                         record.units = text_units(&record.document);
@@ -444,11 +451,17 @@ impl Kernel {
                         ));
                     }
                 }
-                if let Content::Representation { path, digest, size, .. } = &record.document.content {
+                if let Content::Representation {
+                    path, digest, size, ..
+                } = &record.document.content
+                {
                     let mut now = TextFile::new(open_source(&self.source, path)?, None)?;
                     let (actual_digest, actual_size) = digest_reader(&mut now, budget)?;
                     if actual_digest != *digest || actual_size != *size {
-                        return Err(error("conflict", "source representation changed during indexing"));
+                        return Err(error(
+                            "conflict",
+                            "source representation changed during indexing",
+                        ));
                     }
                 }
                 Ok(())
@@ -791,19 +804,40 @@ pub(crate) fn validate_view(view: &ScopeView, require_text: bool) -> Result<()> 
         {
             return Err(error("invalid-request", "unknown language hint"));
         }
-        if let Content::Representation { path, digest, size, processor, fragments, .. } = &d.content {
-            if path.is_empty() || path.len() > 4096
-                || Path::new(path).components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        if let Content::Representation {
+            path,
+            digest,
+            size,
+            processor,
+            fragments,
+            ..
+        } = &d.content
+        {
+            if path.is_empty()
+                || path.len() > 4096
+                || Path::new(path)
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
                 || *size > REPRESENTATION_BYTES
                 || digest.len() != 64
-                || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                || processor.is_empty() || processor.len() > 1024
+                || !digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || processor.is_empty()
+                || processor.len() > 1024
                 || fragments.len() > 256
-                || fragments.iter().any(|fragment| fragment.start > fragment.end || fragment.end > *size
-                    || fragment.locator.is_empty() || fragment.locator.len() > 1024)
+                || fragments.iter().any(|fragment| {
+                    fragment.start > fragment.end
+                        || fragment.end > *size
+                        || fragment.locator.is_empty()
+                        || fragment.locator.len() > 1024
+                })
                 || fragments.windows(2).any(|pair| pair[0].end > pair[1].start)
             {
-                return Err(error("invalid-request", "source representation exceeds its declared bounds"));
+                return Err(error(
+                    "invalid-request",
+                    "source representation exceeds its declared bounds",
+                ));
             }
         }
         if let Content::Text { path, range } = &d.content
