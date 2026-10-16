@@ -260,7 +260,9 @@ describe('exact retained Worker Skill delivery', () => {
     else if (claim === 'version') skill.version = 'invented-version';
     else if (claim === 'source') skill.sourceRef = 'invented-source';
     else skill.id = 'unavailable-entry';
-    await expect(prepare(candidate)).rejects.toThrow();
+    await expect(prepare(candidate)).rejects.toThrow(
+      claim === 'digest' || claim === 'entry' ? CatalogNotFoundError : CatalogIntegrityError
+    );
   });
 
   it('refuses removed entries while exact bytes remain retained', async () => {
