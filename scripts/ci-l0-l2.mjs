@@ -19,7 +19,7 @@ export function shardPlan(root = process.cwd()) {
   const owners = testOwners(root);
   if (new Set(owners.map((o) => o.name)).size !== owners.length)
     throw Error('Duplicate deterministic test owner');
-  return [
+  const plan = [
     ...['check:repo', 'lint', 'typecheck', 'build'].map((task) => ({
       id: `static-${task.replace(':', '-')}`,
       kind: 'static',
@@ -48,13 +48,22 @@ export function shardPlan(root = process.cwd()) {
         return [{ id, kind: 'coverage', owners: [owner.name] }];
       }),
   ];
+  // Queue the measured long suites first when the repository's hosted runner slots are bounded.
+  const priority = (shard) =>
+    shard.owners[0] === '@openkit/worker-shim'
+      ? 0
+      : shard.owners[0] === '@openkit/nanocore'
+        ? 1
+        : 2;
+  return plan.sort((a, b) => priority(a) - priority(b));
 }
 
 /** Derive one whole-owner coverage merge for each partitioned suite. */
 export function coveragePlan(root = process.cwd()) {
   return shardPlan(root)
     .filter((s) => s.partition?.index === 1)
-    .map((s) => ({ id: s.owners[0].replace('@openkit/', ''), owners: s.owners }));
+    .map((s) => ({ id: s.owners[0].replace('@openkit/', ''), owners: s.owners }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** A gate is complete only when every expected shard has exactly one successful observation. */
