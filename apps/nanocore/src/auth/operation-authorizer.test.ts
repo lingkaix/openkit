@@ -266,9 +266,10 @@ function createFixture() {
 
 let fixture: ReturnType<typeof createFixture>;
 
+// Synchronous Core/Store filesystem setup has a separate budget from authorization checks.
 beforeEach(() => {
   fixture = createFixture();
-});
+}, 30_000);
 
 afterEach(() => {
   fixture.coreDb.sqlite.close();
