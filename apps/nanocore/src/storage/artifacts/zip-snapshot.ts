@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fstatSync, openSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { mkdir, mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { crc32 } from 'node:zlib';
 import { fromFdPromise, type ZipFile } from 'yauzl';
-import { ensureCanonicalDirectoryAsync } from '../workspace-file-records.js';
+import {
+  ensureCanonicalDirectoryAsync,
+  measureCanonicalFileDescriptor,
+} from '../workspace-file-records.js';
 import type { FileStorageReservation } from './file-admission.js';
 import { ArtifactPayloadCleanupError } from './file-payload.js';
 
@@ -70,6 +73,7 @@ export interface ZipSnapshotFile {
 export interface StagedZipSnapshot {
   readonly root: string;
   readonly files: readonly ZipSnapshotFile[];
+  readonly directories: readonly string[];
   remove(): Promise<void>;
 }
 
@@ -79,6 +83,8 @@ export async function stageZipSnapshot(input: {
   readonly archivePath: string;
   readonly budget: ZipExtractionBudget;
   readonly reservation: FileStorageReservation;
+  /** Binds source-owned extraction to the same verified original descriptor. */
+  readonly expectedArchive?: { readonly byteLength: number; readonly contentDigest: string };
 }): Promise<StagedZipSnapshot> {
   input.budget.signal.throwIfAborted();
   input.reservation.assertAvailable();
@@ -94,16 +100,27 @@ export async function stageZipSnapshot(input: {
       input.archivePath,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
     );
-    const archiveMetadata = fstatSync(descriptor);
-    if (!archiveMetadata.isFile() || archiveMetadata.nlink !== 1)
+    const archiveMetadata = fstatSync(descriptor, { bigint: true });
+    if (!archiveMetadata.isFile() || archiveMetadata.nlink !== 1n)
       throw new Error('The ZIP source is not one regular file.');
+    if (input.expectedArchive) {
+      const measured = measureCanonicalFileDescriptor(descriptor);
+      if (
+        measured.byteLength !== input.expectedArchive.byteLength ||
+        measured.contentDigest !== input.expectedArchive.contentDigest
+      )
+        throw new Error('The ZIP source integrity is inconsistent.');
+    }
+    const sourceDescriptor = descriptor;
+    input.budget.signal.throwIfAborted();
     archive = await fromFdPromise(descriptor, {
-      autoClose: true,
+      autoClose: false,
       lazyEntries: true,
       strictFileNames: true,
       validateEntrySizes: true,
     });
     descriptor = undefined; // The ZIP owner closes its descriptor from this point.
+    const directoryStart = zipDirectoryCursor(archive);
     // Cancellation can leave a pending central-directory read after iterator cleanup.
     archive.on('error', () => {});
     const entries = archive.eachEntry();
@@ -126,6 +143,9 @@ export async function stageZipSnapshot(input: {
         const type = (entry.externalFileAttributes >>> 16) & 0xf000;
         if (
           entry.isEncrypted() ||
+          (entry.generalPurposeBitFlag & 0x2041) !== 0 ||
+          (entry.externalFileAttributes & 0x0448) !== 0 ||
+          ((entry.externalFileAttributes & 0x10) !== 0 && !directory) ||
           !entry.canDecodeFileData() ||
           (type !== 0 && type !== (directory ? 0x4000 : 0x8000)) ||
           (directory && entry.uncompressedSize !== 0)
@@ -177,6 +197,7 @@ export async function stageZipSnapshot(input: {
           if (byteLength !== entry.uncompressedSize || checksum !== entry.crc32) {
             throw new Error('The ZIP entry size or checksum is inconsistent.');
           }
+          await sink.sync();
         } finally {
           input.budget.signal.removeEventListener('abort', abort);
           source.destroy();
@@ -193,7 +214,30 @@ export async function stageZipSnapshot(input: {
     }
     input.budget.signal.throwIfAborted();
     input.reservation.assertAvailable();
-    return { root, files, remove: () => removeZipStage(root) };
+    assertZipDirectoryComplete(
+      sourceDescriptor,
+      archive,
+      directoryStart,
+      Number(archiveMetadata.size)
+    );
+    const after = fstatSync(sourceDescriptor, { bigint: true });
+    if (
+      after.dev !== archiveMetadata.dev ||
+      after.ino !== archiveMetadata.ino ||
+      after.size !== archiveMetadata.size ||
+      after.nlink !== 1n ||
+      after.mtimeNs !== archiveMetadata.mtimeNs ||
+      after.ctimeNs !== archiveMetadata.ctimeNs
+    )
+      throw new Error('The ZIP source changed during extraction.');
+    return {
+      root,
+      files,
+      directories: [...paths]
+        .filter(([, value]) => value.kind === 'directory')
+        .map(([name]) => name),
+      remove: () => removeZipStage(root),
+    };
   } catch (error) {
     try {
       await removeZipStage(root);
@@ -213,6 +257,9 @@ function safeZipPath(raw: string, directory: boolean): string {
   if (
     !name ||
     name.startsWith('/') ||
+    Buffer.byteLength(name, 'utf8') > 4096 ||
+    name.split('/').length > 64 ||
+    name.split('/').some((part) => Buffer.byteLength(part, 'utf8') > 255) ||
     /^[A-Za-z]:/.test(name) ||
     /[\\\0]/.test(name) ||
     name.split('/').some((part) => !part || part === '.' || part === '..')
@@ -271,4 +318,95 @@ async function removeZipStage(root: string): Promise<void> {
   } catch (error) {
     throw new ArtifactPayloadCleanupError([error]);
   }
+}
+
+/** Checks the consumed directory boundary because yauzl stops at the advertised count and ignores the directory size. This guard is specific to pinned yauzl 3.4.0; remove its cursor access only when the parser exposes an equivalent complete-directory proof. */
+function assertZipDirectoryComplete(
+  descriptor: number,
+  archive: ZipFile,
+  start: number,
+  fileSize: number
+): void {
+  const end = zipDirectoryCursor(archive);
+  const entries = archive.entriesRead;
+  let trailer = end;
+  const signature = readZipHeader(descriptor, trailer, 4, fileSize).readUInt32LE();
+  const zip64 = signature === 0x06064b50;
+  if (zip64) {
+    const record = readZipHeader(descriptor, trailer, 56, fileSize);
+    const recordSize = record.readBigUInt64LE(4);
+    if (
+      recordSize < 44n ||
+      BigInt(end) + 12n + recordSize + 42n > BigInt(fileSize) ||
+      record.readUInt32LE(16) !== 0 ||
+      record.readUInt32LE(20) !== 0 ||
+      record.readBigUInt64LE(24) !== BigInt(entries) ||
+      record.readBigUInt64LE(32) !== BigInt(entries) ||
+      record.readBigUInt64LE(40) !== BigInt(end - start) ||
+      record.readBigUInt64LE(48) !== BigInt(start)
+    )
+      throw new Error('The ZIP64 directory is inconsistent.');
+    trailer = end + 12 + Number(recordSize);
+    const locator = readZipHeader(descriptor, trailer, 20, fileSize);
+    if (
+      locator.readUInt32LE(0) !== 0x07064b50 ||
+      locator.readUInt32LE(4) !== 0 ||
+      locator.readBigUInt64LE(8) !== BigInt(end) ||
+      locator.readUInt32LE(16) !== 1
+    )
+      throw new Error('The ZIP64 directory locator is inconsistent.');
+    trailer += 20;
+  }
+  const record = readZipHeader(descriptor, trailer, 22, fileSize);
+  if (
+    record.readUInt32LE(0) !== 0x06054b50 ||
+    record.readUInt16LE(4) !== 0 ||
+    record.readUInt16LE(6) !== 0 ||
+    trailer + 22 + record.readUInt16LE(20) !== fileSize
+  )
+    throw new Error('The ZIP directory boundary is inconsistent.');
+  for (const offset of [8, 10]) {
+    const count = record.readUInt16LE(offset);
+    if (count !== entries && !(zip64 && count === 0xffff))
+      throw new Error('The ZIP directory entry count is inconsistent.');
+  }
+  const size = record.readUInt32LE(12);
+  const origin = record.readUInt32LE(16);
+  if (
+    (size !== end - start && !(zip64 && size === 0xffffffff)) ||
+    (origin !== start && !(zip64 && origin === 0xffffffff))
+  )
+    throw new Error('The ZIP directory size or offset is inconsistent.');
+}
+
+/** Requires the pinned reader's numeric consumed offset; its published declaration incorrectly calls this field boolean. Unknown parser shapes fail closed. */
+function zipDirectoryCursor(archive: ZipFile): number {
+  const cursor: unknown = Reflect.get(archive, 'readEntryCursor');
+  if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor) || cursor < 0)
+    throw new Error('The ZIP directory cursor is unavailable.');
+  return cursor;
+}
+
+/** Reads at most one fixed trailer header; malformed offsets cannot allocate or read the archive body. */
+function readZipHeader(
+  descriptor: number,
+  position: number,
+  length: number,
+  fileSize: number
+): Buffer {
+  if (
+    !Number.isSafeInteger(fileSize) ||
+    !Number.isSafeInteger(position) ||
+    position < 0 ||
+    position + length > fileSize
+  )
+    throw new Error('The ZIP directory is truncated.');
+  const header = Buffer.alloc(length);
+  let offset = 0;
+  while (offset < length) {
+    const bytes = readSync(descriptor, header, offset, length - offset, position + offset);
+    if (!bytes) throw new Error('The ZIP directory is truncated.');
+    offset += bytes;
+  }
+  return header;
 }

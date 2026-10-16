@@ -47,6 +47,7 @@ import {
   useThreads,
   useWorkspaces,
 } from './data';
+import { ZipFolderPanel } from './ZipFolderPanel';
 
 /** User-facing output kinds, independent of review lifecycle and content format. */
 const ARTIFACT_KIND_LABEL: Record<ArtifactListItem['kind'], string> = {
@@ -555,6 +556,20 @@ export function ArtifactsScreen() {
               <dt>Source</dt>
               <dd>{detail.origin.kind === 'imported' ? 'Imported file' : 'Worker output'}</dd>
             </dl>
+          ) : null}
+          {detail?.content.format === 'file' &&
+          (detail.content.mediaType === 'application/zip' ||
+            detail.title.toLowerCase().endsWith('.zip')) ? (
+            <ZipFolderPanel
+              key={`${detail.workspaceId}:${detail.id}:${detail.version}:${detail.contentDigest}`}
+              source={{
+                workspaceId: detail.workspaceId,
+                artifactId: detail.id,
+                artifactVersion: detail.version,
+                originalDigest: detail.contentDigest,
+              }}
+              disabled={writeBlocked}
+            />
           ) : null}
           {detail ? (
             <AriaLink

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { ARTIFACT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
+  ARTIFACT_OPERATION_DEFINITIONS,
+  type ArtifactFolderSnapshotResponse,
   type ArtifactReviewView,
   IntroduceWorkspaceArtifactResponseSchema,
   ListArtifactReviewsResponseSchema,
@@ -24,7 +25,10 @@ import {
   replayArtifactReviewDecision,
   serializeArtifactReviewFollowUpRequest,
 } from './artifact-reviews.js';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from './context/worker-context-package.js';
@@ -46,6 +50,14 @@ import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { updateWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
+import {
+  ensureArtifactFolderSnapshot,
+  readArtifactFolderSnapshot,
+  ZIP_FOLDER_PROCESSOR,
+} from './storage/artifacts/artifact-folder-cache.js';
+import { FileAdmissionError } from './storage/artifacts/file-admission.js';
+import { ArtifactPayloadCleanupError } from './storage/artifacts/file-payload.js';
+import { verifyArtifactFilePayload } from './storage/artifacts/file-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 
@@ -56,7 +68,13 @@ type ArtifactImplementations = FamilyImplementations<typeof ARTIFACT_OPERATION_D
 export function createArtifactOperationImplementations(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'store' | 'coreDb' | 'inflightCommands' | 'repositoryWorkspaceDb' | 'startModeWorkerTurn'
+    | 'store'
+    | 'coreDb'
+    | 'inflightCommands'
+    | 'repositoryWorkspaceDb'
+    | 'startModeWorkerTurn'
+    | 'dataRoot'
+    | 'fileAdmission'
   >
 ) {
   const store = dependencies.store!;
@@ -75,7 +93,114 @@ export function createArtifactOperationImplementations(
   const administratorEligible = (
     context: Parameters<ArtifactImplementations['artifact.read']>[1]
   ) => context.kind === 'public' && isCurrentDeploymentAdministrator(coreDb!, context.actor);
+  /** Projects a disposable exact-source folder cache without a second command or product record. */
+  const folder = async (
+    input: Parameters<ArtifactImplementations['artifact.folder-read']>[0],
+    context: Parameters<ArtifactImplementations['artifact.folder-read']>[1],
+    extract: boolean
+  ): Promise<ArtifactFolderSnapshotResponse> => {
+    const assertAuthorized = () => {
+      if (
+        context.kind !== 'public' ||
+        !coreDb ||
+        !isWorkspaceOperationAuthorized(
+          coreDb,
+          context.actor,
+          input.workspaceId,
+          ARTIFACT_OPERATION_DEFINITIONS[
+            extract ? 'artifact.folder-extract' : 'artifact.folder-read'
+          ]
+        )
+      ) {
+        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      }
+      assertArtifactWorkspaceLineage(
+        responsibleUserIdForActor(context.actorRef)!,
+        administratorEligible(context),
+        store,
+        input.workspaceId,
+        input.artifactId
+      );
+      const current = store.getArtifact(input.workspaceId, input.artifactId);
+      if (current.version !== input.artifactVersion || current.content.format !== 'file')
+        throw new OperationError('not_found', 'The Artifact file version is unavailable.', 404);
+    };
+    assertAuthorized();
+    if (!dependencies.dataRoot || (extract && !dependencies.fileAdmission))
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'Folder extraction is unavailable.',
+        503
+      );
+    const artifact = store.getArtifact(input.workspaceId, input.artifactId);
+    if (artifact.content.format !== 'file')
+      throw new OperationError('not_found', 'The Artifact file version is unavailable.', 404);
+    const source = {
+      workspaceRoot: resolveDataRootPath(dependencies.dataRoot, 'workspaces', input.workspaceId),
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      byteLength: artifact.content.byteLength,
+      contentDigest: artifact.contentDigest,
+    };
+    const original = {
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      originalDigest: artifact.contentDigest,
+      originalRetained: true as const,
+    };
+    let snapshot: Awaited<ReturnType<typeof readArtifactFolderSnapshot>>;
+    try {
+      snapshot = extract
+        ? await ensureArtifactFolderSnapshot({
+            source,
+            admission: dependencies.fileAdmission!,
+            assertAuthorized,
+            ...(context.signal ? { signal: context.signal } : {}),
+          })
+        : await readArtifactFolderSnapshot({
+            source,
+            assertAuthorized,
+            ...(context.signal ? { signal: context.signal } : {}),
+          });
+    } catch (error) {
+      context.signal?.throwIfAborted();
+      assertAuthorized();
+      try {
+        verifyArtifactFilePayload({ ...source, version: source.artifactVersion });
+      } catch {
+        throw new OperationError('recovery_required', 'The Artifact original is unavailable.', 503);
+      }
+      if (error instanceof ArtifactPayloadCleanupError)
+        throw new OperationError(
+          'recovery_required',
+          'Folder extraction cleanup is unproved; the original is retained.',
+          503
+        );
+      if (error instanceof FileAdmissionError)
+        throw new OperationError(error.code, error.message, 507);
+      return { status: 'unavailable', ...original, reason: 'extraction_failed' };
+    }
+    assertAuthorized();
+    if (!snapshot) return { status: 'unavailable', ...original, reason: 'not_extracted' };
+    const entries = snapshot.files.slice(input.offset, input.offset + 100);
+    return {
+      status: 'ready',
+      ...original,
+      processor: ZIP_FOLDER_PROCESSOR,
+      representationDigest: snapshot.representationDigest,
+      expandedBytes: snapshot.expandedBytes,
+      fileCount: snapshot.files.length,
+      directoryCount: snapshot.directories.length,
+      entries,
+      nextOffset:
+        input.offset + entries.length < snapshot.files.length
+          ? input.offset + entries.length
+          : null,
+    };
+  };
   return {
+    'artifact.folder-read': (input, context) => folder(input, context, false),
+    'artifact.folder-extract': (input, context) => folder(input, context, true),
     'artifact.list': (input, context) => {
       const actor = context.actorRef;
       try {

@@ -197,6 +197,104 @@ describe('bounded ZIP folder snapshots', () => {
     expect(() => budget.consume(1)).toThrow('expansion byte limit');
   });
 
+  it('accepts ZIP64 directory framing while measuring actual member bytes', async () => {
+    const state = await fixture('valid-file');
+    const end = state.original.lastIndexOf(Buffer.from('504b0506', 'hex'));
+    const legacy = Buffer.from(state.original.subarray(end));
+    const record = Buffer.alloc(56);
+    record.writeUInt32LE(0x06064b50, 0);
+    record.writeBigUInt64LE(44n, 4);
+    record.writeUInt16LE(45, 12);
+    record.writeUInt16LE(45, 14);
+    record.writeBigUInt64LE(1n, 24);
+    record.writeBigUInt64LE(1n, 32);
+    record.writeBigUInt64LE(BigInt(legacy.readUInt32LE(12)), 40);
+    record.writeBigUInt64LE(BigInt(legacy.readUInt32LE(16)), 48);
+    const locator = Buffer.alloc(20);
+    locator.writeUInt32LE(0x07064b50, 0);
+    locator.writeBigUInt64LE(BigInt(end), 8);
+    locator.writeUInt32LE(1, 16);
+    legacy.writeUInt16LE(0xffff, 8);
+    legacy.writeUInt16LE(0xffff, 10);
+    legacy.writeUInt32LE(0xffffffff, 12);
+    legacy.writeUInt32LE(0xffffffff, 16);
+    const original = Buffer.concat([state.original.subarray(0, end), record, locator, legacy]);
+    await writeFile(state.archivePath, original);
+    const staged = await stageZipSnapshot(state);
+    expect(staged.files).toMatchObject([{ relativePath: 'note.txt', byteLength: 9 }]);
+    expect(await readFile(state.archivePath)).toEqual(original);
+    await staged.remove();
+  });
+
+  it('rejects an understated central-directory entry count instead of claiming an empty folder', async () => {
+    const state = await fixture('valid-file');
+    const forged = Buffer.from(state.original);
+    const end = forged.lastIndexOf(Buffer.from('504b0506', 'hex'));
+    forged.writeUInt16LE(0, end + 8);
+    forged.writeUInt16LE(0, end + 10);
+    await writeFile(state.archivePath, forged);
+    await expect(stageZipSnapshot(state)).rejects.toThrow();
+    expect(await readFile(state.archivePath)).toEqual(forged);
+    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+  });
+
+  it.each([
+    0x1, 0x40, 0x2000,
+  ])('rejects encrypted or masked entry flags %i before extraction', async (flag) => {
+    const state = await fixture('valid-file');
+    const encrypted = Buffer.from(state.original);
+    const central = encrypted.indexOf(Buffer.from('504b0102', 'hex'));
+    encrypted.writeUInt16LE(encrypted.readUInt16LE(6) | flag, 6);
+    encrypted.writeUInt16LE(encrypted.readUInt16LE(central + 8) | flag, central + 8);
+    await writeFile(state.archivePath, encrypted);
+    await expect(stageZipSnapshot(state)).rejects.toThrow();
+    expect(await readFile(state.archivePath)).toEqual(encrypted);
+    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+  });
+
+  it.each([
+    0x08, 0x40, 0x400, 0x10,
+  ])('rejects DOS volume, device, reparse or mismatched directory attributes %i', async (attribute) => {
+    const state = await fixture('valid-file');
+    const special = Buffer.from(state.original);
+    const central = special.indexOf(Buffer.from('504b0102', 'hex'));
+    special.writeUInt32LE((special.readUInt32LE(central + 38) | attribute) >>> 0, central + 38);
+    await writeFile(state.archivePath, special);
+    await expect(stageZipSnapshot(state)).rejects.toThrow();
+    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+  });
+
+  it('rejects a source rewritten during extraction even when its final bytes match', async () => {
+    const state = await fixture('valid-file');
+    const actual = ZipFile.prototype.openReadStreamPromise;
+    vi.spyOn(ZipFile.prototype, 'openReadStreamPromise').mockImplementationOnce(
+      async function (entry, options) {
+        const stream = await actual.call(this, entry, options);
+        await writeFile(state.archivePath, state.original);
+        return stream;
+      }
+    );
+    await expect(stageZipSnapshot(state)).rejects.toThrow('changed during extraction');
+    expect(await readFile(state.archivePath)).toEqual(state.original);
+    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+  });
+
+  it('shares the actual streamed expansion budget with a further explicit nested extraction', async () => {
+    const state = await fixture('nested');
+    const nestedLength = corpus.archives.find((entry) => entry.id === 'nested')!.entries[0]!
+      .actualSize;
+    // The frozen inner note contains six bytes; only five expanded bytes remain.
+    state.budget.consume(4_000_000_000 - nestedLength - 5);
+    const outer = await stageZipSnapshot(state);
+    expect(outer.files).toHaveLength(1);
+    await expect(
+      stageZipSnapshot({ ...state, archivePath: join(outer.root, outer.files[0]!.relativePath) })
+    ).rejects.toThrow('expansion byte limit');
+    expect(await readFile(state.archivePath)).toEqual(state.original);
+    await outer.remove();
+    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+  });
+
   it('refuses cancellation before creating extraction staging', async () => {
     const state = await fixture('compressed');
     const controller = new AbortController();

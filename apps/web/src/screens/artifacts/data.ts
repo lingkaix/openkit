@@ -379,3 +379,70 @@ export function useIntroduceWorkspaceArtifact() {
     retry: false,
   });
 }
+
+/** Exact original selected for explicit ZIP folder processing. */
+export interface ArtifactFolderInput {
+  readonly workspaceId: string;
+  readonly artifactId: string;
+  readonly artifactVersion: number;
+  readonly originalDigest: string;
+}
+
+/** Reads one bounded inventory page; stale or failed reads never supply cached protected names. */
+export function useArtifactFolder(input: ArtifactFolderInput, offset: number) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: [
+      'artifact-folder',
+      input.workspaceId,
+      input.artifactId,
+      input.artifactVersion,
+      input.originalDigest,
+      offset,
+    ],
+    queryFn: async () => {
+      const result = await client.operations['artifact.folder-read']({
+        workspaceId: input.workspaceId,
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        offset,
+      });
+      assertFolderSource(input, result);
+      return result;
+    },
+    retry: false,
+  });
+}
+
+/** Explicit extraction is retryable from the exact retained original; it creates no new import. */
+export function useExtractArtifactFolder() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: async (input: ArtifactFolderInput) => {
+      const result = await client.operations['artifact.folder-extract']({
+        workspaceId: input.workspaceId,
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        offset: 0,
+      });
+      assertFolderSource(input, result);
+      return result;
+    },
+    retry: false,
+  });
+}
+
+/** Prevents a current or unrelated source response from replacing the selected exact original. */
+function assertFolderSource(
+  input: ArtifactFolderInput,
+  result: { artifactId: string; artifactVersion: number; originalDigest: string }
+): void {
+  if (
+    result.artifactId !== input.artifactId ||
+    result.artifactVersion !== input.artifactVersion ||
+    result.originalDigest !== input.originalDigest
+  )
+    throw new ApiCallError(409, 'The folder snapshot source is inconsistent.', {
+      code: 'recovery_required',
+    });
+}

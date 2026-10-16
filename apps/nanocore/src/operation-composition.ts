@@ -138,6 +138,8 @@ export interface OperationInvocationDependencies {
     Partial<OpenKitNanoHostConfig>;
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
+  /** Shared canonical capacity owner used by disposable ZIP extraction. */
+  readonly fileAdmission?: import('./storage/artifacts/file-admission.js').FileStorageAdmission;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
 }
 /** Supplies only executable bindings, with no repeated declarative contract facts. */

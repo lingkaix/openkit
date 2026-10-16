@@ -471,3 +471,45 @@ export type ExcludeThreadMaterialResponse = z.infer<typeof ExcludeThreadMaterial
 export type RestoreThreadMaterialRequest = z.infer<typeof RestoreThreadMaterialRequestSchema>;
 /** Response payload after restoring one bound Material to worker context. */
 export type RestoreThreadMaterialResponse = z.infer<typeof RestoreThreadMaterialResponseSchema>;
+
+/** One paged, validated file member of a disposable exact-source ZIP snapshot. */
+export const ArtifactFolderEntrySchema = z
+  .object({
+    relativePath: z.string().min(1).max(4096),
+    byteLength: z.number().int().nonnegative().max(4_000_000_000),
+    contentDigest: contentDigestSchema,
+  })
+  .strict();
+
+/** Truthful cache availability; the original Artifact remains its sole durable source. */
+export const ArtifactFolderSnapshotResponseSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ready'),
+      artifactId: opaqueIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      processor: z.literal('openkit.zip.v1'),
+      representationDigest: contentDigestSchema,
+      expandedBytes: z.number().int().nonnegative().max(4_000_000_000),
+      fileCount: z.number().int().nonnegative().max(100_000),
+      directoryCount: z.number().int().nonnegative().max(131_072),
+      entries: z.array(ArtifactFolderEntrySchema).max(100),
+      nextOffset: z.number().int().nonnegative().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('unavailable'),
+      artifactId: opaqueIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      reason: z.enum(['not_extracted', 'extraction_failed']),
+    })
+    .strict(),
+]);
+
+/** Bounded source-bound folder projection used by API and Web consumers. */
+export type ArtifactFolderSnapshotResponse = z.infer<typeof ArtifactFolderSnapshotResponseSchema>;
