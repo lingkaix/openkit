@@ -9,6 +9,8 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 import { readWorkspacePortableFileState } from '../storage/workspace-portable-file-state.js';
 import { createVerifiedWorkspaceExport, importVerifiedWorkspace } from '../storage/workspace-transfer-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -44,7 +46,16 @@ function source() {
   recordWorkspaceOwnerMembership({ coreDb: f.coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const root = join(f.dataRoot, 'workspaces', workspace.id);
   const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'knowledge', 'notebook.git') });
-  const content = '---\ntype: note\ntitle: Exact portable note\nsource_refs: []\nsensitivity: internal\ncustom: {preserve: [one, two]}\n---\nExact Unicode body: 漢字.\r\n\t  ';
+  const content = updateOkfFrontmatter({
+    path: 'notes/portable.md',
+    content: serializeUserAuthoredKnowledgePage({
+      id: 'notes/portable', kind: 'project-context', title: 'Exact portable note',
+      content: 'Exact Unicode body: 漢字.\r\n\t  ',
+      createdAt: '2026-10-16T00:00:00Z', updatedAt: '2026-10-16T00:00:00Z',
+      sourceReferences: [],
+    }, { kind: 'workspace', workspaceId: workspace.id }),
+    updates: { custom: { preserve: ['one', 'two'] } },
+  });
   const baseRevision = notebook.publishedRevision();
   const revision = notebook.prepare({
     baseRevision,
@@ -75,6 +86,10 @@ describe('canonical Notebook Workspace portability', () => {
   it('rebuilds a new target Notebook through the existing verified Workspace archive import', () => {
     const f = source();
     const target = deployment();
+    target.store.createWorkspace('Existing target forces remint', {
+      requestId: randomUUID(), producer: { kind: 'user', id: LOCAL_USER_ID },
+      instructionReference: 'test:existing-target',
+    });
     const exported = createVerifiedWorkspaceExport({
       authorityUserId: LOCAL_USER_ID,
       coreDb: f.coreDb,
@@ -91,12 +106,19 @@ describe('canonical Notebook Workspace portability', () => {
       store: target.store,
       verified: exported.verified,
     });
+    expect(exported.verified.manifest.knowledgeNotebookRevision).toBe(f.revision);
     const targetRoot = join(target.dataRoot, 'workspaces', imported.workspace.id);
     const notebook = new KnowledgeNotebook({ repositoryPath: join(targetRoot, 'knowledge', 'notebook.git') });
     const current = notebook.readRevision(notebook.publishedRevision());
-    expect(current.files['notes/portable.md']).toBe(f.content);
+    const page = parseOkfDocument({ path: 'notes/portable.md', content: current.files['notes/portable.md']! });
+    const original = parseOkfDocument({ path: 'notes/portable.md', content: f.content });
+    expect(page.ok && original.ok).toBe(true);
+    expect(page.document?.body).toBe(original.document?.body);
+    expect(page.document?.frontmatter).toMatchObject({ scope: { kind: 'workspace', workspaceId: imported.workspace.id }, custom: { preserve: ['one', 'two'] } });
+    expect(imported.workspace.id).not.toBe(f.workspace.id);
     expect(current.parentRevision).toBeNull();
     expect(current.metadata.producer).toEqual({ kind: 'user', id: LOCAL_USER_ID });
+    expect(current.metadata.authority).toEqual({ kind: 'direct', instructionReference: `workspace.import:${exported.verified.manifest.id}:notebook:${f.revision}` });
     expect(current.revision).not.toBe(f.revision);
     expect(existsSync(join(targetRoot, 'knowledge', 'pages'))).toBe(false);
     expect(new KnowledgeNotebook({ repositoryPath: join(f.root, 'knowledge', 'notebook.git') }).publishedRevision()).toBe(f.revision);

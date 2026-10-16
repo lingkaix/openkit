@@ -19,6 +19,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import type { z } from 'zod';
+import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
   appendCanonicalTextFile,
@@ -70,6 +71,8 @@ export interface WorkspacePortableFileState {
   readonly workspaceConfig: string | null;
   /** Exact workspace knowledge schema text, or null when absent. */
   readonly workspaceSchema: string | null;
+  /** One source published commit; archive provenance only, never a target permission. */
+  readonly notebookRevision?: string;
   /** Exact portable OKF page text keyed by workspace-relative path. */
   readonly nativeKnowledgePages: ReadonlyMap<string, string>;
   /** Turn-owned worker Context Package traces and exact worker-visible text files. */
@@ -230,8 +233,8 @@ export function readWorkspacePortableFileState(
     conflicts: readWorkspaceKnowledgeConflictLedger(root),
     retrievalTraceFiles: readWorkspaceRetrievalTraceFiles(root, owners),
     workspaceConfig: readOptionalText(root, 'config/workspace.jsonc'),
-    workspaceSchema: readOptionalText(root, 'knowledge/schema/workspace-schema.yaml'),
-    nativeKnowledgePages: readNativeKnowledgePages(root),
+    workspaceSchema: readOptionalText(root, 'knowledge/schema/scope-schema.yaml'),
+    ...readPortableWorkspaceNotebookPages(root),
     workerContextPackageFiles: readWorkerContextPackageFiles(root, owners.turns),
   };
 }
@@ -275,9 +278,8 @@ export function writeWorkspacePortableFileState(
     writeText(root, 'config/workspace.jsonc', state.workspaceConfig, false);
   }
   if (state.workspaceSchema !== null) {
-    writeText(root, 'knowledge/schema/workspace-schema.yaml', state.workspaceSchema, true);
+    writeText(root, 'knowledge/schema/scope-schema.yaml', state.workspaceSchema, true);
   }
-  writeTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/', true);
   writeWorkspaceRetrievalTraceFiles(root, state.retrievalTraceFiles);
   assertWorkerContextPackageFiles(state.workerContextPackageFiles);
   writeTextMap(root, state.workerContextPackageFiles, 'threads/', false);
@@ -332,7 +334,7 @@ export function writeWorkspacePortableExportState(
   if (state.workspaceSchema !== null) {
     writeText(
       root,
-      'workspace-files/knowledge/schema/workspace-schema.yaml',
+      'workspace-files/knowledge/schema/scope-schema.yaml',
       state.workspaceSchema,
       false
     );
@@ -498,13 +500,6 @@ function readOptionalText(root: string, relativePath: string): string | null {
   }
   const path = join(directory, relativePath.split('/').at(-1) ?? '');
   return lstatSync(path, { throwIfNoEntry: false }) ? readCanonicalTextFile(path) : null;
-}
-
-/** Reads every portable OKF page, including exact canonical openkit_entry_id pages. */
-function readNativeKnowledgePages(root: string): ReadonlyMap<string, string> {
-  return new Map(
-    [...readTextTree(root, 'knowledge/pages', true)].filter(([path]) => path.endsWith('.md'))
-  );
 }
 
 /** Parses one query-owned trace file and binds its body to its canonical Workspace-relative path. */

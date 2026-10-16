@@ -54,6 +54,7 @@ import {
 } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
 import { assertConversationRetrievalTraceReadable } from '../internal-agents/assistant-history.js';
+import { importedWorkspaceNotebookFiles } from '../knowledge/notebook-workspace-portability.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -798,12 +799,16 @@ function publishImportedWorkspace(
   store: FsStore,
   ownerUserId: string,
   snapshot: WorkspaceImportSnapshot,
-  stageWorkspace: (stage: ImportWorkspaceStage) => void
+  stageWorkspace: (stage: ImportWorkspaceStage) => void,
+  initialization: NonNullable<Parameters<FsStore['importWorkspaceSnapshot']>[0]['notebookInitialization']>
 ): ReturnType<FsStore['importWorkspaceSnapshot']> {
   const importWorkspaceState = () =>
     store.importWorkspaceSnapshot({
       ...snapshot,
       stageWorkspace,
+      notebookInitialization: initialization,
+      initialNotebookFiles: importedWorkspaceNotebookFiles(snapshot.portableFileState.nativeKnowledgePages),
+      ...(snapshot.portableFileState.workspaceSchema === null ? {} : { initialNotebookSchemaText: snapshot.portableFileState.workspaceSchema }),
     });
   if (!coreDb) {
     return importWorkspaceState();
@@ -946,7 +951,12 @@ export function importVerifiedWorkspace({
     store,
     recoveryOwnerUserId ?? authorityUserId,
     snapshot,
-    stageWorkspace
+    stageWorkspace,
+    {
+      requestId: requestId ?? randomUUID(),
+      producer: { kind: 'user', id: authorityUserId },
+      instructionReference: `workspace.import:${verified.manifest.id}${verified.manifest.knowledgeNotebookRevision ? `:notebook:${verified.manifest.knowledgeNotebookRevision}` : ''}`,
+    }
   );
 
   return WorkspaceImportResponseSchema.parse({

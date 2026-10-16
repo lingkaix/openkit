@@ -110,6 +110,7 @@ import {
   stringListFrontmatterField,
   updateOkfFrontmatter,
 } from '../knowledge/okf.js';
+import { remintPortableWorkspaceNotebookPage } from '../knowledge/notebook-workspace-portability.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
@@ -3948,12 +3949,18 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
     assertPortableWorkspaceFilePath(workspacePath);
     if (workspacePath === 'config/workspace.jsonc') {
       workspaceConfig = content;
-    } else if (workspacePath === 'knowledge/schema/workspace-schema.yaml') {
+    } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
     } else if (workspacePath.startsWith('knowledge/pages/')) {
       nativeKnowledgePages.set(
         workspacePath,
-        rewriteNativePageReferences(workspacePath, content, replacements)
+        remintPortableWorkspaceNotebookPage({
+          path: workspacePath,
+          content,
+          sourceWorkspaceId: context.report.exportedWorkspaceId,
+          targetWorkspaceId: context.targetWorkspaceId,
+          rewriteReferences: (references) => rewritePortableReferences(references, replacements),
+        })
       );
     } else if (
       workspacePath.startsWith('evidence/bundles/') ||

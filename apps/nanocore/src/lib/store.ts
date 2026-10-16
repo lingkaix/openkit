@@ -1419,7 +1419,8 @@ export class FsStore {
     records: WorkspaceFileRecords,
     stageWorkspace?: (stage: ImportWorkspaceStage) => void,
     notebookInitialization?: NotebookInitialization,
-    initialNotebookFiles?: Readonly<Record<string, string>>
+    initialNotebookFiles?: Readonly<Record<string, string>>,
+    initialNotebookSchemaText?: string
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1466,7 +1467,7 @@ export class FsStore {
           initialization: notebookInitialization,
           files: initialNotebookFiles ?? {},
           revalidate: () => ({
-            scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+            scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
             reviewRequiredPageIds: [],
             registeredSources: new Map(
               records.knowledgeSources.map((source) => [source.id, source.contentDigest])
@@ -2067,6 +2068,8 @@ export class FsStore {
     notebookInitialization?: NotebookInitialization;
     /** Exact admitted imported tree, including unknown OKF metadata and reserved navigation bytes. */
     initialNotebookFiles?: Readonly<Record<string, string>>;
+    /** Exact imported scope schema used to validate and initialize the target Notebook. */
+    initialNotebookSchemaText?: string;
     /** Immutable capture admission for imported Turns; absence remains unknown history. */
     turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
     stageWorkspace?: (stage: ImportWorkspaceStage) => void;
@@ -2173,7 +2176,8 @@ export class FsStore {
         input.stageWorkspace?.(stage);
       },
       input.notebookInitialization,
-      input.initialNotebookFiles
+      input.initialNotebookFiles,
+      input.initialNotebookSchemaText
     );
 
     this.workspaces.set(workspace.id, workspace);
