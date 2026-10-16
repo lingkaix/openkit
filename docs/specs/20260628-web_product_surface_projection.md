@@ -154,6 +154,10 @@ The server derives the User from the authenticated actor and requires current Wo
 
 A receipt has no independent termination or recovery command. Deleted or inaccessible Workspaces and Threads are unavailable under their current owners, and their retained User metadata grants no access or resurrection. User deletion removes its User-owned state. Whole Data Root backup retains that state under existing ownership; portable Workspace export and import do not transfer another User's read state or remint it into a new Workspace. No conversion reader or predecessor migration is introduced. Acceptance proves actual display and explicit read, prefetch without advancement, cross-device union and restart, current actor and audience isolation, and truthful failed reads and writes.
 
+### Recorded Interruption Identity
+
+Usage and audit projects the existing AuditEvent actor and exact Workspace/Thread/Turn lineage alongside each event's action, summary, outcome and recorded time. A recorded `turn.interrupt` identifies the admitted requester of an accepted Stop command; it does not substitute for terminal status or prove completed backend cleanup. The visible actor uses its recorded kind and stable identity, with an explicit Actor not recorded label when absent. No identity is inferred from triggerActor, the current viewer, permission admission or optional telemetry. An exact Thread link uses only the event's currently authorized Workspace and Thread coordinates; no identifier is reformatted or guessed. The existing Audit owner defines producer, replay, missing-history and audience semantics. Failed reads retain the existing unavailable and retry behavior. Acceptance preserves a different initiator and interrupter, exact lineage, absent historical identity, and current audience filtering.
+
 ### Workflow-level projection
 
 Web MUST project included operations through product workflows such as account and sharing, conversation, Goal, Material, Action Center, Knowledge, repositories, Workspace Sync review-to-apply, portability, agents and recovery, and Workspace-authorized settings.
