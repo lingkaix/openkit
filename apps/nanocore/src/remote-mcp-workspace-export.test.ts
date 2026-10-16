@@ -9,6 +9,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -59,6 +60,7 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
         app,
         coreDb,
         store,
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
         repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
         inflightCommands: new WeakMap(),
         workspaceMutationAdmission: new WorkspaceMutationAdmission(),

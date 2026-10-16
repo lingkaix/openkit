@@ -11,6 +11,7 @@ export const registryJob = 'Prerelease registry admission';
 export const candidateJobs = [
   'L0-L2 static, unit, contract',
   'L3 NanoCore e2e',
+  'L4 Web e2e',
   'L5 smoke',
   'Workspace portability source',
   'Workspace portability target',
@@ -229,7 +230,9 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
     c?.sha === e.sha &&
       Number.isSafeInteger(c.attempt) &&
       c.attempt > 0 &&
-      ((c.event === 'push' && c.ref === 'refs/heads/main' && c.gate === 'release-gate') ||
+      ((c.event === 'push' &&
+        c.ref === 'refs/heads/main' &&
+        ['release-gate', 'full'].includes(c.gate)) ||
         (c.event === 'workflow_dispatch' && ['release-gate', 'full'].includes(c.gate))) &&
       successfulJobs(c, [
         ...candidateJobs,

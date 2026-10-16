@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, createReadStream } from 'node:fs';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
   ArchivedGitPushRecordSchema,
@@ -98,8 +99,8 @@ import {
   verifyImportedWorkerContextPackageTrace,
   type WorkerContextPackageAuthorityReader,
   WorkerContextPackageManifestSchema,
-  type WorkerContextPackageTrace,
   type WorkerContextPackageSourceFileInput,
+  type WorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
 import { workObservationBodyBundleId } from '../evidence-bundles.js';
 import {
@@ -124,7 +125,6 @@ import {
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
-import { measureCanonicalFile } from './workspace-file-records.js';
 import {
   dryRunWorkspaceImport,
   type ExportedKnowledgeSourceMaterial,
@@ -143,6 +143,7 @@ import {
   KnowledgeSourceRecordSchema,
   knowledgeEntriesEqual,
   listUnresolvedUserInputRequestItemIds,
+  measureCanonicalFile,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
   WorkspaceSystemRecordSchema,
@@ -2604,19 +2605,43 @@ function readWorkResourceImportState(
         sourceRefs: target.targetSourceReferences,
       };
     });
-    const sourceFiles = (sourceTrace.sourceFiles ?? []).map((entry): WorkerContextPackageSourceFileInput => {
-      const sourcePath = requiredMapValue(context.payloadFiles, `${sourcePackageRoot}/${entry.originalSnapshotPath}`, 'Context Package original');
-      return {
-        ...entry,
-        deliveredBytes: Buffer.from(requiredExportFile(context.files, `${sourcePackageRoot}/${entry.packagePath}`), 'utf8'),
-        open: (signal) => createReadStream(sourcePath, { flags: constants.O_RDONLY | constants.O_NOFOLLOW, highWaterMark: 65_536, signal }),
-        assertUnchanged: () => {
-          const proof = measureCanonicalFile(sourcePath);
-          if (proof.byteLength !== entry.byteLength || proof.contentDigest !== entry.originalDigest)
-            throw new Error('Context Package original integrity is inconsistent.');
-        },
-      };
-    });
+    const sourceFiles = (sourceTrace.sourceFiles ?? []).map(
+      (entry): WorkerContextPackageSourceFileInput => {
+        const sourcePath = requiredMapValue(
+          context.payloadFiles,
+          `${sourcePackageRoot}/${entry.originalSnapshotPath}`,
+          'Context Package original'
+        );
+        return {
+          ...entry,
+          deliveredBytes: Buffer.from(
+            requiredExportFile(context.files, `${sourcePackageRoot}/${entry.packagePath}`),
+            'utf8'
+          ),
+          open: async function* (signal) {
+            signal.throwIfAborted();
+            const handle = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+            try {
+              yield* handle.createReadStream({
+                highWaterMark: 65_536,
+                autoClose: false,
+                signal,
+              });
+            } finally {
+              await handle.close();
+            }
+          },
+          assertUnchanged: () => {
+            const proof = measureCanonicalFile(sourcePath);
+            if (
+              proof.byteLength !== entry.byteLength ||
+              proof.contentDigest !== entry.originalDigest
+            )
+              throw new Error('Context Package original integrity is inconsistent.');
+          },
+        };
+      }
+    );
     const sourcePackage = createWorkerContextPackageFiles({
       sourceFiles,
       contextBudgetTokens: sourceManifest.contextBudgetTokens,
@@ -2629,7 +2654,19 @@ function readWorkResourceImportState(
           selection.revisionId
         );
         const material = requireMaterial(context.sourceWorkspaceMaterials, selection.materialId);
-        return { ...selection, content: revision.content, ...(selection.projection ? { deliveredContent: requiredExportFile(context.files, `${sourcePackageRoot}/${selection.packagePath}`) } : {}), sensitivity: material.sensitivity };
+        return {
+          ...selection,
+          content: revision.content,
+          ...(selection.projection
+            ? {
+                deliveredContent: requiredExportFile(
+                  context.files,
+                  `${sourcePackageRoot}/${selection.packagePath}`
+                ),
+              }
+            : {}),
+          sensitivity: material.sensitivity,
+        };
       }),
       threadId: sourceThreadId,
       turnId: sourceTurnId,
@@ -2693,7 +2730,8 @@ function readWorkResourceImportState(
         throw new Error(`Worker Context Package source bytes are contradictory: ${file.path}`);
       }
     }
-    for (const entry of sourceFiles) sourcePackagePaths.add(`${sourcePackageRoot}/${entry.originalSnapshotPath}`);
+    for (const entry of sourceFiles)
+      sourcePackagePaths.add(`${sourcePackageRoot}/${entry.originalSnapshotPath}`);
     const unexpectedSourceFile = [...context.files.keys(), ...context.payloadFiles.keys()].find(
       (path) => path.startsWith(`${sourcePackageRoot}/`) && !sourcePackagePaths.has(path)
     );
@@ -2720,7 +2758,14 @@ function readWorkResourceImportState(
     const targetSourceFiles = sourceFiles.map((entry) => remintContextSourceFile(entry, context));
     const targetRoot = `threads/${targetThreadId}/turns/${targetTurnId}`;
     for (const [index, entry] of targetSourceFiles.entries()) {
-      artifactPayloadFiles.set(`${targetRoot}/context-package/${entry.originalSnapshotPath}`, requiredMapValue(context.payloadFiles, `${sourcePackageRoot}/${sourceFiles[index]!.originalSnapshotPath}`, 'Context Package original'));
+      artifactPayloadFiles.set(
+        `${targetRoot}/context-package/${entry.originalSnapshotPath}`,
+        requiredMapValue(
+          context.payloadFiles,
+          `${sourcePackageRoot}/${sourceFiles[index]!.originalSnapshotPath}`,
+          'Context Package original'
+        )
+      );
     }
     const targetPackage = createWorkerContextPackageFiles({
       sourceFiles: targetSourceFiles,
@@ -2754,14 +2799,37 @@ function readWorkResourceImportState(
             ? importRequestLineage(context, selection.bindingMutationRequestId)
             : null,
           content: sourceRevision.content,
-          ...(selection.projection ? {
-            deliveredContent: requiredExportFile(context.files, `${sourcePackageRoot}/${selection.packagePath}`),
-            projection: {
-              ...selection.projection,
-              sourceRevision: requiredMaterialRevisionId(context, selection.materialId, selection.revisionId),
-              ...(selection.projection.originalSnapshotPath ? { originalSnapshotPath: remintContextSourcePath(selection.projection.originalSnapshotPath, selection.materialId, requiredMapValue(context.materialIds, selection.materialId, 'Material'), selection.revisionId, requiredMaterialRevisionId(context, selection.materialId, selection.revisionId)) } : {}),
-            },
-          } : {}),
+          ...(selection.projection
+            ? {
+                deliveredContent: requiredExportFile(
+                  context.files,
+                  `${sourcePackageRoot}/${selection.packagePath}`
+                ),
+                projection: {
+                  ...selection.projection,
+                  sourceRevision: requiredMaterialRevisionId(
+                    context,
+                    selection.materialId,
+                    selection.revisionId
+                  ),
+                  ...(selection.projection.originalSnapshotPath
+                    ? {
+                        originalSnapshotPath: remintContextSourcePath(
+                          selection.projection.originalSnapshotPath,
+                          selection.materialId,
+                          requiredMapValue(context.materialIds, selection.materialId, 'Material'),
+                          selection.revisionId,
+                          requiredMaterialRevisionId(
+                            context,
+                            selection.materialId,
+                            selection.revisionId
+                          )
+                        ),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
           sensitivity: sourceMaterial.sensitivity,
         };
       }),
@@ -3039,21 +3107,33 @@ function readWorkResourceImportState(
 }
 
 /** Remints only owned identity segments, preserving opaque path segments and original bytes. */
-function remintContextSourcePath(path: string, sourceId: string, targetId: string, sourceRevision?: string, targetRevision?: string): string {
+function remintContextSourcePath(
+  path: string,
+  sourceId: string,
+  targetId: string,
+  sourceRevision?: string,
+  targetRevision?: string
+): string {
   assertWorkspaceArchiveFilePath(path);
-  return path.split('/').map((part) => {
-    if (part === sourceId) return targetId;
-    if (sourceRevision !== undefined) {
-      if (part === sourceRevision) return targetRevision!;
-      for (const extension of ['.md', '.txt'])
-        if (part === `${sourceRevision}${extension}`) return `${targetRevision}${extension}`;
-    }
-    return part;
-  }).join('/');
+  return path
+    .split('/')
+    .map((part) => {
+      if (part === sourceId) return targetId;
+      if (sourceRevision !== undefined) {
+        if (part === sourceRevision) return targetRevision!;
+        for (const extension of ['.md', '.txt'])
+          if (part === `${sourceRevision}${extension}`) return `${targetRevision}${extension}`;
+      }
+      return part;
+    })
+    .join('/');
 }
 
 /** Projects a retained original into target ownership without resolving a live source. */
-function remintContextSourceFile(entry: WorkerContextPackageSourceFileInput, context: ImportRemintContext): WorkerContextPackageSourceFileInput {
+function remintContextSourceFile(
+  entry: WorkerContextPackageSourceFileInput,
+  context: ImportRemintContext
+): WorkerContextPackageSourceFileInput {
   const source = entry.source;
   const sourceId = source.reference.objectId;
   let targetSource: WorkerContextPackageSourceFileInput['source'];
@@ -3062,28 +3142,83 @@ function remintContextSourceFile(entry: WorkerContextPackageSourceFileInput, con
   let newRevision: string | undefined;
   if (source.kind === 'artifact') {
     targetId = requiredMapValue(context.artifactIds, sourceId, 'Artifact');
-    targetSource = { ...source, reference: { scopeId: `artifact/workspace/${context.targetWorkspaceId}`, objectId: targetId } };
+    targetSource = {
+      ...source,
+      reference: { scopeId: `artifact/workspace/${context.targetWorkspaceId}`, objectId: targetId },
+    };
   } else if (source.kind === 'material') {
     targetId = requiredMapValue(context.materialIds, sourceId, 'Material');
     oldRevision = source.revisionId;
     newRevision = requiredMaterialRevisionId(context, sourceId, source.revisionId);
-    targetSource = { ...source, reference: { scopeId: `material/workspace/${context.targetWorkspaceId}`, objectId: targetId }, revisionId: newRevision };
+    targetSource = {
+      ...source,
+      reference: { scopeId: `material/workspace/${context.targetWorkspaceId}`, objectId: targetId },
+      revisionId: newRevision,
+    };
   } else {
     const scope = parseReferenceScope(source.reference.scopeId);
-    if (!scope || scope.family !== 'input' || scope.kind !== 'turn' || scope.workspaceId !== context.report.exportedWorkspaceId)
+    if (
+      !scope ||
+      scope.family !== 'input' ||
+      scope.kind !== 'turn' ||
+      scope.workspaceId !== context.report.exportedWorkspaceId
+    )
       throw new Error('Context Package Turn original reference is invalid.');
-    targetSource = { ...source, reference: { scopeId: `input/turn/${context.targetWorkspaceId}/${requiredMapValue(context.threadIds, scope.threadId, 'thread')}/${requiredMapValue(context.turnIds, scope.turnId, 'turn')}`, objectId: sourceId } };
+    targetSource = {
+      ...source,
+      reference: {
+        scopeId: `input/turn/${context.targetWorkspaceId}/${requiredMapValue(context.threadIds, scope.threadId, 'thread')}/${requiredMapValue(context.turnIds, scope.turnId, 'turn')}`,
+        objectId: sourceId,
+      },
+    };
   }
-  const originalSnapshotPath = remintContextSourcePath(entry.originalSnapshotPath, sourceId, targetId, oldRevision, newRevision);
+  const originalSnapshotPath = remintContextSourcePath(
+    entry.originalSnapshotPath,
+    sourceId,
+    targetId,
+    oldRevision,
+    newRevision
+  );
   let deliveredBytes = entry.deliveredBytes;
   // The current Turn producer includes a qualified reference in its unavailable descriptor.
-  if (source.kind === 'turn-input' && entry.projection.kind === 'descriptor' && entry.projection.representationId === 'unavailable-original-view-v1') {
+  if (
+    source.kind === 'turn-input' &&
+    entry.projection.kind === 'descriptor' &&
+    entry.projection.representationId === 'unavailable-original-view-v1'
+  ) {
     const descriptor = JSON.parse(Buffer.from(deliveredBytes).toString('utf8'));
-    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor) || !isDeepStrictEqual(descriptor.source, source.reference))
+    if (
+      !descriptor ||
+      typeof descriptor !== 'object' ||
+      Array.isArray(descriptor) ||
+      !isDeepStrictEqual(descriptor.source, source.reference)
+    )
       throw new Error('Context Package Turn descriptor source is contradictory.');
-    deliveredBytes = Buffer.from(JSON.stringify({ ...descriptor, source: targetSource.reference }), 'utf8');
+    deliveredBytes = Buffer.from(
+      JSON.stringify({ ...descriptor, source: targetSource.reference }),
+      'utf8'
+    );
   }
-  return { ...entry, source: targetSource, deliveredBytes, originalSnapshotPath, packagePath: remintContextSourcePath(entry.packagePath, sourceId, targetId, oldRevision, newRevision), projection: { ...entry.projection, ...(newRevision ? { sourceRevision: newRevision } : {}), deliveredDigest: `sha256:${createHash('sha256').update(deliveredBytes).digest('hex')}`, byteLength: deliveredBytes.byteLength, originalSnapshotPath } };
+  return {
+    ...entry,
+    source: targetSource,
+    deliveredBytes,
+    originalSnapshotPath,
+    packagePath: remintContextSourcePath(
+      entry.packagePath,
+      sourceId,
+      targetId,
+      oldRevision,
+      newRevision
+    ),
+    projection: {
+      ...entry.projection,
+      ...(newRevision ? { sourceRevision: newRevision } : {}),
+      deliveredDigest: `sha256:${createHash('sha256').update(deliveredBytes).digest('hex')}`,
+      byteLength: deliveredBytes.byteLength,
+      originalSnapshotPath,
+    },
+  };
 }
 
 /**
