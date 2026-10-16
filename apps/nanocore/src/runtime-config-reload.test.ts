@@ -92,7 +92,7 @@ function writeServerConfig(dataRoot: string, model: string): void {
 }
 
 describe('NanoHost restart-required reload fencing', () => {
-  for (const mode of ['safe', 'strict', 'dry-run'] as const) {
+  for (const mode of ['safe', 'strict', 'dry-run', 'read-failed'] as const) {
     it(`keeps native connection authority consistent after ${mode} reload`, async () => {
       const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
       const coreDb = openCoreDb(dataRoot);
@@ -173,7 +173,7 @@ describe('NanoHost restart-required reload fencing', () => {
           ready: true,
         });
         expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({ ready: true, physicalEpoch: 'a'.repeat(64) });
-        if (mode === 'strict') {
+        if (mode === 'strict' || mode === 'read-failed') {
           const candidate = await admit();
           expect(candidate.status).toBe(200);
           expect(candidate.body.role).toBe('candidate');
@@ -182,7 +182,25 @@ describe('NanoHost restart-required reload fencing', () => {
         writeHost({ ...host, credentialRef: 'fixture-successor' });
 
         // Direct callers and public operations must cross the same reload fence.
-        if (mode === 'safe') expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+        if (mode === 'read-failed') {
+          const failure = new Error('Synthetic readiness observation read failed.');
+          const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
+          const targetBeforeReload = getNanoHostRuntimeTarget(coreDb, host.identityId);
+          const readFailure = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
+            if (sql.includes('target_id AS targetId') && sql.includes('WHERE identity_id = ?')) throw failure;
+            return prepare(sql);
+          });
+          try {
+            expect(() => manager.reload({ mode: 'safe' })).toThrow(failure);
+            expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
+            expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
+            expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
+          } finally {
+            readFailure.mockRestore();
+          }
+          // Failed durable observation stays unchanged; process fencing does not claim a committed readiness update.
+          expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toEqual(targetBeforeReload);
+        } else if (mode === 'safe') expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
         else {
           const response = await app.request(...operationRequest('runtime.reload', {}, {
             method: 'POST', headers: { 'content-type': 'application/json' },
@@ -192,7 +210,7 @@ describe('NanoHost restart-required reload fencing', () => {
           expect((await response.json()).status).toBe('rejected');
         }
         expect(manager.current().openKitConfig.nanohost).toEqual(host);
-        if (mode !== 'safe') expect(manager.current()).toBe(initial);
+        if (mode === 'strict' || mode === 'dry-run') expect(manager.current()).toBe(initial);
         if (mode === 'dry-run') {
           expect(authority.mayCarryWork(sessions[0]!)).toBe(true);
           expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({ ready: true, physicalEpoch: 'a'.repeat(64) });
@@ -201,7 +219,7 @@ describe('NanoHost restart-required reload fencing', () => {
         expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
         expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
         expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({ ready: false, freshEmpty: false, physicalEpoch: null });
-        if (mode === 'strict') {
+        if (mode === 'strict' || mode === 'read-failed') {
           authority.closePhysicalConnection(sessions[0]!);
           expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
           expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
