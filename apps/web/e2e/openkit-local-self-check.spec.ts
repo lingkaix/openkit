@@ -34,7 +34,7 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Create workspace$/ }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
-  await page.getByRole('button', { name: /^New conversation$/ }).click();
+  await page.getByRole('button', { name: /^Assistant$/ }).click();
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
