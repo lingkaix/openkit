@@ -61,7 +61,7 @@ function readCodexInferenceRuntimeHint(
   const nativeThreadId = readBoundedString(parsed.thread_id);
   const nativeTurnId = readOptionalBoundedString(parsed.turn_id);
   const parentNativeThreadId = readOptionalBoundedString(parsed.parent_thread_id);
-  requireWorkerResponsesRequestKind(parsed.request_kind);
+  const requestKind = requireWorkerResponsesRequestKind(parsed.request_kind);
   const canonicalSubagentKind = readSubagentKind(parsed.subagent_kind);
 
   requireProjection(clientMetadata.session_id, nativeSessionId);
@@ -89,6 +89,7 @@ function readCodexInferenceRuntimeHint(
     ...(nativeTurnId ? { nativeTurnId } : {}),
     ...(parentNativeThreadId ? { parentNativeThreadId } : {}),
     runtimeFamily: 'codex',
+    requestKind,
     ...(subagentKind ? { subagentKind } : {}),
   };
 }
@@ -97,12 +98,14 @@ function readCodexInferenceRuntimeHint(
  * Requires one request kind emitted by the pinned Codex Responses worker path.
  *
  * @param value Canonical request kind.
+ * @returns The validated native request phase.
  * @throws Error when the request cannot belong to the supported worker Responses path.
  */
-function requireWorkerResponsesRequestKind(value: unknown): void {
+function requireWorkerResponsesRequestKind(value: unknown): 'turn' | 'prewarm' | 'compaction' {
   if (value !== 'turn' && value !== 'prewarm' && value !== 'compaction') {
     throw invalidRuntimeHint();
   }
+  return value;
 }
 
 /**
