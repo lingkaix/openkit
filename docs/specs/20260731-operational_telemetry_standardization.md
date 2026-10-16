@@ -49,7 +49,7 @@ date: "2026-07-31"
 
 OpenKit will use OpenTelemetry as its vendor-neutral operational telemetry standard. Traces, metrics, and correlated logs are diagnostic projections over existing product and evidence owners; they are not durable product truth, acceptance authority, or a replacement for Audit, Usage, Evidence, and work history.
 
-The initial topology is deliberately small: NanoCore emits stock OpenTelemetry signals through OTLP to an optional operator-provided Collector on the same deployment boundary. The Collector may batch, filter, retry, and export to an operator-selected backend. NanoCore remains fully functional when telemetry is disabled, the Collector is absent, or export fails.
+The initial topology is deliberately small: NanoCore and NanoHost emit stock OpenTelemetry signals through OTLP to an optional operator-provided Collector on the same deployment boundary. The Collector may batch, filter, retry, and export to an operator-selected backend. NanoCore remains fully functional when telemetry is disabled, the Collector is absent, or export fails.
 
 Repository tests use the same system-under-test instrumentation and correlation semantics. Test pass or failure remains with the existing test runner and JUnit-compatible result output; large diagnostic artifacts remain in their native formats and are referenced rather than embedded in telemetry.
 
@@ -120,7 +120,7 @@ The exact SDK, Collector, OTLP, and Semantic Convention releases are pinned in t
 The accepted initial topology is:
 
 ```text
-NanoCore and test processes
+NanoCore, NanoHost and test processes
   -> stock OpenTelemetry SDK or stdout log bridge
   -> OTLP
   -> optional operator-provided local Collector
@@ -168,6 +168,12 @@ These attributes are a projection of existing ids, not a new identity vocabulary
 - Cancellation, timeout, typed degraded capability, upstream rejection, product failure, and cleanup failure remain distinct product-safe classifications.
 - Internal Items, token deltas, SSE chunks, heartbeat samples, retry iterations, and worker-native frames do not each create spans. Aggregated events may be attached to the owning span only when they materially identify a terminal or last-completed phase.
 - W3C trace propagation is accepted across OpenKit-owned HTTP clients and trusted internal NanoCore boundaries. Caller-supplied trace context is validated by the stock propagator and never supplies actor, authorization, request-id, Workspace, Turn, provider, or worker authority.
+
+### NanoHost Correlation
+
+NanoHost uses the same optional stock SDK and OTLP export contract. Existing native command responses and result requests carry only optional W3C `traceparent` and `tracestate` headers, as specified by [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md#transport-envelope-and-worker-control-liveness). The initiating command context supplies effect parentage; an unrelated polling request does not. Local execution spans end at the observed local result, independently of result delivery or Core acceptance. Startup and member start are bounded observations; member exit is a bounded observation rather than the end of a process-lifetime span. The observed local startup result does not establish Core readiness.
+
+A Turn-caused NanoHost effect span may carry one span link to the completed Epoch startup context. Startup normally precedes that Turn and is not its child. A known Turn can locate its caused effect spans and their available startup link; startup need not share the Turn trace id. Missing context leaves correlation unavailable and requires no reconstruction. This [accepted interpretation](../decisions/20261016-nanohost_trace_headers_and_startup_link.md) adds no durable state, body field, Sandbox telemetry or delivery authority. Existing content exclusions, bounded export and disabled-export behavior apply unchanged.
 
 ## Metric Contract
 
@@ -245,7 +251,7 @@ With no explicit OTLP destination, instrumentation is disabled. The initial oper
 
 The initial HTTP span includes method, matched route template, status, duration and known request identity; unmatched paths use a fixed unknown-route label rather than raw URLs. No request/response body, query, header, user text, raw exception or host path is emitted. A completed request span proves only the observed HTTP boundary, not later asynchronous Task completion. Terminal product and Worker outcomes are obtained from their own records until their instrumentation is implemented. The same rule applies to streaming responses: distinguish response handoff from stream completion; do not label handoff as completed user work.
 
-Enabling this slice must not enroll unrelated library instrumentation into its export pipeline. Its private stock tracer provider owns only the explicit HTTP instrumentation; disabled or stopped instrumentation uses a non-recording span and does not fall back to a foreign process-global exporter. Library exception and context fields therefore cannot enter this slice merely because a dependency uses the OpenTelemetry API.
+Enabling this slice must not enroll unrelated library instrumentation into its export pipeline. Its private stock tracer provider owns only the explicit HTTP and admitted NanoHost-boundary instrumentation; disabled or stopped instrumentation uses a non-recording span and does not fall back to a foreign process-global exporter. Library exception and context fields therefore cannot enter this slice merely because a dependency uses the OpenTelemetry API.
 
 Use bounded stock SDK buffering and flush through the existing shutdown deadline. No active Collector means optional diagnostic unavailability, not failed product work. A stock in-memory exporter proves the positive and negative instrument paths; one live deployment verifies OTLP export and ordinary requests with export unavailable. No mandatory backend installation is attached to L6 admission.
 
