@@ -35061,10 +35061,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "goalId": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
@@ -37282,10 +37278,6 @@
                                 "type": "null"
                               }
                             ]
-                          },
-                          "goalId": {
-                            "type": "string",
-                            "minLength": 1
                           }
                         },
                         "required": [
@@ -40042,10 +40034,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "goalId": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
@@ -42357,10 +42345,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "goalId": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
@@ -44761,10 +44745,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "goalId": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
@@ -63615,10 +63595,6 @@
                               "type": "null"
                             }
                           ]
-                        },
-                        "goalId": {
-                          "type": "string",
-                          "minLength": 1
                         }
                       },
                       "required": [
@@ -65802,10 +65778,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "goalId": {
-                    "type": "string",
-                    "minLength": 1
                   }
                 },
                 "required": [
@@ -67988,10 +67960,6 @@
                               "type": "null"
                             }
                           ]
-                        },
-                        "goalId": {
-                          "type": "string",
-                          "minLength": 1
                         }
                       },
                       "required": [
@@ -80349,10 +80317,6 @@
                               "type": "null"
                             }
                           ]
-                        },
-                        "goalId": {
-                          "type": "string",
-                          "minLength": 1
                         }
                       },
                       "required": [
@@ -82536,10 +82500,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "goalId": {
-                    "type": "string",
-                    "minLength": 1
                   }
                 },
                 "required": [
@@ -95765,5 +95725,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:24569dd0fb8c437403d32466c0e09f9b2942ffab17476b5886ff6bdf6d632874"
+  "x-openkit-source-digest": "sha256:3e345170e230d2a68c18403b2ba004a08f49b56597a4d242c1612cbde25b668e"
 }

@@ -1650,10 +1650,6 @@
                     "type": "null"
                   }
                 ]
-              },
-              "goalId": {
-                "type": "string",
-                "minLength": 1
               }
             },
             "required": [
