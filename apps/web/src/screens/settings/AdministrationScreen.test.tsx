@@ -1331,32 +1331,25 @@ describe('Administration', () => {
       })
     );
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const candidateFacts =
+      kind === 'environment'
+        ? new RegExp(`Resolved Artifact ${RESOLVED_CANDIDATE.artifactId}`)
+        : /"displayName": "OpenAI production"/;
+    if (kind === 'environment') expect(screen.getAllByText(candidateFacts)).not.toHaveLength(0);
     const queryKey = ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id];
     vi.mocked(client.operations['thread.read']).mockRejectedValue(
       new ApiCallError(403, 'private-parent-denied')
     );
     await act(() => queryClient.invalidateQueries({ queryKey, exact: true }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(
-      screen.queryAllByText(
-        kind === 'environment'
-          ? /Resolved Artifact artifact_resolved/
-          : /"displayName": "OpenAI production"/
-      )
-    ).toHaveLength(0);
+    expect(screen.queryAllByText(candidateFacts)).toHaveLength(0);
     vi.mocked(client.operations['thread.read']).mockReturnValue(new Promise<never>(() => {}));
     await act(async () => {
       void queryClient.refetchQueries({ queryKey, exact: true });
     });
     await waitFor(() => expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe('fetching'));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(
-      screen.queryAllByText(
-        kind === 'environment'
-          ? /Resolved Artifact artifact_resolved/
-          : /"displayName": "OpenAI production"/
-      )
-    ).toHaveLength(0);
+    expect(screen.queryAllByText(candidateFacts)).toHaveLength(0);
     expect(activate).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
     expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
