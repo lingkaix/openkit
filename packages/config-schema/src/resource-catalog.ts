@@ -271,7 +271,7 @@ export const ResourceCatalogDocumentSchema = z
       })
       .strict(),
     revision: z.number().int().nonnegative(),
-    scope: z.enum(['workspace', 'server']).default('workspace'),
+    scope: z.enum(['workspace', 'server']),
     schemaVersion: z.literal(1),
     skills: z
       .object({
@@ -413,6 +413,7 @@ export const EMPTY_RESOURCE_CATALOG = ResourceCatalogDocumentSchema.parse({
   mcp: { bindings: [], entries: [], versions: [] },
   plugins: { entries: [], installations: [], versions: [] },
   revision: 0,
+  scope: 'workspace',
   schemaVersion: 1,
   skills: { candidates: [], entries: [], pins: [], versions: [] },
 });
