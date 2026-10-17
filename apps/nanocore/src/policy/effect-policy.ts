@@ -87,7 +87,7 @@ export function evaluateEffectPolicy(input: EffectPolicyInput): EffectPolicyEval
   );
   return {
     policyDecision,
-    policySnapshotId: snapshotDigest(policy),
+    policySnapshotId: snapshotDigest({ ...policy }),
     result: combineEffectPolicyResults([
       invalid ? 'error' : policyDecision.effect,
       ...(input.mandatoryResults ?? []),
