@@ -6,6 +6,8 @@ import {
   ArtifactReviewRangeFeedbackSchema,
   type ArtifactReviewView,
   ArtifactReviewViewSchema,
+  type JudgementRecord,
+  JudgementRecordSchema,
   SelectArtifactReviewCandidateRequestSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   type SubmitArtifactReviewDecisionResponse,
@@ -330,6 +332,66 @@ export function getArtifactReview(
   const row = requireReview(workspaceDb, artifactId, artifactVersion);
   assertStoredReview(workspaceDb, row);
   return toView(row);
+}
+
+/** Appends a validated annotation to its existing exact version Review without changing decision authority. */
+export function appendArtifactReviewJudgement(
+  workspaceDb: WorkspaceDb,
+  judgement: JudgementRecord
+): JudgementRecord {
+  if (!workspaceDb.sqlite.inTransaction)
+    throw new Error('Review judgement requires the existing Workspace transaction.');
+  const parsed = JudgementRecordSchema.safeParse(judgement);
+  if (
+    !parsed.success ||
+    parsed.data.target.kind !== 'artifact-version' ||
+    parsed.data.workspaceId !== workspaceDb.workspaceId
+  )
+    throw reviewError('invalid_request', 'The Artifact Review judgement is invalid.');
+  const target = parsed.data.target;
+  const row = requireReview(workspaceDb, target.artifactId, target.artifactVersion);
+  assertStoredReview(workspaceDb, row);
+  assertJudgementOwner(row, parsed.data, 'invalid_request');
+  const view = toView(row);
+  if (view.judgements.some((entry) => entry.requestId === parsed.data.requestId))
+    throw reviewError('conflict', 'The Review already owns this judgement request.');
+  const updated = ArtifactReviewViewSchema.safeParse({
+    ...view,
+    judgements: [...view.judgements, parsed.data],
+  });
+  if (!updated.success)
+    throw reviewError('invalid_request', 'The Artifact Review judgement is invalid.');
+  const raw = parseReviewJson(row.judgementsJson);
+  if (!Array.isArray(raw))
+    throw reviewError('recovery_required', 'The retained Artifact judgement history is invalid.');
+  workspaceDb.sqlite
+    .prepare(`UPDATE artifact_reviews SET judgements = ?
+    WHERE workspace_id = ? AND artifact_id = ? AND artifact_version = ?`)
+    .run(
+      JSON.stringify([...raw, parsed.data]),
+      workspaceDb.workspaceId,
+      row.artifactId,
+      row.artifactVersion
+    );
+  return parsed.data;
+}
+
+/** A version Review cannot retain another target, a selection or a correction effect. */
+function assertJudgementOwner(
+  row: ArtifactReviewRow,
+  judgement: JudgementRecord,
+  code: 'invalid_request' | 'recovery_required'
+): void {
+  const target = judgement.target;
+  if (
+    judgement.workspaceId !== row.workspaceId ||
+    target.kind !== 'artifact-version' ||
+    target.artifactId !== row.artifactId ||
+    target.artifactVersion !== row.artifactVersion ||
+    target.contentDigest !== row.contentDigest ||
+    !['accept', 'reject', 'rate'].includes(judgement.kind)
+  )
+    throw reviewError(code, 'The judgement does not identify its owning Artifact Review.');
 }
 
 /**
@@ -926,6 +988,15 @@ function assertStoredReview(workspaceDb: WorkspaceDb, row: ArtifactReviewRow): v
   }
   const view = toView(row);
   const proposal = materialProposal(row);
+  if (
+    new Set(view.judgements.map((judgement) => judgement.requestId)).size !== view.judgements.length
+  )
+    throw reviewError(
+      'recovery_required',
+      'The retained Artifact judgement request identity is duplicated.'
+    );
+  for (const judgement of view.judgements)
+    assertJudgementOwner(row, judgement, 'recovery_required');
   if (proposal) {
     requireProposalAuthority(workspaceDb, proposal);
   }
