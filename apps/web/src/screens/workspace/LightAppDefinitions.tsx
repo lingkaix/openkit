@@ -363,11 +363,12 @@ function DefinitionDetails({
       {read.data?.versions.map((item) => (
         <Button
           key={item.digest}
+          aria-label={`Choose version ${item.digest}`}
           size="sm"
           isDisabled={blocked || read.isFetching}
           onPress={() => setDigest(item.digest)}
         >
-          Choose version {item.digest}
+          Choose version {item.digest.slice(7, 19)}
         </Button>
       ))}
       <Button
@@ -702,13 +703,14 @@ function AppActivation({
             </p>
             <Button
               size="sm"
+              aria-label={`Restore snapshot ${snapshot.snapshotId}`}
               isDisabled={disabled || snapshots.isFetching || !snapshots.isSuccess}
               onPress={() => {
                 if (current)
                   setRestore({ snapshotId: snapshot.snapshotId, appRevision: current.appRevision });
               }}
             >
-              Restore snapshot {snapshot.snapshotId}
+              Restore snapshot {snapshot.snapshotId.slice(0, 8)}
             </Button>
           </div>
         )

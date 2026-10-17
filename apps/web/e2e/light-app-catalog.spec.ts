@@ -2,6 +2,7 @@ import {
   GetLightAppResponseSchema,
   LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
   LightAppSchemaInputSchema,
+  OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
@@ -28,15 +29,13 @@ test('imports a definition, creates and activates a Light App, then restores its
       response.request().method() === 'POST'
   );
   await page.getByRole('button', { name: 'Create workspace', exact: true }).click();
-  expect((await creation).ok()).toBe(true);
+  const created = await creation;
+  expect(created.ok()).toBe(true);
+  const { id: workspaceId } = OPERATION_DEFINITIONS['workspace.create'].outputSchema.parse(
+    await created.json()
+  );
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
   const client = createCoreClient({ baseUrl: stack.coreUrl });
-  const workspace = (await client.workspaces.list()).find(
-    (item) => item.name === 'Light App recovery'
-  );
-  expect(workspace).toBeDefined();
-  if (!workspace) throw new Error('The created Workspace is missing.');
-  const workspaceId = workspace.id;
   const definition = LightAppSchemaInputSchema.parse({
     format: 'openkit.light-app',
     schemaVersion: 1,

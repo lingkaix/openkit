@@ -2,7 +2,7 @@ import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -152,6 +152,7 @@ describe('Light App definitions in the Workspace Catalog', () => {
     const user = userEvent.setup();
     const { imported, select, activate } = fixture();
     const id = await screen.findByRole('textbox', { name: 'Light App catalog ID' });
+    await waitFor(() => expect(id).toBeEnabled());
     expect(id).toHaveValue('');
     expect(screen.getByRole('textbox', { name: 'Light App display name' })).toHaveValue('');
     await user.type(id, 'my-notes');
@@ -259,8 +260,10 @@ describe('Light App definitions in the Workspace Catalog', () => {
       versions: [version, { ...version, digest: earlier, parentDigest: null }],
       pin: { entryId: 'notes', digest: earlier },
     };
+    const historyFile = await screen.findByLabelText('Definition history JSON file');
+    await waitFor(() => expect(historyFile).toBeEnabled());
     await user.upload(
-      await screen.findByLabelText('Definition history JSON file'),
+      historyFile,
       new File([JSON.stringify(history)], 'history.json', { type: 'application/json' })
     );
     expect(historyImport).not.toHaveBeenCalled();
@@ -283,10 +286,9 @@ describe('Light App definitions in the Workspace Catalog', () => {
     const user = userEvent.setup();
     const { imported, client, queryClient } = fixture();
     imported.mockRejectedValue(new Error('secret server detail'));
-    await user.type(
-      await screen.findByRole('textbox', { name: 'Light App catalog ID' }),
-      'my-notes'
-    );
+    const id = await screen.findByRole('textbox', { name: 'Light App catalog ID' });
+    await waitFor(() => expect(id).toBeEnabled());
+    await user.type(id, 'my-notes');
     await user.type(
       screen.getByRole('textbox', { name: 'Light App display name' }),
       'Unsaved notes'
@@ -309,7 +311,9 @@ describe('Light App definitions in the Workspace Catalog', () => {
     vi.mocked(client.operations['catalog.light-app-list']).mockRejectedValue(
       new Error('read failed')
     );
-    await queryClient.invalidateQueries({ queryKey: ['light-app-definitions', workspaceId] });
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['light-app-definitions', workspaceId] });
+    });
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Import definition' })).toBeDisabled()
     );
