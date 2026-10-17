@@ -7,7 +7,6 @@ import {
 import type { Context, Hono } from 'hono';
 import { apiErrorPayload } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
-import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
 import { submitConversationFiles } from './conversation-file-routes.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
@@ -37,8 +36,8 @@ export function registerOperationJsonRoutes(
         if (operationUsesBootstrapSecret(definition) && c.get('bootstrapSecretAdmission') !== true)
           throw new OperationError('core.auth.unauthenticated', 'Authentication required.', 401);
         if (
-          id === 'conversation.submit' &&
-          c.req.header('content-type') === CONVERSATION_FILE_MEDIA_TYPE
+          definition.binaryRequestBody &&
+          c.req.header('content-type') === definition.binaryRequestBody.mediaType
         ) {
           if (!dependencies.conversationService || !dependencies.fileAdmission)
             throw new OperationError(
