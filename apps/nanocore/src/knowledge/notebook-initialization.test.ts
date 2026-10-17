@@ -120,6 +120,33 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     ).toEqual(producer);
   });
 
+  it('creates initial root navigation from imported files and preserves valid reserved bytes', () => {
+    const f = fixture();
+    const topicIndex = '# Topic\n\nKeep authored navigation.\n';
+    const topicLog = '# Topic history\n\n## 2026-10-16\n* Keep authored history.\n';
+    const revision = initializeWorkspaceNotebook({
+      ...f,
+      files: {
+        'topic/index.md': topicIndex,
+        'topic/log.md': topicLog,
+      },
+    });
+    expect(f.notebook().readRevision(revision).files).toEqual({
+      'index.md': '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n',
+      'topic/index.md': topicIndex,
+      'topic/log.md': topicLog,
+    });
+  });
+
+  it('adds only the required version block to a fresh body-only root index', () => {
+    const f = fixture();
+    const body = '# Human navigation\n\nKeep every original body byte.\n';
+    const revision = initializeWorkspaceNotebook({ ...f, files: { 'index.md': body } });
+    expect(f.notebook().readRevision(revision).files['index.md']).toBe(
+      `---\nokf_version: "0.2"\n---\n${body}`
+    );
+  });
+
   it('refuses service attribution for authored initial content before creating Git or Audit evidence', () => {
     for (const files of [
       { 'index.md': '---\nokf_version: "0.2"\n---\n# Authored navigation\n' },
