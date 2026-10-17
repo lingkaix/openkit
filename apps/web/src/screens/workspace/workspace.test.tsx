@@ -2413,7 +2413,7 @@ describe('Catalog', () => {
         })
       )
     );
-    await user.click(screen.getByRole('button', { name: 'Withdraw my proposal' }));
+    await user.click(screen.getByRole('button', { name: 'Withdraw proposal' }));
     await waitFor(() =>
       expect(withdraw).toHaveBeenCalledWith({
         workspaceId: WORKSPACE_A.id,

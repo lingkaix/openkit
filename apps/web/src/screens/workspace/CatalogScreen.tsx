@@ -243,7 +243,7 @@ export function CatalogScreen() {
             )}
             {withdrawCandidate.isError &&
             withdrawCandidate.variables?.workspaceId === workspaceId ? (
-              <ErrorBanner message="Couldn't withdraw that proposal. Only its submitter can withdraw it; refresh the catalog before retrying." />
+              <ErrorBanner message="Couldn't withdraw that proposal. The submitter or an authorized configuration owner can withdraw it; refresh the catalog before retrying." />
             ) : null}
             {proposed.length ? (
               <div className="flex flex-col gap-2 pt-3">
@@ -269,7 +269,7 @@ export function CatalogScreen() {
                             });
                         }}
                       >
-                        Withdraw my proposal
+                        Withdraw proposal
                       </Button>
                       <Button
                         size="sm"
