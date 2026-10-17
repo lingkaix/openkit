@@ -346,14 +346,29 @@ describe('published Workspace notebook reads', () => {
     );
     const source = await registerSource(f, sourceThread.id);
     const destination = f.store.createThread(f.workspaceId, 'Shared destination');
-    const secret = page(
+    // The public aggregate projects admitted Knowledge entries, including their required timestamps.
+    const entryBytes = (id: string, title: string, sourceReferences: string[], content: string) =>
+      serializeUserAuthoredKnowledgePage(
+        {
+          id,
+          kind: 'project-context',
+          title,
+          content,
+          sourceReferences,
+          createdAt: '2026-10-16T00:00:00Z',
+          updatedAt: '2026-10-16T00:00:00Z',
+        },
+        { kind: 'workspace', workspaceId: f.workspaceId }
+      );
+    const secret = entryBytes(
+      'denied-path-marker',
       'DENIED-TITLE-MARKER',
       [`source:${source.id}@${source.contentDigest}`],
       'DENIED-BODY-MARKER\n'
     );
     const revision = publish(f, {
       'denied-path-marker.md': secret,
-      'public.md': page('Public page'),
+      'public.md': entryBytes('public', 'Public page', [], 'Public control page.\n'),
     });
     expect(readAuthorizedWorkspaceNotebookPages(f).pages).toHaveLength(2);
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(true);
