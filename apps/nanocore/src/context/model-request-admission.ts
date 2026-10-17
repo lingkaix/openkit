@@ -57,12 +57,17 @@ function imageCountingProjection(payload: unknown): { payload: unknown; images: 
     if (!Array.isArray(value)) return value;
     return value.map((part: unknown) => {
       const image = record(part);
-      if (!image || image.type !== 'input_image' ||
+      if (
+        !image ||
+        image.type !== 'input_image' ||
         Object.keys(image).some((key) => !['type', 'image_url', 'detail'].includes(key)) ||
-        (image.detail !== undefined && !['auto', 'low', 'high'].includes(image.detail as string))) return part;
-      const inline = typeof image.image_url === 'string'
-        ? /^data:image\/(?:png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(image.image_url)
-        : null;
+        (image.detail !== undefined && !['auto', 'low', 'high'].includes(image.detail as string))
+      )
+        return part;
+      const inline =
+        typeof image.image_url === 'string'
+          ? /^data:image\/(?:png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(image.image_url)
+          : null;
       if (!inline || inline[1]!.length % 4 !== 0) return part;
       images++;
       return { ...image, image_url: '' };
@@ -81,6 +86,6 @@ function imageCountingProjection(payload: unknown): { payload: unknown; images: 
 /** Reads only JSON object positions; arrays and arbitrary string data are not image envelopes. */
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : undefined;
 }

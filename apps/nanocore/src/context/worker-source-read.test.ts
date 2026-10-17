@@ -27,7 +27,9 @@ it('supplies only exact retained original bytes in bounded chunks and rechecks c
   expect(Buffer.concat(chunks)).toEqual(f.bytes);
   const reader = original.open(new AbortController().signal)[Symbol.asyncIterator]();
   expect((await reader.next()).done).toBe(false);
-  f.input.assertCurrent.mockImplementation(() => { throw new Error('Revoked.'); });
+  f.input.assertCurrent.mockImplementation(() => {
+    throw new Error('Revoked.');
+  });
   await expect(reader.next()).rejects.toThrow('Revoked.');
 });
 

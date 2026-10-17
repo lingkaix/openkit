@@ -3009,8 +3009,7 @@ function lowerResponsesNativeInput(
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
       }
-      if (item.type === 'function_call_output')
-        assertResponsesInputContent(item.output, !native);
+      if (item.type === 'function_call_output') assertResponsesInputContent(item.output, !native);
       else readExactResponsesTextContent(item.output, !native);
       lowered.push(item);
       continue;

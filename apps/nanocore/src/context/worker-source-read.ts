@@ -33,8 +33,8 @@ import {
   type SourceViewUnavailable,
   type SourceViewUnavailableReason,
 } from './bounded-source-view.js';
-import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import type { MediaByteSource } from './media-process.js';
+import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   readWorkerContextPackageTrace,
   type WorkerContextPackageKnowledgeSelection,
@@ -367,10 +367,14 @@ export function workerSourceOriginal(input: {
       signal.throwIfAborted();
       input.assertCurrent();
       const path = sourceSnapshotPath(input, source.originalSnapshotPath);
-      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const file = await open(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+      );
       try {
         const pinned = await file.stat({ bigint: true });
-        if (!pinned.isFile() || pinned.nlink !== 1n || pinned.size !== BigInt(source.byteLength)) throw new BoundedSourceError('corrupt');
+        if (!pinned.isFile() || pinned.nlink !== 1n || pinned.size !== BigInt(source.byteLength))
+          throw new BoundedSourceError('corrupt');
         let offset = 0;
         while (offset < source.byteLength) {
           signal.throwIfAborted();
@@ -382,9 +386,15 @@ export function workerSourceOriginal(input: {
           yield buffer.subarray(0, bytesRead);
         }
         signal.throwIfAborted();
-        if (!sameFile(pinned, await file.stat({ bigint: true })) || !sameFile(pinned, await lstat(path, { bigint: true }))) throw new BoundedSourceError('stale');
+        if (
+          !sameFile(pinned, await file.stat({ bigint: true })) ||
+          !sameFile(pinned, await lstat(path, { bigint: true }))
+        )
+          throw new BoundedSourceError('stale');
         input.assertCurrent();
-      } finally { await file.close(); }
+      } finally {
+        await file.close();
+      }
     },
   };
 }

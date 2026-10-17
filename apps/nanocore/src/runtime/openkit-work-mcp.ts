@@ -133,16 +133,21 @@ const WorkSearchSourceArgsSchema = z
   .strip();
 
 const WorkListPeersArgsSchema = z.object({}).strip();
-const WorkViewSourceArgsSchema = z.object({
-  path: z.string().min(1).max(4096),
-  page: z.number().int().positive().safe().optional(),
-  crop: z.object({
-    left: z.number().int().nonnegative().safe(),
-    top: z.number().int().nonnegative().safe(),
-    width: z.number().int().positive().safe(),
-    height: z.number().int().positive().safe(),
-  }).strip().optional(),
-}).strip();
+const WorkViewSourceArgsSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    page: z.number().int().positive().safe().optional(),
+    crop: z
+      .object({
+        left: z.number().int().nonnegative().safe(),
+        top: z.number().int().nonnegative().safe(),
+        width: z.number().int().positive().safe(),
+        height: z.number().int().positive().safe(),
+      })
+      .strip()
+      .optional(),
+  })
+  .strip();
 const WorkReadPeerArgsSchema = z
   .object({
     handle: z.string().min(1),
@@ -496,29 +501,48 @@ async function viewSource(
 ) {
   const parsed = WorkViewSourceArgsSchema.safeParse(args);
   if (!parsed.success)
-    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', { code: 'mcp-call-failed' });
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+      code: 'mcp-call-failed',
+    });
   try {
-    if (!input.fileAdmission) return sourceToolResult({ status: 'unavailable', reason: 'unavailable' });
+    if (!input.fileAdmission)
+      return sourceToolResult({ status: 'unavailable', reason: 'unavailable' });
     const selected = resolveCurrentWorkerSource(input, parsed.data.path);
     if (!selected.source) return sourceToolResult({ status: 'unavailable', reason: 'unsupported' });
-    const view = await viewWorkerSourceSnapshot({ ...selected, source: selected.source, admission: input.fileAdmission, page: parsed.data.page, crop: parsed.data.crop, signal: input.signal });
+    const view = await viewWorkerSourceSnapshot({
+      ...selected,
+      source: selected.source,
+      admission: input.fileAdmission,
+      page: parsed.data.page,
+      crop: parsed.data.crop,
+      signal: input.signal,
+    });
     selected.assertCurrent();
     if (view.status === 'unavailable') return sourceToolResult({ ...view });
     const { bytes, ...metadata } = view;
     const result: {
       isError: boolean;
       structuredContent?: Record<string, unknown>;
-      content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: 'image/jpeg' }>;
+      content: Array<
+        { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: 'image/jpeg' }
+      >;
     } = {
       isError: false,
-      content: [ { type: 'text', text: JSON.stringify(metadata) }, { type: 'image', data: bytes.toString('base64'), mimeType: 'image/jpeg' } ],
+      content: [
+        { type: 'text', text: JSON.stringify(metadata) },
+        { type: 'image', data: bytes.toString('base64'), mimeType: 'image/jpeg' },
+      ],
     };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024) return sourceToolResult({ status: 'unavailable', reason: 'resource_limited' });
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024)
+      return sourceToolResult({ status: 'unavailable', reason: 'resource_limited' });
     input.signal?.throwIfAborted();
     selected.assertCurrent();
     return result;
   } catch {
-    return sourceToolResult({ status: 'unavailable', reason: input.signal?.aborted ? 'cancelled' : 'unavailable' });
+    return sourceToolResult({
+      status: 'unavailable',
+      reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
+    });
   }
 }
 

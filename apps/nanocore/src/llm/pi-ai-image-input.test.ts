@@ -34,15 +34,17 @@ async function fixture(imageInput = true, contextWindowTokens = 131_072) {
         request.headers['content-encoding'] === 'zstd' ? zstdDecompressSync(encoded) : encoded;
       bodies.push(JSON.parse(decoded.toString('utf8')));
       response.writeHead(200, { 'content-type': 'text/event-stream' });
-      response.end(`data: ${JSON.stringify({
-        type: 'response.completed',
-        response: {
-          id: 'resp_image',
-          status: 'completed',
-          output: [],
-          usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 },
-        },
-      })}\n\n`);
+      response.end(
+        `data: ${JSON.stringify({
+          type: 'response.completed',
+          response: {
+            id: 'resp_image',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 },
+          },
+        })}\n\n`
+      );
     })().catch((error: unknown) => response.destroy(error as Error));
   });
   servers.push(server);
@@ -178,20 +180,24 @@ it('refuses the approximate image allowance at the actual final callback before 
   const input = request(f.model.id);
   const before = structuredClone(input);
   let admissionFailure: unknown;
-  const admission = vi.fn((final: Parameters<typeof admitModelRequest>[0] & { codexTurnState?: string | undefined }) => {
-    expect(final.contextWindowTokens).toBe(capacity);
-    expect(final.outputReserveTokens).toBe(32);
-    expect(final.payload).toMatchObject({ input: input.input, instructions: input.instructions });
-    try {
-      admitModelRequest({ ...final, continuity: final.codexTurnState });
-    } catch (error) {
-      admissionFailure = error;
-      throw error;
+  const admission = vi.fn(
+    (final: Parameters<typeof admitModelRequest>[0] & { codexTurnState?: string | undefined }) => {
+      expect(final.contextWindowTokens).toBe(capacity);
+      expect(final.outputReserveTokens).toBe(32);
+      expect(final.payload).toMatchObject({ input: input.input, instructions: input.instructions });
+      try {
+        admitModelRequest({ ...final, continuity: final.codexTurnState });
+      } catch (error) {
+        admissionFailure = error;
+        throw error;
+      }
     }
-  });
-  await expect(f.client.createResponses(f.provider, input, undefined, {
-    finalRequestAdmission: admission,
-  })).rejects.toThrow();
+  );
+  await expect(
+    f.client.createResponses(f.provider, input, undefined, {
+      finalRequestAdmission: admission,
+    })
+  ).rejects.toThrow();
   expect(admission).toHaveBeenCalledOnce();
   expect(admissionFailure).toMatchObject({ code: 'internal_agent_context_exceeded' });
   expect(f.bodies).toEqual([]);

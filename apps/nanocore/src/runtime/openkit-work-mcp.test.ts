@@ -4,14 +4,14 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { allocateEntityId } from '@openkit/protocol';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
-import * as packageOwner from '../context/worker-context-package.js';
 import * as visionProcessor from '../context/vision-view.js';
+import * as packageOwner from '../context/worker-context-package.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
@@ -975,14 +975,23 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   expect(result.isError).toBe(false);
   const image = result.content.find((block) => block.type === 'image');
   const text = result.content.find((block) => block.type === 'text');
-  if (!image || image.type !== 'image' || !text || text.type !== 'text') throw new Error('Expected standard text and image carrier.');
+  if (!image || image.type !== 'image' || !text || text.type !== 'text')
+    throw new Error('Expected standard text and image carrier.');
   expect(image.mimeType).toBe('image/jpeg');
   const delivered = Buffer.from(image.data, 'base64');
   const metadata = JSON.parse(text.text);
   expect(metadata).toMatchObject({
-    status: 'available', source: { originalDigest: f.source.originalDigest, byteLength: bytes.length },
-    originalDimensions: { width: 16, height: 8, frames: 1 }, crop: args.crop, page: null, coordinateSpace: 'image-pixels',
-    delivered: { width: 8, height: 8, digest: `sha256:${createHash('sha256').update(delivered).digest('hex')}` },
+    status: 'available',
+    source: { originalDigest: f.source.originalDigest, byteLength: bytes.length },
+    originalDimensions: { width: 16, height: 8, frames: 1 },
+    crop: args.crop,
+    page: null,
+    coordinateSpace: 'image-pixels',
+    delivered: {
+      width: 8,
+      height: 8,
+      digest: `sha256:${createHash('sha256').update(delivered).digest('hex')}`,
+    },
     processor: { id: 'node-canvas-vision-v1' },
   });
   const decoded = await loadImage(delivered);
@@ -995,15 +1004,17 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
   expect(readdirSync(join(f.dataRoot, 'workspaces', '.staging'))).toEqual([]);
   const processActual = visionProcessor.processVisionView;
-  const revoke = vi.spyOn(visionProcessor, 'processVisionView').mockImplementation(async (input) => {
-    const view = await processActual(input);
-    expect(view.status).toBe('available');
-    const revoked = f.coreDb.sqlite.transaction(() =>
-      disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001')
-    )();
-    expect(revoked?.changed).toBe(true);
-    return view;
-  });
+  const revoke = vi
+    .spyOn(visionProcessor, 'processVisionView')
+    .mockImplementation(async (input) => {
+      const view = await processActual(input);
+      expect(view.status).toBe('available');
+      const revoked = f.coreDb.sqlite.transaction(() =>
+        disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+      )();
+      expect(revoked?.changed).toBe(true);
+      return view;
+    });
   onTestFinished(() => revoke.mockRestore());
   const denied = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
   expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
@@ -1056,7 +1067,10 @@ it('continues selected Knowledge at its actual commit after later publication an
   expect(viewed.structuredContent).toEqual({ status: 'unavailable', reason: 'unsupported' });
   expect(viewed.content.some((block) => block.type === 'image')).toBe(false);
   expect(processor).not.toHaveBeenCalled();
-  const searched = await dispatchOpenkitWorkTool(f.input, 'work_search_source', { path, query: 'Exact' });
+  const searched = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+    path,
+    query: 'Exact',
+  });
   expect(searched.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   const preview = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path });
   const page = preview.structuredContent as {
