@@ -87,6 +87,11 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
   publishIndex(f, '---\nokf_version: "0.2"\n---\n# Later overview\n');
   expect(() => result.assertCurrent()).not.toThrow();
   expect(result.text).not.toContain('Later overview');
+  publishIndex(f, '---\nokf_version: "0.2"\nsensitivity: restricted\n---\n# Restricted\n');
+  expect(() => result.assertCurrent()).toThrow();
+  expect(prepareKnowledgeOverview(f).text).not.toContain('# Restricted');
+  expect(prepareKnowledgeOverview(f).text).toContain('"unavailable":true');
+  publishIndex(f, '---\nokf_version: "0.2"\n---\n# Readable again\n');
   // A Workspace credential with no current membership cannot reuse the pinned projection.
   f.coreDb.sqlite
     .prepare(

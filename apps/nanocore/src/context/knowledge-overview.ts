@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ActorRef } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
+import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { FsStore } from '../lib/store.js';
 import {
   canReadServerKnowledge,
@@ -61,8 +62,26 @@ export function prepareKnowledgeOverview(input: KnowledgeOverviewInput): Prepare
       : []),
   ];
   const overviews = scopes.map(({ scope, read }) => {
+    // Workspace page reads admit source closure; automatic navigation also excludes sensitive roots.
+    const admitted = (notebookRevision?: string) => {
+      const current = read(target);
+      const selected =
+        notebookRevision && notebookRevision !== current.notebookRevision
+          ? read({ ...target, notebookRevision })
+          : current;
+      for (const snapshot of [current, selected]) {
+        const page = snapshot.pages[0];
+        const parsed = page ? parseOkfDocument({ path: 'index.md', content: page.content }) : null;
+        const sensitivity = parsed?.document
+          ? stringFrontmatterField(parsed.document, 'sensitivity')
+          : null;
+        if (!page || !parsed?.ok || sensitivity === 'restricted' || sensitivity === 'confidential')
+          throw new Error('Knowledge overview unavailable.');
+      }
+      return selected;
+    };
     try {
-      const selected = read(target);
+      const selected = admitted();
       const page = selected.pages[0];
       if (!page) throw new Error('Knowledge overview unavailable.');
       const source = Buffer.from(redactInternalAgentText(page.content));
@@ -70,7 +89,7 @@ export function prepareKnowledgeOverview(input: KnowledgeOverviewInput): Prepare
       while (end > 0 && end < source.length && (source[end]! & 0xc0) === 0x80) end--;
       const content = source.subarray(0, end).toString('utf8');
       checks.push(() => {
-        const current = read({ ...target, notebookRevision: selected.notebookRevision });
+        const current = admitted(selected.notebookRevision);
         if (current.pages[0]?.contentDigest !== page.contentDigest)
           throw new Error('Knowledge overview is no longer available.');
       });
