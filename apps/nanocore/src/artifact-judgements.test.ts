@@ -9,6 +9,7 @@ import {
   decideArtifactReview,
   getArtifactReview,
   listArtifactReviews,
+  listExportableArtifactReviews,
 } from './artifact-reviews.js';
 import { FsStore } from './lib/store.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
@@ -193,6 +194,10 @@ describe('Exact Artifact judgement in the existing Review', () => {
     expect(JSON.parse(retained.judgements)[0].descriptiveAnnotation).toEqual({ retained: true });
     expect(JSON.parse(retained.judgements)[0].actor.descriptiveLabel).toBe('original author');
     expect(JSON.parse(retained.judgements)[0].target.descriptiveLabel).toBe('original source');
+    const exported = listExportableArtifactReviews(state.workspaceDb).find(
+      (entry) => entry.reviewId === review.reviewId
+    );
+    expect(exported?.judgements).toEqual(JSON.parse(retained.judgements));
     const rollbackArtifact = state.imported('rolled-back-annotation');
     expect(() =>
       state.workspaceDb.sqlite.transaction(() => {

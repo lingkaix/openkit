@@ -7,6 +7,7 @@ import {
   type ArtifactReviewView,
   ArtifactReviewViewSchema,
   type JudgementRecord,
+  JudgementRecordReaderSchema,
   JudgementRecordSchema,
   SelectArtifactReviewCandidateRequestSchema,
   SubmitArtifactReviewDecisionRequestSchema,
@@ -312,7 +313,15 @@ export function listExportableArtifactReviews(
   rows.forEach((row) => {
     assertStoredReview(workspaceDb, row);
   });
-  return rows.map((row) => ({ ...toView(row), decisionRequestId: row.decisionRequestId }));
+  return rows.map((row) => {
+    const judgements = parseReviewJson(row.judgementsJson);
+    JudgementRecordReaderSchema.array().parse(judgements);
+    return {
+      ...toView(row),
+      judgements: judgements as ArtifactReviewView['judgements'],
+      decisionRequestId: row.decisionRequestId,
+    };
+  });
 }
 
 /**
