@@ -398,7 +398,27 @@ export function rootSuite({ root = process.cwd() } = {}) {
     if (r.error || r.signal || r.status !== 0)
       throw Error(`Test Strategy: failed command ${args.join(' ')}`);
   };
-  command(['pnpm', 'build:openkit']);
+  command([
+    'pnpm',
+    '--filter',
+    '@openkit/core-client...',
+    '--filter',
+    '@openkit/nanocore...',
+    '--workspace-concurrency=1',
+    'build',
+  ]);
+  command([
+    'pnpm',
+    'exec',
+    'esbuild',
+    'skills/openkit-cli.mjs',
+    '--bundle',
+    '--platform=node',
+    '--target=node24',
+    '--format=cjs',
+    '--minify',
+    '--outfile=skills/openkit-ops/scripts/openkit',
+  ]);
   command(['git', 'diff', '--exit-code', '--', 'skills/openkit-ops/scripts/openkit']);
   return rootNodeSuite({ root });
 }
