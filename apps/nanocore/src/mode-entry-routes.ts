@@ -2083,7 +2083,10 @@ function publishAssistantHandoffConfirmation(
     status: 'completed',
     responsibleUserId: actorId,
     userInputRequestId: requestId,
-    prompt: 'Confirm the exact work before it becomes shared execution.',
+    prompt:
+      handoff.kind === 'task'
+        ? 'Confirm the exact work before it becomes shared execution. Private files are not included. Attach files explicitly when you select a Worker.'
+        : 'Confirm the exact work before it becomes shared execution.',
     questions,
     assistantHandoff: handoff,
     createdAt: turn.startedAt ?? at,
