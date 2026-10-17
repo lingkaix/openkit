@@ -199,6 +199,55 @@ it('repairs a premature maintenance result with one native no-change submission'
   expect(f.createResponses).toHaveBeenCalledTimes(3);
 }, 120_000);
 
+// A repair may finish after a refused duplicate, but cannot repeat the native submission.
+it('refuses a duplicate notebook submission during maintenance result repair', async () => {
+  const f = fixture();
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
+  });
+  const before = notebook.publishedRevision();
+  let step = 0;
+  f.createResponses.mockImplementation(async () => {
+    if (++step === 1 || step === 3)
+      return call('knowledge.notebook.update', { summary: 'No changes are needed.' });
+    if (step === 2) return markdown();
+    expect(JSON.stringify(f.createResponses.mock.calls.at(-1))).toContain(
+      'Repair cannot repeat notebook effects. Start a new request.'
+    );
+    return call('knowledge.result', { summary: 'No changes are needed.' });
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Inspect the notebook; keep existing content.',
+        }),
+      }
+    )
+  );
+  expect(response.status, await response.clone().text()).toBe(200);
+  const body = (await response.json()) as { turnId: string; outcome: string };
+  expect(body.outcome).toBe('no-change');
+  const turn = f.store.getTurnById(body.turnId);
+  expect(turn.status).toBe('completed');
+  expect(
+    turn.items.filter(
+      (item) => item.type === 'tool-call' && item.tool === 'knowledge.notebook.update'
+    )
+  ).toEqual([
+    expect.objectContaining({ status: 'completed' }),
+    expect.objectContaining({ status: 'failed' }),
+  ]);
+  expect(turn.items).toContainEqual(
+    expect.objectContaining({ type: 'tool-call', tool: 'knowledge.result', status: 'completed' })
+  );
+  expect(notebook.publishedRevision()).toBe(before);
+  expect(f.createResponses).toHaveBeenCalledTimes(4);
+}, 120_000);
+
 // Organizing an empty overview is a separate editing run; the existing human fact must keep its bytes.
 it('organizes the initial root index around an existing human fact through the real editor and publisher', async () => {
   const f = fixture();
