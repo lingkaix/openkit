@@ -8823,7 +8823,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           }
         )
       );
-      expect(conflictingResume.status).toBe(409);
+      expect(conflictingResume.status, await conflictingResume.clone().text()).toBe(409);
       await expect(conflictingResume.json()).resolves.toMatchObject({
         code: 'recovery_required',
       });
