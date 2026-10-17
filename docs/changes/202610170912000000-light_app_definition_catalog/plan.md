@@ -19,8 +19,14 @@ Publish a complete SQLite-consistent snapshot before definition DDL or supported
 
 ## Verification And Checkpoint
 
-Implementation is active on lane/go with two isolated Builder branches for catalog reuse and native migrations. Primary owns owner text, API/CLI/Web integration and final acceptance. Lowest-sufficient regressions cover catalog history/selection/portability, supported schema changes, refusal without writes, snapshot failure, actual restore/restart and journal upgrade. Exact-head package/owner suites, generated projections and Web e2e precede independent Sol review and express landing on green main. No current implementation or final-gate success is claimed yet.
+Implementation is active on lane/go with three isolated Builder branches for catalog reuse, native migrations and the existing Web Catalog projection. Primary owns owner text, API/CLI/Web integration and final acceptance. Lowest-sufficient regressions cover catalog history/selection/portability, supported schema changes, refusal without writes, snapshot failure, actual restore/restart and journal upgrade. Exact-head package/owner suites, generated projections and Web e2e precede independent Sol review and express landing on green main. No current implementation or final-gate success is claimed yet.
 
 ## Next Action
 
-Merge the coherent helper branches normally, finish public operations and the existing Workspace Catalog projection, reconcile actual diff and owner tests, obtain independent review and land only after L-WEB repairs main. B01 intake is complete outside the repository; BWM remains held and physical Worker Skill delivery waits for P17.
+Merge the coherent helper branches normally, finish public operations and the existing Workspace Catalog projection, reconcile actual diff and owner tests, obtain independent review and land only after the current main repair is green. B01 intake is complete outside the repository; BWM remains held and physical Worker Skill delivery waits for P17.
+
+## Reachable Review Corrections
+
+Hot data-root backup must preserve sealed recovery snapshot bytes. SQLite online backup rewrites their headers and invalidates exact snapshot digests, so recovery copies are excluded from the live-database backup loop and stay in the ordinary exact file copy. The regression restores a hot backup and then restores its app snapshot to recover a removed value.
+
+A reusable entry can have history without a selected default. A later new revision must name an explicit retained parent in that case; Web passes the inspected chosen version as parent only when its entry ID matches the authored import target. This keeps stable identities independent of default activation, while exact admitted reimport retains original version facts.

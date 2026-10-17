@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
+import { stableJson } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   verifyWorkspaceExportTree,
@@ -83,6 +84,134 @@ function add(input: ReturnType<typeof fixture>, expectedRevision = 0, title = 'A
 }
 
 describe('Light App definition catalog', () => {
+  it('allocates stable definition identities once and reuses them for authored-name reimport', () => {
+    const input = fixture();
+    const first = add(input);
+    const admitted = JSON.parse(first.version.definitionJson) as LightAppSchemaInput;
+    expect(admitted.collections[0].id).toMatch(/^col_/);
+    expect(admitted.collections[0].fields[0].id).toMatch(/^fld_/);
+    const repeated = add(input, first.catalog.revision);
+    expect(repeated.version.digest).toBe(first.version.digest);
+    expect(repeated.version).toEqual(first.version);
+    expect(repeated.catalog.lightApps.versions).toHaveLength(1);
+  });
+
+  it('keeps supplied collection and field identities through an explicit template rename', () => {
+    const input = fixture();
+    const first = add(input);
+    const admitted = JSON.parse(first.version.definitionJson) as LightAppSchemaInput;
+    const collection = admitted.collections[0];
+    const renamed = importWorkspaceLightAppDefinition({
+      ...input,
+      expectedRevision: first.catalog.revision,
+      entryId: 'admissions',
+      displayName: 'Admissions',
+      producer,
+      createdAt: '2026-10-18T00:00:00.000Z',
+      selectDefault: true,
+      parentDigest: first.version.digest,
+      definition: {
+        ...admitted,
+        collections: [
+          {
+            ...collection,
+            name: 'submissions',
+            fields: [{ ...collection.fields[0], name: 'applicant_name' }],
+          },
+        ],
+      },
+    });
+    const next = JSON.parse(renamed.version.definitionJson) as LightAppSchemaInput;
+    expect(next.collections[0].id).toBeDefined();
+    expect(next.collections[0].fields[0].id).toBeDefined();
+    expect(next.collections[0].id).toBe(collection.id);
+    expect(next.collections[0].fields[0].id).toBe(collection.fields[0].id);
+    expect(next.collections[0].name).toBe('submissions');
+    expect(next.collections[0].fields[0].name).toBe('applicant_name');
+    expect(renamed.version.parentDigest).toBe(first.version.digest);
+  });
+
+  it('refuses dangling index and relation selectors before changing catalog bytes', () => {
+    const input = fixture();
+    const first = add(input);
+    const path = catalogDocumentPath(input.dataRoot, input.workspaceId);
+    const before = readFileSync(path, 'utf8');
+    const authored = definition();
+    const collection = authored.collections[0];
+    expect(() =>
+      importWorkspaceLightAppDefinition({
+        ...input,
+        expectedRevision: first.catalog.revision,
+        entryId: 'admissions',
+        displayName: 'Admissions',
+        producer,
+        createdAt: '2026-10-18T00:00:00.000Z',
+        definition: {
+          ...authored,
+          collections: [{ ...collection, indexes: [{ fields: ['missing'], unique: true }] }],
+        },
+      })
+    ).toThrow(CatalogInputError);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(() =>
+      importWorkspaceLightAppDefinition({
+        ...input,
+        expectedRevision: first.catalog.revision,
+        entryId: 'admissions',
+        displayName: 'Admissions',
+        producer,
+        createdAt: '2026-10-18T00:00:00.000Z',
+        definition: {
+          ...authored,
+          collections: [
+            {
+              ...collection,
+              fields: [
+                ...collection.fields,
+                {
+                  name: 'school',
+                  type: 'relation',
+                  required: false,
+                  description: 'Related school.',
+                  options: { collection: 'missing' },
+                },
+              ],
+            },
+          ],
+        },
+      })
+    ).toThrow(CatalogInputError);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+
+  it('refuses a correctly hashed external history with a dangling selector without changing the catalog', () => {
+    const input = fixture();
+    const first = add(input);
+    const path = catalogDocumentPath(input.dataRoot, input.workspaceId);
+    const before = readFileSync(path, 'utf8');
+    const exported = exportWorkspaceLightAppDefinition({ ...input, entryId: 'admissions' });
+    const admitted = JSON.parse(first.version.definitionJson) as LightAppSchemaInput;
+    const definitionJson = stableJson({
+      ...admitted,
+      collections: [
+        { ...admitted.collections[0], indexes: [{ fields: ['missing'], unique: true }] },
+      ],
+    });
+    const digest = `sha256:${createHash('sha256').update(definitionJson).digest('hex')}`;
+    expect(() =>
+      importWorkspaceLightAppDefinitionHistory({
+        ...input,
+        expectedRevision: first.catalog.revision,
+        export: {
+          ...exported,
+          entry: { ...exported.entry, currentDigest: digest },
+          versions: [{ ...first.version, definitionJson, digest }],
+        },
+      })
+    ).toThrow(CatalogInputError);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+
   it('retains immutable history, explicit selection and pin rollback across restart', async () => {
     const input = fixture();
     const first = add(input);
@@ -211,7 +340,7 @@ describe('Light App definition catalog', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).lightApps).toEqual(retained.lightApps);
   });
 
-  it('refuses stale revisions, malformed definitions and invalid history before publication', () => {
+  it('refuses stale revisions, malformed definitions and missing parents before publication', () => {
     const input = fixture();
     const first = add(input);
     const path = catalogDocumentPath(input.dataRoot, input.workspaceId);
@@ -250,6 +379,37 @@ describe('Light App definition catalog', () => {
       })
     ).toThrow(CatalogInputError);
     expect(readFileSync(path, 'utf8')).toBe(before);
+    const inactive = {
+      ...fixture(),
+      entryId: 'admissions',
+      displayName: 'Admissions',
+      producer,
+      createdAt: '2026-10-17T00:00:00.000Z',
+      selectDefault: false,
+    };
+    const root = importWorkspaceLightAppDefinition({
+      ...inactive,
+      expectedRevision: 0,
+      definition: definition(),
+    });
+    const admitted = JSON.parse(root.version.definitionJson) as LightAppSchemaInput;
+    const repeated = importWorkspaceLightAppDefinition({
+      ...inactive,
+      expectedRevision: root.catalog.revision,
+      definition: admitted,
+    });
+    expect(repeated.version).toEqual(root.version);
+    expect(repeated.catalog.lightApps.versions).toHaveLength(1);
+    const inactivePath = catalogDocumentPath(inactive.dataRoot, inactive.workspaceId);
+    const inactiveBefore = readFileSync(inactivePath, 'utf8');
+    expect(() =>
+      importWorkspaceLightAppDefinition({
+        ...inactive,
+        expectedRevision: repeated.catalog.revision,
+        definition: { ...admitted, title: 'New revision' },
+      })
+    ).toThrow('Select a parent/default before importing a revision');
+    expect(readFileSync(inactivePath, 'utf8')).toBe(inactiveBefore);
   });
 
   it('refuses malformed retained definitions and broken pin references on owner reads', () => {
@@ -394,6 +554,6 @@ describe('Light App definition catalog', () => {
         entryId: 'admissions',
         digest: first.version.digest,
       }).definition
-    ).toEqual(definition());
+    ).toEqual(JSON.parse(first.version.definitionJson));
   });
 });

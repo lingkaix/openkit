@@ -141,6 +141,27 @@ describe('openkit-generative MCP', () => {
       const apps = listed.structuredContent as { items: Array<{ appId: string; title: string }> };
       expect(apps.items.some((item) => item.title === SCHEMA.title)).toBe(true);
       expect(created.structuredContent).toMatchObject({ title: SCHEMA.title, lifecycle: 'active' });
+      const imported = await dispatchOpenkitGenerativeTool(
+        { ...context, protocolRequestId: randomUUID() },
+        'catalog_light_app_import',
+        {
+          expectedRevision: 0,
+          entryId: 'membership-map',
+          displayName: 'Membership map',
+          definition: SCHEMA,
+          selectDefault: true,
+        }
+      );
+      const version = imported.structuredContent as { version: { digest: string } };
+      const instantiated = await dispatchOpenkitGenerativeTool(
+        { ...context, protocolRequestId: randomUUID() },
+        'kernel_apps_instantiate',
+        { entryId: 'membership-map' }
+      );
+      expect(instantiated.structuredContent).toMatchObject({
+        definitionSource: { entryId: 'membership-map', digest: version.version.digest },
+        title: SCHEMA.title,
+      });
       const app = created.structuredContent as { appId: string; schemaRevision: number };
       const record = await dispatchOpenkitGenerativeTool(
         { ...context, protocolRequestId: randomUUID() },

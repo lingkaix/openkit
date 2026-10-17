@@ -13,6 +13,7 @@ import {
   stableJson,
 } from '@openkit/config-schema';
 import { z } from 'zod';
+import { admitLightAppDefinition } from '../generative-kernel/schema.js';
 import {
   CatalogConflictError,
   CatalogInputError,
@@ -57,7 +58,7 @@ const DefinitionExportSchema = z
 
 /**
  * Admits a strict declarative template in one existing catalog publication.
- * Identical bytes retain their first immutable actor, time and parent facts.
+ * Same-name authored reimports reuse retained identities; identical bytes keep their first history.
  *
  * @param input Exact definition, historical producer and optional future-use default selection.
  * @returns Published catalog and retained version.
@@ -79,22 +80,51 @@ export function importWorkspaceLightAppDefinition(
   const existing = current.lightApps.entries.find((entry) => entry.id === id);
   if (existing?.availability === 'removed')
     throw new CatalogNotFoundError(`Light App definition removed: ${id}`);
-  const definitionJson = inputValue(() =>
-    stableJson(LightAppSchemaInputSchema.parse(input.definition))
+  const parentDigest =
+    input.parentDigest === undefined ? (existing?.currentDigest ?? null) : input.parentDigest;
+  const parent = current.lightApps.versions.find(
+    (version) => version.entryId === id && version.digest === parentDigest
   );
+  if (parentDigest !== null && !parent) {
+    throw new CatalogNotFoundError(`Light App definition parent not found: ${id}/${parentDigest}`);
+  }
+  const definitionJson = inputValue(() => {
+    const previous = parent
+      ? (JSON.parse(parent.definitionJson) as LightAppSchemaInput)
+      : undefined;
+    // Authored template reimports reuse same-name identities; explicit rename IDs remain unchanged.
+    const definition = previous
+      ? {
+          ...input.definition,
+          collections: input.definition.collections.map((collection) => {
+            const prior = previous.collections.find((item) =>
+              collection.id === undefined
+                ? item.name === collection.name
+                : item.id === collection.id
+            );
+            return {
+              ...collection,
+              id: collection.id ?? prior?.id,
+              fields: collection.fields.map((field) => ({
+                ...field,
+                id: field.id ?? prior?.fields.find((item) => item.name === field.name)?.id,
+              })),
+            };
+          }),
+        }
+      : input.definition;
+    return stableJson(admitLightAppDefinition(definition, previous));
+  });
   const digest = definitionDigest(definitionJson);
   const retained = current.lightApps.versions.find(
     (version) => version.entryId === id && version.digest === digest
   );
-  const parentDigest =
-    input.parentDigest === undefined ? (existing?.currentDigest ?? null) : input.parentDigest;
   if (
-    parentDigest !== null &&
-    !current.lightApps.versions.some(
-      (version) => version.entryId === id && version.digest === parentDigest
-    )
+    !retained &&
+    parentDigest === null &&
+    current.lightApps.versions.some((version) => version.entryId === id)
   ) {
-    throw new CatalogNotFoundError(`Light App definition parent not found: ${id}/${parentDigest}`);
+    throw new CatalogInputError('Select a parent/default before importing a revision.');
   }
   const version =
     retained ??
@@ -194,7 +224,19 @@ export function importWorkspaceLightAppDefinitionHistory(
       pins: exported.pin ? [exported.pin] : [],
     },
   };
-  inputValue(() => validateLightAppDefinitionCatalog(source));
+  inputValue(() => {
+    validateLightAppDefinitionCatalog(source);
+    for (const version of exported.versions) {
+      const definition = JSON.parse(version.definitionJson) as LightAppSchemaInput;
+      // The retained definition is its own identity base: missing IDs fail instead of being allocated.
+      const admitted = admitLightAppDefinition(definition, definition);
+      if (stableJson(admitted) !== version.definitionJson) {
+        throw new Error(
+          `Light App history definition is not normalized: ${version.entryId}/${version.digest}`
+        );
+      }
+    }
+  });
   const id = inputValue(() => ResourceCatalogIdSchema.parse(input.entryId ?? exported.entry.id));
   const existing = current.lightApps.entries.find((entry) => entry.id === id);
   if (existing?.availability === 'removed')
