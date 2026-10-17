@@ -849,7 +849,7 @@ function knowledgeReviewRows(store: FsStore, workspaceId: string): HumanAttentio
         id: `knowledge:${proposal.id}`,
         kind: 'knowledge_review',
         workspaceId,
-        title: `Review knowledge proposal for ${proposal.knowledgePageId}`,
+        title: `Review knowledge proposal for ${proposal.changes?.map(({ path }) => path).join(', ') ?? proposal.knowledgePageId}`,
         summary: proposal.rationale,
         severity: 'needs_input',
         createdAt: proposal.createdAt,

@@ -421,6 +421,17 @@
                 "type": "string",
                 "const": "context-summary"
               },
+              "strategy": {
+                "type": "string",
+                "enum": [
+                  "rolling",
+                  "compaction"
+                ]
+              },
+              "logicalModelId": {
+                "type": "string",
+                "minLength": 1
+              },
               "text": {
                 "type": "string",
                 "minLength": 1,
@@ -492,6 +503,8 @@
               "createdAt",
               "completedAt",
               "type",
+              "strategy",
+              "logicalModelId",
               "text",
               "environmentDigest",
               "sourceRange"
@@ -1818,6 +1831,53 @@
                   }
                 ]
               },
+              "knowledgeMaintenanceResult": {
+                "type": "object",
+                "properties": {
+                  "threadId": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "published",
+                      "review-required",
+                      "no-change",
+                      "skipped",
+                      "failed"
+                    ]
+                  },
+                  "notebookRevision": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "candidateRevision": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "proposalId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "summary": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "threadId",
+                  "turnId",
+                  "outcome",
+                  "notebookRevision",
+                  "summary"
+                ],
+                "additionalProperties": false
+              },
               "type": {
                 "type": "string",
                 "const": "status"
@@ -2484,6 +2544,170 @@
           "type": "null"
         }
       ]
+    },
+    "internalExecution": {
+      "type": "object",
+      "properties": {
+        "roleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "logicalModelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contextStrategy": {
+          "type": "string",
+          "enum": [
+            "rolling",
+            "compaction"
+          ]
+        },
+        "threshold": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "knowledge": {
+          "type": "object",
+          "properties": {
+            "purpose": {
+              "type": "string",
+              "enum": [
+                "query",
+                "maintenance"
+              ]
+            },
+            "ownerScope": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "user"
+                    },
+                    "userId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "userId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "workspace"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "workspaceId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "server"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "baseRevision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "trigger": {
+              "type": "string",
+              "enum": [
+                "schedule",
+                "request"
+              ]
+            },
+            "instructions": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceRange": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "threadId": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "firstItemId": {
+                    "type": "string",
+                    "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "lastItemId": {
+                    "type": "string",
+                    "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "threadId",
+                  "turnId",
+                  "firstItemId",
+                  "lastItemId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "askingThreadId": {
+              "type": "string",
+              "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            },
+            "askingTurnId": {
+              "type": "string",
+              "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            },
+            "askingCapabilityCallId": {
+              "type": "string",
+              "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "required": [
+            "purpose",
+            "ownerScope",
+            "baseRevision",
+            "trigger",
+            "instructions",
+            "sourceRange"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "roleId",
+        "logicalModelId",
+        "contextStrategy",
+        "threshold"
+      ],
+      "additionalProperties": false
     },
     "startedAt": {
       "anyOf": [

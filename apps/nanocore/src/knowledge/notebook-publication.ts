@@ -18,7 +18,7 @@ import {
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
-import { type KnowledgeNotebook, NotebookError } from './notebook.js';
+import { type KnowledgeNotebook, type NotebookCommitMetadata, NotebookError } from './notebook.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument, updateOkfFrontmatter, validateOpenKitKnowledgeProfile } from './okf.js';
 
@@ -79,6 +79,11 @@ export interface NotebookPublicationDependencies {
   readonly producer: ActorRef;
   /** Actual current human command actor, separate from the immutable candidate producer. */
   readonly actor?: Extract<ActorRef, { kind: 'user' }>;
+  /** Trusted current instruction/delegation facts; never supplied by a model or page. */
+  readonly publicationAuthority?: Exclude<
+    NotebookCommitMetadata['authority'],
+    { kind: 'proposal' }
+  >;
   /** Exact existing Proposal candidate; the callback appends its human Review before publication. */
   readonly reviewedCandidate?: {
     readonly proposalId: string;
@@ -128,21 +133,31 @@ function humanNotebookPageBytes(
   content: string,
   ownerScope: KnowledgeOwnerScope
 ): string {
+  return attributedNotebookPageBytes(path, content, ownerScope, 'user-authored');
+}
+
+/** Normalizes service-owned attribution before publication or retention of an exact Review candidate. */
+export function attributedNotebookPageBytes(
+  path: string,
+  content: string,
+  ownerScope: KnowledgeOwnerScope,
+  reviewState: 'user-authored' | 'delegated'
+): string {
   const parsed = parseOkfDocument({ path, content });
   if (!parsed.ok) throw new NotebookError('invalid_request');
   if (parsed.document.reserved) return content;
   const profile = validateOpenKitKnowledgeProfile(parsed.document, ownerScope);
   if (profile.conformance !== 'OpenKit-profile-valid') throw new NotebookError('invalid_request');
-  return parsed.document.frontmatter.review_state === 'user-authored'
+  return parsed.document.frontmatter.review_state === reviewState
     ? content
-    : updateOkfFrontmatter({ path, content, updates: { review_state: 'user-authored' } });
+    : updateOkfFrontmatter({ path, content, updates: { review_state: reviewState } });
 }
 
 /** Reads only this command's existing Audit evidence; page content is never stored in Audit. */
 export function readWorkspaceNotebookAdmissions(
   dependencies: Pick<
     NotebookPublicationDependencies,
-    'workspaceDb' | 'producer' | 'command' | 'reviewedCandidate'
+    'workspaceDb' | 'producer' | 'command' | 'reviewedCandidate' | 'publicationAuthority'
   >,
   request: Pick<NotebookUpdate, 'workspaceId' | 'requestId'>,
   action: string
@@ -163,7 +178,7 @@ export function readWorkspaceNotebookAdmissions(
 function readNotebookAdmissions(
   dependencies: Pick<
     ScopedNotebookPublicationDependencies,
-    'owner' | 'producer' | 'command' | 'reviewedCandidate'
+    'owner' | 'producer' | 'command' | 'reviewedCandidate' | 'publicationAuthority'
   >,
   request: Pick<NotebookEdit, 'requestId'>,
   action: string
@@ -207,9 +222,7 @@ function readNotebookAdmissions(
         (dependencies.reviewedCandidate
           ? admission.authority.kind === 'proposal' &&
             admission.authority.proposalId === dependencies.reviewedCandidate.proposalId
-          : admission.authority.kind === 'direct' &&
-            admission.authority.instructionReference ===
-              `${dependencies.command?.name ?? OPERATION}:${request.requestId}`)
+          : isDeepStrictEqual(admission.authority, publicationAuthority(dependencies, request)))
     );
 }
 
@@ -217,7 +230,7 @@ function readNotebookAdmissions(
 export function readWorkspaceNotebookAdmissionRevision(
   dependencies: Pick<
     NotebookPublicationDependencies,
-    'notebook' | 'producer' | 'command' | 'reviewedCandidate'
+    'notebook' | 'producer' | 'command' | 'reviewedCandidate' | 'publicationAuthority'
   >,
   request: NotebookUpdate,
   evidence: KnowledgeNotebookAdmission
@@ -232,7 +245,7 @@ export function readWorkspaceNotebookAdmissionRevision(
 function readNotebookAdmissionRevision(
   dependencies: Pick<
     NotebookPublicationDependencies,
-    'notebook' | 'producer' | 'command' | 'reviewedCandidate'
+    'notebook' | 'producer' | 'command' | 'reviewedCandidate' | 'publicationAuthority'
   >,
   request: NotebookEdit,
   evidence: KnowledgeNotebookAdmission,
@@ -258,12 +271,29 @@ function readNotebookAdmissionRevision(
       ? candidate.revision !== dependencies.reviewedCandidate.candidateRevision ||
         candidate.metadata.authority.kind !== 'proposal' ||
         candidate.metadata.authority.proposalId !== dependencies.reviewedCandidate.proposalId
-      : candidate.metadata.authority.kind !== 'direct' ||
-        candidate.metadata.authority.instructionReference !==
-          `${dependencies.command?.name ?? OPERATION}:${request.requestId}`)
+      : !isDeepStrictEqual(
+          candidate.metadata.authority,
+          publicationAuthority(dependencies, request)
+        ))
   )
     throw new NotebookError('recovery_required');
   return candidate;
+}
+
+/** Resolves immutable historical authority only from the native current-admission path. */
+function publicationAuthority(
+  dependencies: Pick<
+    NotebookPublicationDependencies,
+    'reviewedCandidate' | 'publicationAuthority' | 'command'
+  >,
+  request: Pick<NotebookEdit, 'requestId'>
+): NotebookCommitMetadata['authority'] {
+  return dependencies.reviewedCandidate
+    ? { kind: 'proposal', proposalId: dependencies.reviewedCandidate.proposalId }
+    : (dependencies.publicationAuthority ?? {
+        kind: 'direct',
+        instructionReference: `${dependencies.command?.name ?? OPERATION}:${request.requestId}`,
+      });
 }
 
 /** Publishes a human Workspace edit through one Git CAS, with existing Audit and receipt owners. */
@@ -295,7 +325,14 @@ export async function publishNotebook(
   const inputDigest = commandInputHash(commandInput);
   const actor =
     dependencies.actor ?? (dependencies.producer.kind === 'user' ? dependencies.producer : null);
-  if (!actor) throw new NotebookError('invalid_request');
+  if (
+    !actor ||
+    (dependencies.producer.kind !== 'user' && dependencies.producer.kind !== 'agent') ||
+    (dependencies.producer.kind === 'agent' &&
+      !dependencies.reviewedCandidate &&
+      (!dependencies.publicationAuthority || dependencies.producer.responsibleUserId !== actor.id))
+  )
+    throw new NotebookError('invalid_request');
   const scope: CommandRequestScope =
     ownerScope.kind === 'workspace'
       ? { workspaceId: ownerScope.workspaceId, actorId: actor.id }
@@ -320,7 +357,12 @@ export async function publishNotebook(
         expected[path] =
           dependencies.reviewedCandidate || base.files[path] === content
             ? content
-            : humanNotebookPageBytes(path, content, ownerScope);
+            : attributedNotebookPageBytes(
+                path,
+                content,
+                ownerScope,
+                dependencies.producer.kind === 'agent' ? 'delegated' : 'user-authored'
+              );
     }
     if (
       Object.keys(expected).length !== Object.keys(candidate.files).length ||
@@ -411,7 +453,12 @@ export async function publishNotebook(
           files[path] =
             dependencies.reviewedCandidate || base.files[path] === content
               ? content
-              : humanNotebookPageBytes(path, content, ownerScope);
+              : attributedNotebookPageBytes(
+                  path,
+                  content,
+                  ownerScope,
+                  dependencies.producer.kind === 'agent' ? 'delegated' : 'user-authored'
+                );
       }
       const check = (facts: NotebookPublicationAdmission) =>
         validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
@@ -431,12 +478,7 @@ export async function publishNotebook(
         )
       )
         throw new NotebookError('invalid_request');
-      const authority = dependencies.reviewedCandidate
-        ? { kind: 'proposal' as const, proposalId: dependencies.reviewedCandidate.proposalId }
-        : ({
-            kind: 'direct',
-            instructionReference: `${operation}:${request.requestId}`,
-          } as const);
+      const authority = publicationAuthority(dependencies, request);
       const candidateRevision =
         dependencies.reviewedCandidate?.candidateRevision ??
         dependencies.notebook.prepare({

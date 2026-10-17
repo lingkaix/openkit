@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
+import { RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -14,14 +15,15 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** One real isolated Knowledge authority, with explicit membership rather than changed fixture defaults. */
-function fixture(member = true) {
+function fixture(member = true, citedAnswer = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-operations-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -40,7 +42,20 @@ function fixture(member = true) {
       : 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const app = createApp({ coreDb, dataRoot, store });
+  const plan = citedAnswer
+    ? {
+        query: 'cutover lesson',
+        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/cutover-lesson`,
+        answer: 'Source traced cutover lesson.',
+        uncertainty: null,
+      }
+    : {
+        query: 'audience budget baseline',
+        answer: 'No authorized evidence answers this question.',
+        uncertainty: 'No authorized matching evidence.',
+      };
+  const answerPlans = [plan, plan, plan, plan, plan, plan];
+  const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, answerPlans);
   const dependencies = {
     coreDb,
     store,
@@ -58,6 +73,7 @@ function fixture(member = true) {
     store,
     dependencies,
     dataRoot,
+    answerPlans,
     close: async () => {
       await closeRetrievalServices();
       coreDb.sqlite.close();
@@ -76,7 +92,7 @@ function notebook(f: ReturnType<typeof fixture>) {
   });
 }
 
-/** Accepted public inventory; the same definitions must drive each concrete projection. */
+/** Retained entry/governance projection cohort; native role operations have their own query and command proofs. */
 const governedIds = [
   'knowledge.answer',
   'knowledge.source.list',
@@ -117,7 +133,10 @@ async function projections(f: ReturnType<typeof fixture>, token?: string) {
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
   const app = token
-    ? createApp({ mode: 'server', coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store })
+    ? createKnowledgeAnswerApp(
+        { mode: 'server', coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store },
+        f.answerPlans
+      ).app
     : f.app;
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
@@ -252,7 +271,13 @@ describe('Knowledge operation definition cutover', () => {
   it('declares the accepted governed and Notebook operation inventory without handwritten projection catalogs', () => {
     const tables = schemas as unknown as Record<string, Record<string, unknown>>;
     expect(Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
-      [...governedIds].sort()
+      [
+        ...governedIds,
+        'knowledge.ask',
+        'knowledge.tell',
+        'knowledge.maintain',
+        'knowledge.proposal.read',
+      ].sort()
     );
     expect(Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
       [...entryIds].sort()
@@ -296,7 +321,7 @@ describe('Knowledge operation definition cutover', () => {
     'Workspace member',
     'eligible administrator',
   ])('preserves authorized Knowledge parity across HTTP client and CLI for %s, with exact command replay and normalized observations for retrieval, preparation and answer', async (authority) => {
-    const f = fixture(authority === 'Workspace member');
+    const f = fixture(authority === 'Workspace member', true);
     try {
       const token =
         authority === 'eligible administrator'
@@ -444,7 +469,7 @@ describe('Knowledge operation definition cutover', () => {
     }
   }, 120_000);
 
-  it('keeps unauthorized Workspace refusal on every definition, scoped source denial and readonly refusal on every mutation before effects', async () => {
+  it('keeps unauthorized Workspace refusal on every retained definition, scoped source denial and readonly refusal on every retained mutation before effects', async () => {
     const f = fixture();
     try {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
@@ -717,6 +742,12 @@ describe('Knowledge operation definition cutover', () => {
             'knowledge.context.prepare',
             'knowledge.answer',
           ]) {
+            const beforeQuestion = new Set(
+              f.store
+                .listThreads(DEMO_WORKSPACE_ID)
+                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+                .map((turn) => turn.id)
+            );
             const result = await project(id, {
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               query: 'audience budget baseline',
@@ -733,9 +764,55 @@ describe('Knowledge operation definition cutover', () => {
             });
             expect(JSON.stringify(result)).not.toContain(entry.title);
             expect(JSON.stringify(result)).not.toContain(entry.content);
-            if (id === 'knowledge.answer')
+            if (id === 'knowledge.answer') {
               expect(result).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
-            else if (id === 'knowledge.retrieval')
+              expect(
+                (result as schemas.OperationOutput<'knowledge.answer'>).uncertainty
+              ).toBeTruthy();
+              const runs = f.store
+                .listThreads(DEMO_WORKSPACE_ID)
+                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+                .filter(
+                  (turn) => !beforeQuestion.has(turn.id) && turn.agentId === 'knowledge-manager'
+                );
+              expect(runs).toHaveLength(1);
+              const call = runs[0]!.items.find(
+                (item) => item.type === 'tool-call' && item.tool === 'knowledge.retrieval'
+              );
+              if (call?.type !== 'tool-call' || !call.result)
+                throw new Error('The Knowledge retrieval result was not retained.');
+              const search = JSON.parse(JSON.parse(call.result)[0].text);
+              const selection = search.sources.find(
+                (source: { source: string }) => source.source === 'workspace'
+              );
+              expect(selection.excluded).toContainEqual(
+                expect.objectContaining({
+                  reference: { scopeId: `page/workspace/${DEMO_WORKSPACE_ID}`, objectId: entry.id },
+                  contentDigest: null,
+                  sourceReferences: [],
+                  reason: 'sensitive_content',
+                })
+              );
+              // Native continuation can verify its safe selection without granting full raw-trace inspection.
+              expect(() =>
+                retrieval.assertKnowledgeRetrievalTraceReadable({
+                  dataRoot: f.dataRoot,
+                  workspaceId: DEMO_WORKSPACE_ID,
+                  access: {
+                    store: f.store,
+                    coreDb: f.coreDb,
+                    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+                    requestActor: {
+                      kind: 'local',
+                      userId: 'usr_00000000-0000-7000-8000-000000000001',
+                    },
+                  },
+                  retrievalTraceRef: RetrievalTraceReferenceSchema.parse(
+                    selection.retrievalTraceRef
+                  ),
+                })
+              ).toThrowError('Knowledge trace or source is unavailable.');
+            } else if (id === 'knowledge.retrieval')
               expect(result).toMatchObject({
                 selected: [],
                 excluded: [
