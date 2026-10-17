@@ -1,7 +1,7 @@
 ---
 type: change-plan
-status: in-progress
-date: "2026-10-16"
+status: implemented
+date: "2026-10-17"
 branch: lane/web-p27
 ---
 # Exact Review Feedback and Candidate Use
@@ -43,3 +43,13 @@ Exact ddb312905d3c01a75d9cd47c23932242aa48c4b1 completed LOCAL-GATE PASS on 2026
 The prior exact 6098 gate remains failed: its inherited file-input journey waited for the obsolete Quick Chat picker label before file selection. The one-line test-only correction uses the current Personal label, preserves every original-byte and disclosure assertion, and is independently approved. Complete passing subjects from that failed gate remain separate evidence: five storage files with 114 cases, four root contract files with 100 cases, CLI equality, OpenAPI checks and matching builds. Earlier complete App API 363, Chat 204, conversation file 18, setup-corrected Artifact projection 38 and unchanged owner remainders carry only under their named source identities. Overlapping totals and partial successes are not added. The external L-WEB checkpoint and p27-express-evidence.md preserve the failed logs, exact commands and limits.
 
 After the passing gate, clean main merge 135005715df5c672b26cbbbef799c2094294d77f adds only the existing NanoHost Collector test and guide text. A separate normal merge includes the independently approved P26 execution-record closeout 986e4acc6c4bbbf75dfe5f306683480ae1c9d671 after its containing main CI passed. These later document and main changes are not included in the ddb gate. P17 remains absent from main. Publication still requires its actual main merge, any consequential conflict review, the applicable merged-head gate and current green main. No whole-P17, deployed authentication or real-Worker acceptance is claimed.
+
+## Current Preparation Checkpoint
+
+The 2026-10-17 RESUME authorizes continued preparation. The branch normally composes Notebook main 5c18131e, approved P17 source 652c197e and the later approved Notebook integration a21d0c28, current main f97679ac, and the independently reviewed cleanup candidate 0fa4a5d6. P17 is still not published on main. The cleanup candidate stays a separate landing before P27. The preceding sections retain their historical evidence and do not establish current publication readiness.
+
+Notebook keeps Workspace migration 0002; unlanded exact Review columns append as 0003 with their unchanged additive SQL and aligned snapshot, journal and expectations. Store retains Git Notebook authority and verified receiving-Turn file forwarding. The newer P17 merge at 98ca3a40 changes no file bytes from 76582664; the conflicts only reflect method and paragraph order and already composed generated outputs. OpenAPI and CLI retain all parent operations. Three canonical Protocol projections now include the already accepted file Artifact and Turn input shapes. The exact parser-default fixture and operation census compose both accepted additions without weakening their assertions. No authored D01 or ProposalReview production edit was needed.
+
+Complete observed integration subjects are the 12-file Native storage, Store and Audit cohort with 262 cases; App API 371; Core Client 118; Config 341; Protocol 298; CLI interface 89; and the exact operation census. Complete Workspace Web coverage passes 169 cases in all four owner files, with Web typecheck. The later main changes two App API fixtures, so that complete package must run again. The complete current Retrieval Kernel package passes Python 17, Rust library 44 and executable faces 7. The remaining Native runtime and canonical-storage cohorts are still running on the byte-identical 76582664 tree; no result is claimed yet. Failed attempts remain failed in the external lane evidence.
+
+Next Action: inspect the remaining terminal owner checks, obtain independent review of this exact combined head, and run the exact local gate with canonical generation, the current App API and root contracts, matching builds and the complete browser suite. Source preparation can proceed before P17 publication; landing still requires actual P17 on main, current green main and the landing window. No deployed authentication, real Worker execution, whole-server backup or release qualification follows from these local checks.
