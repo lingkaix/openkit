@@ -1237,7 +1237,7 @@ describe('Knowledge Manager answer operation', () => {
     const roleTurns = store
       .listThreads(DEMO_WORKSPACE_ID)
       .filter((thread) => thread.entryPath === 'knowledge-manager')
-      .flatMap((thread) => store.listTurns(DEMO_WORKSPACE_ID, thread.id));
+      .flatMap((thread) => store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id));
     expect(roleTurns).toHaveLength(1);
     expect(roleTurns[0]).toMatchObject({
       status: 'completed',

@@ -44,6 +44,11 @@ export function createKnowledgeAnswerApp(
     }
     return { id: `response-${planIndex}-${step}`, object: 'response', output };
   });
+  const gatewayConfig = createTestGatewayConfig();
+  // This answer fixture leaves summary generation to its separate owner tests.
+  gatewayConfig.logicalModels[0]!.contextManagement = [
+    { type: 'compaction', compactThreshold: 32_000 },
+  ];
   const app = createApp({
     ...options,
     providerRegistry: new ProviderRegistry([
@@ -58,7 +63,7 @@ export function createKnowledgeAnswerApp(
         },
       },
     ]),
-    gatewayConfig: createTestGatewayConfig(),
+    gatewayConfig,
     llmGatewayDispatcher: { createResponses } as unknown as LLMGatewayProviderDispatcher,
   });
   return { app, createResponses };
