@@ -80,10 +80,10 @@ export function createTurnOperationImplementations(
         throw classifiedTurnFailure(error, 'turn_interrupt_failed') ?? error;
       }
     },
-    'turn.feedback': (input) => {
+    'turn.feedback': (input, context) => {
       const { turnId, ...body } = input;
       try {
-        return updateTurnFeedback(dependencies.store!, turnId, body);
+        return updateTurnFeedback(dependencies.store!, turnId, body, context.actorRef);
       } catch (error) {
         throw classifiedTurnFailure(error, 'not_found') ?? error;
       }
