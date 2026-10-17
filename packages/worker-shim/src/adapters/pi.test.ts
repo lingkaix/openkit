@@ -1180,8 +1180,8 @@ describe('Pi controlled channel faults', () => {
       assistantText: null,
       nativeEvidence: { nativeTerminal: true },
     });
-    expect(outcome.diagnostics?.nativeError).toContain('Safe native inference explanation');
-    expect(Buffer.byteLength(outcome.diagnostics?.nativeError ?? '', 'utf8')).toBeLessThanOrEqual(
+    expect(outcome.diagnostics?.native).toContain('Safe native inference explanation');
+    expect(Buffer.byteLength(outcome.diagnostics?.native ?? '', 'utf8')).toBeLessThanOrEqual(
       16_384
     );
     const diagnostics = JSON.stringify(outcome.diagnostics);
