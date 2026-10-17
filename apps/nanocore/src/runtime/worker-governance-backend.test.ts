@@ -6,12 +6,14 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   openShellNetworkEndpointsFromPackagePolicy,
@@ -159,30 +161,30 @@ describe('NanoHost worker governance helpers', () => {
   });
 
   it('imports verified Skill files after the canonical AEP', async () => {
+    const skillBody =
+      '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n';
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-supply-import-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     try {
-      const store = createDemoStore();
-      const turn = store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'Use catalog skill',
-        {
-          kind: 'user',
-          id: 'usr_00000000-0000-7000-8000-000000000001',
-        }
-      );
+      const userId = ensureLocalUser(coreDb);
+      const store = createDemoStore({ dataRoot }, userId);
+      const { workspace, thread } = createDemoWorkspaceForUser(userId);
+      const agentSessionId = allocateEntityId('as');
+      const turn = store.createTurn(workspace.id, thread.id, 'Use catalog skill', {
+        kind: 'user',
+        id: userId,
+      });
       const created = importWorkspaceSkill({
         activate: true,
         createdAt: '2026-09-08T00:00:00.000Z',
         dataRoot,
         displayName: 'Repo guidelines',
         expectedRevision: 0,
-        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
+        producer: { id: userId, kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(skillBody, 'utf8').toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },
@@ -193,14 +195,14 @@ describe('NanoHost worker governance helpers', () => {
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
-          agentSessionId: 'as_00000000-0000-79c6-aae9-aedf5075fd1f',
+          agentSessionId,
           backend: { kind: 'openshell' },
           coreDb,
           createdAt: '2026-06-16T00:00:00.000Z',
           requestId: 'req_nanohost_skill_1',
           turn,
           triggerActor: turn.triggerActor,
-          userId: 'usr_00000000-0000-7000-8000-000000000001',
+          userId,
           workspaceCwd: process.cwd(),
           workspaceRoots: [],
         })
@@ -211,15 +213,16 @@ describe('NanoHost worker governance helpers', () => {
       });
       expect(imports.map((item) => item.slot)).toEqual(['package-config', 'worker-supply']);
       expect(imports[1]).toMatchObject({
-        byteLength: Buffer.byteLength('# Hello\n'),
-        relativePath:
-          'as_00000000-0000-79c6-aae9-aedf5075fd1f/supply/inputs/repo-guidelines/SKILL.md',
+        body: Buffer.from(skillBody, 'utf8'),
+        byteLength: Buffer.byteLength(skillBody),
+        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/SKILL.md`,
         slot: 'worker-supply',
       });
       expect(imports[1]?.contentDigest).toBe(
         created.version.inventory.find((entry) => entry.path === 'SKILL.md')?.sha256
       );
     } finally {
+      coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     }
   });

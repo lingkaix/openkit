@@ -20,7 +20,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as catalogOwner from './resource-catalog.js';
-import { loadWorkspaceResourceCatalog } from './resource-catalog.js';
+import { loadWorkspaceResourceCatalog, skillSnapshotPath } from './resource-catalog.js';
 
 /** Real local identity, Workspace admission and immutable catalog owners. */
 function fixture(
@@ -30,12 +30,12 @@ function fixture(
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b5-projections-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('B5 projection');
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    ownerUserId: userId,
     workspaceId: workspace.id,
   });
   const app = createApp({
@@ -54,7 +54,7 @@ function fixture(
     ...(getBootReadiness ? { getBootReadiness } : {}),
     agentManifests: [createTestAgentSetup().manifest],
   });
-  return { app, coreDb, dataRoot, workspace, store };
+  return { app, coreDb, dataRoot, userId, workspace, store };
 }
 
 /** Posts complete logical input through the real operation admission and native owner. */
@@ -76,7 +76,13 @@ function call(f: ReturnType<typeof fixture>, id: OperationId, input: unknown, se
 }
 
 const tree = (text: string) => [
-  { kind: 'file', path: 'SKILL.md', contentBase64: Buffer.from(text).toString('base64') },
+  {
+    kind: 'file',
+    path: 'SKILL.md',
+    contentBase64: Buffer.from(
+      `---\nname: proof\ndescription: Exercise catalog operations.\n---\n${text}`
+    ).toString('base64'),
+  },
 ];
 
 describe('B5 catalog operation projections', () => {
@@ -103,7 +109,7 @@ describe('B5 catalog operation projections', () => {
           tree: tree('# Proof'),
         },
       });
-      expect(imported.status).toBe(201);
+      expect(imported.status, await imported.clone().text()).toBe(201);
       const skill = await imported.json();
       expect(skill.entry.currentDigest).toBe(skill.version.digest);
       const list = await call(f, 'catalog.skill-list', { workspaceId: f.workspace.id });
@@ -127,34 +133,37 @@ describe('B5 catalog operation projections', () => {
         candidateId: candidate.id,
         ...{
           decision: 'promoted',
-          expectedRevision: 3,
+          expectedCurrentDigest: skill.version.digest,
+          expectedRevision: 2,
           requestId: requestId(),
         },
       });
       expect(decide.status).toBe(200);
-      expect(await decide.json()).toEqual({ revision: 4 });
+      expect(await decide.json()).toEqual({ revision: 3 });
       const select = await call(f, 'catalog.skill-select', {
         workspaceId: f.workspace.id,
         skillId: 'proof',
         ...{
           digest: skill.version.digest,
-          expectedRevision: 4,
+          expectedCurrentDigest: candidate.candidateDigest,
+          expectedRevision: 3,
           requestId: requestId(),
         },
       });
       expect(select.status).toBe(200);
-      expect(await select.json()).toEqual({ revision: 5 });
+      expect(await select.json()).toEqual({ revision: 4 });
       const pin = await call(f, 'catalog.skill-pin', {
         workspaceId: f.workspace.id,
         skillId: 'proof',
         ...{
           digest: candidate.candidateDigest,
-          expectedRevision: 5,
+          expectedPinDigest: null,
+          expectedRevision: 4,
           requestId: requestId(),
         },
       });
       expect(pin.status).toBe(200);
-      expect(await pin.json()).toEqual({ revision: 6 });
+      expect(await pin.json()).toEqual({ revision: 5 });
       const mcpResponse = await call(f, 'catalog.mcp-create', {
         workspaceId: f.workspace.id,
         ...{
@@ -162,7 +171,7 @@ describe('B5 catalog operation projections', () => {
           displayName: 'Echo',
           allowedTools: ['echo'],
           declaration: { kind: 'http', endpoint: 'https://example.test/mcp' },
-          expectedRevision: 6,
+          expectedRevision: 5,
           requestId: requestId(),
         },
       });
@@ -176,12 +185,12 @@ describe('B5 catalog operation projections', () => {
         mcpId: 'echo',
         ...{
           digest: mcp.versionDigest,
-          expectedRevision: 7,
+          expectedRevision: 6,
           requestId: requestId(),
         },
       });
       expect(mcpSelect.status).toBe(200);
-      expect(await mcpSelect.json()).toEqual({ revision: 8 });
+      expect(await mcpSelect.json()).toEqual({ revision: 7 });
       const binding = await call(f, 'catalog.mcp-binding', {
         workspaceId: f.workspace.id,
         mcpId: 'echo',
@@ -190,16 +199,16 @@ describe('B5 catalog operation projections', () => {
           enabled: true,
           schemaPolicy: 'tracking',
           bindingRevision: 1,
-          expectedRevision: 8,
+          expectedRevision: 7,
           requestId: requestId(),
         },
       });
       expect(binding.status).toBe(200);
-      expect(await binding.json()).toEqual({ revision: 9 });
+      expect(await binding.json()).toEqual({ revision: 8 });
       const plugin = await call(f, 'catalog.plugin-import', {
         workspaceId: f.workspace.id,
         ...{
-          expectedRevision: 9,
+          expectedRevision: 8,
           requestId: requestId(),
           tree: [
             {
@@ -218,10 +227,151 @@ describe('B5 catalog operation projections', () => {
       expect(pluginList.status).toBe(200);
       expect((await pluginList.json()).items).toEqual([pluginBody.entry]);
       const retained = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
-      expect(retained.revision).toBe(10);
+      expect(retained.revision).toBe(9);
       expect(retained.skills.entries[0]?.currentDigest).toBe(skill.version.digest);
       expect(retained.skills.pins[0]?.digest).toBe(candidate.candidateDigest);
       expect(retained.mcp.bindings[0]?.enabled).toBe(true);
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('projects exact Skill inspection, comparison, removal and retained-version refusal', async () => {
+    const f = fixture();
+    try {
+      const invalid = await call(f, 'catalog.skill-import', {
+        workspaceId: f.workspace.id,
+        displayName: 'Invalid',
+        expectedRevision: 0,
+        requestId: crypto.randomUUID(),
+        tree: [
+          {
+            kind: 'file',
+            path: 'notes.md',
+            contentBase64: Buffer.from('# Notes').toString('base64'),
+          },
+        ],
+      });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ code: 'invalid_request' });
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(0);
+      const imported = await call(f, 'catalog.skill-import', {
+        workspaceId: f.workspace.id,
+        id: 'proof',
+        displayName: 'Proof',
+        tree: tree('# Original'),
+        expectedRevision: 0,
+        requestId: crypto.randomUUID(),
+      });
+      expect(imported.status, await imported.clone().text()).toBe(201);
+      const original = await imported.json();
+      const identity = {
+        workspaceId: f.workspace.id,
+        skillId: 'proof',
+        digest: original.version.digest,
+      };
+      const read = await call(f, 'catalog.skill-version-read', identity);
+      expect(read.status).toBe(200);
+      expect(await read.json()).toEqual({ version: original.version });
+      expect(original.version.producer).toEqual({ id: f.userId, kind: 'user' });
+      const listed = await call(f, 'catalog.skill-version-list', {
+        workspaceId: f.workspace.id,
+        skillId: 'proof',
+      });
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({ items: [original.version] });
+      const content = await call(f, 'catalog.skill-content-read', {
+        ...identity,
+        path: 'SKILL.md',
+      });
+      expect(content.status).toBe(200);
+      expect(await content.json()).toEqual({
+        contentBase64: tree('# Original')[0]!.contentBase64,
+        digest: identity.digest,
+        entryId: 'proof',
+        path: 'SKILL.md',
+      });
+      const revised = await call(f, 'catalog.skill-import', {
+        workspaceId: f.workspace.id,
+        id: 'proof',
+        displayName: 'Proof',
+        activate: false,
+        tree: tree('# Revised'),
+        expectedRevision: 1,
+        requestId: crypto.randomUUID(),
+      });
+      expect(revised.status).toBe(201);
+      const second = await revised.json();
+      const diff = await call(f, 'catalog.skill-diff', {
+        workspaceId: f.workspace.id,
+        skillId: 'proof',
+        baseDigest: identity.digest,
+        candidateDigest: second.version.digest,
+      });
+      expect(diff.status).toBe(200);
+      expect(await diff.json()).toMatchObject({
+        baseDigest: identity.digest,
+        candidateDigest: second.version.digest,
+        entryId: 'proof',
+        changes: [
+          {
+            path: 'SKILL.md',
+            before: original.version.inventory[0],
+            after: second.version.inventory[0],
+          },
+        ],
+      });
+      const pinned = await call(f, 'catalog.skill-pin', {
+        ...identity,
+        expectedPinDigest: null,
+        expectedRevision: 2,
+        requestId: crypto.randomUUID(),
+      });
+      expect(pinned.status).toBe(200);
+      const removed = await call(f, 'catalog.skill-remove', {
+        workspaceId: f.workspace.id,
+        skillId: 'proof',
+        expectedRevision: 3,
+        requestId: crypto.randomUUID(),
+      });
+      expect(removed.status).toBe(200);
+      const refused = await call(f, 'catalog.skill-select', {
+        ...identity,
+        expectedCurrentDigest: null,
+        expectedRevision: 4,
+        requestId: crypto.randomUUID(),
+      });
+      expect(refused.status).toBe(404);
+      const historical = await call(f, 'catalog.skill-content-read', {
+        ...identity,
+        path: 'SKILL.md',
+      });
+      expect(historical.status).toBe(200);
+      const purge = await call(f, 'catalog.skill-purge', {
+        ...identity,
+        expectedRevision: 4,
+        requestId: crypto.randomUUID(),
+      });
+      expect(purge.status).toBe(409);
+      expect(await purge.json()).toMatchObject({
+        code: 'resource_retained',
+        details: { references: ['skill_pin:proof'] },
+      });
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(4);
+      rmSync(skillSnapshotPath(f.dataRoot, f.workspace.id, 'proof', identity.digest), {
+        recursive: true,
+        force: true,
+      });
+      const unavailable = await call(f, 'catalog.skill-content-read', {
+        ...identity,
+        path: 'SKILL.md',
+      });
+      expect(unavailable.status).toBe(503);
+      expect(await unavailable.json()).toMatchObject({ code: 'resource_unavailable' });
+      const lineage = await call(f, 'catalog.skill-version-read', identity);
+      expect(lineage.status).toBe(200);
+      expect(await lineage.json()).toEqual({ version: original.version });
     } finally {
       f.coreDb.sqlite.close();
       rmSync(f.dataRoot, { force: true, recursive: true });
@@ -389,6 +539,7 @@ function mutations(workspaceId: string) {
       workspaceId,
       candidateId: testEntityId('cand', 'candidate'),
       decision: 'promoted',
+      expectedCurrentDigest: digest,
       expectedRevision: 0,
       requestId,
     },
@@ -396,10 +547,32 @@ function mutations(workspaceId: string) {
       workspaceId,
       skillId: 'proof',
       digest,
+      expectedCurrentDigest: digest,
       expectedRevision: 0,
       requestId,
     },
-    'catalog.skill-pin': { workspaceId, skillId: 'proof', digest, expectedRevision: 0, requestId },
+    'catalog.skill-pin': {
+      workspaceId,
+      skillId: 'proof',
+      digest,
+      expectedPinDigest: null,
+      expectedRevision: 0,
+      requestId,
+    },
+    'catalog.skill-remove': { workspaceId, skillId: 'proof', expectedRevision: 0, requestId },
+    'catalog.skill-purge': {
+      workspaceId,
+      skillId: 'proof',
+      digest,
+      expectedRevision: 0,
+      requestId,
+    },
+    'catalog.skill-candidate-withdraw': {
+      workspaceId,
+      candidateId: testEntityId('cand', 'candidate'),
+      expectedRevision: 0,
+      requestId,
+    },
     'catalog.mcp-create': {
       workspaceId,
       displayName: 'Echo',
@@ -563,7 +736,7 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
       },
       token.secret
     );
-    expect(imported.status).toBe(201);
+    expect(imported.status, await imported.clone().text()).toBe(201);
     const host = await call(
       f,
       'catalog.mcp-create',
@@ -580,6 +753,7 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
     );
     expect(host.status).toBe(201);
     const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+    const receiptsBefore = f.store.listCommandRequests();
     for (const [operation, input, expected] of [
       [
         'catalog.skill-import',
@@ -599,6 +773,8 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
           workspaceId: f.workspace.id,
           skillId: 'proof',
           digest: `sha256:${'a'.repeat(64)}`,
+          expectedCurrentDigest:
+            before.skills.entries.find((entry) => entry.id === 'proof')?.currentDigest ?? null,
           expectedRevision: 2,
           requestId: crypto.randomUUID(),
         },
@@ -626,7 +802,7 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
       expect(remote.isError).toBe(true);
       expect(JSON.parse(remote.content[0].text)).toMatchObject(expected);
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
-      expect(f.store.listCommandRequests()).toEqual([]);
+      expect(f.store.listCommandRequests()).toEqual(receiptsBefore);
     }
   } finally {
     f.coreDb.sqlite.close();

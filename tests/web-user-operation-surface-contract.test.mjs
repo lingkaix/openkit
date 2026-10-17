@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 264;
+const EXPECTED_CATALOG_SIZE = 272;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 204;
+const EXPECTED_INCLUDED_SIZE = 212;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -35,6 +35,14 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['memory.source.read', 'R069'],
   ['memory.source.register', 'R069'],
   ['memory.update', 'R069'],
+  ['catalog.skill-version-list', 'R108'],
+  ['catalog.skill-update-check', 'R108'],
+  ['catalog.skill-version-read', 'R108'],
+  ['catalog.skill-content-read', 'R108'],
+  ['catalog.skill-diff', 'R108'],
+  ['catalog.skill-remove', 'R108'],
+  ['catalog.skill-purge', 'R108'],
+  ['catalog.skill-candidate-withdraw', 'R108'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -112,6 +120,14 @@ const WEB_OPERATION_GROUPS = {
     'catalog.mcp-list': { disposition: 'live', surface: 'Catalog' },
     'catalog.plugin-list': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-version-list': { disposition: 'roadmap', roadmap: 'R108' },
+    'catalog.skill-update-check': { disposition: 'roadmap', roadmap: 'R108' },
+    'catalog.skill-version-read': { disposition: 'roadmap', roadmap: 'R108' },
+    'catalog.skill-content-read': { disposition: 'roadmap', roadmap: 'R108' },
+    'catalog.skill-diff': { disposition: 'roadmap', roadmap: 'R108' },
+    'catalog.skill-remove': { disposition: 'roadmap', roadmap: 'R108' },
+    'catalog.skill-purge': { disposition: 'roadmap', roadmap: 'R108' },
+    'catalog.skill-candidate-withdraw': { disposition: 'roadmap', roadmap: 'R108' },
     'catalog.mcp-select': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-select': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-pin': { disposition: 'live', surface: 'Catalog' },

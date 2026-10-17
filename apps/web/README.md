@@ -275,7 +275,7 @@ Review cards prioritize changed paths, status, risk and change counts; exact rec
 
 ### Catalog
 
-The live Tier-A **Catalog** screen projects selected-Workspace Skill, MCP, and Agent Plugin catalog management through `client.operations`. It imports SKILL.md files or Skill folders, pins current Skill versions, creates inactive MCP configurations, toggles enablement, and imports plugin.json packages. Fresh Skill and MCP fields keep actual values empty and show examples only as native placeholders; Skill file and folder import stay disabled until a display name is entered. Directory uploads snapshot selected files before resetting the native input, so the live FileList cannot disappear during submission. Browser File API folder uploads include regular files only and cannot preserve executable flags or empty directories. Writes stay disabled while disconnected.
+The live Tier-A **Catalog** screen projects selected-Workspace Skill, MCP, and Agent Plugin catalog management through `client.operations`. It imports SKILL.md files, Skill folders or explicitly selected ecosystem sources, pins current Skill versions, creates inactive MCP configurations, toggles enablement, and imports plugin.json packages. The curated choices are Anthropic Skills, OpenAI Skills and the OpenKit repository Skills folder. Choosing a source only fills the form; Load retains one inactive Skill through the existing import, and Use selects its version. Fresh Skill and MCP fields keep actual values empty and show examples only as native placeholders; import stays disabled until its required values are entered. Directory uploads snapshot selected files before resetting the native input, so the live FileList cannot disappear during submission. Browser File API folder uploads include regular files only and cannot preserve executable flags or empty directories. Writes stay disabled while disconnected. Run the complete Workspace test suite and Web e2e for catalog changes.
 
 ### Generative UI
 
@@ -484,6 +484,8 @@ New API-key Provider profiles allocate one canonical Vault reference through the
 The Web end-to-end suite runs with one worker to keep the shared development machine within its test resource bound. The root test:e2e:web command builds and runs the complete suite.
 
 The local Web E2E simulator image fixture reuses its recorded Artifact identity for the same request and allocates canonical ar UUIDv7 only for a new settlement.
+
+Catalog Skill pin, candidate decision and default-version selection commands retain the exact observed pin or current digest together with the catalog revision. The native catalog owner checks those values before changing a pointer; a refreshed view does not authorize a stale selection.
 
 The Notebook history panel offers one-page editing from a complete current-authorized diff. The Page text/Markdown editor preserves exact current text, previews current-to-edited bytes, and submits a fixed-base `knowledge.notebook.update` command through the composed Core Client. Page and summary limits are 2 MiB and 4 KiB in UTF-8, with no clipping. An unknown result keeps only the saved request available for retry; a conflict needs explicit current-history inspection before another edit. Workspace changes, unavailable history and direct access denial hide the editor and its bytes. Publication refreshes Knowledge, indexes, attention and history; native OKF, Source and schema validation remain authoritative.
 
