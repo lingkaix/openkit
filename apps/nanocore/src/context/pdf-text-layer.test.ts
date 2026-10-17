@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPdfFixture as pdf } from '../test-support/pdf-fixture.js';
 import {
@@ -12,7 +11,7 @@ import {
   processPdfTextLayer,
 } from './pdf-text-layer.js';
 
-// Observe production launches while retaining the real parser, namespaces and resource limiter.
+// Observe production launches while retaining the real Node child and PDF.js parser.
 const observations = vi.hoisted(() => ({
   launches: [] as {
     args: string[];
@@ -21,7 +20,7 @@ const observations = vi.hoisted(() => ({
     code?: number | null;
     env?: NodeJS.ProcessEnv;
   }[],
-  withoutIsolation: false,
+  withoutChild: false,
   onParser: undefined as ((pid: number | undefined) => void) | undefined,
 }));
 vi.mock('node:child_process', async (original) => {
@@ -29,14 +28,8 @@ vi.mock('node:child_process', async (original) => {
   return {
     ...actual,
     spawn: (...args: Parameters<typeof actual.spawn>) => {
-      const child = observations.withoutIsolation
-        ? actual.spawn(
-            args[0],
-            (args[1] as string[]).map((arg) =>
-              arg === '/usr/bin/bwrap' ? '/fixture-missing-isolation' : arg
-            ),
-            args[2]
-          )
+      const child = observations.withoutChild
+        ? actual.spawn('/fixture-missing-node', args[1] as string[], args[2])
         : actual.spawn(...args);
       const entry = {
         args: args[1] as string[],
@@ -49,7 +42,7 @@ vi.mock('node:child_process', async (original) => {
         entry.signal = signal;
         Object.assign(entry, { code });
       });
-      if (entry.args.includes('-layout')) observations.onParser?.(child.pid);
+      observations.onParser?.(child.pid);
       return child;
     },
   };
@@ -59,7 +52,7 @@ const roots: string[] = [];
 afterEach(async () => {
   observations.launches.length = 0;
   observations.onParser = undefined;
-  observations.withoutIsolation = false;
+  observations.withoutChild = false;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -126,11 +119,11 @@ describe('isolated PDF text-layer representation', () => {
     const d = result.derivative;
     expect(d.source.originalDigest).toBe(sha(bytes));
     expect(d.processor).toMatchObject({
-      id: 'poppler-pdf-text-layer-v1',
-      configuration: { encoding: 'UTF-8', layout: true, eol: 'unix' },
+      id: 'pdfjs-pdf-text-layer-v1',
+      configuration: { encoding: 'UTF-8', textLayout: 'pdfjs-items-v1', eol: 'unix', options: { isEvalSupported: false } },
     });
-    expect(d.processor.pdfinfoVersion).toMatch(/^\d+\.\d+/);
-    expect(d.processor.pdftotextVersion).toMatch(/^\d+\.\d+/);
+    expect(d.processor.pdfjsVersion).toMatch(/^\d+\.\d+/);
+    expect(d.processor.nodeVersion).toBe(process.versions.node);
     expect(d.text).toBe('# Page 1\n\nAlpha exact one\n\n# Page 2\n\nBeta exact two\n\n');
     expect(d.representationDigest).toBe(sha(d.text));
     const representation = Buffer.from(d.text);
@@ -153,47 +146,28 @@ describe('isolated PDF text-layer representation', () => {
     expect(await readFile(canonical)).toEqual(bytes);
     await rm(canonical);
     await expectClean(f);
-    const launch = observations.launches.find((entry) => entry.args.includes('-layout'))!;
-    const infoLaunch = observations.launches.find(
-      (entry) => entry.args.includes('/usr/bin/pdfinfo') && entry.args.includes('/input.pdf')
-    )!;
-    const observedInvocation = (entry: typeof launch, normalizePage: boolean) => ({
-      command: '/usr/bin/prlimit',
-      arguments: entry.args.map((arg, index, args) =>
-        arg.endsWith('/input.pdf') && arg !== '/input.pdf'
-          ? '/private-source'
-          : normalizePage && (args[index - 1] === '-f' || args[index - 1] === '-l')
-            ? 'selected-page'
-            : arg
-      ),
-      environment: entry.env,
-    });
+    expect(observations.launches).toHaveLength(1);
+    const launch = observations.launches[0]!;
     expect(d.processor.resourceProfileDigest).toBe(
-      sha(
-        JSON.stringify({
-          pdfinfoVersion: d.processor.pdfinfoVersion,
-          pdftotextVersion: d.processor.pdftotextVersion,
-          configuration: d.processor.configuration,
-          pdfinfo: observedInvocation(infoLaunch, false),
-          pdftotext: observedInvocation(launch, true),
-        })
-      )
+      sha(JSON.stringify({
+        pdfjsVersion: d.processor.pdfjsVersion,
+        nodeVersion: d.processor.nodeVersion,
+        configuration: d.processor.configuration,
+        invocation: {
+          command: process.execPath,
+          arguments: launch.args.map((arg) => arg.endsWith('/input.pdf') ? '/private-source' : arg),
+          environment: launch.env,
+        },
+      }))
     );
-    expect(launch.env).toEqual({ LC_ALL: 'C' });
-    expect(launch.args).toEqual(
-      expect.arrayContaining([
-        '--unshare-all',
-        '--new-session',
-        '--die-with-parent',
-        '--clearenv',
-        '--remount-ro',
-        '--fsize=0',
-        '--cpu=5',
-        '--as=536870912',
-        '--nofile=64',
-        '/input.pdf',
-      ])
-    );
+    expect(launch.env).toEqual({ LC_ALL: 'C', LANG: 'C', TZ: 'UTC' });
+    expect(launch.args).toEqual([
+      '--max-old-space-size=512',
+      '--disallow-code-generation-from-strings',
+      expect.stringMatching(/pdf-text-layer-child\.(ts|js)$/),
+      expect.stringMatching(/input\.pdf$/),
+      JSON.stringify(PDF_TEXT_LAYER_LIMITS),
+    ]);
   });
 
   it('reuses deterministic identity only for the same original and output-changing processor configuration', async () => {
@@ -258,7 +232,7 @@ describe('isolated PDF text-layer representation', () => {
     await expectClean(f);
   });
 
-  it('refuses passwordless encrypted originals even when Poppler permits their text to be read', async () => {
+  it('refuses passwordless encrypted originals even when an empty password permits their text to be read', async () => {
     const bytes = await readFile(
       new URL('./fixtures/pdf-text-layer/encrypted.pdf', import.meta.url)
     );
@@ -304,98 +278,49 @@ describe('isolated PDF text-layer representation', () => {
     await expectClean(f);
   });
 
-  it('refuses output overflow by killing the real parser and cleaning staging', async () => {
+  it('refuses text overflow in the real child and cleans staging', async () => {
     const f = await fixture(pdf(['x'.repeat(1000)]));
     const result = await processPdfTextLayer({ ...f.input, limits: { maxOutputBytes: 40 } });
     expect(result.status).toBe('unavailable');
     if (result.status !== 'unavailable') throw new Error('expected bound');
     expect(result.reason).toBe('resource-limited');
-    expect(observations.launches.some((entry) => entry.args.includes('-layout'))).toBe(true);
+    expect(observations.launches).toHaveLength(1);
     await expectClean(f);
   });
 
-  it('enforces a hard CPU limit on real compressed PDF content without crashing NanoCore', async () => {
-    const content = deflateSync(Buffer.from('0 0 m 1 1 l S\n'.repeat(3_000_000)));
-    const f = await fixture(pdf([''], content), 65_536);
-    const result = await processPdfTextLayer({
-      ...f.input,
-      limits: { cpuSeconds: 1, wallTimeMs: 10_000 },
-    });
-    expect(result.status).toBe('unavailable');
-    if (result.status !== 'unavailable') throw new Error('expected CPU bound');
-    expect(result.reason).toBe('resource-limited');
-    expect(
-      observations.launches.some(
-        (entry) =>
-          entry.args.includes('-layout') && (entry.signal === 'SIGKILL' || entry.code === 137)
-      )
-    ).toBe(true);
+  it('bounds the real child heap without crashing NanoCore', async () => {
+    const f = await fixture(pdf(['Text']));
+    const result = await processPdfTextLayer({ ...f.input, limits: { heapBytes: 8 * 1_048_576 } });
+    expect(result).toMatchObject({ status: 'unavailable', reason: 'resource-limited' });
+    expect(observations.launches[0]!.args).toContain('--max-old-space-size=8');
     await expectClean(f);
   });
 
-  it('cancels a real parser process and leaves neither a derivative nor staging bytes', async () => {
-    const content = deflateSync(Buffer.from('0 0 m 1 1 l S\n'.repeat(3_000_000)));
-    const f = await fixture(pdf([''], content), 65_536);
+  it('cancels a real Node child and waits for exit before releasing staging', async () => {
+    const f = await fixture(pdf(['Text']));
     const controller = new AbortController();
-    let actualParserPid: number | undefined;
-    let actualLimits = '';
-    let parserStart = '';
-    let observation: Promise<void> | undefined;
+    let childPid: number | undefined;
     observations.onParser = (pid) => {
-      observation = (async () => {
-        const deadline = Date.now() + 2000;
-        while (Date.now() < deadline) {
-          const pending = pid ? [pid] : [];
-          while (pending.length) {
-            const current = pending.shift()!;
-            try {
-              const command = (await readFile(`/proc/${current}/comm`, 'utf8')).trim();
-              if (command === 'pdftotext') {
-                actualParserPid = current;
-                actualLimits = await readFile(`/proc/${current}/limits`, 'utf8');
-                parserStart = processIdentity(
-                  await readFile(`/proc/${current}/stat`, 'utf8')
-                ).start;
-                controller.abort();
-                return;
-              }
-              const children = await readFile(`/proc/${current}/task/${current}/children`, 'utf8');
-              pending.push(...children.trim().split(/\s+/).filter(Boolean).map(Number));
-            } catch {
-              /* The real process may have exited between observations. */
-            }
-          }
-          await new Promise((resolve) => setTimeout(resolve, 5));
-        }
-      })();
+      childPid = pid;
+      controller.abort();
     };
-    const result = await processPdfTextLayer({ ...f.input, signal: controller.signal });
-    expect(result.status).toBe('unavailable');
-    if (result.status !== 'unavailable') throw new Error('expected cancellation');
-    expect(result.reason).toBe('cancelled');
-    await observation;
-    expect(actualParserPid).toBeTypeOf('number');
-    await expectStopped(actualParserPid!, parserStart);
-    expect(actualLimits).toMatch(/Max address space\s+536870912\s+536870912/);
-    expect(actualLimits).toMatch(/Max cpu time\s+5\s+5/);
-    expect(actualLimits).toMatch(/Max file size\s+0\s+0/);
-    expect(actualLimits).toMatch(/Max open files\s+64\s+64/);
-    expect(actualLimits).toMatch(/Max processes\s+0\s+0/);
+    expect(await processPdfTextLayer({ ...f.input, signal: controller.signal })).toMatchObject({
+      status: 'unavailable', reason: 'cancelled',
+    });
+    expect(childPid).toBeTypeOf('number');
+    expect(() => process.kill(childPid!, 0)).toThrow();
     await expectClean(f);
   });
 
-  it('kills a real parser at the total wall deadline', async () => {
-    const content = deflateSync(Buffer.from('0 0 m 1 1 l S\n'.repeat(3_000_000)));
-    const f = await fixture(pdf([''], content), 65_536);
+  it('kills a stopped real child at the parent wall deadline', async () => {
+    const f = await fixture(pdf(['Text']));
+    observations.onParser = (pid) => { process.kill(pid!, 'SIGSTOP'); };
     const started = Date.now();
-    const result = await processPdfTextLayer({ ...f.input, limits: { wallTimeMs: 200 } });
-    expect(result).toEqual({
-      status: 'unavailable',
-      reason: 'resource-limited',
-      complete: false,
-      provesCompleteBodyAbsence: false,
+    expect(await processPdfTextLayer({ ...f.input, limits: { wallTimeMs: 200 } })).toEqual({
+      status: 'unavailable', reason: 'resource-limited', complete: false, provesCompleteBodyAbsence: false,
     });
-    expect(observations.launches.some((entry) => entry.args.includes('-layout'))).toBe(true);
+    expect(observations.launches).toHaveLength(1);
+    expect(observations.launches[0]!.signal).toBe('SIGKILL');
     expect(Date.now() - started).toBeLessThan(2000);
     await expectClean(f);
   });
@@ -453,9 +378,9 @@ describe('isolated PDF text-layer representation', () => {
     await expectClean(f);
   });
 
-  it('fails closed before opening the source when the real isolation executable cannot run', async () => {
+  it('fails closed without a representation when the Node child cannot run', async () => {
     const f = await fixture(pdf(['Text']));
-    observations.withoutIsolation = true;
+    observations.withoutChild = true;
     const result = await processPdfTextLayer(f.input);
     expect(result).toEqual({
       status: 'unavailable',
@@ -463,7 +388,6 @@ describe('isolated PDF text-layer representation', () => {
       complete: false,
       provesCompleteBodyAbsence: false,
     });
-    expect(f.opened()).toBe(0);
     await expectClean(f);
   });
 
@@ -472,26 +396,9 @@ describe('isolated PDF text-layer representation', () => {
       maxInputBytes: 67_108_864,
       maxOutputBytes: 2_097_152,
       maxPages: 64,
-      addressSpaceBytes: 536_870_912,
-      cpuSeconds: 5,
+      heapBytes: 536_870_912,
       wallTimeMs: 20_000,
     });
   });
 });
 
-/** Compare PID starttime, so reuse cannot conceal a still-running parser or kill another process. */
-function processIdentity(stat: string): { state: string; start: string } {
-  const fields = stat
-    .slice(stat.lastIndexOf(')') + 2)
-    .trim()
-    .split(/\s+/);
-  return { state: fields[0]!, start: fields[19]! };
-}
-async function expectStopped(pid: number, start: string): Promise<void> {
-  try {
-    const current = processIdentity(await readFile(`/proc/${pid}/stat`, 'utf8'));
-    expect(current.start !== start || ['Z', 'X'].includes(current.state)).toBe(true);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-}

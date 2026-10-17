@@ -578,7 +578,7 @@ it('retains a selected PDF original and complete isolated text representation wh
       { page: 1, coordinateSpace: 'representation-utf8' },
       { page: 2, coordinateSpace: 'representation-utf8' },
     ],
-    processor: { id: 'poppler-pdf-text-layer-v1' },
+    processor: { id: 'pdfjs-pdf-text-layer-v1' },
   });
   expect(readFileSync(join(root, 'instructions.md'), 'utf8')).toBe('Inspect selected originals');
   expect(

@@ -29,7 +29,6 @@ export interface MediaProcessLimits {
 /** Fixed release-authored native programs, never a user-selected executable. */
 export type MediaExecutable =
   | '/usr/bin/pdfinfo'
-  | '/usr/bin/pdftotext'
   | '/usr/bin/timeout'
   | '/usr/bin/identify'
   | '/usr/bin/convert'

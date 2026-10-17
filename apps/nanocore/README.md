@@ -561,3 +561,6 @@ Command receipt normalization selects the existing per-kind validator from the r
 Explicit ZIP folder snapshots use `artifact.folder-extract` and paged `artifact.folder-read`. The original Artifact stays unchanged and remains downloadable. Disposable source-version caches use the existing sidecar lifecycle; no editable folder tree or new command receipt exists. The focused route check is `pnpm --filter @openkit/nanocore exec vitest run src/artifact-folder-routes.test.ts --maxWorkers=1`.
 
 Internal-role Gateway admission estimates complete final Provider requests locally, including native overlays and output reserve. It makes no additional network token-count call and keeps native/custom routes usable without an exact counter. Original-file byte limits and bounded source previews remain independent; see the [Context guide](src/context/README.md).
+
+
+Selected PDF text-layer extraction uses the packaged `pdfjs-dist` dependency in a short-lived Node child on both the host and containers. The child has bounded input, pages, text, heap and wall time, an explicit environment without inherited secrets, and no native text-extractor fallback. The [Context guide](src/context/README.md) describes provenance and focused checks. Explicit vision retains its existing native processor.

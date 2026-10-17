@@ -9,6 +9,7 @@ import {
   searchPdfSourceSnapshot,
 } from './pdf-source-representation.js';
 import { PDF_TEXT_LAYER_LIMITS } from './pdf-text-layer.js';
+import { PDF_TEXT_LAYER_OPTIONS } from './pdf-text-layer-child.js';
 import type { WorkerContextPackageSourceFile } from './worker-context-package.js';
 
 const roots: string[] = [];
@@ -17,7 +18,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Synthetic retained text tests transport and search; native extraction has its own real PDF suite. */
+/** Synthetic retained text tests transport and search; PDF.js extraction has its own real PDF suite. */
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'pdf-source-retrieval-'));
   roots.push(dataRoot);
@@ -58,17 +59,17 @@ function fixture() {
       representationSnapshotPath: representationPath,
       pdfTextLayer: {
         processor: {
-          id: 'poppler-pdf-text-layer-v1',
+          id: 'pdfjs-pdf-text-layer-v1',
           resourceProfileDigest: sha('synthetic transport fixture'),
-          pdfinfoVersion: 'fixture',
-          pdftotextVersion: 'fixture',
+          pdfjsVersion: 'fixture',
+          nodeVersion: process.versions.node,
           configuration: {
             ...PDF_TEXT_LAYER_LIMITS,
             encoding: 'UTF-8',
-            layout: true,
+            textLayout: 'pdfjs-items-v1',
+            options: PDF_TEXT_LAYER_OPTIONS,
             eol: 'unix',
-            addressSpaceScope: 'per-process',
-            parserDescendants: 0,
+            heapScope: 'v8-old-generation',
           },
         },
         pages: [

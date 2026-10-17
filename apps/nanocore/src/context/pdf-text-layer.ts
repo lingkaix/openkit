@@ -1,16 +1,17 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
-  assertMediaIsolation,
   type MediaByteSource,
   MediaProcessFailure,
   type MediaResourceProfile,
   type MediaStageReservation,
-  mediaProcessInvocation,
-  runMediaProcess,
   validMediaSource as validSource,
   withStagedMediaSource,
 } from './media-process.js';
+import { PDF_TEXT_LAYER_OPTIONS } from './pdf-text-layer-child.js';
 
 /** An authorized immutable source. Emit at most 64KiB per chunk, honor cancellation and recheck access. */
 export type PdfTextLayerSource = MediaByteSource;
@@ -20,33 +21,31 @@ export interface PdfTextLayerLimits {
   maxInputBytes: number;
   maxOutputBytes: number;
   maxPages: number;
-  /** Per-process address space. Bubblewrap adds fixed supervisor overhead, not an aggregate memory quota. */
-  addressSpaceBytes: number;
-  cpuSeconds: number;
+  /** V8 old-generation heap ceiling in the short-lived Node child, not total process memory. */
+  heapBytes: number;
   wallTimeMs: number;
 }
 
-/** Named, conservative defaults; runtime packaging must supply Poppler, Bubblewrap and prlimit. */
+/** Named defaults for the same packaged Node/PDF.js path on the host and in a container. */
 export const PDF_TEXT_LAYER_LIMITS: Readonly<PdfTextLayerLimits> = Object.freeze({
   maxInputBytes: 67_108_864,
   maxOutputBytes: 2_097_152,
   maxPages: 64,
-  addressSpaceBytes: 536_870_912,
-  cpuSeconds: 5,
+  heapBytes: 536_870_912,
   wallTimeMs: 20_000,
 });
 
 /** Output identity includes every setting that can change the representation or its coverage. */
 export interface PdfTextLayerProcessor extends MediaResourceProfile {
-  id: 'poppler-pdf-text-layer-v1';
-  pdfinfoVersion: string;
-  pdftotextVersion: string;
+  id: 'pdfjs-pdf-text-layer-v1';
+  pdfjsVersion: string;
+  nodeVersion: string;
   configuration: PdfTextLayerLimits & {
     encoding: 'UTF-8';
-    layout: true;
+    textLayout: 'pdfjs-items-v1';
+    options: typeof PDF_TEXT_LAYER_OPTIONS;
     eol: 'unix';
-    addressSpaceScope: 'per-process';
-    parserDescendants: 0;
+    heapScope: 'v8-old-generation';
   };
 }
 
@@ -84,22 +83,29 @@ export interface PdfTextLayerDerivative {
 /** Retained processor, page locators and text-layer coverage within the existing package projection. */
 export const PdfTextLayerEvidenceSchema = z.object({
   processor: z.object({
-    id: z.literal('poppler-pdf-text-layer-v1'),
+    id: z.literal('pdfjs-pdf-text-layer-v1'),
     resourceProfileDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    pdfinfoVersion: z.string().min(1).max(128),
-    pdftotextVersion: z.string().min(1).max(128),
+    pdfjsVersion: z.string().min(1).max(128),
+    nodeVersion: z.string().min(1).max(128),
     configuration: z.object({
       maxInputBytes: z.number().int().positive().max(PDF_TEXT_LAYER_LIMITS.maxInputBytes),
       maxOutputBytes: z.number().int().positive().max(PDF_TEXT_LAYER_LIMITS.maxOutputBytes),
       maxPages: z.number().int().positive().max(PDF_TEXT_LAYER_LIMITS.maxPages),
-      addressSpaceBytes: z.number().int().positive().max(PDF_TEXT_LAYER_LIMITS.addressSpaceBytes),
-      cpuSeconds: z.number().int().positive().max(PDF_TEXT_LAYER_LIMITS.cpuSeconds),
+      heapBytes: z.number().int().min(1_048_576).max(PDF_TEXT_LAYER_LIMITS.heapBytes),
       wallTimeMs: z.number().int().positive().max(PDF_TEXT_LAYER_LIMITS.wallTimeMs),
       encoding: z.literal('UTF-8'),
-      layout: z.literal(true),
+      textLayout: z.literal('pdfjs-items-v1'),
+      options: z.object({
+        isEvalSupported: z.literal(false),
+        disableFontFace: z.literal(true),
+        useSystemFonts: z.literal(false),
+        useWorkerFetch: z.literal(false),
+        useWasm: z.literal(false),
+        enableXfa: z.literal(false),
+        stopAtErrors: z.literal(true),
+      }),
       eol: z.literal('unix'),
-      addressSpaceScope: z.literal('per-process'),
-      parserDescendants: z.literal(0),
+      heapScope: z.literal('v8-old-generation'),
     }),
   }),
   pages: z
@@ -163,10 +169,6 @@ export interface ProcessPdfTextLayerInput {
 }
 
 const INFO_BYTES = 16_384;
-const EXECUTABLES = {
-  pdfinfo: '/usr/bin/pdfinfo',
-  pdftotext: '/usr/bin/pdftotext',
-} as const;
 
 /** Processes only verified private bytes; no PDF parser runs in NanoCore or the Retrieval Kernel. */
 export async function processPdfTextLayer(
@@ -189,17 +191,13 @@ export async function processPdfTextLayer(
   ]);
   try {
     checkSignal(signal, input.signal);
-    await assertMediaIsolation(limits, signal);
-    // Even version discovery uses the real isolation boundary, before opening source bytes.
-    const versions: string[] = [];
-    for (const kind of ['pdfinfo', 'pdftotext'] as const) {
-      const version = await runContained(kind, ['-v'], limits, signal, undefined, 4096);
-      const match = new RegExp(`^${kind} version ([0-9]+(?:\\.[0-9]+){1,3})\\r?\\n`).exec(
-        version.stderr
-      );
-      if (version.code !== 0 || !match || version.stdout.length !== 0)
-        throw new ProcessorFailure('dependency-unavailable');
-      versions.push(match[1] as string);
+    let pdfjsVersion: string;
+    try {
+      pdfjsVersion = createRequire(import.meta.url)('pdfjs-dist/package.json').version;
+      if (typeof pdfjsVersion !== 'string' || pdfjsVersion.length > 128)
+        throw new Error('Invalid processor version.');
+    } catch {
+      throw new ProcessorFailure('dependency-unavailable');
     }
     return await withStagedMediaSource(
       original,
@@ -208,93 +206,31 @@ export async function processPdfTextLayer(
       signal,
       'pdf-text-layer-',
       async (sourcePath) => {
-        const info = await runContained(
-          'pdfinfo',
-          ['/input.pdf'],
-          limits,
-          signal,
-          sourcePath,
-          INFO_BYTES
-        );
-        if (info.code !== 0 || info.stderr.length !== 0) throw new ProcessorFailure('invalid-pdf');
-        // Poppler prints free-form metadata first. Use the final generated fields, not forged metadata lines.
-        const totalPagesText = [...info.stdout.matchAll(/^Pages:[ \t]+(\d+)[ \t]*$/gm)].at(-1)?.[1];
-        const totalPages = Number(totalPagesText);
-        const encrypted = [...info.stdout.matchAll(/^Encrypted:[ \t]+(yes|no)(?:[ \t]|$)/gm)].at(
-          -1
-        )?.[1];
-        if (encrypted === 'yes') throw new ProcessorFailure('encrypted');
-        if (encrypted !== 'no' || !Number.isSafeInteger(totalPages) || totalPages < 1)
-          throw new ProcessorFailure('invalid-pdf');
         const configuration: PdfTextLayerProcessor['configuration'] = {
           ...limits,
           encoding: 'UTF-8',
-          layout: true,
+          textLayout: 'pdfjs-items-v1',
+          options: PDF_TEXT_LAYER_OPTIONS,
           eol: 'unix',
-          addressSpaceScope: 'per-process',
-          parserDescendants: 0,
+          heapScope: 'v8-old-generation',
         };
+        const nodeVersion = process.versions.node;
         const processor: PdfTextLayerProcessor = {
-          id: 'poppler-pdf-text-layer-v1',
-          // The same argument constructor launches each parser. The private path and page selector are normalized; their bytes/coverage remain source evidence.
+          id: 'pdfjs-pdf-text-layer-v1',
           resourceProfileDigest: digest(
             JSON.stringify({
-              pdfinfoVersion: versions[0],
-              pdftotextVersion: versions[1],
+              pdfjsVersion,
+              nodeVersion,
               configuration,
-              pdfinfo: mediaProcessInvocation(
-                EXECUTABLES.pdfinfo,
-                ['/input.pdf'],
-                limits,
-                '/private-source'
-              ),
-              pdftotext: mediaProcessInvocation(
-                EXECUTABLES.pdftotext,
-                textArguments('selected-page'),
-                limits,
-                '/private-source'
-              ),
+              invocation: childInvocation(limits, '/private-source'),
             })
           ),
-          pdfinfoVersion: versions[0] as string,
-          pdftotextVersion: versions[1] as string,
+          pdfjsVersion,
+          nodeVersion,
           configuration,
         };
-        let text = '';
-        let byteLength = 0;
-        const pages: PdfPageLocator[] = [];
-        const pagesWithoutText: number[] = [];
-        for (let page = 1; page <= Math.min(totalPages, limits.maxPages); page++) {
-          const header = `# Page ${page}\n\n`;
-          const remaining = limits.maxOutputBytes - byteLength - Buffer.byteLength(header) - 1;
-          if (remaining < 1) throw new ProcessorFailure('resource-limited');
-          const output = await runContained(
-            'pdftotext',
-            textArguments(String(page)),
-            limits,
-            signal,
-            sourcePath,
-            remaining
-          );
-          if (output.code !== 0 || output.stderr.length !== 0)
-            throw new ProcessorFailure('invalid-pdf');
-          const hasText = output.stdout.trim().length > 0;
-          if (!hasText) pagesWithoutText.push(page);
-          text += header;
-          byteLength += Buffer.byteLength(header);
-          const startByte = byteLength;
-          text += output.stdout;
-          byteLength += Buffer.byteLength(output.stdout);
-          pages.push({
-            page,
-            coordinateSpace: 'representation-utf8',
-            startByte,
-            endByte: byteLength,
-            hasText,
-          });
-          text += '\n';
-          byteLength++;
-        }
+        const { text, pages, totalPages } = await runChild(sourcePath, limits, signal);
+        const pagesWithoutText = pages.filter((page) => !page.hasText).map((page) => page.page);
         const complete = pages.length === totalPages && pagesWithoutText.length === 0;
         const source = {
           sourceKey: original.sourceKey,
@@ -347,51 +283,87 @@ export async function processPdfTextLayer(
   }
 }
 
-/** Keeps output-changing Poppler arguments identical in execution and the measured processor profile. */
-function textArguments(page: string): string[] {
-  return [
-    '-f',
-    page,
-    '-l',
-    page,
-    '-layout',
-    '-enc',
-    'UTF-8',
-    '-eol',
-    'unix',
-    '-nopgbrk',
-    '/input.pdf',
-    '-',
-  ];
+/** Uses the same fixed child launch for execution and measured resource-profile identity. */
+function childInvocation(limits: PdfTextLayerLimits, sourcePath: string) {
+  const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
+  return {
+    command: process.execPath,
+    arguments: [
+      `--max-old-space-size=${Math.floor(limits.heapBytes / 1_048_576)}`,
+      '--disallow-code-generation-from-strings',
+      fileURLToPath(new URL(`./pdf-text-layer-child.${extension}`, import.meta.url)),
+      sourcePath,
+      JSON.stringify(limits),
+    ],
+    environment: { LC_ALL: 'C', LANG: 'C', TZ: 'UTC' },
+  };
 }
 
-/** Decodes only the bounded native text result, preserving PDF's strict UTF8/BOM semantics. */
-async function runContained(
-  kind: keyof typeof EXECUTABLES,
-  args: string[],
-  limits: PdfTextLayerLimits,
-  signal: AbortSignal,
-  sourcePath: string | undefined,
-  outputLimit: number
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const result = await runMediaProcess(
-    EXECUTABLES[kind],
-    args,
-    limits,
-    signal,
-    sourcePath,
-    outputLimit
+/** Bounds the private result envelope, kills on cancellation, and waits for the parser to exit before cleanup. */
+function runChild(sourcePath: string, limits: PdfTextLayerLimits, signal: AbortSignal) {
+  return new Promise<{ text: string; pages: PdfPageLocator[]; totalPages: number }>(
+    (resolve, reject) => {
+      if (signal.aborted) {
+        reject(new ProcessorFailure('resource-limited'));
+        return;
+      }
+      const invocation = childInvocation(limits, sourcePath);
+      const child = spawn(invocation.command, invocation.arguments, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: invocation.environment,
+        cwd: '/',
+      });
+      const output: Buffer[] = [];
+      let outputBytes = 0;
+      let errorBytes = 0;
+      let failure: ProcessorFailure | undefined;
+      const stop = () => {
+        failure ??= new ProcessorFailure('resource-limited');
+        child.kill('SIGKILL');
+      };
+      signal.addEventListener('abort', stop, { once: true });
+      child.stdout.on('data', (chunk: Buffer) => {
+        outputBytes += chunk.byteLength;
+        // JSON can expand each text byte to six bytes. Page metadata has a separate fixed allowance.
+        if (outputBytes > limits.maxOutputBytes * 6 + 32_768) stop();
+        else output.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        errorBytes += chunk.byteLength;
+        if (errorBytes > INFO_BYTES) stop();
+      });
+      child.on('error', () => {
+        failure ??= new ProcessorFailure('dependency-unavailable');
+      });
+      child.on('close', (code, terminationSignal) => {
+        signal.removeEventListener('abort', stop);
+        if (failure) return reject(failure);
+        if (terminationSignal || code === 4)
+          return reject(new ProcessorFailure('resource-limited'));
+        if (code !== 0)
+          return reject(
+            new ProcessorFailure(
+              code === 3 ? 'encrypted' : code === 2 ? 'invalid-pdf' : 'dependency-unavailable'
+            )
+          );
+        try {
+          const result = z.object({
+            text: z.string(),
+            pages: PdfTextLayerEvidenceSchema.shape.pages,
+            totalPages: z.number().int().positive(),
+          }).parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(output))));
+          if (
+            Buffer.byteLength(result.text) > limits.maxOutputBytes ||
+            result.pages.length !== Math.min(result.totalPages, limits.maxPages)
+          ) throw new ProcessorFailure('resource-limited');
+          resolve(result);
+        } catch (error) {
+          reject(error instanceof ProcessorFailure ? error : new ProcessorFailure('invalid-pdf'));
+        }
+      });
+      if (signal.aborted) stop();
+    }
   );
-  try {
-    const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-    return {
-      code: result.code,
-      stdout: decoder.decode(result.stdout),
-      stderr: decoder.decode(result.stderr),
-    };
-  } catch {
-    throw new ProcessorFailure('invalid-pdf');
-  }
 }
 
 /** Preserves cancellation separately from the total processing deadline. */
@@ -407,6 +379,7 @@ function digest(bytes: string): string {
 function validLimits(limits: PdfTextLayerLimits): boolean {
   return Object.entries(PDF_TEXT_LAYER_LIMITS).every(([key, ceiling]) => {
     const value = limits[key as keyof PdfTextLayerLimits];
-    return Number.isSafeInteger(value) && value > 0 && value <= ceiling;
+    return Number.isSafeInteger(value) && value > 0 && value <= ceiling &&
+      (key !== 'heapBytes' || value >= 1_048_576); 
   });
 }
