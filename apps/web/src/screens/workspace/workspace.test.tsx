@@ -6412,7 +6412,7 @@ describe('Archived threads', () => {
     expect(screen.getByRole('button', { name: 'Preview-only conversation' })).toBeInTheDocument();
     expect(
       within(screen.getByRole('main', { name: 'Workspace' })).queryByRole('button', {
-        name: 'New conversation',
+        name: 'Assistant',
       })
     ).not.toBeInTheDocument();
 

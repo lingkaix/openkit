@@ -84,7 +84,11 @@ import {
   readAuthorizedWorkspaceNotebookPages,
   threadReadable,
 } from './retrieval-knowledge-adapter.js';
-import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
+import {
+  commandInputHash,
+  IdempotencyKeyConflictError,
+  runIdempotentCommand,
+} from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { openWorkspaceDb } from './storage/db.js';
 import {
@@ -1444,6 +1448,16 @@ export function createKnowledgeOperationImplementations(
       try {
         const { workspaceId, proposalId } = input;
         const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
+        // A completed request owns its original input before later content conflict checks.
+        const receipt =
+          context.actorRef.kind === 'user'
+            ? store.getCommandRequest('knowledge.proposal.reverse', input.requestId, {
+                workspaceId,
+                actorId: context.actorRef.id,
+              })
+            : null;
+        if (receipt && receipt.inputHash !== commandInputHash(input))
+          throw new IdempotencyKeyConflictError();
         store.projectKnowledgeProposalDraft(workspaceId, proposalId);
         const decision = store.projectKnowledgeProposalDecision(workspaceId, input.reviewId);
         if (

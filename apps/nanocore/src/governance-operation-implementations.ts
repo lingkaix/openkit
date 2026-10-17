@@ -95,7 +95,7 @@ export function createGovernanceOperationImplementations(
         governanceReadFailure(error);
       }
     },
-    'audit.workspace-list': (input) => {
+    'audit.workspace-list': (input, context) => {
       try {
         const workspaceId = input.workspaceId;
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
@@ -103,7 +103,17 @@ export function createGovernanceOperationImplementations(
         try {
           return {
             workspaceId,
-            auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
+            auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb).filter(
+              (event) =>
+                !event.threadId ||
+                isThreadIdVisible(
+                  dependencies.store!,
+                  workspaceId,
+                  event.threadId,
+                  publicOperationActor(context).userId,
+                  isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
+                )
+            ),
           };
         } finally {
           workspaceDb.sqlite.close();

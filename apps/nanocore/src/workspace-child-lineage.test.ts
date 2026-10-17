@@ -282,7 +282,7 @@ describe('Workspace child lineage', () => {
           { body: JSON.stringify(child) }
         )
       );
-      expect(response.status).toBe(403);
+      expect(response.status, `${id}: ${await response.clone().text()}`).toBe(403);
       await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
     }
   });
