@@ -63,7 +63,7 @@ function publishIndex(f: ReturnType<typeof fixture>, content: string) {
 
 it('delivers a bounded UTF-8 overview at its source revision, stays pinned after publication and rechecks current authority', () => {
   const f = fixture();
-  const content = '---\nokf_version: "0.2"\n---\n# Admissions\n' + '€'.repeat(2000);
+  const content = `---\nokf_version: "0.2"\n---\n# Admissions\n${'€'.repeat(2000)}`;
   const revision = publishIndex(f, content);
   const result = prepareKnowledgeOverview(f);
   const payload = JSON.parse(
@@ -89,7 +89,9 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
   expect(result.text).not.toContain('Later overview');
   // A Workspace credential with no current membership cannot reuse the pinned projection.
   f.coreDb.sqlite
-    .prepare('DELETE FROM workspace_memberships WHERE workspace_id = ?')
+    .prepare(
+      "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ?"
+    )
     .run(f.workspaceId);
   expect(() => result.assertCurrent()).toThrow();
 });

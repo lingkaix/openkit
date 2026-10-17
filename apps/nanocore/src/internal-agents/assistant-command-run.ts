@@ -256,6 +256,10 @@ export async function runAssistantModel(input: {
     ? [{ role: 'user', content: [{ type: 'text', text: overview.text }] }]
     : [];
   const messages = [...overviewMessages, ...input.messages];
+  const assertCurrent = () => {
+    input.assertCurrent();
+    overview?.assertCurrent();
+  };
   const state: {
     result?: Omit<AssistantCommandResult, 'content'>;
     failure?: { error: unknown };
@@ -268,8 +272,7 @@ export async function runAssistantModel(input: {
   });
   const model = input.gateway.logicalModel;
   const guardedProvider: typeof provider = (request) => {
-    input.assertCurrent();
-    overview?.assertCurrent();
+    assertCurrent();
     prepared?.assertCurrent();
     return provider(request);
   };
@@ -278,6 +281,9 @@ export async function runAssistantModel(input: {
     prepared = await prepareInternalAgentContext({
       ...input.context,
       prefixMessages: [...overviewMessages, ...(input.context.prefixMessages ?? [])],
+      environmentFacts: overview?.text
+        ? { roleFacts: input.context.environmentFacts, knowledgeOverview: overview.text }
+        : input.context.environmentFacts,
       systemPrompt: input.systemPrompt,
       requiredMessages: input.messages.slice(input.context.prefixMessages?.length ?? 0),
       tools: input.tools,
@@ -289,7 +295,7 @@ export async function runAssistantModel(input: {
       bounds: { context: model.contract?.context, output: model.contract?.output },
       limits: input.limits,
       signal: input.signal,
-      assertCurrent: input.assertCurrent,
+      assertCurrent,
       callProvider: guardedProvider,
     });
   const exit = await runInternalAgentLoop(

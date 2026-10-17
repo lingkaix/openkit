@@ -12,7 +12,7 @@ Core Knowledge owns scope isolation and overview semantics. The Knowledge Manage
 
 1. Read Workspace plus currently admitted Server roots at fixed commits. Deliver at most 4,096 UTF-8 content bytes per scope, exact canonical/delivered digests and truncation state. Unavailable roots reveal no storage diagnostic.
 2. Add the ordinary Worker context file and a native input pointer without changing the canonical request or its digest. Existing package inventory retains the file; omit the optional projection to prove the ablation.
-3. Supply Assistant command and pending-outcome context prefixes through the existing runtime. Current source authority is rechecked before dispatch and answer publication; exact history and selected Skill input remain unchanged.
+3. Supply Assistant command and pending-outcome context prefixes through the existing runtime. Current source authority is rechecked before dispatch, summary publication and answer publication; exact history and selected Skill input remain unchanged. The existing summary environment digest binds the overview revision and delivered content, so a later run cannot reuse continuity from a different or unavailable overview.
 4. Regressions cover real Git revisions, UTF-8 limits, current authorization, the Worker file ablation and an actual fake-provider Assistant request. Run the complete touched-owner directories and inventory consumers, then independent Sol review and express landing on green main.
 
 ## Ownership And Evidence
