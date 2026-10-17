@@ -30,6 +30,7 @@ import { editMemoryPage, readMemoryPage, saveMemoryPage } from './memory-lifecyc
 import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import {
+  listUserKnowledgeSources,
   readUserKnowledgeSource,
   registerUserKnowledgeSource,
 } from './scoped-knowledge-sources.js';
@@ -184,6 +185,12 @@ describe('Item-confirmed self Memory forget', () => {
   it('binds actual Source retention to the human grant and retains only source-version fingerprints after exact forgetting', async () => {
     const f = await fixture(true);
     const source = f.source!;
+    const unrelated = await registerUserKnowledgeSource(f.writer, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Other retained Source',
+      content: 'Independent retained Source bytes.\r\n',
+    });
     const prepared = prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     const preview = projectApprovalEffect({
@@ -204,6 +211,9 @@ describe('Item-confirmed self Memory forget', () => {
     expect(readMemoryPage(f.writer, 'preference')?.content).toContain(
       'Private exact forgotten text.'
     );
+    expect(readUserKnowledgeSource(f.writer, source.id, 'model')?.content).toBe(
+      'Independent retained Source bytes.\r\n'
+    );
     const removed = await f.apply(prepared.pendingRequestId);
     expect(readMemoryPage(f.writer, 'preference')).toBeNull();
     const root = join(f.writer.coreDb.dataRoot, 'users', f.writer.actor.userId, 'memory');
@@ -216,6 +226,13 @@ describe('Item-confirmed self Memory forget', () => {
     expect(readUserKnowledgeSource(f.writer, source.id)?.content).toBe(
       'Independent retained Source bytes.\r\n'
     );
+    expect(readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
+    expect(listUserKnowledgeSources(f.writer, 'model').map(({ id }) => id)).toEqual([unrelated.id]);
+    expect(
+      listUserKnowledgeSources(f.writer, 'human')
+        .map(({ id }) => id)
+        .sort()
+    ).toEqual([source.id, unrelated.id].sort());
     expect(
       projectApprovalEffect({
         record: readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!,
@@ -255,6 +272,18 @@ describe('Item-confirmed self Memory forget', () => {
     });
     expect(await f.apply(prepared.pendingRequestId)).toEqual(removed);
     expect(f.notebook.publishedRevision()).toBe(later.notebookRevision);
+    expect(readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
+    rmSync(root, { recursive: true });
+    expect(() => readUserKnowledgeSource(f.writer, source.id, 'model')).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(() => listUserKnowledgeSources(f.writer, 'model')).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(existsSync(root)).toBe(false);
+    expect(readUserKnowledgeSource(f.writer, source.id, 'human')?.content).toBe(
+      'Independent retained Source bytes.\r\n'
+    );
   });
 
   it.each([

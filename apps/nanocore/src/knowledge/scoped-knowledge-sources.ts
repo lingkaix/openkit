@@ -25,6 +25,7 @@ import {
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { admitMemoryContext, type MemoryContext, type MemoryWriter } from './memory-lifecycle.js';
+import { readMemorySuppressions } from './memory-maintenance.js';
 import { NotebookError } from './notebook.js';
 import {
   parseOkfDocument,
@@ -197,15 +198,50 @@ function records(input: MemoryContext, root: string): SourceEnvelope[] {
   }
 }
 
-/** Lists only the current self's canonical Source metadata; absent storage is never an empty collection fallback. */
-export function listUserKnowledgeSources(input: MemoryContext): UserKnowledgeSource[] {
-  return records(input, sourceRoot(input)).map(project);
+/** Reads exact forgotten Source versions for model delivery; existing initialization Audit distinguishes first use from lost Memory storage. */
+function suppressedSourceVersions(input: MemoryContext): ReadonlySet<string> {
+  const owner = admitMemoryContext(input);
+  try {
+    if (!lstatSync(owner.notebookRoot, { throwIfNoEntry: false })) {
+      if (
+        input.userDb.sqlite
+          .prepare(
+            "SELECT 1 FROM audit_events WHERE action = 'knowledge.notebook.initialize' LIMIT 1"
+          )
+          .get()
+      )
+        unavailable();
+      return new Set();
+    }
+    return new Set(
+      readMemorySuppressions(owner.notebookRoot, input.userDb.userId).flatMap(
+        ({ payload }) => payload.sourceFingerprints
+      )
+    );
+  } catch {
+    return unavailable();
+  }
 }
 
-/** Reads exact captured text after current self, closed Source semantics, canonical path and content-digest checks. */
+/** Lists self Source metadata, excluding exact forgotten versions from trusted model delivery while retaining human inspection. */
+export function listUserKnowledgeSources(
+  input: MemoryContext,
+  delivery: 'human' | 'model' = 'human'
+): UserKnowledgeSource[] {
+  const rows = records(input, sourceRoot(input));
+  const suppressed = delivery === 'model' ? suppressedSourceVersions(input) : new Set<string>();
+  const sources = rows
+    .filter(({ id, contentDigest }) => !suppressed.has(`source:${id}@${contentDigest}`))
+    .map(project);
+  admitMemoryContext(input);
+  return sources;
+}
+
+/** Reads exact captured text after self/integrity admission; trusted model delivery cannot disclose a forgotten Source version. */
 export function readUserKnowledgeSource(
   input: MemoryContext,
-  sourceId: string
+  sourceId: string,
+  delivery: 'human' | 'model' = 'human'
 ): { readonly source: UserKnowledgeSource; readonly content: string } | null {
   admitMemoryContext(input);
   if (!KnowledgeSourceIdSchema.safeParse(sourceId).success)
@@ -213,6 +249,11 @@ export function readUserKnowledgeSource(
   const root = sourceRoot(input);
   const row = records(input, root).find(({ id }) => id === sourceId);
   if (!row) return null;
+  if (
+    delivery === 'model' &&
+    suppressedSourceVersions(input).has(`source:${row.id}@${row.contentDigest}`)
+  )
+    return null;
   try {
     const bytes = readCanonicalFile(join(root, 'materials', row.id, 'content.txt'));
     const content = bytes.toString('utf8');
