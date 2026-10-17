@@ -279,7 +279,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
         removeWorkspaceMember({
           coreDb,
           workspaceId: DEMO_WORKSPACE_ID,
-          ownerUserId: FIXTURE_LOCAL_USER_ID,
+          actorUserId: FIXTURE_LOCAL_USER_ID,
           memberUserId: actor.userId,
           expectedRevision: 1,
         })
