@@ -184,8 +184,9 @@ test('packaged administrator CLI describes current App-update operations', () =>
   }
 });
 
-test('release packager archives the operations Skill with LICENSE and SHA-256', () => {
+test('release packager archives the operations Skill with LICENSE and SHA-256', (t) => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-ops-release-assets-'));
+  t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
   writeFileSync(join(repoRoot, 'LICENSE'), 'fixture license\n');
   mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'scripts'), { recursive: true });
   writeFileSync(join(repoRoot, 'skills', 'openkit-ops', 'SKILL.md'), '# Fixture Skill\n');
@@ -234,6 +235,7 @@ test('release packager archives the operations Skill with LICENSE and SHA-256', 
   assert.ok(checksumLines.includes(`${opsChecksum}  openkit-ops-skill-v0.1.0-rc.1.tar.gz`));
 
   const extractDir = mkdtempSync(join(tmpdir(), 'openkit-ops-extract-'));
+  t.after(() => rmSync(extractDir, { recursive: true, force: true }));
   const verified = verifyOperationsSkillArchive({
     archivePath: result.opsArchivePath,
     destDir: extractDir,
@@ -243,6 +245,20 @@ test('release packager archives the operations Skill with LICENSE and SHA-256', 
     verified.skillPath,
     join(extractDir, 'openkit-ops-skill-v0.1.0-rc.1', 'skills', 'openkit-ops', 'SKILL.md')
   );
+  const identityPath = join(verified.envelopePath, 'release-identity.json');
+  const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
+  writeFileSync(identityPath, JSON.stringify({ ...identity, metadata: { fixture: true } }));
+  const additiveArchive = join(outputDir, 'additive.tar.gz');
+  const packed = spawnSync(
+    'tar',
+    ['-czf', additiveArchive, '-C', extractDir, 'openkit-ops-skill-v0.1.0-rc.1'],
+    { encoding: 'utf8' }
+  );
+  assert.equal(packed.status, 0, packed.stderr);
+  verifyOperationsSkillArchive({
+    archivePath: additiveArchive,
+    destDir: join(repoRoot, 'verify-additive'),
+  });
 });
 
 test('operations Skill verifier rejects a packaged reference that does not resolve', () => {
