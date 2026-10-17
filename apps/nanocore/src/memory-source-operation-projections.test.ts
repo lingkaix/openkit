@@ -212,7 +212,7 @@ describe('public explicit self Source intake', () => {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'call', arguments: { operation, input } },
+          params: { name: 'openkit_call', arguments: { operation, input } },
         }),
       });
       expect(response.status).toBe(200);
