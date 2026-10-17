@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
+import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
+import { internalContextSourceDigest } from '../internal-agents/rolling-context.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -75,12 +77,49 @@ function fixture(enabled = true, protectedPages: string[] = []) {
     createdAt: timestamp,
     completedAt: timestamp,
   });
-  store.updateTurn(ordinaryTurn.id, { status: 'completed', completedAt: timestamp });
+  store.updateTurn(ordinaryTurn.id, {
+    status: 'completed',
+    completedAt: timestamp,
+    internalExecution: {
+      roleId: 'assistant',
+      logicalModelId: 'ordinary-model',
+      contextStrategy: 'rolling',
+      threshold: 1000,
+    },
+  });
   const run = vi.fn(async (input: KnowledgeManagerAgentRun) => {
     const payload = JSON.parse(
       input.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join(
         ''
       )
+    );
+    const history = input.tools.find((tool) => tool.name === 'thread.history.read')!;
+    expect(history).toBeDefined();
+    const foreignItems = store.getTurnById(ordinaryTurn.id).items;
+    expect(
+      await history.execute(
+        {
+          range: {
+            threadId: ordinary.id,
+            firstItemId: foreignItems[0]!.id,
+            lastItemId: foreignItems[0]!.id,
+            sourceDigest: internalContextSourceDigest(store, foreignItems, 'compaction'),
+          },
+          limit: 5,
+        },
+        { callId: randomUUID(), toolOccurrence: 1, signal: input.signal }
+      )
+    ).toMatchObject({ isError: true });
+    expect(input.readEvidence([])).toBe(
+      readInternalContextEvidence({
+        store,
+        coreDb,
+        workspaceId: workspace.id,
+        threadId: input.turn.threadId,
+        nativeAuthority: { actorRef: actor, assertCurrent: input.assertCurrent },
+        items: [],
+        strategy: 'compaction',
+      })
     );
     const ref = payload.sources[0].reference;
     const page = `---\ntype: KnowledgePage\ntitle: Labels\nschema_version: openkit-scope-knowledge-schema-v4\nrequiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]\nopenkit_status: active\nstatus: stable\nscope: {kind: workspace, workspaceId: ${workspace.id}}\nsource_refs: [${JSON.stringify(ref)}]\nreview_state: user-authored\nsensitivity: normal\nfreshness: current\ncreated_at: "2026-10-17T00:00:00.000Z"\nupdated_at: "2026-10-17T00:00:00.000Z"\n---\nThe project uses green labels.\n`;
@@ -145,6 +184,36 @@ function fixture(enabled = true, protectedPages: string[] = []) {
 describe('Workspace Knowledge Manager maintenance admission', () => {
   it('publishes through the existing owner with exact human edits and selected ordinary expressions as inputs', async () => {
     const f = fixture();
+    const own = f.store.createTurn(
+      f.workspace.id,
+      f.ordinaryTurn.threadId,
+      'Prior KM input',
+      f.input.actor,
+      null
+    );
+    const timestamp = new Date().toISOString();
+    f.store.createItem({
+      id: allocateEntityId('it'),
+      workspaceId: f.workspace.id,
+      threadId: own.threadId,
+      turnId: own.id,
+      type: 'user-message',
+      actor: f.input.actor,
+      text: 'A prior KM run must not become learning input.',
+      status: 'completed',
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    f.store.updateTurn(own.id, {
+      status: 'completed',
+      completedAt: timestamp,
+      internalExecution: {
+        roleId: 'knowledge-manager',
+        logicalModelId: 'km-model',
+        contextStrategy: 'compaction',
+        threshold: 1000,
+      },
+    });
     const result = await maintainKnowledgeAgent(f.dependencies, {
       ...f.input,
       tellContent: '€'.repeat(22000),
@@ -189,6 +258,76 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
             ? [item.knowledgeMaintenanceResult]
             : []
         )[0]
+    ).toEqual(result);
+  });
+  it('includes a human page removal outside the active editing snapshot', async () => {
+    const f = fixture();
+    const content = `---
+ type: KnowledgePage
+ title: Removed lesson
+ schema_version: openkit-scope-knowledge-schema-v4
+ requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+ openkit_status: active
+ status: stable
+ scope: {kind: workspace, workspaceId: ${f.workspace.id}}
+ source_refs: []
+ review_state: user-authored
+ sensitivity: normal
+ freshness: current
+ created_at: "2026-10-17T00:00:00.000Z"
+ updated_at: "2026-10-17T00:00:00.000Z"
+---
+An obsolete human lesson.
+`.replace(/^ /gm, '');
+    const publish = (changes: Record<string, string | null>) => {
+      const baseRevision = f.notebook.publishedRevision();
+      const candidateRevision = f.notebook.prepare({
+        baseRevision,
+        changes,
+        metadata: {
+          summary: 'Human correction',
+          producer: f.input.actor,
+          changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(changes) },
+          authority: { kind: 'direct', instructionReference: 'human correction' },
+          sourceReferences: [],
+        },
+      });
+      f.notebook.publish({ baseRevision, candidateRevision });
+    };
+    publish({ 'obsolete.md': content });
+    publish({ 'obsolete.md': null });
+    const result = await maintainKnowledgeAgent(f.dependencies, f.input);
+    expect(result.outcome).toBe('published');
+    const run = f.run.mock.calls[0]![0];
+    const payload = JSON.parse(
+      run.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
+    );
+    expect(payload.humanEdits.changes).toContainEqual({
+      path: 'obsolete.md',
+      before: content,
+      after: null,
+    });
+    expect(payload.files).not.toContain('obsolete.md');
+  });
+  it('retains the settled native result before a later provider failure', async () => {
+    const f = fixture();
+    const execute = f.run.getMockImplementation()!;
+    f.run.mockImplementationOnce(async (run) => {
+      await execute({ ...run, validateResult: () => {} });
+      const current = f.store.getTurnById(run.turn.id);
+      expect(
+        current.items.filter((item) => item.type === 'status' && item.knowledgeMaintenanceResult)
+      ).toHaveLength(1);
+      throw new Error('Late provider failure.');
+    });
+    const result = await maintainKnowledgeAgent(f.dependencies, f.input);
+    expect(result.outcome).toBe('published');
+    const current = f.store.getTurnById(result.turnId);
+    expect(
+      current.items.filter((item) => item.type === 'status' && item.knowledgeMaintenanceResult)
+    ).toHaveLength(1);
+    expect(
+      current.items.find((item) => item.type === 'status')?.knowledgeMaintenanceResult
     ).toEqual(result);
   });
   it('saves the exact multi-page Proposal when publication is not delegated', async () => {

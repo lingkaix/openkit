@@ -34,6 +34,7 @@ import {
   createDemoWorkspaceForUser,
   DEMO_WORKSPACE_ID,
 } from './test-support/demo-store.js';
+import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
@@ -1110,7 +1111,14 @@ describe('Knowledge Manager answer operation', () => {
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
     const store = createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+      {
+        query: 'release cadence',
+        pageId: 'release-plan',
+        answer: 'Release cadence is fortnightly with a Tuesday review.',
+        uncertainty: null,
+      },
+    ]);
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
@@ -1219,29 +1227,26 @@ describe('Knowledge Manager answer operation', () => {
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
+    const askingCalls = usage.capabilityCalls.filter(
+      (call) => call.capabilityId === 'knowledge.ask'
+    );
+    expect(askingCalls).toEqual([
+      expect.objectContaining({ operation: 'knowledge.ask', status: 'succeeded' }),
+    ]);
+    expect(createResponses).toHaveBeenCalledTimes(3);
+    const roleTurns = store
+      .listThreads(DEMO_WORKSPACE_ID)
+      .filter((thread) => thread.entryPath === 'knowledge-manager')
+      .flatMap((thread) => store.listTurns(DEMO_WORKSPACE_ID, thread.id));
+    expect(roleTurns).toHaveLength(1);
+    expect(roleTurns[0]).toMatchObject({
+      status: 'completed',
+      internalExecution: { roleId: 'knowledge-manager' },
+    });
     expect(
-      usage.capabilityCalls.filter((call) => call.capabilityId === 'knowledge.answer')
-    ).toEqual([
-      expect.objectContaining({
-        capabilityId: 'knowledge.answer',
-        family: 'knowledge',
-        operation: 'knowledge.answer',
-        providerRef: 'nanocore-knowledge',
-        serviceRef: 'knowledge-manager',
-        status: 'succeeded',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      }),
-    ]);
-    expect(usage.usageRecords.filter((record) => record.source === 'knowledge-answer')).toEqual([
-      expect.objectContaining({
-        category: 'tool',
-        providerRef: 'nanocore-knowledge',
-        quantity: 1,
-        source: 'knowledge-answer',
-        unit: 'capability_calls',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      }),
-    ]);
+      roleTurns[0]!.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)
+    ).toEqual(['knowledge.retrieval', 'knowledge.page.read']);
+    expect(body).not.toHaveProperty('confidence');
 
     coreDb.sqlite.close();
   });
@@ -1252,7 +1257,13 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const app = createApp({ coreDb, dataRoot, store });
+    const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+      {
+        query: 'unwritten roadmap promise',
+        answer: 'There is no evidence for that roadmap promise.',
+        uncertainty: 'No matching workspace knowledge entries were found.',
+      },
+    ]);
     try {
       const res = await app.request(
         ...knowledgeOperationRequest(
@@ -1270,7 +1281,6 @@ describe('Knowledge Manager answer operation', () => {
       const body = KnowledgeManagerAnswerResponseSchema.parse(await res.json());
       expect(body).toMatchObject({
         citations: [],
-        confidence: 0,
         outcome: 'insufficient-evidence',
         uncertainty: 'No matching workspace knowledge entries were found.',
       });
@@ -1279,13 +1289,19 @@ describe('Knowledge Manager answer operation', () => {
     }
   });
 
-  it('returns insufficient evidence for a single shared query token', async () => {
+  it('retains model uncertainty when the available page does not answer the question', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-weak-overlap-'));
     const store = createDemoStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const app = createApp({ coreDb, dataRoot, store });
+    const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+      {
+        query: 'Reply exactly CATALOG_OK_GROK. Do not call tools.',
+        answer: 'The notebook does not establish the selected model.',
+        uncertainty: 'Retrieved workspace knowledge does not cover the question.',
+      },
+    ]);
     try {
       const createRes = await app.request(
         ...knowledgeOperationRequest(
@@ -1323,9 +1339,8 @@ describe('Knowledge Manager answer operation', () => {
       expect(res.status).toBe(200);
       expect(KnowledgeManagerAnswerResponseSchema.parse(await res.json())).toMatchObject({
         citations: [],
-        confidence: 0,
         outcome: 'insufficient-evidence',
-        uncertainty: 'Retrieved workspace knowledge does not sufficiently cover the query.',
+        uncertainty: 'Retrieved workspace knowledge does not cover the question.',
       });
     } finally {
       coreDb.sqlite.close();
@@ -1338,7 +1353,15 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const app = createApp({ coreDb, dataRoot, store });
+    const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+      {
+        query: 'Cadence',
+        pageId: 'cadence',
+        answer: 'Weekly ship after smoke.',
+        uncertainty: null,
+      },
+      { query: 'Weekly', pageId: 'cadence', answer: 'Weekly ship after smoke.', uncertainty: null },
+    ]);
     try {
       const createRes = await app.request(
         ...knowledgeOperationRequest(
@@ -1395,7 +1418,7 @@ describe('Knowledge Manager answer operation', () => {
         )
       );
       expect(KnowledgeManagerAnswerResponseSchema.parse(await incidental.json()).outcome).toBe(
-        'insufficient-evidence'
+        'answered'
       );
     } finally {
       coreDb.sqlite.close();
@@ -2048,6 +2071,40 @@ describe('Knowledge Manager answer operation', () => {
     }
   });
 
+  it('redacts unexpected Knowledge Manager provider failures', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-provider-failure-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    authorizeDemoWorkspace(coreDb);
+    try {
+      const { app, createResponses } = createKnowledgeAnswerApp(
+        { coreDb, dataRoot, store: createDemoStore({ dataRoot }) },
+        [],
+        'ENOENT /Users/private/openkit-data/knowledge/pages/secret.md token=private-secret'
+      );
+      const response = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.answer',
+          { workspaceId: DEMO_WORKSPACE_ID },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query: 'release cadence' }),
+          }
+        )
+      );
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({
+        code: 'knowledge_manager_answer_failed',
+        message: 'Knowledge Manager answer failed.',
+      });
+      expect(createResponses).toHaveBeenCalled();
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('redacts unexpected Knowledge Manager failures', async () => {
     const unsafeMessage =
       'ENOENT /Users/private/openkit-data/knowledge/pages/secret.md token=private-secret';
@@ -2057,12 +2114,6 @@ describe('Knowledge Manager answer operation', () => {
     });
     const readApp = createAppWithWorkspaceAuthority({ store: readStore });
     const readCases = [
-      {
-        id: 'knowledge.answer',
-        body: { query: 'release cadence' },
-        code: 'knowledge_manager_answer_failed',
-        message: 'Knowledge Manager answer failed.',
-      },
       {
         id: 'knowledge.context.prepare',
         body: { query: 'release cadence' },

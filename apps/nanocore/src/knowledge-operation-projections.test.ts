@@ -13,15 +13,15 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** One real isolated Knowledge authority, with explicit membership rather than changed fixture defaults. */
-function fixture(member = true) {
+function fixture(member = true, citedAnswer = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-operations-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -40,7 +40,20 @@ function fixture(member = true) {
       : 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const app = createApp({ coreDb, dataRoot, store });
+  const plan = citedAnswer
+    ? {
+        query: 'cutover lesson',
+        pageId: 'cutover-lesson',
+        answer: 'Source traced cutover lesson.',
+        uncertainty: null,
+      }
+    : {
+        query: 'audience budget baseline',
+        answer: 'No authorized evidence answers this question.',
+        uncertainty: 'No authorized matching evidence.',
+      };
+  const answerPlans = [plan, plan, plan, plan, plan, plan];
+  const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, answerPlans);
   const dependencies = {
     coreDb,
     store,
@@ -58,6 +71,7 @@ function fixture(member = true) {
     store,
     dependencies,
     dataRoot,
+    answerPlans,
     close: async () => {
       await closeRetrievalServices();
       coreDb.sqlite.close();
@@ -117,7 +131,10 @@ async function projections(f: ReturnType<typeof fixture>, token?: string) {
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
   const app = token
-    ? createApp({ mode: 'server', coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store })
+    ? createKnowledgeAnswerApp(
+        { mode: 'server', coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store },
+        f.answerPlans
+      ).app
     : f.app;
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
@@ -296,7 +313,7 @@ describe('Knowledge operation definition cutover', () => {
     'Workspace member',
     'eligible administrator',
   ])('preserves authorized Knowledge parity across HTTP client and CLI for %s, with exact command replay and normalized observations for retrieval, preparation and answer', async (authority) => {
-    const f = fixture(authority === 'Workspace member');
+    const f = fixture(authority === 'Workspace member', true);
     try {
       const token =
         authority === 'eligible administrator'

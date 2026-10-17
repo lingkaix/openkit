@@ -10,9 +10,10 @@ import {
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
+import { createAssistantHistory } from '../internal-agents/assistant-history.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
+import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
-import { internalContextDigest } from '../internal-agents/rolling-context.js';
 import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
 import type { FsStore, KnowledgeSourceRecord } from '../lib/store.js';
 
@@ -243,6 +244,13 @@ export function prepareKnowledgeMaintenance(
     summary: input.instructions,
   };
   let outcome: ReturnType<typeof response> | undefined;
+  let outcomeStatusRecorded = false;
+  const recordOutcome = () => {
+    if (outcome && !outcomeStatusRecorded) {
+      status(outcome.summary, false, outcome);
+      outcomeStatusRecorded = true;
+    }
+  };
   let closed = false;
   const close = () => {
     if (!closed) {
@@ -259,7 +267,7 @@ export function prepareKnowledgeMaintenance(
         current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
       );
     if (!isSealedTurnTerminal(current.status)) {
-      status(result.summary, true, result);
+      if (!outcomeStatusRecorded) status(result.summary, true, result);
       store.updateTurn(turn.id, {
         status: input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
@@ -368,7 +376,7 @@ export function prepareKnowledgeMaintenance(
       .filter(
         (prior) =>
           prior.status === 'completed' &&
-          !prior.internalExecution &&
+          prior.internalExecution?.roleId !== 'knowledge-manager' &&
           prior.agentId !== 'knowledge-manager' &&
           !processed.has(prior.id) &&
           store.getThread(input.workspaceId, prior.threadId).entryPath !== 'knowledge-manager' &&
@@ -419,6 +427,7 @@ export function prepareKnowledgeMaintenance(
       sourceFiles[source.id] = text;
       admittedReferences.add(`source:${source.id}@${source.contentDigest}`);
     }
+    const historyReads: Array<{ notebookRevision: string; path: string; content: string }> = [];
     const assertCurrent = () => {
       input.signal.throwIfAborted();
       admitKnowledgeRetrieval(target);
@@ -428,6 +437,14 @@ export function prepareKnowledgeMaintenance(
           throw new NotebookError('recovery_required');
       for (const path of Object.keys(files))
         readAuthorizedWorkspaceNotebookPages({ ...target, pageIds: [path.slice(0, -3)] });
+      for (const selection of historyReads) {
+        const page = readAuthorizedWorkspaceNotebookPages({
+          ...target,
+          notebookRevision: selection.notebookRevision,
+          pageIds: [selection.path.slice(0, -3)],
+        }).pages[0];
+        if (page?.content !== selection.content) throw new NotebookError('recovery_required');
+      }
     };
     const settings = () =>
       findWorkspaceConfig(dependencies.runtimeConfigManager.current(), input.workspaceId)?.config
@@ -569,13 +586,24 @@ export function prepareKnowledgeMaintenance(
         }
       },
     });
-    const tools = [
+    const nativeAuthority = { actorRef: input.actor, assertCurrent };
+    const history = createAssistantHistory({
+      store,
+      coreDb: dependencies.coreDb,
+      workspaceId: input.workspaceId,
+      threadId: thread.id,
+      turnId: turn.id,
+      nativeAuthority,
+    });
+    const tools: AgentTool[] = [
+      history.tool,
       tool('knowledge.notebook-workspace.update', 'script', (value) =>
         editor.workspaceUpdate({ script: value.script! })
       ),
       tool('knowledge.notebook.update', 'summary', async (value) => {
         const result = await editor.notebookUpdate({ summary: value.summary! });
         if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
+        recordOutcome();
         return result;
       }),
     ];
@@ -590,16 +618,22 @@ export function prepareKnowledgeMaintenance(
         ? notebook.inspectRevision(revision.parentRevision)
         : undefined;
       if (revision.metadata.producer.kind === 'user')
-        for (const path of Object.keys(files)) {
+        for (const path of new Set([
+          ...Object.keys(revision.entries),
+          ...Object.keys(parent?.entries ?? {}),
+        ])) {
           if (revision.entries[path] === parent?.entries[path]) continue;
-          const read = (notebookRevision: string | undefined, exists: boolean) =>
-            !notebookRevision || !exists
-              ? null
-              : readAuthorizedWorkspaceNotebookPages({
-                  ...target,
-                  notebookRevision,
-                  pageIds: [path.slice(0, -3)],
-                }).pages[0]!.content;
+          const read = (notebookRevision: string | undefined, exists: boolean) => {
+            if (!notebookRevision || !exists) return null;
+            const content = readAuthorizedWorkspaceNotebookPages({
+              ...target,
+              notebookRevision,
+              pageIds: [path.slice(0, -3)],
+            }).pages[0]!.content;
+            admitBytes(content);
+            historyReads.push({ notebookRevision, path, content });
+            return content;
+          };
           humanChanges.push({
             path,
             before: read(parent?.revision, Boolean(parent?.entries[path])),
@@ -656,11 +690,21 @@ export function prepareKnowledgeMaintenance(
           ],
         },
       ],
-      readEvidence: (items) => internalContextDigest(items),
+      readEvidence: (items) =>
+        readInternalContextEvidence({
+          store,
+          coreDb: dependencies.coreDb,
+          workspaceId: input.workspaceId,
+          threadId: thread.id,
+          nativeAuthority,
+          items,
+          strategy: 'compaction',
+        }),
       validateResult: () => {
         assertCurrent();
         if (!outcome) throw new NotebookError('invalid_request');
-        status(outcome.summary, false, outcome);
+        history.assertCurrent();
+        recordOutcome();
       },
     };
     dependencies.pin(runInput);
