@@ -509,9 +509,7 @@ async function authorizeGatewayOperation(
     return workspaceAccessDenied();
   }
   if (workspaceId === undefined) {
-    return actor.kind === 'local' ||
-      actor.kind === 'session' ||
-      (actor.kind === 'token' && actor.tokenScope === 'server-admin')
+    return isCanonicalUserOperationAuthorized(coreDb, actor, access.policyOperation)
       ? null
       : workspaceAccessDenied();
   }
