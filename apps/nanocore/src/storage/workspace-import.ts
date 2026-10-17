@@ -3867,6 +3867,10 @@ function readRetrievalTraceImportState(
   const targetItems = new Map(targetCanonical.itemRevisions.map((item) => [item.id, item]));
   const references = new Map<string, RetrievalTraceReference>();
   const selectedPages = new Map<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>();
+  const importedSource =
+    WorkspaceSystemRecordSchema.parse(
+      readImportJson(context.files, 'records/workspace-record.json')
+    ).importedFrom !== undefined;
 
   for (const exportPath of tracePaths) {
     const sourcePath = exportPath.slice('workspace-files/'.length);
@@ -3875,7 +3879,16 @@ function readRetrievalTraceImportState(
       requiredExportFile(context.files, exportPath),
       context.report.exportedWorkspaceId
     );
-    if (sourceTrace.queryContext.serverId !== context.report.manifest.sourceDeploymentId) {
+    // External history keeps its original query Server across exports; it grants no current access.
+    const retainedExternalHistory =
+      importedSource &&
+      'sourceScope' in sourceTrace &&
+      (sourceTrace.retrievalParameters.sourceScope === 'user' ||
+        sourceTrace.retrievalParameters.sourceScope === 'server');
+    if (
+      sourceTrace.queryContext.serverId !== context.report.manifest.sourceDeploymentId &&
+      !retainedExternalHistory
+    ) {
       throw new Error('Portable retrieval trace Server lineage is contradictory.');
     }
     const sourceOwner = parseReferenceScope(sourceReference.scopeId);
@@ -4044,8 +4057,11 @@ function readRetrievalTraceImportState(
       requestDigest: sourceTrace.requestDigest,
       queryContext: {
         ...sourceTrace.queryContext,
-        // S51 retains a User query's external authority so a foreign import cannot acquire target self access.
-        serverId: userSelection ? sourceTrace.queryContext.serverId : context.targetServerId,
+        // User and Server selections keep their originating authority; import cannot turn them into local grants.
+        serverId:
+          userSelection || sourceTrace.sourceScope === 'page/server'
+            ? sourceTrace.queryContext.serverId
+            : context.targetServerId,
         workspaceId: context.targetWorkspaceId,
         threadId: targetThreadId,
         ...(targetTurnId ? { turnId: targetTurnId } : { turnId: undefined }),

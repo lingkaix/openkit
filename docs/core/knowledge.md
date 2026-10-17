@@ -11,6 +11,8 @@ This document does not own runtime session continuity, workflow progression, con
 
 Memory is the user-facing name for User-owned reusable understanding, preferences, learning and personal context. Knowledge is the name for reusable understanding owned by a Workspace or CoreServer. They use one governed knowledge model; Memory is not a second storage engine or a hidden Agent state.
 
+Server Knowledge is the Server's shared knowledge base, mainly for sharing information across Workspaces on that Server. Workspace work can query both its Workspace Knowledge and Server Knowledge when the Server Knowledge owner admits the actor; User Memory does not enter shared work.
+
 Knowledge is not runtime session state, a prompt dump, hidden agent memory, raw source storage, or a replacement for an external system of record.
 
 ## Purpose

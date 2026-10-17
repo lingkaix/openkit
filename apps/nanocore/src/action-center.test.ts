@@ -1,12 +1,12 @@
-import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ListHumanAttentionResponseSchema,
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
@@ -22,7 +22,7 @@ import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './st
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { type createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -358,6 +358,50 @@ function recordPendingWorkspaceReview(
 }
 
 describe('action center app API', () => {
+  it('names the actual changed paths of a multi-page Proposal', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const single = createKnowledgeProposalFixture(
+      store,
+      workspaceId,
+      'preview-title',
+      'Review exact pages.'
+    );
+    const secondId = 'action-center/second';
+    const proposal = store.createKnowledgeProposal({
+      workspaceId,
+      requestId: randomUUID(),
+      baseRevision: single.baseRevision,
+      changes: [
+        { path: `${single.knowledgePageId}.md`, content: single.canonicalPageBytes! },
+        {
+          path: `${secondId}.md`,
+          content: single.canonicalPageBytes!.replaceAll(single.knowledgePageId!, secondId),
+        },
+      ],
+      summary: 'Organize two pages',
+      sourceReferences: single.sourceReferences,
+      verifiedExternalReferences: [],
+      producer: single.producer,
+      createdAt: timestamp,
+    });
+    const app = createAuthorizedCoreApp(coreDb, store);
+    const response = await app.request(
+      ...operationRequest('attention.list', { workspaceId }, undefined)
+    );
+    expect(response.status).toBe(200);
+    const body = ListHumanAttentionResponseSchema.parse(await response.json());
+    const row = body.items.find(({ id }) => id === `knowledge:${proposal.id}`);
+    expect(row?.title).toBe(
+      `Review knowledge proposal for action-center/preview-title.md, action-center/second.md`
+    );
+  });
+
   it('rejects a missing workspace without creating its canonical directory', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();

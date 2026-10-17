@@ -268,6 +268,7 @@ afterEach(() => {
 describe('central Workspace operation authorizer', () => {
   it.each([
     'user',
+    'unattributed Gateway',
     'Workspace member',
     'Workspace administrator',
   ] as const)('requires the current Kernel decision after %s eligibility', async (scope) => {
@@ -286,12 +287,19 @@ describe('central Workspace operation authorizer', () => {
         tokenWorkspaceIds: [],
       };
     }
-    const send = () =>
-      fixture.app.request(
+    const send = () => {
+      if (scope === 'unattributed Gateway')
+        return fixture.app.request('/v1/responses', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+      return fixture.app.request(
         ...(scope === 'user'
           ? operationRequest('caller.read', {})
           : operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id }))
       );
+    };
     // Establish current eligibility with the real policy before replacing only its mandatory input.
     expect((await send()).status).toBe(200);
     const actualEvaluate = policyKernel.evaluateAccess;
