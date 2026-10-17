@@ -110,7 +110,7 @@ export const JudgementRecordSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
-/** Retained ordered membership and selection history; current choice is a projection. */
+/** Retained ordered membership and attributable judgement history; current choice is a projection. */
 export const CandidateSetRecordSchema = z
   .object({
     formatVersion: z.literal(1),
@@ -119,7 +119,7 @@ export const CandidateSetRecordSchema = z
     createdBy: UserActorRefSchema,
     createdAt: TimestampSchema,
     candidates: z.array(EvaluationCandidateSchema).min(2),
-    selections: z.array(CandidateSelectionJudgementSchema),
+    judgements: z.array(JudgementRecordSchema),
     extensions: descriptiveExtensions,
   })
   .superRefine((set, context) => {
@@ -129,20 +129,31 @@ export const CandidateSetRecordSchema = z
     if (new Set(identities).size !== identities.length) {
       context.addIssue({ code: 'custom', message: 'A candidate version can occur only once.' });
     }
-    for (const selection of set.selections) {
+    if (
+      new Set(set.judgements.map((judgement) => judgement.requestId)).size !== set.judgements.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A judgement request can occur only once in its owning set.',
+      });
+    }
+    for (const judgement of set.judgements) {
       if (
-        selection.workspaceId !== set.workspaceId ||
-        selection.target.candidateSetId !== set.candidateSetId ||
-        !set.candidates.some(
-          (candidate) =>
-            candidate.artifactId === selection.choice.artifactId &&
-            candidate.artifactVersion === selection.choice.artifactVersion &&
-            candidate.contentDigest === selection.choice.contentDigest
-        )
+        judgement.workspaceId !== set.workspaceId ||
+        judgement.target.kind !== 'candidate-set' ||
+        judgement.target.candidateSetId !== set.candidateSetId ||
+        (judgement.kind === 'select' &&
+          !set.candidates.some(
+            (candidate) =>
+              candidate.artifactId === judgement.choice.artifactId &&
+              candidate.artifactVersion === judgement.choice.artifactVersion &&
+              candidate.contentDigest === judgement.choice.contentDigest
+          ))
       ) {
         context.addIssue({
           code: 'custom',
-          message: 'A selection must identify an exact member of its owning set.',
+          message:
+            'A judgement must target its owning set, and a selection must identify an exact member.',
         });
       }
     }

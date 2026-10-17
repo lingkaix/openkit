@@ -9,6 +9,7 @@ export type {
   CapabilityCallLedgerStatus,
 } from './capability-usage-ledger.js';
 export { capabilityCalls, usageRecords } from './capability-usage-ledger.js';
+export { evaluationCandidateSets } from './evaluation-candidate-sets.js';
 export type {
   EvidenceBundleImportStatus,
   EvidenceBundleRetentionClass,

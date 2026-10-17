@@ -39,17 +39,47 @@ describe('evaluation retained shapes', () => {
       createdBy: actor,
       createdAt: judgement.recordedAt,
       candidates: [candidate, secondCandidate],
-      selections: [judgement],
+      judgements: [judgement],
       extensions: {},
     };
     expect(CandidateSetRecordSchema.parse(set)).toEqual(set);
+    expect(
+      CandidateSetRecordSchema.safeParse({ ...set, judgements: [judgement, judgement] }).success
+    ).toBe(false);
+    expect(
+      CandidateSetRecordSchema.parse({
+        ...set,
+        judgements: [
+          judgement,
+          {
+            ...judgement,
+            requestId: 'set-rating',
+            kind: 'rate',
+            choice: { value: 3, lowerBound: 1, upperBound: 5 },
+          },
+        ],
+      }).judgements
+    ).toHaveLength(2);
+    expect(
+      CandidateSetRecordSchema.safeParse({
+        ...set,
+        judgements: [
+          {
+            ...judgement,
+            kind: 'accept',
+            choice: null,
+            target: { ...candidate, kind: 'artifact-version' },
+          },
+        ],
+      }).success
+    ).toBe(false);
     expect(
       CandidateSetRecordSchema.safeParse({ ...set, candidates: [candidate, candidate] }).success
     ).toBe(false);
     expect(
       CandidateSetRecordSchema.safeParse({
         ...set,
-        selections: [{ ...judgement, choice: { ...candidate, artifactVersion: 3 } }],
+        judgements: [{ ...judgement, choice: { ...candidate, artifactVersion: 3 } }],
       }).success
     ).toBe(false);
     expect(
