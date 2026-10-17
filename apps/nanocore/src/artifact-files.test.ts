@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { allocateEntityId } from '@openkit/protocol';
+import { ArtifactVersionRecordSchema, allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
@@ -99,6 +99,116 @@ function download(state: ReturnType<typeof fixture>, artifactId: string, artifac
 }
 
 describe('exact Artifact file import and download', () => {
+  it('publishes binary v2 through the composed stream route and retains both exact originals after reopen', async () => {
+    const state = fixture();
+    const original = corpus.originals.find(({ id }) => id === 'binary-invalid-utf8')!;
+    const firstBytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
+    const imported = await upload(state, original);
+    expect(imported.status, await imported.clone().text()).toBe(201);
+    const { artifactId } = (await imported.json()) as { artifactId: string };
+    const first = state.store.getArtifact(state.workspace.id, artifactId);
+    const thread = state.store.createThread(
+      state.workspace.id,
+      'Binary version publication',
+      undefined,
+      'conversation',
+      {
+        visibility: 'workspace',
+      }
+    );
+    expect(state.store.listThreadTurns(state.workspace.id, thread.id)).toEqual([]);
+    const bytes = Buffer.from([255, 0, 128, 10, 13, 0, 195, 40]);
+    const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const requestId = randomUUID();
+    const actor = { kind: 'user', id: LOCAL_USER_ID } as const;
+    const turnId = deriveEntityId('tu', [
+      actor,
+      state.workspace.id,
+      thread.id,
+      'artifact.version-file-commit',
+      requestId,
+    ]);
+    const query = new URLSearchParams({
+      workspaceId: state.workspace.id,
+      artifactId,
+      threadId: thread.id,
+      expectedArtifactVersion: '1',
+      title: 'Revised binary original',
+      summary: JSON.stringify(null),
+      mediaType: 'application/octet-stream',
+      byteLength: String(bytes.length),
+      contentDigest,
+    });
+    const response = await state.app.request(
+      `/api/app/operations/artifact.version-file-commit?${query}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream', 'x-openkit-request-id': requestId },
+        body: bytes,
+      }
+    );
+    expect(response.status, await response.clone().text()).toBe(201);
+    const committed = ArtifactVersionRecordSchema.parse(await response.json());
+    expect(committed.artifact).toMatchObject({
+      id: artifactId,
+      version: 2,
+      threadId: null,
+      turnId: null,
+      summary: null,
+      origin: first.origin,
+      contentDigest,
+      content: { format: 'file', mediaType: 'application/octet-stream', byteLength: bytes.length },
+    });
+    expect(committed.version).toMatchObject({
+      artifactId,
+      artifactVersion: 2,
+      parentVersion: 1,
+      actor,
+      threadId: thread.id,
+      turnId,
+      contentDigest,
+      requestId,
+      recordedAt: committed.artifact.updatedAt,
+    });
+    const reopened = new FsStore({ dataRoot: state.dataRoot });
+    expect(reopened.getArtifact(state.workspace.id, artifactId)).toEqual(committed.artifact);
+    expect(reopened.getArtifactVersion(state.workspace.id, artifactId, 1).artifact).toEqual(first);
+    expect(reopened.getArtifactVersion(state.workspace.id, artifactId, 2)).toEqual(committed);
+    const publication = reopened.getTurn(state.workspace.id, thread.id, turnId);
+    expect(publication).toMatchObject({ status: 'completed', triggerActor: actor });
+    expect(publication.agentId ?? null).toBeNull();
+    expect(publication.agentSessionId ?? null).toBeNull();
+    expect(publication.items).toContainEqual(
+      expect.objectContaining({
+        id: deriveEntityId('it', [artifactId, turnId]),
+        type: 'artifact-reference',
+        artifactId,
+        artifactVersion: 2,
+        lastMutationRequestId: requestId,
+        title: 'Revised binary original',
+        summary: null,
+      })
+    );
+    expect(committed.artifact.origin).toMatchObject({
+      kind: 'imported',
+      sourceDigest: original.sha256,
+    });
+    state.store = reopened;
+    state.app = createApp({ coreDb: state.coreDb, dataRoot: state.dataRoot, store: reopened });
+    for (const exact of [
+      { version: 1, bytes: firstBytes, digest: original.sha256 },
+      { version: 2, bytes, digest: contentDigest },
+    ]) {
+      const downloaded = await download(state, artifactId, exact.version);
+      expect(downloaded.status, await downloaded.clone().text()).toBe(200);
+      expect(downloaded.headers.get('content-length')).toBe(String(exact.bytes.length));
+      expect(downloaded.headers.get('x-openkit-content-digest')).toBe(exact.digest);
+      const retained = Buffer.from(await downloaded.arrayBuffer());
+      expect(retained).toEqual(exact.bytes);
+      expect(`sha256:${createHash('sha256').update(retained).digest('hex')}`).toBe(exact.digest);
+    }
+  });
+
   it('closes the original file when the public archive response is cancelled', async () => {
     const state = fixture();
     // Incompressible bytes keep the actual source reader under backpressure at cancellation.
