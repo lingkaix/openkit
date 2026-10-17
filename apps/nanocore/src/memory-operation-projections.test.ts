@@ -6,6 +6,7 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
+import { userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
@@ -54,7 +55,7 @@ function fixture() {
       },
       { kind: 'user', userId }
     );
-  return { call, content, userId, coreDb };
+  return { call, content, userId, coreDb, dataRoot };
 }
 
 describe('public explicit self Memory', () => {
@@ -92,6 +93,35 @@ describe('public explicit self Memory', () => {
     expect((await f.call('memory.read', { pageId: 'preferences' })).body.page.content).toBe(
       f.content('My changed preference.\n')
     );
+  });
+
+  it('replays the first save without replacing later content and refuses a lost initialized root', async () => {
+    const f = fixture();
+    const input = {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'preferences',
+      content: f.content('Original preference.'),
+      summary: 'First save',
+    };
+    const first = await f.call('memory.create', input);
+    expect(first.status).toBe(200);
+    const corrected = f.content('Corrected preference.');
+    const update = await f.call('memory.update', {
+      requestId: randomUUID(),
+      baseRevision: first.body.notebookRevision,
+      pageId: 'preferences',
+      content: corrected,
+      summary: 'Correction',
+    });
+    expect(update.status).toBe(200);
+    expect(await f.call('memory.create', input)).toEqual(first);
+    expect((await f.call('memory.read', { pageId: 'preferences' })).body.page.content).toBe(
+      corrected
+    );
+    rmSync(userMemoryRoot(f.dataRoot, f.userId), { recursive: true });
+    const refused = await f.call('memory.create', { ...input, requestId: randomUUID() });
+    expect(refused).toMatchObject({ status: 503, body: { code: 'recovery_required' } });
   });
 
   it('rejects caller-selected owners and unsupported source-bearing content without publication', async () => {

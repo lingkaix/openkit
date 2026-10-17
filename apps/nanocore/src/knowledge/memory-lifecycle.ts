@@ -155,9 +155,9 @@ export function editMemoryPage(input: MemoryWriter, change: MemoryPageChange) {
 }
 
 /**
- * Internal suppression primitive for the future Item-confirmed forget owner, not a forget command or confirmation grant.
+ * Internal suppression primitive for the Item-confirmed forget owner, not a confirmation grant.
  *
- * It binds current exact revision/digest, retains no prose and makes the page unavailable before any later Git/index cleanup. Git/evidence/backup bytes remain separately retained; this is not physical erasure. Public/history/restore and confirmation application stay unjoined.
+ * It binds current exact revision/digest, retains no prose and makes the page unavailable before any later Git/index cleanup. Git/evidence/backup bytes remain separately retained; this is not physical erasure. The caller must bind the existing human grant before using this primitive.
  */
 export function recordMemorySuppression(
   input: MemoryContext,

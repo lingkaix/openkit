@@ -192,6 +192,42 @@ describe('internal direct User and Server Notebook publication', () => {
     expect(await publishScopedNotebook(confirmed, removal)).toEqual(forgotten);
   });
 
+  it('permits unrelated explicit saves when a suppressed page remains after failed cleanup', async () => {
+    const f = fixture();
+    const ownerScope = resolveScopedNotebookOwner(f.user).ownerScope;
+    const saved = await publishScopedNotebook(f.user, edit(f.initialUser, ownerScope));
+    const target = readMemoryPage(f.user, 'note')!;
+    recordMemorySuppression(f.user, {
+      requestId: randomUUID(),
+      pageId: 'note',
+      notebookRevision: saved.notebookRevision,
+      digest: target.digest,
+    });
+    const content = serializeUserAuthoredKnowledgePage(
+      {
+        id: 'unrelated',
+        kind: 'preference',
+        title: 'Another explicit preference',
+        content: 'This independent preference remains usable.',
+        sourceReferences: [],
+        createdAt: '2026-10-17T00:00:00.000Z',
+        updatedAt: '2026-10-17T00:00:00.000Z',
+      },
+      ownerScope
+    );
+    const next = await publishScopedNotebook(f.user, {
+      requestId: randomUUID(),
+      baseRevision: saved.notebookRevision,
+      changes: [{ path: 'unrelated.md', content }],
+      summary: 'Save an independent preference',
+    });
+    expect(readMemoryPage(f.user, 'unrelated')?.content).toBe(content);
+    expect(readMemoryPage(f.user, 'note')).toBeNull();
+    expect(notebook(f.user).readRevision(next.notebookRevision).files['note.md']).toBe(
+      target.content
+    );
+  });
+
   it.each([
     'user',
     'server',

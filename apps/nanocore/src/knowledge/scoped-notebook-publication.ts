@@ -147,11 +147,8 @@ export async function publishScopedNotebook(
           assertMemoryPagesNotSuppressed(
             owner.notebookRoot,
             userDb.userId,
-            [
-              ...Object.keys(currentFiles),
-              ...Object.keys(baseFiles),
-              ...request.changes.map(({ path }) => path),
-            ].filter((path) => path !== forgetPath)
+            // A retained hidden page must not fence unrelated explicit human saves after failed cleanup.
+            request.changes.map(({ path }) => path).filter((path) => path !== forgetPath)
           );
         assertEmptySourceReferences(currentFiles);
         assertEmptySourceReferences(notebook.readRevision(request.baseRevision).files);
