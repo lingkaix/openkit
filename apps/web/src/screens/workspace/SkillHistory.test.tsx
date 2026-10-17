@@ -40,7 +40,7 @@ function fixture(
       .mockResolvedValue({ digest, path: 'SKILL.md', contentBase64: btoa('hello') }),
     'catalog.skill-diff': vi
       .fn()
-      .mockResolvedValue({ changes: [{ path: 'SKILL.md', before: {}, after: {} }] }),
+      .mockResolvedValue({ changes: [{ path: 'SKILL.md', before: { kind: 'file', size: 3, sha256: olderDigest }, after: { kind: 'file', size: 5, sha256: digest } }] }),
     'catalog.skill-update-check': vi.fn().mockResolvedValue({ status: 'unchanged' }),
     'catalog.skill-remove': vi.fn().mockResolvedValue({ revision: 8 }),
     'catalog.skill-purge': vi.fn().mockResolvedValue({ revision: 8 }),
@@ -79,6 +79,8 @@ describe('Skill retained history', () => {
     expect(await screen.findByText('Source check: unchanged')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Compare with sha256:bbbb/ }));
     expect(await screen.findByText('Changed: SKILL.md')).toBeInTheDocument();
+    expect(screen.getByText(`Before: 3 bytes · ${olderDigest}`)).toBeInTheDocument();
+    expect(screen.getByText(`After: 5 bytes · ${digest}`)).toBeInTheDocument();
     expect(operations['catalog.skill-diff']).toHaveBeenCalledWith({
       workspaceId,
       skillId: 'research',
@@ -119,6 +121,27 @@ describe('Skill retained history', () => {
     expect(await screen.findByText('owner/repo')).toBeInTheDocument();
     expect(operations['catalog.skill-version-read']).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['remove', 'purge'] as const)(
+    'names a lost %s response as unknown and offers read-only inspection',
+    async (action) => {
+      const user = userEvent.setup();
+      const operations = fixture();
+      await user.click(await screen.findByRole('button', { name: /Inspect sha256:aaaa/ }));
+      await screen.findByText('owner/repo');
+      const mutation = action === 'remove' ? operations['catalog.skill-remove'] : operations['catalog.skill-purge'];
+      mutation.mockRejectedValue(new TypeError('response lost'));
+      const name = action === 'remove' ? 'Remove Skill from future selection' : 'Confirm permanent deletion';
+      if (action === 'purge')
+        await user.click(screen.getByRole('button', { name: 'Delete retained version bytes' }));
+      await user.click(screen.getByRole('button', { name }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(/result is unknown/i);
+      expect(screen.getByRole('button', { name })).toBeDisabled();
+      await user.click(screen.getByRole('button', { name: 'Inspect current Skill state' }));
+      await waitFor(() => expect(operations['catalog.skill-version-list']).toHaveBeenCalledTimes(2));
+      expect(mutation).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it.each(['history', 'version', 'content', 'diff'] as const)(
     'hides retained %s data after the current read is refused',
