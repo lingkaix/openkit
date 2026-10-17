@@ -168,13 +168,6 @@ const fields = [
   {
     kind: 'usr',
     schema:
-      WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS['workspace.member-access-change'].inputSchema.shape
-        .targetUserId,
-    derived: false,
-  },
-  {
-    kind: 'usr',
-    schema:
       WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS['workspace.member-remove'].inputSchema.shape
         .targetUserId,
     derived: false,
