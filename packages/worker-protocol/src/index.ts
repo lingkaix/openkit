@@ -205,6 +205,9 @@ export const WorkerRecordBaseSchema = z
 /** Maximum decoded bytes in one restricted observation transport chunk. */
 export const WORKER_OBSERVATION_CHUNK_MAX_BYTES = 48 * 1024;
 
+/** Per-Turn raw model UTF-8 ceiling shared by primary, children and provider attempts; file and observation transport bounds are separate. */
+export const MAX_WORKER_RAW_OUTPUT_BYTES = 16_777_216;
+
 /** Maximum admitted bytes in one semantic observation body. */
 export const WORKER_OBSERVATION_CONTENT_MAX_BYTES = 16 * 1024 * 1024;
 

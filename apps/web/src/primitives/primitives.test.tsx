@@ -716,16 +716,13 @@ describe('primitive tier — behavior', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('keeps selected and uploaded artifacts when the attachment dialog closes', async () => {
+  it('keeps selected Artifacts and arbitrary client files when the attachment dialog closes', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    const uploaded = { id: 'ar_00000000-0000-718a-b50b-9500f6ded18a', version: 1, label: 'Notes' };
-    const onImportFile = vi.fn().mockResolvedValue(uploaded);
     render(
       <Composer
         targetCatalog={availableComposerCatalog}
         artifacts={[{ id: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', version: 2, label: 'Brief' }]}
-        onImportFile={onImportFile}
         onSubmit={onSubmit}
       />
     );
@@ -734,14 +731,13 @@ describe('primitive tier — behavior', () => {
     const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
     await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(onImportFile).toHaveBeenCalledWith(file);
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         artifactRefs: [
           { artifactId: 'ar_00000000-0000-7b97-b1e4-18ef545a7af3', artifactVersion: 2 },
-          { artifactId: 'ar_00000000-0000-718a-b50b-9500f6ded18a', artifactVersion: 1 },
         ],
+        files: [file],
       })
     );
   });

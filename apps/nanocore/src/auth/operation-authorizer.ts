@@ -843,7 +843,7 @@ function readonlyTokenCannotMutate(
 }
 
 /**
- * Maps retained catalog entries to canonical routes; only JSON definitions use native admission, while streaming bindings retain these guards.
+ * Maps retained routes to guards. Canonical operation routes perform native admission, including bounded streaming metadata.
  *
  * @returns Unique retained non-server operation routes.
  * @throws When a catalog operation has no canonical route owner.
@@ -866,6 +866,9 @@ function guardedOperationRoutes(): OperationRoute[] {
     if (!route) {
       throw new Error(`Public operation has no canonical route: ${operationKey}.`);
     }
+    // Canonical operation routes admit their parsed selectors before reading a body stream.
+    // Retained archive paths continue to use the guards below.
+    if (route.path === `/api/app/operations/${operationKey}`) continue;
     routes.push({ ...route, access, operationKey });
   }
   return routes;

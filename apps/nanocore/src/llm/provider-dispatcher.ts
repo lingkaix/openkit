@@ -22,6 +22,7 @@ import {
 } from './pi-ai-client.js';
 import { PromptCacheKeyResolver, type PromptCacheKeyScope } from './prompt-cache-key.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
+import type { RawModelOutputPosition } from './raw-provider-output.js';
 
 /**
  * Construction options for the gateway provider dispatcher.
@@ -41,6 +42,15 @@ export interface LLMGatewayProviderDispatcherOptions {
  * Provider transport state shared across one gateway dispatch.
  */
 export interface LLMGatewayTransportContext {
+  /** Strong Worker observation boundary. Its failure aborts this inference before output conversion. */
+  readonly rawOutput?: {
+    /** Opens actual stock source lifetime, independent of public response cancellation. */
+    readonly sourceStarted: () => () => void;
+    /** Confirms the stock source invokes its native pre-conversion observation hook. */
+    readonly sourceEvent: () => void;
+    readonly observe: (position: RawModelOutputPosition) => void;
+    readonly fail: (error: Error) => never;
+  };
   /** Absolute Gateway deadline in milliseconds on the executor clock (production Date.now); never reset per attempt. */
   readonly deadline?: number;
   /** Private observer for admitted semantic events, before public response conversion. */

@@ -682,7 +682,7 @@ describe('S16 Material and Artifact Review schemas', () => {
           title: 'Imported notes',
           mediaType: 'text/markdown',
           contentDigest,
-          content: '# Imported notes',
+          byteLength: 16,
         },
         'workspaceId',
       ],
@@ -704,16 +704,28 @@ describe('S16 Material and Artifact Review schemas', () => {
         false
       );
     }
-    for (const [content, expected] of [
-      ['{"valid":true}', true],
-      ['{"invalid":', false],
-    ] as const) {
+    // File import admits exact arbitrary-byte metadata. Content decoding belongs to an explicit processor.
+    for (const mediaType of ['application/json', 'application/octet-stream', 'image/png']) {
+      expect(
+        ImportWorkspaceArtifactRequestSchema.safeParse({ ...requests[0][1], mediaType }).success
+      ).toBe(true);
       expect(
         ImportWorkspaceArtifactRequestSchema.safeParse({
           ...requests[0][1],
-          mediaType: 'application/json',
-          content,
+          mediaType,
+          content: '{"invalid":',
         }).success
+      ).toBe(false);
+    }
+    for (const [byteLength, expected] of [
+      [0, true],
+      [1_000_000_000, true],
+      [1_000_000_001, false],
+      [-1, false],
+      [0.5, false],
+    ] as const) {
+      expect(
+        ImportWorkspaceArtifactRequestSchema.safeParse({ ...requests[0][1], byteLength }).success
       ).toBe(expected);
     }
     expect(
@@ -6283,4 +6295,45 @@ it('preserves non-UTF8 patch bytes with canonical encoding and closed encoding a
   ]) {
     expect(appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse(bad).success).toBe(false);
   }
+});
+
+describe('exact Artifact Review feedback and candidate choice', () => {
+  it('admits original UTF-16 range fields and rejects empty or reversed ranges', () => {
+    const range = {
+      materialId: 'mat_00000000-0000-7807-b767-6378f3fcdcf3',
+      revisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
+      contentDigest: `sha256:${'a'.repeat(64)}`,
+      start: 3,
+      end: 7,
+      originalText: '😀e\u0301',
+    };
+    expect(
+      appApiSchemas.SubmitArtifactReviewDecisionRequestSchema.parse({
+        requestId: 'range',
+        decision: 'rejected',
+        rangeFeedback: range,
+      })
+    ).toMatchObject({ rangeFeedback: range });
+    expect(
+      appApiSchemas.SubmitArtifactReviewDecisionRequestSchema.safeParse({
+        requestId: 'range',
+        decision: 'rejected',
+        rangeFeedback: { ...range, end: 3 },
+      }).success
+    ).toBe(false);
+  });
+  it('admits exact candidate selection without accepting caller actor identity', () => {
+    const definition = appApiSchemas.ARTIFACT_OPERATION_DEFINITIONS['artifact.review.select'];
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+      artifactVersion: 1,
+      contentDigest: `sha256:${'a'.repeat(64)}`,
+      requestId: 'choice',
+      reason: 'Prefer this.',
+    };
+    expect(definition.inputSchema.parse(input)).toEqual(input);
+    expect(definition.inputSchema.safeParse({ ...input, actorId: 'forged' }).success).toBe(false);
+    expect(definition.inputSchema.safeParse({ ...input, reason: '' }).success).toBe(false);
+  });
 });

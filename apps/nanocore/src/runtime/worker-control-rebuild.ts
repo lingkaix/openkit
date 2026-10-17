@@ -125,7 +125,7 @@ function listTerminalControlLeases(coreDb: CoreDb): NanoHostExecutionAttemptReco
            AND lease.worker_control_token_hash IS NOT NULL
            AND lease.worker_inference_token_hash IS NOT NULL
            AND lease.deadline > ?
-          AND ((lease.phase = 'closing' AND lease.terminal_cause = 'turn-cancelled') OR EXISTS (
+          AND ((lease.phase = 'closing' AND lease.terminal_cause IN ('turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable')) OR EXISTS (
             SELECT 1
               FROM worker_control_records AS record
              WHERE record.workspace_id = lease.workspace_id

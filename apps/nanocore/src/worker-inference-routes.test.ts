@@ -11,6 +11,7 @@ import {
   fauxProvider,
   getCurrentTools,
 } from '@earendil-works/pi-ai';
+import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage, GatewayConfig } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
@@ -73,6 +74,24 @@ interface WorkerInferenceDispatchCall {
 
 /** Minimal dispatcher fake for worker inference route tests. */
 class FakeWorkerInferenceDispatcher {
+  /** The fake's fixed Provider output is fully known before public delivery; it supplies source proof independently of its held HTTP streams. */
+  public observeSource(context: LLMGatewayDispatchContext, text = ''): void {
+    const boundary = context.transport?.rawOutput;
+    if (!boundary) return;
+    const settle = boundary.sourceStarted();
+    try {
+      boundary.sourceEvent();
+      if (text)
+        boundary.observe({
+          partId: 0,
+          field: 'text',
+          fromBytePosition: 0,
+          bytePosition: Buffer.byteLength(text, 'utf8'),
+        });
+    } finally {
+      settle();
+    }
+  }
   /** Chat Completions calls accepted by the fake. */
   public readonly chatCalls: WorkerInferenceDispatchCall[] = [];
   /** Responses calls accepted by the fake. */
@@ -109,6 +128,7 @@ class FakeWorkerInferenceDispatcher {
     context: LLMGatewayDispatchContext = {}
   ) {
     this.chatCalls.push({ context, provider, request });
+    this.observeSource(context, request.stream ? '' : 'worker chat ok');
     context.transport?.onCodexTurnState?.('worker-provider-response-state');
 
     return {
@@ -140,6 +160,7 @@ class FakeWorkerInferenceDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.chatCalls.push({ context, provider, request });
+    this.observeSource(context, request.stream ? '' : 'worker chat ok');
     context.transport?.onCodexTurnState?.('worker-provider-response-state');
 
     return streamText('data: {"id":"chatcmpl_worker_stream"}\n\ndata: [DONE]\n\n');
@@ -159,6 +180,10 @@ class FakeWorkerInferenceDispatcher {
     context: LLMGatewayDispatchContext = {}
   ) {
     this.responseCalls.push({ context, provider, request });
+    this.observeSource(
+      context,
+      this.shouldFailResponsesStream || this.shouldHoldResponsesStream ? 'Hi' : ''
+    );
     if (this.responseErrorAfterAbort) {
       const signal = context.transport?.signal;
 
@@ -205,6 +230,10 @@ class FakeWorkerInferenceDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.responseCalls.push({ context, provider, request });
+    this.observeSource(
+      context,
+      this.shouldFailResponsesStream || this.shouldHoldResponsesStream ? 'Hi' : ''
+    );
     if (this.responseError) {
       throw this.responseError;
     }
@@ -289,6 +318,7 @@ const CODEX_PROVIDER_ID = 'openai-codex';
 const CODEX_PROVIDER_MODEL = 'openai-codex/gpt-5.6-sol';
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const coreDb of ownedCoreDatabases.splice(0)) {
     coreDb.sqlite.close();
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
@@ -723,6 +753,54 @@ function postRawWorkerResponses(
 }
 
 describe('worker inference routes', () => {
+  it.each([
+    false,
+    true,
+  ])('refuses successful Provider output without native raw observation proof (stream=%s)', async (stream) => {
+    const fixture = createWorkerInferenceRouteFixture();
+    vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementation(
+      async (_provider, request) => ({
+        id: 'resp_unobserved',
+        object: 'response',
+        model: request.model,
+        output: [],
+        status: 'completed',
+      })
+    );
+    vi.spyOn(fixture.dispatcher, 'createResponsesStream').mockResolvedValue(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: {"type":"response.output_text.delta","delta":"unobserved"}\n\n'
+            )
+          );
+          controller.close();
+        },
+      })
+    );
+    const response = await postWorkerResponses(fixture, {
+      model: WORKER_LOGICAL_MODEL_ID,
+      input: 'Observe exactly',
+      stream,
+    });
+    expect(response.status).toBe(503);
+    const workspaceDb = openWorkspaceDb(
+      fixture.coreDb!.dataRoot,
+      fixture.environmentPackage.scope.workspaceId
+    );
+    try {
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            "SELECT status, error_code FROM capability_calls WHERE service_ref = 'worker-inference-gateway'"
+          )
+          .all()
+      ).toEqual([{ status: 'failed', error_code: 'worker_raw_output_unavailable' }]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
   it('dispatches canonical Responses through the AEP provider', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     const response = await postWorkerResponses(
@@ -1353,7 +1431,8 @@ describe('worker inference routes', () => {
     const reader = response.body!.getReader();
 
     expect(response.status).toBe(200);
-    expect(dispatchSignal).toBe(request.signal);
+    expect(dispatchSignal).toBeInstanceOf(AbortSignal);
+    expect(dispatchSignal?.aborted).toBe(false);
     await expect(reader.read()).resolves.toMatchObject({ done: false });
     await reader.cancel('consumer disconnected');
 
@@ -2767,17 +2846,20 @@ describe('slice 1d round 2 terminal frame closeout', () => {
         },
       ];
       let index = 0;
-      const dispatch = vi.spyOn(f.dispatcher, 'createResponsesStream').mockResolvedValue(
-        new ReadableStream({
-          pull(controller) {
-            if (index < frames.length)
-              controller.enqueue(
-                new TextEncoder().encode(`data: ${JSON.stringify(frames[index++])}\n\n`)
-              );
-            else controller.close();
-          },
-        })
-      );
+      const dispatch = vi
+        .spyOn(f.dispatcher, 'createResponsesStream')
+        .mockImplementation(async (_provider, _request, context) => {
+          f.dispatcher.observeSource(context, 'released');
+          return new ReadableStream({
+            pull(controller) {
+              if (index < frames.length)
+                controller.enqueue(
+                  new TextEncoder().encode(`data: ${JSON.stringify(frames[index++])}\n\n`)
+                );
+              else controller.close();
+            },
+          });
+        });
       const response = await postWorkerResponses(f, {
         input: 'Hello',
         model: WORKER_LOGICAL_MODEL_ID,
@@ -2830,23 +2912,17 @@ describe('slice 3c Worker native effort and immutable package', () => {
     [undefined, 'low', 'low'],
     [undefined, undefined, undefined],
   ] as const)('request %s/%s uses %s through stock Models', async (recorded, requested, expected) => {
-    const faux = fauxProvider({
-      provider: 'openrouter',
-      models: [{ id: WORKER_PROVIDER_MODEL, reasoning: true }],
-    });
     const received: unknown[] = [];
-    faux.setResponses([
-      (_context, options) => {
-        // Faux forwarding evidence; stock serialized bodies are covered in gateway-effort-transport.test.ts.
-        received.push(
-          (options as Record<string, unknown>).reasoning ??
-            (options as Record<string, unknown>).reasoningEffort
-        );
-        return fauxAssistantMessage('worker effort answer');
-      },
-    ]);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      received.push(body.reasoning?.effort ?? body.reasoning_effort);
+      return new Response(
+        'data: {"id":"chatcmpl_effort","model":"openai/gpt-5.2","choices":[{"index":0,"delta":{"content":"worker effort answer"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    });
     const models = createModels();
-    models.setProvider(faux.provider);
+    models.setProvider(openrouterProvider());
     const dispatcher = new LLMGatewayProviderDispatcher({
       piAiClient: new PiAiGatewayClient({ models }),
     });
@@ -2867,7 +2943,8 @@ describe('slice 3c Worker native effort and immutable package', () => {
     const request = dispatched.mock.calls[0]?.[1];
     if (expected === undefined) expect(request).not.toHaveProperty('reasoning');
     else expect(request).toMatchObject({ reasoning: { effort: expected } });
-    expect(received).toEqual([expected]);
+    // Stock Completions maps an omitted Core effort through this model's disabled-thinking value.
+    expect(received).toEqual([expected ?? 'none']);
     expect(f.environmentPackage).toEqual(admittedPackage);
     const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
@@ -2881,6 +2958,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
         expect(entries?.[0]).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
       else expect(entries?.[0]).toHaveProperty('effectiveEffort', expected);
     } finally {
+      fetchSpy.mockRestore();
       db.sqlite.close();
     }
   });

@@ -13,6 +13,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { WorkerRawOutputStateSchema } from '../runtime/worker-raw-output.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
 
@@ -46,9 +47,9 @@ type CapabilityCallRow = {
 };
 
 /** Storage/export-only validation preserves other canonical namespaces; live protocol projections still strip them. */
-export const CanonicalCapabilityCallExtensionsSchema = CapabilityCallExtensionsSchema.catchall(
-  z.unknown()
-);
+export const CanonicalCapabilityCallExtensionsSchema = CapabilityCallExtensionsSchema.extend({
+  'openkit.worker/rawOutput': WorkerRawOutputStateSchema.optional(),
+}).catchall(z.unknown());
 
 /** Exportable capability call ledger record. */
 export interface CapabilityCallLedgerRecord extends CapabilityCall {

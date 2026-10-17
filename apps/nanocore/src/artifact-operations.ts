@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
-import type { ARTIFACT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
+  ARTIFACT_OPERATION_DEFINITIONS,
+  type ArtifactFolderSnapshotResponse,
   type ArtifactReviewView,
-  ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactResponseSchema,
   ListArtifactReviewsResponseSchema,
   type SubmitArtifactReviewDecisionResponse,
@@ -20,16 +19,19 @@ import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
   ArtifactReviewError,
-  type ArtifactReviewMediaType,
   decideArtifactReview,
   deriveArtifactReviewFollowUpTurnId,
   deriveArtifactReviewWorkerRequestId,
   getArtifactReview,
   listArtifactReviews,
   replayArtifactReviewDecision,
+  selectArtifactReviewCandidate,
   serializeArtifactReviewFollowUpRequest,
 } from './artifact-reviews.js';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from './context/worker-context-package.js';
@@ -40,7 +42,7 @@ import {
   StoreRecordNotFoundError,
 } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
-import type { OperationImplementations } from './operation-contract.js';
+import type { FamilyImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import {
   commandInputHash,
@@ -51,27 +53,35 @@ import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { updateWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
+import {
+  ensureArtifactFolderSnapshot,
+  readArtifactFolderSnapshot,
+  ZIP_FOLDER_PROCESSOR,
+} from './storage/artifacts/artifact-folder-cache.js';
+import { FileAdmissionError } from './storage/artifacts/file-admission.js';
+import { ArtifactPayloadCleanupError } from './storage/artifacts/file-payload.js';
+import {
+  MAX_ARTIFACT_MATERIAL_TEXT_BYTES,
+  readArtifactFileText,
+  verifyArtifactFilePayload,
+} from './storage/artifacts/file-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 
-/** Exact protocol content format for each accepted Artifact import media type. */
-const ARTIFACT_FORMAT_BY_MEDIA_TYPE = {
-  'application/json': 'json',
-  'text/markdown': 'markdown',
-  'text/plain': 'text',
-} as const;
-
 /** Exact family join; the definition table alone owns ids and declarative facts. */
-type ArtifactImplementations = Pick<
-  OperationImplementations,
-  keyof typeof ARTIFACT_OPERATION_DEFINITIONS
->;
+type ArtifactImplementations = FamilyImplementations<typeof ARTIFACT_OPERATION_DEFINITIONS>;
 
 /** Joins the existing Artifact, command and version-owned Review lifecycles without HTTP context. */
 export function createArtifactOperationImplementations(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'store' | 'coreDb' | 'inflightCommands' | 'repositoryWorkspaceDb' | 'startModeWorkerTurn'
+    | 'store'
+    | 'coreDb'
+    | 'inflightCommands'
+    | 'repositoryWorkspaceDb'
+    | 'startModeWorkerTurn'
+    | 'dataRoot'
+    | 'fileAdmission'
   >
 ) {
   const store = dependencies.store!;
@@ -90,7 +100,114 @@ export function createArtifactOperationImplementations(
   const administratorEligible = (
     context: Parameters<ArtifactImplementations['artifact.read']>[1]
   ) => context.kind === 'public' && isCurrentDeploymentAdministrator(coreDb!, context.actor);
+  /** Projects a disposable exact-source folder cache without a second command or product record. */
+  const folder = async (
+    input: Parameters<ArtifactImplementations['artifact.folder-read']>[0],
+    context: Parameters<ArtifactImplementations['artifact.folder-read']>[1],
+    extract: boolean
+  ): Promise<ArtifactFolderSnapshotResponse> => {
+    const assertAuthorized = () => {
+      if (
+        context.kind !== 'public' ||
+        !coreDb ||
+        !isWorkspaceOperationAuthorized(
+          coreDb,
+          context.actor,
+          input.workspaceId,
+          ARTIFACT_OPERATION_DEFINITIONS[
+            extract ? 'artifact.folder-extract' : 'artifact.folder-read'
+          ]
+        )
+      ) {
+        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      }
+      assertArtifactWorkspaceLineage(
+        responsibleUserIdForActor(context.actorRef)!,
+        administratorEligible(context),
+        store,
+        input.workspaceId,
+        input.artifactId
+      );
+      const current = store.getArtifact(input.workspaceId, input.artifactId);
+      if (current.version !== input.artifactVersion || current.content.format !== 'file')
+        throw new OperationError('not_found', 'The Artifact file version is unavailable.', 404);
+    };
+    assertAuthorized();
+    if (!dependencies.dataRoot || (extract && !dependencies.fileAdmission))
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'Folder extraction is unavailable.',
+        503
+      );
+    const artifact = store.getArtifact(input.workspaceId, input.artifactId);
+    if (artifact.content.format !== 'file')
+      throw new OperationError('not_found', 'The Artifact file version is unavailable.', 404);
+    const source = {
+      workspaceRoot: resolveDataRootPath(dependencies.dataRoot, 'workspaces', input.workspaceId),
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      byteLength: artifact.content.byteLength,
+      contentDigest: artifact.contentDigest,
+    };
+    const original = {
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      originalDigest: artifact.contentDigest,
+      originalRetained: true as const,
+    };
+    let snapshot: Awaited<ReturnType<typeof readArtifactFolderSnapshot>>;
+    try {
+      snapshot = extract
+        ? await ensureArtifactFolderSnapshot({
+            source,
+            admission: dependencies.fileAdmission!,
+            assertAuthorized,
+            ...(context.signal ? { signal: context.signal } : {}),
+          })
+        : await readArtifactFolderSnapshot({
+            source,
+            assertAuthorized,
+            ...(context.signal ? { signal: context.signal } : {}),
+          });
+    } catch (error) {
+      context.signal?.throwIfAborted();
+      assertAuthorized();
+      try {
+        verifyArtifactFilePayload({ ...source, version: source.artifactVersion });
+      } catch {
+        throw new OperationError('recovery_required', 'The Artifact original is unavailable.', 503);
+      }
+      if (error instanceof ArtifactPayloadCleanupError)
+        throw new OperationError(
+          'recovery_required',
+          'Folder extraction cleanup is unproved; the original is retained.',
+          503
+        );
+      if (error instanceof FileAdmissionError)
+        throw new OperationError(error.code, error.message, 507);
+      return { status: 'unavailable', ...original, reason: 'extraction_failed' };
+    }
+    assertAuthorized();
+    if (!snapshot) return { status: 'unavailable', ...original, reason: 'not_extracted' };
+    const entries = snapshot.files.slice(input.offset, input.offset + 100);
+    return {
+      status: 'ready',
+      ...original,
+      processor: ZIP_FOLDER_PROCESSOR,
+      representationDigest: snapshot.representationDigest,
+      expandedBytes: snapshot.expandedBytes,
+      fileCount: snapshot.files.length,
+      directoryCount: snapshot.directories.length,
+      entries,
+      nextOffset:
+        input.offset + entries.length < snapshot.files.length
+          ? input.offset + entries.length
+          : null,
+    };
+  };
   return {
+    'artifact.folder-read': (input, context) => folder(input, context, false),
+    'artifact.folder-extract': (input, context) => folder(input, context, true),
     'artifact.list': (input, context) => {
       const actor = context.actorRef;
       try {
@@ -120,94 +237,6 @@ export function createArtifactOperationImplementations(
         return store.getArtifact(input.workspaceId, input.artifactId);
       } catch (error) {
         artifactOperationFailure(error);
-      }
-    },
-    'artifact.import': async (input, context) => {
-      const actor = context.actorRef;
-      const { workspaceId } = input;
-      try {
-        store.getWorkspace(workspaceId);
-      } catch (error) {
-        artifactOperationFailure(error);
-      }
-      try {
-        assertArtifactContentDigest(input.content, input.contentDigest);
-      } catch (error) {
-        artifactOperationFailure(error);
-      }
-      const artifactId = deriveEntityId('ar', [
-        actor,
-        workspaceId,
-        'artifact.import',
-        input.requestId,
-      ]);
-      const workspaceDb = openReceiptDb(workspaceId);
-
-      try {
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'artifact.import',
-          requestId: input.requestId,
-          scope: { workspaceId },
-          input: {
-            title: input.title,
-            mediaType: input.mediaType,
-            contentDigest: input.contentDigest,
-          },
-          responseKind: 'artifact',
-          workspaceDb,
-          execute: () => {
-            const acceptedAt = new Date().toISOString();
-            const artifact = store.createArtifact({
-              id: artifactId,
-              workspaceId,
-              threadId: null,
-              turnId: null,
-              kind: 'file',
-              title: input.title,
-              status: 'ready',
-              summary: null,
-              version: 1,
-              content: {
-                format: ARTIFACT_FORMAT_BY_MEDIA_TYPE[input.mediaType],
-                body: input.content,
-              },
-              contentDigest: input.contentDigest,
-              lastMutationRequestId: input.requestId,
-              origin: {
-                kind: 'imported',
-                sourceKind: 'direct-import',
-                sourceId: input.requestId,
-                sourceDigest: input.contentDigest,
-                actor,
-                requestId: input.requestId,
-                recordedAt: acceptedAt,
-              },
-              createdAt: acceptedAt,
-              updatedAt: acceptedAt,
-            });
-            return ImportWorkspaceArtifactResponseSchema.parse({
-              artifactId: artifact.id,
-              artifactVersion: artifact.version,
-            });
-          },
-          replay: (record) =>
-            replayArtifactImport(store, {
-              actor,
-              artifactId,
-              input,
-              record,
-              workspaceId,
-            }),
-          responseId: (result) => result.artifactId,
-        });
-
-        return response;
-      } catch (error) {
-        artifactOperationFailure(error);
-      } finally {
-        workspaceDb.sqlite.close();
       }
     },
     'artifact.introduce': async (input, context) => {
@@ -308,6 +337,79 @@ export function createArtifactOperationImplementations(
         workspaceDb?.sqlite.close();
       }
     },
+    'artifact.review.select': async (input, context) => {
+      const actorId = responsibleUserIdForActor(context.actorRef)!;
+      const { workspaceId, artifactId, artifactVersion } = input;
+      assertArtifactWorkspaceLineage(
+        actorId,
+        administratorEligible(context),
+        store,
+        workspaceId,
+        artifactId
+      );
+      const workspaceDb = openReceiptDb(workspaceId);
+      try {
+        if (
+          listWorkspaceSyncReviews(workspaceDb, workspaceId).some(
+            (review) => review.artifactId === artifactId
+          )
+        )
+          throw recoveryRequired(
+            'A Workspace Sync Review already owns the target Artifact presentation.'
+          );
+        const choiceInput = {
+          actorId,
+          artifactId,
+          artifactVersion,
+          contentDigest: input.contentDigest,
+          requestId: input.requestId,
+          ...(input.reason === undefined ? {} : { reason: input.reason }),
+          selectedAt: new Date().toISOString(),
+        };
+        const requireCandidate = () => {
+          const review = getArtifactReview(workspaceDb, artifactId, artifactVersion);
+          const artifact = store.getArtifact(workspaceId, artifactId);
+          if (
+            artifact.version !== artifactVersion ||
+            artifact.contentDigest !== input.contentDigest ||
+            review.contentDigest !== input.contentDigest ||
+            artifact.status !== 'ready'
+          )
+            throw new ArtifactReviewError('stale', 'The exact Artifact candidate is unavailable.');
+          requireCurrentReviewedArtifact(store, review);
+        };
+        return await runIdempotentCommand({
+          store,
+          inflightCommands,
+          command: 'artifact.review.select',
+          requestId: input.requestId,
+          scope: { workspaceId, artifactId, artifactVersion: String(artifactVersion) },
+          input: { contentDigest: input.contentDigest, reason: input.reason ?? null },
+          responseKind: 'artifact_review',
+          workspaceDb,
+          workspaceTransaction: true,
+          responseId: (result) => result.review.reviewId,
+          execute: () => {
+            requireCandidate();
+            return { review: selectArtifactReviewCandidate(workspaceDb, choiceInput) };
+          },
+          replay: (record) => {
+            requireCandidate();
+            const review = selectArtifactReviewCandidate(workspaceDb, choiceInput, true);
+            if (
+              record.response.kind !== 'artifact_review' ||
+              record.response.id !== review.reviewId
+            )
+              throw recoveryRequired('The candidate choice receipt has invalid response lineage.');
+            return { review };
+          },
+        });
+      } catch (error) {
+        artifactOperationFailure(error);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    },
     'artifact.review.decide': async (input, context) => {
       const actor = context.actorRef;
       const { workspaceId, artifactId, artifactVersion } = input;
@@ -326,6 +428,7 @@ export function createArtifactOperationImplementations(
       );
       const workspaceDb = openReceiptDb(workspaceId);
       const feedback = input.feedback ?? null;
+      const rangeFeedback = input.rangeFeedback ?? null;
 
       try {
         if (
@@ -344,6 +447,7 @@ export function createArtifactOperationImplementations(
             artifactVersion,
             decision: input.decision,
             feedback,
+            rangeFeedback,
             requestId: input.requestId,
           });
           if (
@@ -365,9 +469,9 @@ export function createArtifactOperationImplementations(
                 review,
                 input.decision,
                 feedback ?? '',
-                artifact.content.body,
-                artifactMediaType(artifact.content.format),
-                input.requestId
+                artifact,
+                input.requestId,
+                workspaceDb
               ),
               response,
               review,
@@ -382,7 +486,7 @@ export function createArtifactOperationImplementations(
           command: 'artifact.review.decide' as const,
           requestId: input.requestId,
           scope: { workspaceId, artifactId, artifactVersion: String(artifactVersion) },
-          input: { decision: input.decision, feedback },
+          input: { decision: input.decision, feedback, rangeFeedback },
           responseKind: 'artifact_review' as const,
           workspaceDb,
           replay,
@@ -407,16 +511,28 @@ export function createArtifactOperationImplementations(
               }
               const review = getArtifactReview(workspaceDb, artifactId, artifactVersion);
               const artifact = requireCurrentReviewedArtifact(store, review);
+              const contentProof = artifactReviewContentProof(artifact, workspaceDb);
+              if (
+                contentProof.artifactContent === null ||
+                Buffer.byteLength(contentProof.artifactContent, 'utf8') > 2048 ||
+                contentProof.artifactContent.split('\n').length > 50
+              ) {
+                throw new OperationError(
+                  'artifact_input_unavailable',
+                  'Exact reviewed Artifact input delivery is unavailable.',
+                  503
+                );
+              }
               const decisionInput = {
                 actor,
                 actorId,
-                artifactContent: artifact.content.body,
+                ...contentProof,
                 artifactId,
-                artifactMediaType: artifactMediaType(artifact.content.format),
                 artifactVersion,
                 decidedAt: new Date().toISOString(),
                 decision,
                 feedback,
+                rangeFeedback,
                 requestId: input.requestId,
               } as const;
               const claimedResponse =
@@ -480,12 +596,12 @@ export function createArtifactOperationImplementations(
               }
 
               const prompt = artifactReviewFollowUpPrompt(
-                review,
+                getArtifactReview(workspaceDb, artifactId, artifactVersion),
                 decision,
                 feedback,
-                artifact.content.body,
-                artifactMediaType(artifact.content.format),
-                input.requestId
+                artifact,
+                input.requestId,
+                workspaceDb
               );
               const workerRequestId = deriveArtifactReviewWorkerRequestId(input.requestId);
               upsertWorkerCheckpoint(workspaceDb, {
@@ -500,6 +616,7 @@ export function createArtifactOperationImplementations(
                   artifactVersion: review.artifactVersion,
                   decision,
                   feedback,
+                  rangeFeedback,
                 }),
                 stage: 'preparing',
                 iteration: 0,
@@ -575,13 +692,17 @@ export function createArtifactOperationImplementations(
               return decideArtifactReview(workspaceDb, {
                 actor,
                 actorId,
-                artifactContent: artifact.content.body,
+                ...artifactReviewContentProof(
+                  artifact,
+                  workspaceDb,
+                  input.decision === 'accepted' && review.materialProposal !== null
+                ),
                 artifactId,
-                artifactMediaType: artifactMediaType(artifact.content.format),
                 artifactVersion,
                 decidedAt: new Date().toISOString(),
                 decision: input.decision,
                 feedback,
+                rangeFeedback,
                 requestId: input.requestId,
               });
             },
@@ -652,12 +773,12 @@ function requireCurrentReviewedArtifact(
   } catch {
     throw recoveryRequired('The reviewed Artifact is unavailable.');
   }
+  store.assertArtifactContent(artifact);
   const origin = artifact.origin;
   if (
     artifact.version !== review.artifactVersion ||
     artifact.status !== 'ready' ||
     artifact.contentDigest !== review.contentDigest ||
-    artifactContentDigest(artifact.content.body) !== review.contentDigest ||
     origin.kind !== 'turn-output' ||
     origin.threadId !== review.sourceThreadId ||
     origin.turnId !== review.sourceTurnId
@@ -779,8 +900,7 @@ function assertArtifactReviewFollowUpProof(input: {
  * @param review Version-owned Review input.
  * @param decision Refinement or redo choice.
  * @param feedback Required reviewer feedback.
- * @param artifactContent Exact reviewed Artifact content.
- * @param mediaType Exact reviewed Artifact media type.
+ * @param artifact Exact reviewed Artifact record with verified original identity.
  * @param decisionRequestId Original Review command identity.
  * @returns Canonical worker input retained by scheduler admission and S39.
  * @throws ArtifactAuthorityError when the required source lineage is incomplete.
@@ -789,9 +909,9 @@ function artifactReviewFollowUpPrompt(
   review: ArtifactReviewView,
   decision: 'needs_refinement' | 'redo',
   feedback: string,
-  artifactContent: string,
-  mediaType: ArtifactReviewMediaType,
-  decisionRequestId: string
+  artifact: ReturnType<FsStore['getArtifact']>,
+  decisionRequestId: string,
+  workspaceDb: WorkspaceDb
 ): string {
   if (!review.sourceThreadId || !review.sourceTurnId || !review.sourceAgentId) {
     throw recoveryRequired('The Artifact Review source lineage is incomplete.');
@@ -803,17 +923,64 @@ function artifactReviewFollowUpPrompt(
     artifactId: review.artifactId,
     artifactVersion: review.artifactVersion,
     contentDigest: review.contentDigest,
-    artifactContent,
-    artifactMediaType: mediaType,
+    ...artifactReviewContentProof(artifact, workspaceDb),
     sourceThreadId: review.sourceThreadId,
     sourceTurnId: review.sourceTurnId,
     sourceAgentId: review.sourceAgentId,
     materialProposal: review.materialProposal,
+    ...(review.rangeFeedback == null ? {} : { rangeFeedback: review.rangeFeedback }),
     decision,
     feedback,
     decisionRequestId,
     workerRequestId: deriveArtifactReviewWorkerRequestId(decisionRequestId),
   });
+}
+
+/** Projects verified original identity into Review input without a fabricated text body. */
+function artifactReviewContentProof(
+  artifact: ReturnType<FsStore['getArtifact']>,
+  workspaceDb: WorkspaceDb,
+  materialApply = false
+) {
+  const content = artifact.content;
+  if (content.format === 'file') {
+    const mediaType = content.mediaType;
+    if (
+      content.byteLength > 0 &&
+      (mediaType === 'text/markdown' ||
+        mediaType === 'text/plain' ||
+        mediaType === 'application/json')
+    ) {
+      let text: string | null;
+      try {
+        text = readArtifactFileText({
+          workspaceRoot: resolveDataRootPath(
+            workspaceDb.dataRoot,
+            'workspaces',
+            artifact.workspaceId
+          ),
+          artifactId: artifact.id,
+          version: artifact.version,
+          byteLength: content.byteLength,
+          contentDigest: artifact.contentDigest,
+          maximumBytes: materialApply ? MAX_ARTIFACT_MATERIAL_TEXT_BYTES : 2048,
+        });
+      } catch {
+        throw recoveryRequired('The Artifact original is unavailable.');
+      }
+      if (text !== null && (materialApply || text.split('\n').length <= 50))
+        return { artifactContent: text, artifactMediaType: mediaType } as const;
+    }
+    return {
+      artifactContent: null,
+      artifactMediaType: content.mediaType,
+      artifactFile: { byteLength: content.byteLength, contentDigest: artifact.contentDigest },
+    } as const;
+  }
+  return {
+    artifactContent: content.body,
+    artifactMediaType: artifactMediaType(content.format),
+  } as const;
 }
 
 /**
@@ -823,70 +990,13 @@ function artifactReviewFollowUpPrompt(
  * @returns Exact accepted media type.
  */
 function artifactMediaType(
-  format: ReturnType<FsStore['getArtifact']>['content']['format']
+  format: 'markdown' | 'text' | 'json'
 ): 'text/markdown' | 'text/plain' | 'application/json' {
   return format === 'markdown'
     ? 'text/markdown'
     : format === 'text'
       ? 'text/plain'
       : 'application/json';
-}
-
-/**
- * Replays one import receipt after proving the exact imported Artifact owner.
- *
- * @param store Shared product store.
- * @param expected Expected request, identity, and receipt proof.
- * @returns Stable imported Artifact identity.
- * @throws ArtifactAuthorityError when the receipt and Artifact disagree.
- */
-function replayArtifactImport(
-  store: FsStore,
-  expected: {
-    readonly actor: ActorRef;
-    readonly artifactId: string;
-    readonly input: {
-      readonly requestId: string;
-      readonly contentDigest: string;
-    };
-    readonly record: CommandRequestRecord;
-    readonly workspaceId: string;
-  }
-) {
-  if (
-    expected.record.response.kind !== 'artifact' ||
-    expected.record.response.id !== expected.artifactId
-  ) {
-    throw recoveryRequired('The Artifact import receipt has invalid response lineage.');
-  }
-
-  let artifact: ReturnType<FsStore['getArtifact']>;
-  try {
-    artifact = store.getArtifact(expected.workspaceId, expected.artifactId);
-  } catch {
-    throw recoveryRequired('The Artifact import receipt has no matching owner.');
-  }
-  const origin = artifact.origin;
-  if (
-    artifact.workspaceId !== expected.workspaceId ||
-    artifact.threadId !== null ||
-    artifact.turnId !== null ||
-    artifactContentDigest(artifact.content.body) !== artifact.contentDigest ||
-    origin.kind !== 'imported' ||
-    origin.sourceKind !== 'direct-import' ||
-    origin.sourceId !== expected.input.requestId ||
-    origin.sourceDigest !== expected.input.contentDigest ||
-    canonicalIdentifierName(origin.actor) !== canonicalIdentifierName(expected.actor) ||
-    origin.requestId !== expected.input.requestId ||
-    origin.recordedAt !== artifact.createdAt
-  ) {
-    throw recoveryRequired('The Artifact import receipt disagrees with its durable owner.');
-  }
-
-  return ImportWorkspaceArtifactResponseSchema.parse({
-    artifactId: artifact.id,
-    artifactVersion: 1,
-  });
 }
 
 /**
@@ -925,12 +1035,12 @@ function replayArtifactIntroduction(
   } catch {
     throw recoveryRequired('The Artifact introduction receipt has no matching owner tuple.');
   }
+  store.assertArtifactContent(artifact);
   const origin = artifact.origin;
   const item = turn.items[0];
   if (
     artifact.threadId !== null ||
     artifact.turnId !== null ||
-    artifactContentDigest(artifact.content.body) !== artifact.contentDigest ||
     origin.kind !== 'imported' ||
     origin.sourceKind !== 'direct-import' ||
     origin.sourceId !== origin.requestId ||
@@ -967,32 +1077,6 @@ function replayArtifactIntroduction(
     turnId: turn.id,
     itemId: item.id,
   });
-}
-
-/**
- * Verifies exact Artifact bytes before receipt lookup.
- *
- * @param content Submitted canonical content.
- * @param expectedDigest Submitted lowercase SHA-256 digest.
- * @throws ArtifactAuthorityError when the bytes do not match.
- */
-function assertArtifactContentDigest(content: string, expectedDigest: string): void {
-  if (artifactContentDigest(content) !== expectedDigest) {
-    throw new ArtifactAuthorityError(
-      'source_digest_mismatch',
-      'Artifact content does not match its digest.'
-    );
-  }
-}
-
-/**
- * Computes the canonical Artifact digest over exact UTF-8 content.
- *
- * @param content Exact Artifact body.
- * @returns Lowercase SHA-256 digest with its protocol prefix.
- */
-function artifactContentDigest(content: string): string {
-  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
 }
 
 /**

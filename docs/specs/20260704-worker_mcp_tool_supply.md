@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: "2026-10-15"
+updated: "2026-10-17"
 ---
 # Worker MCP Tool Supply
 
@@ -61,7 +61,7 @@ In the accepted target, Gateway-managed MCP servers are declared once in a works
 - Do not sandbox MCP server processes in this slice; server trust is deployment configuration.
 - Do not expose MCP server internals, endpoints, or native errors to workers or ordinary product summaries. Deployment-admin raw configuration inspection remains a restricted management operation under the MCP catalog owner.
 - Do not stream partial tool results in v1; calls are request/response with bounded payloads.
-- Do not use `memory` vocabulary anywhere; these routes sit beside the future `knowledge.*` routes after the rename.
+- Do not expose User Memory to Workers. Workspace Knowledge ask/tell uses the built-in `openkit-work` server, not a separate capability family.
 
 ## Background
 
@@ -140,9 +140,23 @@ Rules:
 
 ### Server lifecycle
 
-The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_request_input`, `work_list_peers`, `work_read_peer`, and `work_submit_artifact`, whose identity and semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Until that resource family is cut over, the in-process dispatch named here remains the contract.
+The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_request_input`, `work_list_peers`, `work_read_peer` and `work_submit_artifact`, whose semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It also supplies `knowledge_ask` and `knowledge_tell` under [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md). It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Until that resource family is cut over, the in-process dispatch named here remains the contract.
 
 The synchronous file-submission Tool carries only path and bounded metadata on this capability route; its file bytes use the existing independent NanoHost file-data reservation. The native call may await that effect while inference, heartbeat, and cancellation continue. Its durable success, request replay, and product-safe refusal semantics belong to [Worker Agent Capability](20260703-worker_agent_capability.md#built-in-work-target). This adds no runtime-specific Artifact branch, external MCP process, App API bearer, seventh Harness operation, or new capability family. Discovery must expose the same Tool and schema across Codex, Pi, OpenCode, and DeepSeek. A timed-out response never proves that publication did not commit; exact command replay and authorized Artifact read decide that fact.
+
+### Workspace Knowledge ask and tell
+
+`openkit-work` exposes `knowledge_ask(question)` and `knowledge_tell(content,sources)` through the same authenticated capability path. NanoCore binds actor, Workspace, Task Thread/Turn, audience and source admission from the current Task context. Tool arguments cannot override those values or select User Memory, Server Knowledge or another Workspace. A non-Task context cannot use these Tools.
+
+`knowledge_ask` starts a bounded Knowledge Manager query run. Knowledge Manager uses its governed Retrieval Kernel and page, Source and history reads, then returns a bounded answer with `page@revision` and `source@digest` citations and uncertainty. Parallel requests keep their query contexts and audiences isolated. Missing, denied or unavailable evidence remains a typed bounded result; no response widens access. Knowledge Manager receives no network Tools or Tools outside its notebook scope. Its shared Provider transport is not a model-facing network Tool. Its trusted answer needs no second-model review or confidence mark.
+
+Knowledge Manager records its own model usage and work under its existing Internal Core Role. The asking capability call supplies lineage only; Knowledge Manager usage is not charged to the Worker. This reuses existing usage and work records.
+
+The existing CapabilityCall retains the exact delivered answer bytes as delivery evidence. A selection trace proves selection only. The call proves answer delivery, not delivery of every cited page or that the Worker used the answer. Existing Task context preparation and S39 receipt distinctions remain in force. This adds no answer store, delivery ledger or capability family.
+
+`knowledge_tell` submits supplied information and admitted Sources to the notebook scope's Knowledge Manager maintenance Thread. Knowledge Manager integrates and organizes through the existing fixed-base publisher. Current scope maintenance delegation permits ordinary publication; otherwise the exact candidate requires proposal approval. The result preserves the maintenance owner's `published`, `review_required`, `no_change` or typed-failure distinction. A Tool call, fact or model confidence cannot grant publication authority. A tell cannot claim terminal Worker output without the existing completed-Turn and delivery evidence.
+
+Workers receive the scope's bounded OKF root `index.md`, kept current by Knowledge Manager, so they can ask for details. The overview follows current source and audience restrictions. Workers receive no direct notebook editing Tool, host filesystem path, Git handle or App API bearer.
 
 ### Built-in operation derivation
 
@@ -204,6 +218,8 @@ The gateway has an MCP subsystem beside the inference dispatcher: the existing w
 
 ## Current Implementation Projection
 
+Worker Knowledge ask/tell and the maintained overview supply are not implemented. The accepted additions reuse `openkit-work`, CapabilityCall evidence and the Knowledge Manager runtime; this specification adds no new worker transport.
+
 The selected `openkit-repository` builtin and `repository_push` binding are removed. Retained captured calls whose tool left supply resolve to `denied-not-executed` before claim or Gateway contact under Pending Requests. Generic captured vendor MCP execution and configured approval remain implemented.
 
 The executable plane implements the three selected-MCP routes. NanoCore exposes authenticated `/capabilities/mcp/*` handlers, validates selected catalog and schema lineage, applies policy, runs the bounded upstream call, and records capability, usage, and audit outcomes. Sandbox Integration carries the separate capability token over its existing nested session and fixed native listener. The Codex, Pi, OpenCode, and DeepSeek adapters project selected servers on the native MCP path. No worker-visible upstream credential exists. The implementation uses the MCP SDK v2 packages named in Accepted Design, at `@modelcontextprotocol/client`, `@modelcontextprotocol/core`, and `@modelcontextprotocol/server` `2.2.0`. Upstream `tools/list` pagination is followed within a bounded page count. An approval-required call returns pending without an upstream effect, and a later grant executes the captured call. Unpinned `tools/list` uses the current Workspace snapshot, and ordinary calls re-observe live tools, so this projection does not establish a fixed per-Turn snapshot. Source-level adapter projection is not a live vendor call and is not product enablement of a runtime whose image owner still disables it.
@@ -238,12 +254,13 @@ No compatibility path exists. The implementation followed the order: fail-closed
 Mapped to `docs/specs/20260529-test_strategy.md`, using a deterministic stub MCP server harness:
 
 - Grant-time regressions change another allowed tool's retained `inputSchema` and an excluded tool's retained `inputSchema`. Each tracking case executes the original captured call once; pinned entries refuse the whole-snapshot drift before contact. Top-level tool description changes outside `inputSchema` do not refuse tracking calls. Changing any requested-tool schema content, including nested descriptions and annotations, or removing the requested tool refuses before upstream contact. The checks retain catalog, eligibility, authorization, Policy, credential, and claim refusals.
-- L0: schema-drift checks for catalog entry, schema snapshot, and route payload shapes; lint that no `memory` vocabulary and no MCP-native error strings appear in public schemas.
+- L0: schema-drift checks for catalog entry, schema snapshot, and route payload shapes; public schemas expose no User Memory selector or MCP-native error strings.
 - Catalog extension checks prove inactive import performs no contact, ordinary Workspace authority cannot activate changed host-executed stdio, non-secret package fields preserve Vault precedence, changed effective versions reject stale AEPs, and HTTP redirects contact neither same-origin nor cross-origin targets and leak no canary credentials.
 - Focused conformance proves retained raw bindings and digests remain unchanged; recognized presentation survives catalog round trips; unsupported presentation fails closed; bearer bytes are correct through the real SDK; raw custom-header, env, and existing query delivery remain exact; mixed-case collisions yield only the Vault value; raw/formatted/query-encoded canaries cannot escape; and missing credentials, stale bindings, revocation, rotation, authentication rejection, redirects, and approval-pending calls preserve their existing no-contact, no-replay, or honest-effect predicates.
 - L1: unit tests for argument validation against snapshots, pin-policy drift behavior, error normalization mapping, redaction filters, idle reaping and teardown-on-revocation triggers.
 - L2: contract tests on the capability plane: full lineage on every call record; schema snapshot id stamped; usage rows validate against `UsageRecordSchema` with `category: "tool"` and `unit: "tool_calls"`; denial paths yield only typed codes; canary credential values planted in server environment never appear in any worker-visible payload.
 - L3: NanoCore black-box tests: end-to-end call through a spawned stub server; server crash mid-call fails typed without hanging the turn; grant revocation tears down the spawned server and the next call fails typed; an approval-required call makes no upstream contact, records the denied raising `CapabilityCall`, returns `isError: true` with the pending fields, and leaves the Turn running; a grant after that Turn ended executes the captured call exactly once with the captured arguments, and a repeated identical call while pending returns the same request while changed arguments raise a new one; grant after policy, credential, or supply change records `denied-not-executed` with no contact; a crash between claim and finish yields `outcome-unknown` and no second execution; `tools/list` pages from a multi-page upstream are all followed; a tracking drift inside a Turn is seen only at the next Turn; both a stateless-era and a session-era client work against the worker-facing server; oversized result fails typed; `pinned` entry fails on drifted stub schema until re-pinned.
+- Built-in Knowledge checks discover identical ask/tell schemas across admitted harnesses, reject non-Task or scope-override calls before reads, and preserve audience isolation. Ask retains exact delivered answer bytes in the CapabilityCall and attributes model usage to Knowledge Manager. No confidence mark or second-model review is required. Tell cannot publish without current delegation or required proposal approval. Neither result substitutes selection evidence for S39 pushed-context delivery or fabricates completed Worker provenance.
 - A concurrent native-discovery regression supplies the two built-ins and one deterministic catalog server, overlaps their initialization requests at the real capability admission boundary, and verifies that every request is admitted without retry and every healthy selected server's expected tools are returned by discovery. A separate overflow case fills the current capability ceiling and verifies immediate HTTP 429 before semantic dispatch, preserved worker-control admission, and renewed admission after exchange completion or termination. A transport-only fixture proves admission and carriage, not the runtime's captured tool catalog.
 - L5: smoke: packaged build spawns the stub server and completes one governed tool call.
 - L6: story acceptance: public `task.start` drives a real checkpoint, execution attempt, AEP, session-continuity backend, worker-control lineage, and catalog-declared MCP tool; the marked call returns a pending result with no upstream contact while the Turn continues, the AgentSession stays bound, the grant executes the captured call through the gateway, and a later Turn on the same Thread delivers the outcome; audit shows the full call chain with no credential or raw payload leakage.

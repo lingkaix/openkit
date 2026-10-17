@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  constants,
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import {
   parseWorkspaceDataSourceCatalog,
@@ -29,6 +37,7 @@ import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
 } from '../workspace-deletion-request.js';
+import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
 import {
   RECURRING_PORTABLE_FEATURE,
   RECURRING_PORTABLE_PATHS,
@@ -48,10 +57,13 @@ import {
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
   listUnresolvedUserInputRequestItemIds,
+  measureCanonicalFile,
   parseCanonicalWorkspaceHistory,
   projectWorkspaceSystemRecord,
   readCanonicalFile,
   readCanonicalTextFile,
+  turnFilePayloadPath,
+  verifyTurnFileInputs,
 } from './workspace-file-records.js';
 import {
   parseWorkspaceRetrievalTraceFile,
@@ -160,12 +172,16 @@ export interface VerifiedWorkspaceExportTree {
   fileContents: ReadonlyMap<string, string>;
   /** Exact restricted original bytes, kept separate from canonical UTF-8 records. */
   binaryFileContents: ReadonlyMap<string, Uint8Array>;
+  /** Verified original payload paths for Artifacts and Turn inputs; never loaded into UTF-8 or binary body maps. */
+  artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Digest of the exact manifest bytes parsed by this verification. */
   manifestDigest: string;
 }
 
 /** Input for writing one workspace export tree. */
 export interface WriteWorkspaceExportTreeInput {
+  /** Current source root required when canonical Artifacts own file-backed originals. */
+  sourceWorkspaceRoot?: string;
   /** Trusted current administrator eligibility for including private project history; never caller input. */
   administratorEligible?: boolean;
   /** Exact internal deletion owner, revalidated before preserving private history. */
@@ -444,6 +460,20 @@ export function writeWorkspaceExportTree(
         };
       })
     );
+    for (const turn of history.turns) {
+      if (!turn.fileInputs?.length) continue;
+      if (!input.sourceWorkspaceRoot) throw new Error('Turn input payload source is unavailable.');
+      verifyTurnFileInputs(input.sourceWorkspaceRoot, turn);
+      for (const ordinal of turn.fileInputs.keys()) {
+        const target = turnFilePayloadPath(input.exportRoot, turn.threadId, turn.id, ordinal);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(
+          turnFilePayloadPath(input.sourceWorkspaceRoot, turn.threadId, turn.id, ordinal),
+          target,
+          constants.COPYFILE_EXCL
+        );
+      }
+    }
     for (const [turnId, text] of input.turnObservations ?? []) {
       const turn = history.turns.find((candidate) => candidate.id === turnId);
       if (!turn) {
@@ -496,6 +526,25 @@ export function writeWorkspaceExportTree(
     writeWorkspacePortableExportState(input.exportRoot, portableFileState);
     for (const artifact of history.artifacts) {
       const artifactRoot = join(input.exportRoot, 'artifacts', artifact.id);
+      if (artifact.content.format === 'file') {
+        if (!input.sourceWorkspaceRoot) throw new Error('Artifact payload source is unavailable.');
+        verifyArtifactFilePayload({
+          workspaceRoot: input.sourceWorkspaceRoot,
+          artifactId: artifact.id,
+          version: artifact.version,
+          byteLength: artifact.content.byteLength,
+          contentDigest: artifact.contentDigest,
+        });
+        const target = artifactFilePayloadPath(input.exportRoot, artifact.id, artifact.version);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(
+          artifactFilePayloadPath(input.sourceWorkspaceRoot, artifact.id, artifact.version),
+          target,
+          constants.COPYFILE_EXCL
+        );
+        writeJson(join(artifactRoot, 'artifact.json'), artifact);
+        continue;
+      }
       const filesRoot = join(artifactRoot, 'files');
 
       mkdirSync(filesRoot, { recursive: true });
@@ -755,11 +804,11 @@ export function writeWorkspaceExportTree(
       .map((path) => {
         assertWorkspaceArchiveFilePath(path);
         const filePath = join(input.exportRoot, path);
-        const bytes = readCanonicalFile(filePath);
+        const measured = measureCanonicalFile(filePath);
         return {
           path,
-          digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-          bytes: bytes.byteLength,
+          digest: measured.contentDigest,
+          bytes: measured.byteLength,
         };
       })
       .sort((left, right) => left.path.localeCompare(right.path));
@@ -962,6 +1011,7 @@ export function verifyWorkspaceExportTree(
   const expected = new Map(manifest.contentInventory.map((entry) => [entry.path, entry]));
   const fileContents = new Map<string, string>();
   const binaryFileContents = new Map<string, Uint8Array>();
+  const artifactPayloadFiles = new Map<string, string>();
   const actual = listRegularExportFiles(input.exportRoot).filter(
     (path) => path !== WORKSPACE_EXPORT_MANIFEST_FILE
   );
@@ -979,6 +1029,18 @@ export function verifyWorkspaceExportTree(
   }
 
   for (const entry of manifest.contentInventory) {
+    if (
+      /^artifacts\/[^/]+\/versions\/[1-9][0-9]*\/payload$/.test(entry.path) ||
+      /^threads\/[^/]+\/turns\/[^/]+\/inputs\/(0|[1-9][0-9]*)\/payload$/.test(entry.path)
+    ) {
+      const path = join(input.exportRoot, entry.path);
+      const measured = measureCanonicalFile(path);
+      if (measured.byteLength !== entry.bytes || measured.contentDigest !== entry.digest) {
+        throw new Error('Artifact export payload integrity is inconsistent.');
+      }
+      artifactPayloadFiles.set(entry.path, path);
+      continue;
+    }
     const bytes = readCanonicalFile(join(input.exportRoot, entry.path));
     if (bytes.byteLength !== entry.bytes) {
       throw new Error(`Size mismatch for export file ${entry.path}`);
@@ -1020,6 +1082,18 @@ export function verifyWorkspaceExportTree(
           .split('\n')
           .map((line) => ItemSchema.parse(JSON.parse(line)));
   const unresolvedUserInputRequestIds = listUnresolvedUserInputRequestItemIds(itemRevisions);
+  const inputPaths = new Set<string>();
+  for (const value of (fileContents.get('records/turns.jsonl') ?? '').split('\n').filter(Boolean)) {
+    const turn = TurnSchema.parse(JSON.parse(value));
+    verifyTurnFileInputs(input.exportRoot, turn);
+    for (const ordinal of (turn.fileInputs ?? []).keys()) {
+      inputPaths.add(`threads/${turn.threadId}/turns/${turn.id}/inputs/${ordinal}/payload`);
+    }
+  }
+  for (const path of artifactPayloadFiles.keys()) {
+    if (path.startsWith('threads/') && !inputPaths.has(path))
+      throw new Error('Export has an unowned Turn input payload.');
+  }
 
   if (unresolvedUserInputRequestIds.length > 0) {
     throw new Error(
@@ -1033,6 +1107,7 @@ export function verifyWorkspaceExportTree(
     checkedFiles: manifest.contentInventory.map((entry) => entry.path).sort(),
     fileContents,
     binaryFileContents,
+    artifactPayloadFiles,
     manifestDigest: digestText(manifestText),
   };
 }

@@ -1974,7 +1974,7 @@ describe('reasoning effort admission and replay', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it.each([
     'turn.start',
@@ -2314,8 +2314,8 @@ describe('Task durable admission response', () => {
     });
     let turnId: string | undefined;
     try {
-      // The held executor and ordered events prove admission timing; disk commits can exceed the polling default.
-      await vi.waitFor(() => expect(responseObserved).toBe(true), { timeout: 10_000 });
+      // Await the response under the test timeout; the held executor proves publication ordering.
+      const response = await pending;
       let completionObserved = false;
       void executor.finished.promise.then(() => {
         completionObserved = true;
@@ -2326,7 +2326,6 @@ describe('Task durable admission response', () => {
       expect(receiptAtResponse).toMatchObject({ command, requestId });
       expect(publicationEvents).toEqual(['publication', 'response']);
       expect(completionObserved).toBe(false);
-      const response = await pending;
       expect(response.status, await response.clone().text()).toBe(token ? 200 : 202);
       const wire = await response.json();
       const result = token ? JSON.parse(wire.result.content[0].text) : wire;

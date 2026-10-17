@@ -6,7 +6,7 @@ import {
   RetrySchedulerAdmissionResponseSchema,
   SchedulerAdmissionReadModelSchema,
 } from '@openkit/app-api-schemas';
-import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient, createCoreClient } from '@openkit/core-client';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -350,6 +350,7 @@ function schedulerItemsFor(workspaceId: string) {
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClient {
   return {
+    artifactFiles: createCoreClient({ baseUrl: 'http://core.test' }).artifactFiles,
     core: {
       meta: vi.fn().mockResolvedValue({}),
 
@@ -3949,7 +3950,7 @@ describe('Recovery and search', () => {
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -4064,7 +4065,7 @@ describe('Recovery and search', () => {
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         });

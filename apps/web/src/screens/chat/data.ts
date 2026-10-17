@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useConnectionFailure, useCoreClient } from '../../app/core-client';
 import type { ComposerWorkerEnvironmentOption, ComposerWorkerEnvironments } from '../../primitives';
 import { useWorkspaceStore } from '../workspace-store';
+import { submitConversationDraft } from './file-drafts';
 
 /** One item in a thread's stream (the protocol Item union, via the response type). */
 export type ThreadItem = ListThreadItemsResponse['items'][number];
@@ -52,6 +53,10 @@ export const chatKeys = {
 };
 
 export interface ConversationDraft {
+  /** Original client selections retained in TanStack mutation variables for exact retry. */
+  files?: File[];
+  /** Payload-bound consent from the existing Worker handoff confirmation. */
+  fileHandoffConfirmed?: true;
   input: string;
   targetRef: string;
   logicalModelId?: string;
@@ -733,11 +738,7 @@ export function useSendTurn() {
   return useMutation({
     mutationKey: chatKeys.submitMutation,
     mutationFn: async (input: ConversationSubmission) =>
-      client.operations['conversation.submit']({
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        ...input.draft,
-      }),
+      submitConversationDraft(client, input.workspaceId, input.threadId, input.draft),
     onSuccess: (response) => {
       void queryClient.invalidateQueries({
         queryKey: chatKeys.items(response.receivingWorkspaceId, response.receivingThreadId),
