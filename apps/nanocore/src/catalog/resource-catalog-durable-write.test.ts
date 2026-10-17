@@ -72,7 +72,9 @@ function snapshotFixture(kind: 'import' | 'portability', withCatalogAuthority = 
     {
       kind: 'file' as const,
       path: 'SKILL.md',
-      contentBase64: Buffer.from('# Durable Skill\n').toString('base64'),
+      contentBase64: Buffer.from(
+        '---\nname: durable\ndescription: Exercise durable snapshot publication.\n---\n# Durable Skill\n'
+      ).toString('base64'),
     },
     { kind: 'directory' as const, path: 'scripts' },
     {

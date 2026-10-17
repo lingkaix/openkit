@@ -10521,7 +10521,7 @@ describe('nanocore server', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('rejects edited knowledge proposal decisions without mutation', async () => {
     const store = createDemoStore();

@@ -83,6 +83,31 @@ export function readArtifactFileText(input: {
     input.maximumBytes > MAX_ARTIFACT_MATERIAL_TEXT_BYTES
   )
     throw new Error('Artifact text processor limit is invalid.');
+  const bytes = readArtifactFileBytes(input);
+  if (bytes === null) return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads complete original bytes within the native caller's explicit allocation bound.
+ * @param input Exact version-owned identity, integrity evidence and caller-owned maximum.
+ * @returns Verified unchanged bytes, or null when the original exceeds the caller's bound.
+ * @throws Error for an invalid bound or unavailable, changed or corrupt original.
+ */
+export function readArtifactFileBytes(input: {
+  readonly workspaceRoot: string;
+  readonly artifactId: string;
+  readonly version: number;
+  readonly byteLength: number;
+  readonly contentDigest: string;
+  readonly maximumBytes: number;
+}): Buffer | null {
+  if (!Number.isSafeInteger(input.maximumBytes) || input.maximumBytes < 0)
+    throw new Error('Artifact byte reader limit is invalid.');
   if (input.byteLength > input.maximumBytes) return null;
   const descriptor = openArtifactFilePayload(input);
   try {
@@ -97,7 +122,7 @@ export function readArtifactFileText(input: {
         Math.min(65_536, bytes.byteLength - position),
         position
       );
-      if (!count) throw new Error('The Artifact original changed during text reading.');
+      if (!count) throw new Error('The Artifact original changed during byte reading.');
       position += count;
     }
     const after = fstatSync(descriptor, { bigint: true });
@@ -107,12 +132,8 @@ export function readArtifactFileText(input: {
       before.ctimeNs !== after.ctimeNs ||
       after.nlink !== 1n
     )
-      throw new Error('The Artifact original changed during text reading.');
-    try {
-      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-    } catch {
-      return null;
-    }
+      throw new Error('The Artifact original changed during byte reading.');
+    return bytes;
   } finally {
     closeSync(descriptor);
   }
