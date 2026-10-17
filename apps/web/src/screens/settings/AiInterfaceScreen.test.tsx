@@ -525,9 +525,7 @@ describe('AI interface deployment-admin workflow', () => {
         });
         expect(getAccountQuota).not.toHaveBeenCalled();
       } else {
-        expect(
-          client.operations['provider-subscription.login-start']
-        ).not.toHaveBeenCalled();
+        expect(client.operations['provider-subscription.login-start']).not.toHaveBeenCalled();
       }
       if (exhausted) {
         await user.click(within(card).getByRole('button', { name: 'Refresh quota' }));
