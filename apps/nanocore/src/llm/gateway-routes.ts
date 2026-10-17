@@ -2160,9 +2160,9 @@ export function registerWorkerInferenceRoutes({
                     observedHttpRejection = status;
                     const { type, code, param, message } = details ?? {};
                     const selected = {
-                      ...(typeof type === 'string' ? { type } : {}),
-                      ...(typeof code === 'string' ? { code } : {}),
-                      ...(typeof param === 'string' ? { param } : {}),
+                      ...(typeof type === 'string' ? { type: type.slice(0, 200) } : {}),
+                      ...(typeof code === 'string' ? { code: code.slice(0, 200) } : {}),
+                      ...(typeof param === 'string' ? { param: param.slice(0, 200) } : {}),
                       ...(typeof message === 'string' ? { message: message.slice(0, 200) } : {}),
                     };
                     observedProviderError = Object.keys(selected).length ? selected : undefined;

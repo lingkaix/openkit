@@ -254,7 +254,10 @@ describe('stock Codex HTTP rejection diagnostics', () => {
 });
 
 describe('stock xAI HTTP rejection diagnostics', () => {
-  it('retains bounded typed HTTP 422 details without granting replay', async () => {
+  it.each([
+    'nested',
+    'flat',
+  ] as const)('retains bounded typed HTTP 422 details without granting replay: %s', async (shape) => {
     const models = createModels();
     models.setProvider(xaiProvider());
     const model = models
@@ -269,16 +272,31 @@ describe('stock xAI HTTP rejection diagnostics', () => {
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
       urls.push(input instanceof Request ? input.url : String(input));
       const response = new Response(
-        JSON.stringify({
-          error: {
-            type: 'schema_error',
-            code: 'tool_type_rejected',
-            param: 'tools[0].type',
-            message: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
-            body: 'body-canary',
-          },
-          private: 'unselected-canary',
-        }),
+        shape === 'invalid'
+          ? 'not JSON'
+          : shape === 'oversized'
+            ? JSON.stringify({ error: { message: 'x'.repeat(17 * 1024) } })
+            : JSON.stringify(
+                shape === 'nested'
+                  ? {
+                      error: {
+                        type: 'schema_error',
+                        code: 'tool_type_rejected',
+                        param: 'tools[0].type',
+                        message: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
+                        body: 'body-canary',
+                      },
+                      private: 'unselected-canary',
+                    }
+                  : {
+                      type: 'schema_error',
+                      code: 'tool_type_rejected',
+                      param: 'tools[0].type',
+                      error: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
+                      body: 'body-canary',
+                      private: 'unselected-canary',
+                    }
+              ),
         { status: 422 }
       );
       response.headers.set('x-private-provider', 'header-canary');
@@ -316,6 +334,10 @@ describe('stock xAI HTTP rejection diagnostics', () => {
     expect(attempted).toEqual(['0:0']);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(urls).toEqual(['https://api.x.ai/v1/responses']);
+    if (shape === 'invalid' || shape === 'oversized') {
+      expect(observe.mock.calls).toEqual([[422]]);
+      return;
+    }
     expect(observe.mock.calls).toEqual([
       [
         422,
