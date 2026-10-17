@@ -199,6 +199,32 @@ describe('exact Artifact candidate comparison', () => {
     expect(screen.queryByText('private membership failure')).not.toBeInTheDocument();
   });
 
+  it('hides an open cached comparison when the current successful list omits its membership', async () => {
+    list.mockResolvedValue({ items: [set] });
+    const { client } = mount();
+    await userEvent.click(
+      await screen.findByRole('button', { name: `Open comparison ${set.candidateSetId}` })
+    );
+    expect(await screen.findByText('# First exact original')).toBeVisible();
+    list.mockResolvedValue({ items: [] });
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['candidate-sets', workspaceId] });
+    });
+    expect(client.getQueryState(['candidate-set', workspaceId, set.candidateSetId])?.status).toBe(
+      'success'
+    );
+    expect(client.getQueryData(['candidate-sets', workspaceId])).toEqual([]);
+    await waitFor(() =>
+      expect(screen.queryByText('# First exact original')).not.toBeInTheDocument()
+    );
+    expect(screen.queryByRole('link', { name: 'Download version 1' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Record choice' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Use selected in next Turn' })
+    ).not.toBeInTheDocument();
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it('does not open a late create result after the user inspects another comparison', async () => {
     list.mockResolvedValue({ items: [set] });
     let settle!: (record: typeof set) => void;

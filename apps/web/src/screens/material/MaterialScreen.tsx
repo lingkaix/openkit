@@ -28,6 +28,7 @@ import {
   useWorkspaceMaterials,
   type WorkspaceMaterial,
 } from './data';
+import { MaterialJudgements } from './MaterialJudgements';
 import { RevisionHistory } from './RevisionHistory';
 import { ThreadMaterialPanel } from './ThreadMaterialPanel';
 
@@ -284,6 +285,18 @@ function MaterialDetail({
           />
         </>
       )}
+
+      {revision.data && selectedRevisionId ? (
+        <MaterialJudgements
+          key={`${workspaceId}:${materialId}:${selectedRevisionId}`}
+          workspaceId={workspaceId}
+          revision={revision.data.revision}
+          disabled={disconnected || revision.isFetching || material.isFetching}
+          unavailable={!revision.isSuccess || material.isError}
+          onInspect={() => setOpenedRevisionId(selectedRevisionId)}
+          onRefresh={async () => (await revision.refetch()).isSuccess}
+        />
+      ) : null}
 
       {!comparisonOpen && openedRevisionId ? (
         <Card>
