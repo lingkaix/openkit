@@ -37,6 +37,7 @@ import {
 } from './internal-agents/assistant-skill-resources.js';
 import type { ToolExecutionContext } from './internal-agents/internal-agent-loop.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
+import { createKnowledgeProposalPreviewOperationImplementations } from './knowledge/notebook-proposal-preview.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
@@ -74,6 +75,17 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
+  /** Bounded Knowledge Manager role supplied by application assembly. */
+  readonly knowledgeAgent?:
+    | {
+        readonly ask: (
+          input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        readonly maintain: (
+          input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
+      }
+    | undefined;
   readonly coreDb: CoreDb | undefined;
   /** Shared deployment-local channel and notification owners. */
   readonly channelServices?: ChannelServices;
@@ -226,6 +238,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),

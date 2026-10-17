@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   ListHumanAttentionResponseSchema,
+  operationToolName,
   StartTaskModeResponseSchema,
   SubmitConversationResponseSchema,
   WorkspaceExportResponseSchema,
@@ -40,7 +41,11 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from './auth/nanohost-transport-session.js';
-import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
+import {
+  finishCapabilityCall,
+  listWorkspaceCapabilityCalls,
+  startCapabilityCall,
+} from './capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -489,9 +494,18 @@ describe('worker MCP routes', () => {
     recordMcpWorkerLineage(coreDb, environmentPackage);
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const app = new Hono();
+    const knowledgeAnswer = {
+      threadId: testEntityId('th', 'km-query'),
+      turnId: testEntityId('tu', 'km-query'),
+      answer: 'The cited answer has exact bytes: é.',
+      citations: [],
+      uncertainty: 'Fixture delivery only.',
+    };
+    const askKnowledge = vi.fn(async () => knowledgeAnswer);
     registerWorkerMcpRoutes({
       app,
       coreDb,
+      knowledgeAgent: { ask: askKnowledge, maintain: vi.fn() },
       runtimeConfig: () =>
         createInMemoryRuntimeConfigSnapshot({
           dataRoot,
@@ -557,11 +571,40 @@ describe('worker MCP routes', () => {
       expect(sessionTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect(statelessTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect((await workClient.listTools()).tools.map((tool) => tool.name)).toEqual([
+        operationToolName('knowledge.ask'),
+        operationToolName('knowledge.tell'),
         'work_request_input',
         'work_list_peers',
         'work_read_peer',
         'work_submit_artifact',
       ]);
+      const delivered = await workClient.callTool({
+        name: operationToolName('knowledge.ask'),
+        arguments: { question: 'What is known?' },
+      });
+      expect(askKnowledge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          caller: 'worker',
+          workspaceId: turn.workspaceId,
+          question: 'What is known?',
+          access: expect.objectContaining({ outputThreadId: turn.threadId, outputTurnId: turn.id }),
+        })
+      );
+      const knowledgeDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      try {
+        const retained = listWorkspaceCapabilityCalls(knowledgeDb, turn.workspaceId).find(
+          (call) => call.extensions?.['openkit.knowledge/delivery']
+        );
+        expect(retained?.status).toBe('succeeded');
+        expect(JSON.parse(retained!.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
+          delivered
+        );
+        expect(delivered.content).toEqual([
+          { type: 'text', text: JSON.stringify(knowledgeAnswer) },
+        ]);
+      } finally {
+        knowledgeDb.sqlite.close();
+      }
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
       try {
@@ -1146,6 +1189,8 @@ describe('worker MCP routes', () => {
       expect(workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toHaveLength(1);
       const tools = (await client.listTools()).tools;
       expect(tools.map((tool) => tool.name)).toEqual([
+        operationToolName('knowledge.ask'),
+        operationToolName('knowledge.tell'),
         'work_request_input',
         'work_list_peers',
         'work_read_peer',

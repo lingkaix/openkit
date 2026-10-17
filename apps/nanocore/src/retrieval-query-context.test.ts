@@ -846,12 +846,18 @@ describe('retrieval query context, references, and query-owned traces', () => {
       }),
     ]);
     const sourceScope = 'page/server';
+    // Import remints the containing records while retaining the Server whose Knowledge was selected.
+    const importedQueryContext = {
+      ...original.queryContext,
+      serverId: fixture.store.getWorkspace(fixture.workspaceId).importedFrom!.sourceDeploymentId,
+    };
     const imported = KnowledgeRetrievalTraceSchema.parse({
       ...original,
+      queryContext: importedQueryContext,
       sourceScope,
       requestDigest: sha256(
         canonicalJson({
-          queryContext: original.queryContext,
+          queryContext: importedQueryContext,
           sourceScope,
           caller: original.caller,
           request: {

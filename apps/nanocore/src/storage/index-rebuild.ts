@@ -14,7 +14,6 @@ import {
   parseReferenceScope,
   type RetrievalTraceReference,
 } from '@openkit/protocol';
-import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
@@ -35,14 +34,18 @@ import {
 import { OperationError } from '../operation-error.js';
 import {
   admitKnowledgeRetrieval,
+  admitServerKnowledgeRetrieval,
   admitUserMemoryRetrieval,
   collectKnowledgeInventory,
+  collectServerKnowledgeInventory,
   collectUserMemoryInventory,
   currentKnowledgeReferenceProofs,
   type KnowledgeRetrievalAccess,
   knowledgePageConflicted,
+  knowledgePageDelegated,
   knowledgePageReadable,
   knowledgeSourceReferencesReadable,
+  readAuthorizedServerNotebookPages,
   readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
   resolveKnowledgeQueryContext,
@@ -585,12 +588,18 @@ export async function retrieveUserMemory(
   return retrieveNotebookSelection(input, true);
 }
 
-/** Shared governed selection for the two currently admitted notebook sources; it supplies facts, never an answer. */
+/** Shared governed selection for the admitted notebook sources; it supplies facts, never an answer. */
 async function retrieveNotebookSelection(
   input: RetrieveWorkspaceKnowledgeInput,
   memory: boolean
 ): Promise<KnowledgeRetrievalResponse> {
-  const admit = () => (memory ? admitUserMemoryRetrieval(input) : admitKnowledgeRetrieval(input));
+  const server = !memory && input.sourceScope === 'server';
+  const admit = () =>
+    memory
+      ? admitUserMemoryRetrieval(input)
+      : server
+        ? admitServerKnowledgeRetrieval(input)
+        : admitKnowledgeRetrieval(input);
   if (memory) admit();
   const queryContext = resolveKnowledgeQueryContext(input);
   if (!memory) admit();
@@ -624,15 +633,6 @@ async function retrieveNotebookSelection(
       'Knowledge pin is outside the selected source.',
       400
     );
-  if (normalized.sourceScope === 'server') {
-    if (
-      !input.access.coreDb ||
-      !input.access.requestActor ||
-      !isCurrentDeploymentAdministrator(input.access.coreDb, input.access.requestActor)
-    )
-      throw new OperationError('workspace_access_denied', 'Server Knowledge access denied.', 403);
-    throw new OperationError('knowledge_retrieval_failed', 'Server Knowledge is unavailable.', 503);
-  }
   if (!queryContext.threadId && (input.caller !== 'app-api' || input.access.actor.kind !== 'user'))
     throw new OperationError(
       'invalid_request',
@@ -649,27 +649,35 @@ async function retrieveNotebookSelection(
   const createdAt = input.now?.() ?? new Date().toISOString();
   const traceId = input.traceId ?? allocateEntityId('krt');
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
-  const memoryPages = memory ? readAuthorizedUserMemoryPages(input) : undefined;
-  const admittedPages = memoryPages ?? readAuthorizedWorkspaceNotebookPages(input);
+  const scopedPages = memory
+    ? readAuthorizedUserMemoryPages(input)
+    : server
+      ? readAuthorizedServerNotebookPages(input)
+      : undefined;
+  const admittedPages = scopedPages ?? readAuthorizedWorkspaceNotebookPages(input);
   const notebookRevision = admittedPages.notebookRevision;
   const pinnedInput = { ...input, notebookRevision };
   const pinnedPages = new Map(admittedPages.pages.map((page) => [page.id, page.content]));
   const scopeSchemaText =
-    memoryPages?.scopeSchemaText ?? readScopeKnowledgeSchemaText(workspaceRoot);
+    scopedPages?.scopeSchemaText ?? readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources =
-    memoryPages?.registeredSources ?? readRegisteredSources(workspaceRoot, input.workspaceId);
+    scopedPages?.registeredSources ?? readRegisteredSources(workspaceRoot, input.workspaceId);
   const expectedOwnerScope = memory
     ? { kind: 'user' as const, userId: input.access.requestActor!.userId }
-    : undefined;
+    : server
+      ? { kind: 'server' as const }
+      : undefined;
   const knowledgeIds = readKnowledgePageIds(pinnedPages);
   const service = getRetrievalService(
     input.dataRoot,
     memory
       ? resolveDataRootPath(input.dataRoot, 'users', input.access.requestActor!.userId)
-      : workspaceRoot
+      : server
+        ? resolveDataRootPath(input.dataRoot, 'server')
+        : workspaceRoot
   );
   await service.search({ mode: 'lexical', query: input.query, scopes: [], limit: 1 });
-  const indexes = memory ? undefined : readWorkspaceKnowledgeDerivedIndexes(pinnedInput);
+  const indexes = memory || server ? undefined : readWorkspaceKnowledgeDerivedIndexes(pinnedInput);
   const sourceReferencesByConcept = new Map<string, string[]>();
   const scores = new Map<string, number>();
   const addressedIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
@@ -690,7 +698,11 @@ async function retrieveNotebookSelection(
   }
 
   const collect = () =>
-    memory ? collectUserMemoryInventory(pinnedInput) : collectKnowledgeInventory(pinnedInput);
+    memory
+      ? collectUserMemoryInventory(pinnedInput)
+      : server
+        ? collectServerKnowledgeInventory(pinnedInput)
+        : collectKnowledgeInventory(pinnedInput);
   const before = collect();
   await service.publish(before.view, await service.inspect(before.view.scope));
   const matches = await service.search({
@@ -734,7 +746,7 @@ async function retrieveNotebookSelection(
   const validationRecords =
     indexes?.validation.records ??
     admittedPages.pages.map(({ id, content, contentDigest }) => {
-      const path = `memory/pages/${id}.md`;
+      const path = `${memory ? 'memory' : 'knowledge'}/pages/${id}.md`;
       const document = parseOkfDocument({ path, content }).document!;
       const report = validateKnowledgePageCandidate({
         path,
@@ -773,6 +785,12 @@ async function retrieveNotebookSelection(
   const selected: WorkspaceKnowledgeRetrievalCandidate[] = [];
   const excluded: WorkspaceKnowledgeRetrievalExclusion[] = [];
 
+  const pageReadable = (id: string, content: string) =>
+    memory ||
+    (server
+      ? readAuthorizedServerNotebookPages({ ...pinnedInput, pageIds: [id] }).pages[0]?.content ===
+        content
+      : knowledgePageReadable(pinnedInput, id, content));
   for (const candidate of candidates) {
     const record = validationByConcept.get(candidate.knowledgePageId);
 
@@ -880,16 +898,13 @@ async function retrieveNotebookSelection(
     if (!parsed.ok || !document || validation.conformance !== 'scope-schema-valid') {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest:
-          memory || knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
-            ? contentDigest
-            : null,
+        contentDigest: pageReadable(candidate.knowledgePageId, content) ? contentDigest : null,
         reason: 'lower_conformance',
       });
       continue;
     }
 
-    if (!memory && !knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)) {
+    if (!pageReadable(candidate.knowledgePageId, content)) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest: null,
@@ -904,16 +919,24 @@ async function retrieveNotebookSelection(
       !states.includes(
         stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
       ) ||
-      (!memory && knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId)) ||
-      (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
-      (reviewState === 'accepted' && !referenceProof)
+      (!memory && !server && knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId)) ||
+      (reviewState !== 'accepted' &&
+        reviewState !== 'user-authored' &&
+        !(
+          reviewState === 'delegated' &&
+          !memory &&
+          knowledgePageDelegated(
+            pinnedInput,
+            candidate.knowledgePageId,
+            content,
+            server ? 'server' : 'workspace'
+          )
+        )) ||
+      ((reviewState === 'accepted' || reviewState === 'delegated') && !referenceProof)
     ) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest:
-          memory || knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
-            ? contentDigest
-            : null,
+        contentDigest: pageReadable(candidate.knowledgePageId, content) ? contentDigest : null,
         reason: 'lower_conformance',
       });
       continue;
@@ -1064,6 +1087,8 @@ function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRe
     if (sourceScope !== `page/user/${input.access.requestActor?.userId}`)
       throw knowledgeTraceUnavailable();
     admitUserMemoryRetrieval(target);
+  } else if (trace.retrievalParameters.sourceScope === 'server') {
+    admitServerKnowledgeRetrieval(target);
   }
   return trace;
 }
@@ -1103,25 +1128,26 @@ function currentKnowledgeReferenceContent(
       throw error;
     }
   }
-  const importedFrom = input.access.store.getWorkspace(input.workspaceId).importedFrom;
-  const crossDeploymentImport =
-    importedFrom !== undefined && importedFrom.sourceDeploymentId !== serverId;
-  if (crossDeploymentImport && reference.scopeId === 'page/server')
+  // The selected trace's originating Server controls authority, not the Workspace's import history.
+  if (
+    reference.scopeId === 'page/server' &&
+    serverId !== resolveKnowledgeQueryContext(input).serverId
+  )
     throw knowledgeTraceUnavailable();
-  if (reference.scopeId !== `page/workspace/${input.workspaceId}`) {
-    if (
-      reference.scopeId === 'page/server' &&
-      input.access.coreDb &&
-      input.access.requestActor &&
-      isCurrentDeploymentAdministrator(input.access.coreDb, input.access.requestActor)
-    )
-      throw new OperationError(
-        'knowledge_source_unavailable',
-        'Knowledge trace source is unavailable.',
-        503
+  if (reference.scopeId === 'page/server') {
+    try {
+      return (
+        readAuthorizedServerNotebookPages({ ...input, pageIds: [reference.objectId] }).pages[0]
+          ?.content ?? null
       );
-    throw knowledgeTraceUnavailable();
+    } catch (error) {
+      if (error instanceof OperationError && error.status === 403)
+        throw knowledgeTraceUnavailable();
+      throw error;
+    }
   }
+  if (reference.scopeId !== `page/workspace/${input.workspaceId}`)
+    throw knowledgeTraceUnavailable();
   admitKnowledgeRetrieval(input);
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const current = readWorkspaceNotebookIndexSource(workspaceRoot, undefined, [reference.objectId]);
@@ -1181,6 +1207,19 @@ function currentKnowledgeReferenceContent(
 export function assertKnowledgeRetrievalTraceReadable(
   input: KnowledgeTraceReadInput
 ): KnowledgeRetrievalTrace {
+  return assertKnowledgeTraceProjectionReadable(input, 'full');
+}
+
+/** Verifies the KM selection projection, whose exclusions contain no digest or Source metadata. */
+export function assertKnowledgeRetrievalSelectionReadable(input: KnowledgeTraceReadInput): void {
+  assertKnowledgeTraceProjectionReadable(input, 'selection');
+}
+
+/** Current admission follows the bytes exposed by the chosen projection; full reads stay strict. */
+function assertKnowledgeTraceProjectionReadable(
+  input: KnowledgeTraceReadInput,
+  projection: 'full' | 'selection'
+): KnowledgeRetrievalTrace {
   const trace = readAdmittedKnowledgeTrace(input);
   if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
   const target = {
@@ -1192,10 +1231,10 @@ export function assertKnowledgeRetrievalTraceReadable(
       outputTurnId: trace.queryContext.turnId,
     },
   };
+  const entries = projection === 'full' ? [...trace.selected, ...trace.excluded] : trace.selected;
   const references = [
-    ...trace.selected.map((entry) => entry.reference),
-    ...trace.excluded.map((entry) => entry.reference),
-    ...trace.retrievalParameters.pinnedReferences,
+    ...entries.map((entry) => entry.reference),
+    ...(projection === 'full' ? trace.retrievalParameters.pinnedReferences : []),
   ];
   for (const reference of references) {
     if (reference.scopeId !== trace.sourceScope) throw knowledgeTraceUnavailable();
@@ -1206,8 +1245,11 @@ export function assertKnowledgeRetrievalTraceReadable(
         503
       );
   }
-  for (const entry of [...trace.selected, ...trace.excluded]) {
-    if (trace.retrievalParameters.sourceScope === 'user') {
+  for (const entry of entries) {
+    if (
+      trace.retrievalParameters.sourceScope === 'user' ||
+      trace.retrievalParameters.sourceScope === 'server'
+    ) {
       const content = currentKnowledgeReferenceContent(
         target,
         entry.reference,
@@ -1292,10 +1334,17 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
   const notebookRevision = trace.notebookRevision;
   const pinnedInput = { ...input, notebookRevision };
-  if (trace.retrievalParameters.sourceScope === 'user') {
-    admitUserMemoryRetrieval(input);
+  if (
+    trace.retrievalParameters.sourceScope === 'user' ||
+    trace.retrievalParameters.sourceScope === 'server'
+  ) {
+    const server = trace.retrievalParameters.sourceScope === 'server';
+    const admit = () =>
+      server ? admitServerKnowledgeRetrieval(input) : admitUserMemoryRetrieval(input);
+    admit();
     if (
-      trace.sourceScope !== `page/user/${input.access.requestActor!.userId}` ||
+      trace.sourceScope !==
+        (server ? 'page/server' : `page/user/${input.access.requestActor!.userId}`) ||
       trace.queryContext.threadId !== context.threadId
     )
       throw knowledgeTraceUnavailable();
@@ -1321,6 +1370,14 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         sha256Digest(content) !== selected.contentDigest ||
         !sameStrings(sourceRefs, selected.sourceReferences) ||
         stringFrontmatterField(document, 'openkit_status') !== 'active' ||
+        (server &&
+          !['accepted', 'user-authored'].includes(
+            stringFrontmatterField(document, 'review_state') ?? ''
+          ) &&
+          !(
+            stringFrontmatterField(document, 'review_state') === 'delegated' &&
+            knowledgePageDelegated(pinnedInput, selected.reference.objectId, content, 'server')
+          )) ||
         ['stale', 'expired'].includes(stringFrontmatterField(document, 'freshness') ?? '')
       )
         throw knowledgeTraceUnavailable();
@@ -1337,7 +1394,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         kind: kind === 'preference' || kind === 'task-summary' ? kind : 'project-context',
       });
     }
-    admitUserMemoryRetrieval(input);
+    admit();
     return pages;
   }
   const referenceProofs = currentKnowledgeReferenceProofs(pinnedInput);
@@ -1395,8 +1452,13 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       validation.errors.length > 0 ||
       document.conceptId !== selected.reference.objectId ||
       stringFrontmatterField(document, 'openkit_status') !== 'active' ||
-      (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
-      (reviewState === 'accepted' && !referenceProof) ||
+      (reviewState !== 'accepted' &&
+        reviewState !== 'user-authored' &&
+        !(
+          reviewState === 'delegated' &&
+          knowledgePageDelegated(pinnedInput, selected.reference.objectId, content)
+        )) ||
+      ((reviewState === 'accepted' || reviewState === 'delegated') && !referenceProof) ||
       sensitivity === 'restricted' ||
       sensitivity === 'confidential' ||
       freshness === 'stale' ||

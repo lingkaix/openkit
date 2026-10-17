@@ -569,7 +569,11 @@ const auth =
 
 readFileReserveBytes = () =>
   runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
+let prepareKnowledgeMaintenance: ((instant: string) => void) | undefined;
 const app = createApp({
+  onKnowledgeMaintenanceReady: (prepare) => {
+    prepareKnowledgeMaintenance = prepare;
+  },
   automationStore,
   fileAdmission,
   ...(auth ? { auth } : {}),
@@ -697,6 +701,9 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   },
 });
 recurringSchedules = startRecurringScheduleService({
+  prepareKnowledgeMaintenance: (instant) => {
+    prepareKnowledgeMaintenance?.(instant);
+  },
   schedules: automationStore,
   store,
   prepare: (occurrence) =>
