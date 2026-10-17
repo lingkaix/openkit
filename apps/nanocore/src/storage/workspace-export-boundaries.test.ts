@@ -33,6 +33,7 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
@@ -775,7 +776,7 @@ describe('workspace import route handles', () => {
       exportId
     );
     const nestedIndex = '# Imported topic index\n\nKeep this navigation byte-for-byte.\n';
-    const nestedLog = '# Imported topic log\n\nKeep this history byte-for-byte.\n';
+    const nestedLog = '# Imported topic log\n\n## 2026-10-16\n* Keep this history byte-for-byte.\n';
     const input = minimalExportInput(
       exportRoot,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -862,18 +863,21 @@ describe('workspace import route handles', () => {
 
     expect(response.status, await response.clone().text()).toBe(200);
     const result = (await response.json()) as { importedWorkspaceId: string };
-    const pagesRoot = join(
-      dataRoot,
-      'workspaces',
-      result.importedWorkspaceId,
-      'knowledge',
-      'pages'
-    );
-    expect(readFileSync(join(pagesRoot, 'index.md'), 'utf8')).toBe(
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        result.importedWorkspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const published = notebook.readRevision(notebook.publishedRevision()).files;
+    expect(published['topic/index.md']).toBe(nestedIndex);
+    expect(published['topic/log.md']).toBe(nestedLog);
+    expect(published['index.md']).toBe(
       '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n'
     );
-    expect(readFileSync(join(pagesRoot, 'topic', 'index.md'), 'utf8')).toBe(nestedIndex);
-    expect(readFileSync(join(pagesRoot, 'topic', 'log.md'), 'utf8')).toBe(nestedLog);
   });
 
   it.each([
