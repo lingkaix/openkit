@@ -192,8 +192,12 @@ export type DecideArtifactReviewInput = ReplayArtifactReviewDecisionInput & {
 /** Raw Artifact Review authority row including private request proof. */
 type ArtifactReviewRow = Omit<
   typeof artifactReviews.$inferSelect,
-  'rangeFeedback' | 'candidateSelections'
-> & { readonly rangeFeedbackJson: string | null; readonly candidateSelectionsJson: string };
+  'rangeFeedback' | 'candidateSelections' | 'judgements'
+> & {
+  readonly rangeFeedbackJson: string | null;
+  readonly candidateSelectionsJson: string;
+  readonly judgementsJson: string;
+};
 
 /** Portable Review owner retaining private decision request lineage. */
 export type ExportableArtifactReview = ArtifactReviewView & {
@@ -211,6 +215,7 @@ const REVIEW_SELECT = `SELECT
   decision, decision_actor_id AS decisionActorId,
   decision_request_id AS decisionRequestId, feedback, decided_at AS decidedAt,
   range_feedback AS rangeFeedbackJson, candidate_selections AS candidateSelectionsJson,
+  judgements AS judgementsJson,
   follow_up_turn_id AS followUpTurnId,
   applied_material_revision_id AS appliedMaterialRevisionId, created_at AS createdAt
 FROM artifact_reviews`;
@@ -956,6 +961,7 @@ function toView(row: ArtifactReviewRow): ArtifactReviewView {
     feedback: row.feedback,
     rangeFeedback: parseReviewJson(row.rangeFeedbackJson),
     candidateSelections: parseReviewJson(row.candidateSelectionsJson),
+    judgements: parseReviewJson(row.judgementsJson),
     decidedAt: row.decidedAt,
     followUpTurnId: row.followUpTurnId,
     appliedMaterialRevisionId: row.appliedMaterialRevisionId,

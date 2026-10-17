@@ -607,6 +607,7 @@ describe('database setup', () => {
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
         'workspace_0004_evaluation_candidates',
+        'workspace_0005_evaluation_judgements',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -932,6 +933,7 @@ describe('native Drizzle migrate', () => {
         ...before,
         range_feedback: null,
         candidate_selections: '[]',
+        judgements: '[]',
       });
       expect(listAppliedNativeMigrationIds(db.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
@@ -939,6 +941,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
         'workspace_0004_evaluation_candidates',
+        'workspace_0005_evaluation_judgements',
       ]);
     } finally {
       db.sqlite.close();

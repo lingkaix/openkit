@@ -18,6 +18,7 @@ import type {
   WorkspaceMaterialRevisionView,
   WorkspaceMaterialView,
 } from '@openkit/app-api-schemas';
+import { JudgementRecordSchema } from '@openkit/app-api-schemas';
 import { type ActorRef, deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 
 import type { WorkspaceDb } from './storage/db.js';
@@ -33,7 +34,10 @@ type WorkspaceMaterialErrorCode =
 type MaterialRow = WorkspaceMaterialView & { readonly lastMutationRequestId: string };
 
 /** Immutable revision authority row with private request proof. */
-type RevisionRow = WorkspaceMaterialRevisionView & { readonly createdByRequestId: string };
+type RevisionRow = Omit<WorkspaceMaterialRevisionView, 'judgements'> & {
+  readonly createdByRequestId: string;
+  readonly judgementsJson: string;
+};
 
 /**
  * Verifies a UTF-16 range against the exact immutable Material source.
@@ -152,7 +156,7 @@ FROM workspace_materials`;
 const REVISION_SELECT = `SELECT
   workspace_id AS workspaceId, material_id AS materialId, revision_id AS revisionId,
   parent_revision_id AS parentRevisionId, media_type AS mediaType,
-  content_digest AS contentDigest, content, author_id AS authorId,
+  content_digest AS contentDigest, content, author_id AS authorId, judgements AS judgementsJson,
   created_by_request_id AS createdByRequestId, created_at AS createdAt
 FROM workspace_material_revisions`;
 
@@ -775,7 +779,11 @@ function toRevisionSummary(row: RevisionRow): WorkspaceMaterialRevisionSummary {
 
 /** Projects a closed exact revision. @param row Authority row. @returns Public view. */
 function toRevisionView(row: RevisionRow): WorkspaceMaterialRevisionView {
-  return { ...toRevisionSummary(row), content: row.content };
+  return {
+    ...toRevisionSummary(row),
+    content: row.content,
+    judgements: JudgementRecordSchema.array().parse(JSON.parse(row.judgementsJson)),
+  };
 }
 
 /** Computes the exact UTF-8 digest. @param content Canonical content. @returns SHA-256 digest. */
