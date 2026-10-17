@@ -158,15 +158,14 @@ export type OperationOutput<K extends OperationId> = z.infer<
 export function operationHttpPath<K extends string>(id: K): `/api/app/operations/${K}` {
   return `/api/app/operations/${id}`;
 }
-/** Derives the provider/MCP spelling; assemblers check collisions across supplied Tools. */
+/** Derives the provider/MCP spelling by replacing dots only; assemblers check supplied Tool collisions. */
 export function operationToolName(id: string): string {
   return id.replaceAll('.', '_');
 }
 /**
  * Checks current logical operation and Tool names before their model projection.
  *
- * Reused contracts may repeat the same id. Distinct ids must remain distinct even
- * when a provider folds hyphens to underscores in their projected names.
+ * Reused contracts may repeat the same id. Distinct ids must remain distinct after wrappers also fold hyphens to underscores.
  *
  * @param ids Canonical ids from the actual composed declarations or supplied Tools.
  * @throws When an id has invalid grammar, exceeds the model limit, or collides.
