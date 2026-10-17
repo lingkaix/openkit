@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { constants } from 'node:fs';
-import { link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { link, lstat, mkdir, open, rename, rmdir, unlink } from 'node:fs/promises';
 import { isAbsolute, join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -81,7 +81,7 @@ export async function runFileEffect({ argv, stdin, stdout, stderr, slotRoots }) 
  *
  * @param {string[]} argv CLI arguments after the executable name.
  * @param {Record<string, string>} slotRoots Canonical slot-to-root projection.
- * @returns {{operation: 'reference.import', root: string, relativePath: string, length: number, digest: string, replace: boolean} | {operation: 'file.export', root: string, relativePath: string, allowMissing: boolean, live: boolean, maximum: number, slot: string}}
+ * @returns {{operation: 'reference.import', root: string, relativePath: string, entryKind: 'file', executable: boolean, length: number, digest: string, replace: boolean} | {operation: 'reference.import', root: string, relativePath: string, entryKind: 'directory', replace: false} | {operation: 'file.export', root: string, relativePath: string, allowMissing: boolean, live: boolean, maximum: number, slot: string}}
  */
 function parseCommand(argv, slotRoots) {
   if (!Array.isArray(argv) || !slotRoots || typeof slotRoots !== 'object') {
@@ -89,15 +89,35 @@ function parseCommand(argv, slotRoots) {
   }
 
   if (
-    argv.length === 9 &&
+    argv.length === 7 &&
+    argv[0] === 'reference.import' &&
+    argv[1] === '--slot' &&
+    argv[2] === 'worker-supply' &&
+    argv[3] === '--path' &&
+    argv[5] === '--entry-kind' &&
+    argv[6] === 'directory'
+  ) {
+    const relativePath = parseRelativePath(argv[4]);
+    const root = resolveWorkerSupplyRoot(slotRoots, relativePath);
+    return { entryKind: 'directory', operation: 'reference.import', relativePath, replace: false, root };
+  }
+
+  if (
+    argv.length === 13 &&
     argv[0] === 'reference.import' &&
     argv[1] === '--slot' &&
     argv[3] === '--path' &&
     argv[5] === '--length' &&
-    argv[7] === '--sha256'
+    argv[7] === '--sha256' &&
+    argv[9] === '--entry-kind' &&
+    argv[10] === 'file' &&
+    argv[11] === '--executable' &&
+    (argv[12] === 'true' || argv[12] === 'false')
   ) {
     const relativePath = parseRelativePath(argv[4]);
     const slot = argv[2];
+    const executable = argv[12] === 'true';
+    if (executable && slot !== 'worker-supply') throw new Error('invalid executable slot');
     const replace = slot === 'runtime-credential';
     const root =
       slot === 'package-config'
@@ -114,7 +134,16 @@ function parseCommand(argv, slotRoots) {
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error('invalid digest');
     }
-    return { digest, length, operation: 'reference.import', relativePath, replace, root };
+    return {
+      digest,
+      entryKind: 'file',
+      executable,
+      length,
+      operation: 'reference.import',
+      relativePath,
+      replace,
+      root,
+    };
   }
 
   const live = argv.includes('--artifact-submission');
@@ -189,7 +218,7 @@ function resolvePackageConfigRoot(slotRoots, relativePath) {
 }
 
 /**
- * Resolves one AgentSession-private worker-supply file namespace.
+ * Resolves one AgentSession-private worker-supply inventory namespace.
  *
  * @param {Record<string, string>} slotRoots Slot root projection.
  * @param {string} relativePath Validated import path.
@@ -287,9 +316,9 @@ function parseBoundedDecimal(value, maximum = MAX_FILE_BYTES) {
 }
 
 /**
- * Imports one verified stdin body through private fsynced atomic placement.
+ * Imports one inventory directory or verified file through the fixed placement path.
  *
- * @param {{root: string, relativePath: string, length: number, digest: string, replace: boolean}} command Parsed import command.
+ * @param {{root: string, relativePath: string, entryKind: 'file' | 'directory', executable?: boolean, length?: number, digest?: string, replace: boolean}} command Parsed import command.
  * @param {AsyncIterable<Uint8Array | string>} stdin Import body stream.
  * @param {NodeJS.WritableStream} stdout Result stream.
  * @returns {Promise<void>}
@@ -300,6 +329,27 @@ async function importReference(command, stdin, stdout) {
     command.relativePath,
     command.replace
   );
+  if (command.entryKind === 'directory') {
+    // NanoHost already verified empty carriage; its interactive sender stays open until this result.
+    await mkdir(target, { mode: 0o700 });
+    try {
+      const directory = await open(
+        target,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+      );
+      try {
+        await directory.chmod(0o700);
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+      await syncDirectory(parent);
+    } catch (error) {
+      await rmdir(target).catch(() => undefined);
+      throw error;
+    }
+    return;
+  }
   const partial = join(parent, `.openkit-file-effect-${randomUUID()}.partial`);
   let partialHandle;
   let placed = false;
@@ -308,9 +358,9 @@ async function importReference(command, stdin, stdout) {
     partialHandle = await open(
       partial,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600
+      command.executable ? 0o700 : 0o600
     );
-    await partialHandle.chmod(0o600);
+    await partialHandle.chmod(command.executable ? 0o700 : 0o600);
     const hash = createHash('sha256');
     let received = 0;
 

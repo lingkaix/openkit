@@ -25,6 +25,7 @@ RUN corepack enable \
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/protocol/package.json packages/protocol/package.json
 COPY packages/worker-protocol/package.json packages/worker-protocol/package.json
+COPY packages/config-schema/package.json packages/config-schema/package.json
 COPY packages/worker-shim/package.json packages/worker-shim/package.json
 COPY packages/codex-app-server-schema/package.json packages/codex-app-server-schema/package.json
 COPY packages/pi-runtime-host/package.json packages/pi-runtime-host/package.json
@@ -34,12 +35,14 @@ RUN pnpm install --frozen-lockfile
 
 COPY packages/protocol packages/protocol
 COPY packages/worker-protocol packages/worker-protocol
+COPY packages/config-schema packages/config-schema
 COPY packages/worker-shim packages/worker-shim
 COPY packages/codex-app-server-schema packages/codex-app-server-schema
 COPY packages/pi-runtime-host packages/pi-runtime-host
 
 RUN pnpm --filter @openkit/protocol build \
   && pnpm --filter @openkit/worker-protocol build \
+  && pnpm --filter @openkit/config-schema build \
   && pnpm --filter @openkit/worker-shim build \
   && pnpm --filter @openkit/pi-runtime-host build \
   && rm package.json \
