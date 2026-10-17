@@ -1245,7 +1245,7 @@ describe('Knowledge Manager answer operation', () => {
     });
     expect(
       roleTurns[0]!.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)
-    ).toEqual(['knowledge.retrieval', 'knowledge.page.read']);
+    ).toEqual(['knowledge.retrieval', 'knowledge.page.read', 'knowledge.result']);
     expect(body).not.toHaveProperty('confidence');
 
     coreDb.sqlite.close();

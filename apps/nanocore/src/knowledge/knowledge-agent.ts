@@ -14,6 +14,7 @@ import {
   runKnowledgeManagerAgent,
 } from '../internal-agents/knowledge-manager-agent.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
+import { OperationError } from '../operation-error.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import {
   admitKnowledgeRetrieval,
@@ -489,6 +490,7 @@ export async function askKnowledgeAgent(
                 }
               : {}),
           }),
+        resultSchema: schema(answerSchema),
         validateResult: (text) => {
           assertCurrent();
           const answer = answerSchema.parse(JSON.parse(text));
@@ -550,6 +552,12 @@ export async function askKnowledgeAgent(
           message: 'Knowledge query failed. Start a new request after inspection.',
         },
       });
-    throw error;
+    if (error instanceof OperationError) throw error;
+    throw new OperationError(
+      'knowledge_query_failed',
+      'Knowledge query failed. Inspect the retained Turn before a new request.',
+      422,
+      { cause: error, details: { threadId: thread.id, turnId: turn.id } }
+    );
   }
 }

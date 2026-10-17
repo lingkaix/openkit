@@ -16,7 +16,13 @@ import type { WorkspaceDb } from '../storage/db.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
-import { type AgentMessage, type AgentTool, runInternalAgentLoop } from './internal-agent-loop.js';
+import {
+  type AgentMessage,
+  type AgentTool,
+  type InternalAgentProviderCall,
+  type JsonSchema,
+  runInternalAgentLoop,
+} from './internal-agent-loop.js';
 import { resolveInternalRoleProfile } from './profile-resolver.js';
 import { internalContextFailure } from './rolling-context.js';
 
@@ -60,6 +66,8 @@ export interface KnowledgeManagerAgentRun {
   readonly signal: AbortSignal;
   readonly assertCurrent: () => void;
   readonly readEvidence: (items: readonly Item[]) => string;
+  /** The existing loop validates this result Tool schema before role output admission. */
+  readonly resultSchema: JsonSchema;
   /** Role output admission occurs before the Turn can claim successful completion. */
   readonly validateResult: (text: string) => void;
 }
@@ -170,13 +178,42 @@ async function executeKnowledgeManagerAgent(
     const { selection, threshold, limits } = pinKnowledgeManagerExecution(dependencies, input);
     const logicalModel = selection.logicalModel;
     const systemPrompt = assembleBuiltInSystemPrompt('knowledge-manager');
+    const signal = AbortSignal.any([input.signal, AbortSignal.timeout(limits.deadlineMs)]);
+    let resultText: string | undefined;
+    let usedToolCalls = 0;
+    const tools: AgentTool[] = [
+      ...input.tools.map((tool) => ({
+        ...tool,
+        execute: async (value: unknown, context: Parameters<AgentTool['execute']>[1]) => {
+          if (resultText !== undefined) throw new Error('Knowledge result is already submitted.');
+          usedToolCalls += 1;
+          return tool.execute(value, context);
+        },
+      })),
+      {
+        name: 'knowledge.result',
+        description:
+          'Finish this run by submitting the structured result. Use this Tool instead of a text answer. For maintenance, first submit the notebook candidate or no-change outcome through knowledge.notebook.update. A result grants no publication authority.',
+        inputSchema: input.resultSchema,
+        execute: async (value) => {
+          signal.throwIfAborted();
+          input.assertCurrent();
+          if (resultText !== undefined) throw new Error('Knowledge result is already submitted.');
+          usedToolCalls += 1;
+          const text = JSON.stringify(value);
+          input.validateResult(text);
+          resultText = text;
+          return { content: [{ type: 'text', text: 'Result accepted.' }] };
+        },
+      },
+    ];
     const commitMessages = createKnowledgeManagerTranscript(store, turn, turn.triggerActor);
     const result = await withTurnModelCapture(
       {
         store,
         turn,
         workspaceDb: input.workspaceDb,
-        environment: { systemPrompt, tools: input.tools },
+        environment: { systemPrompt, tools },
       },
       async (capture) => {
         const ordinary = createInternalAgentGatewayProvider({
@@ -225,35 +262,81 @@ async function executeKnowledgeManagerAgent(
           commitMessages,
           callProvider: ordinary,
         });
-        const exit = await runInternalAgentLoop(
-          {
-            systemPrompt,
-            messages: input.messages,
-            tools: input.tools,
-            model: {
-              logicalModelId: logicalModel.id,
-              capabilities: logicalModel.capabilities,
-              modelFamilyId: logicalModel.modelFamilyId,
-            },
-            limits,
-            signal: input.signal,
-          },
-          provider
-        );
-        commitMessages(exit.messages);
-        input.assertCurrent();
-        if (exit.kind !== 'quiescent')
-          throw new Error(
-            `Knowledge Manager run ended: ${exit.kind}${'code' in exit ? ` (${exit.code})` : ''}.`
+        // A final text response or rejected result call gets one repair response, within the same
+        // captured Provider, compaction call budget and absolute deadline. Notebook effects are not retried.
+        let repairUsed = false;
+        let repairResponseReceived = false;
+        let resultRequested = false;
+        const callIds = new Set<string>();
+        const resultProvider: InternalAgentProviderCall = async (request) => {
+          request.signal.throwIfAborted();
+          input.assertCurrent();
+          // The result Tool is terminal. End the loop without another Provider effect.
+          if (resultText !== undefined)
+            return { message: { role: 'assistant', content: [], truncated: false } };
+          if (repairResponseReceived) throw new Error('Knowledge result repair failed.');
+          if (resultRequested) repairUsed = true;
+          const response = await provider(request);
+          if (repairUsed) repairResponseReceived = true;
+          for (const part of response.message.content) {
+            if (part.type !== 'toolCall') continue;
+            if (callIds.has(part.callId) || (repairUsed && part.name !== 'knowledge.result'))
+              throw new Error('Knowledge result repair has invalid Tool calls.');
+            callIds.add(part.callId);
+          }
+          resultRequested = response.message.content.some(
+            (part) => part.type === 'toolCall' && part.name === 'knowledge.result'
           );
-        const last = exit.messages.at(-1);
-        const text =
-          last?.role === 'assistant'
-            ? last.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
-            : '';
-        if (!text.trim()) throw new Error('Knowledge Manager returned no answer.');
-        input.validateResult(text);
-        return text;
+          return response;
+        };
+        const loopInput = {
+          systemPrompt,
+          messages: input.messages,
+          tools,
+          model: {
+            logicalModelId: logicalModel.id,
+            capabilities: logicalModel.capabilities,
+            modelFamilyId: logicalModel.modelFamilyId,
+          },
+          limits,
+          signal,
+        };
+        let exit = await runInternalAgentLoop(loopInput, resultProvider);
+        commitMessages(exit.messages);
+        if (resultText === undefined && exit.kind === 'quiescent' && !repairUsed) {
+          repairUsed = true;
+          if (usedToolCalls >= limits.maxToolCalls)
+            throw new Error('Knowledge Tool budget is exhausted.');
+          exit = await runInternalAgentLoop(
+            {
+              ...loopInput,
+              messages: [
+                ...exit.messages,
+                {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'text',
+                      text: 'The run has no accepted result. Call knowledge.result with its required fields now. Plain text is not a result. Do not repeat notebook effects.',
+                    },
+                  ],
+                },
+              ],
+              limits: {
+                ...limits,
+                maxModelTurns: 1,
+                maxToolCalls: limits.maxToolCalls - usedToolCalls,
+              },
+            },
+            resultProvider
+          );
+          commitMessages(exit.messages);
+        }
+        signal.throwIfAborted();
+        input.assertCurrent();
+        if (resultText === undefined)
+          throw new Error(`Knowledge Manager returned no accepted result (${exit.kind}).`);
+        return resultText;
       }
     );
     store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
