@@ -5,8 +5,11 @@ import {
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import { readMemorySuppressions } from '../knowledge/memory-maintenance.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
+import { userMemoryRoot } from '../storage/fs-layout.js';
 import { canonicalJsonText, type PendingRequestRecord } from './pending-requests.js';
 
 /** Inclusive encoded presentation limits, independent of capture and delivery limits. */
@@ -49,6 +52,25 @@ export function projectApprovalEffect(input: {
   )
     return { status: 'unavailable', reason: 'Current Thread access is unavailable.' };
   try {
+    if (record.governedIntent?.operation === 'memory.forget') {
+      // Retained confirmation evidence must not become a model-readable copy of forgotten Memory.
+      const owner = record.governedIntent.ownerScope as
+        | { kind?: unknown; userId?: unknown }
+        | undefined;
+      const pageId = record.governedIntent.pageId;
+      if (
+        !coreDb ||
+        !isCanonicalUserActive(coreDb, record.responsibleUserId) ||
+        owner?.kind !== 'user' ||
+        owner.userId !== record.responsibleUserId ||
+        typeof pageId !== 'string' ||
+        readMemorySuppressions(
+          userMemoryRoot(coreDb.dataRoot, record.responsibleUserId),
+          record.responsibleUserId
+        ).some((row) => row.payload.pageId === pageId)
+      )
+        return { status: 'unavailable', reason: 'The Memory target is unavailable.' };
+    }
     const intent = record.serverId
       ? JSON.parse(record.canonicalArgumentsJson!)
       : record.governedIntent;

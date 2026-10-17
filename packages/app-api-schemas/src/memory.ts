@@ -39,12 +39,13 @@ const PageFactsSchema = z.object({
 export const MemoryPublicationSchema = z.object({
   outcome: z.literal('published'),
   ownerScope: MemoryOwnerSchema,
-  baseRevision: z.string().min(1),
+  baseRevision: z.string().min(1).nullable(),
   notebookRevision: z.string().min(1),
   changedPageIds: z.array(PageIdSchema).max(256),
   receiptRef: z
     .object({
       operation: z.enum([
+        'knowledge.create',
         'knowledge.notebook.update',
         'knowledge.notebook.restore',
         'knowledge.delete',
@@ -66,13 +67,16 @@ export const ChangeMemoryPageRequestSchema = z
   })
   .strict();
 
-/** Server-captured Item confirmation binds exact target bytes and an existing private Assistant context. */
+/** Null base is an explicit first save into a new User scope, never a missing-store recovery request. */
+export const CreateMemoryPageRequestSchema = ChangeMemoryPageRequestSchema.extend({
+  baseRevision: ChangeMemoryPageRequestSchema.shape.baseRevision.nullable(),
+});
+
+/** Server-captured Item confirmation binds exact target bytes to a private person command. */
 export const PrepareMemoryForgetRequestSchema = z
   .object({
     requestId: RequestIdSchema,
     workspaceId: WorkspaceIdSchema,
-    threadId: ThreadIdSchema,
-    turnId: TurnIdSchema,
     pageId: PageIdSchema,
     notebookRevision: z.string().min(1),
     digest: DigestSchema,
@@ -92,13 +96,6 @@ const self = {
 
 /** Explicit source-free self management; no Worker, automatic capture or caller-selected owner is admitted. */
 export const MEMORY_OPERATION_DEFINITIONS = {
-  'memory.notebook.initialize': {
-    ...self,
-    description: 'Initialize an empty personally owned Memory notebook explicitly.',
-    inputSchema: z.object({ requestId: RequestIdSchema }).strict(),
-    outputSchema: z.object({ ownerScope: MemoryOwnerSchema, notebookRevision: z.string().min(1) }),
-    mutating: true,
-  },
   'memory.list': {
     ...self,
     description: 'List current personally authored Memory without disclosing suppressed entries.',
@@ -124,7 +121,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
   'memory.create': {
     ...self,
     description: 'Save exact personally authored Memory under a new page identity.',
-    inputSchema: ChangeMemoryPageRequestSchema,
+    inputSchema: CreateMemoryPageRequestSchema,
     outputSchema: MemoryPublicationSchema,
     mutating: true,
   },
@@ -164,6 +161,9 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     inputSchema: PrepareMemoryForgetRequestSchema,
     outputSchema: z.object({
       pendingRequestId: RequestIdSchema,
+      workspaceId: WorkspaceIdSchema,
+      threadId: ThreadIdSchema,
+      turnId: TurnIdSchema,
       itemId: z.string().min(1),
       ownerScope: MemoryOwnerSchema,
       pageId: PageIdSchema,

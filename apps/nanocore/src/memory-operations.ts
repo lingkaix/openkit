@@ -1,23 +1,34 @@
-import { existsSync } from 'node:fs';
-import type { MEMORY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { existsSync, lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  MEMORY_OPERATION_DEFINITIONS,
+  MemoryPublicationSchema,
+  type OperationInput,
+} from '@openkit/app-api-schemas';
 import { z } from 'zod';
-import { applyMemoryForget, prepareMemoryForget } from './knowledge/memory-forget.js';
+import { applyMemoryForget, prepareMemoryForgetCommand } from './knowledge/memory-forget.js';
 import {
   diffMemoryHistory,
   readMemoryHistory,
   restoreMemoryHistory,
 } from './knowledge/memory-history.js';
 import {
+  admitMemoryContext,
   editMemoryPage,
   listMemoryPages,
   type MemoryWriter,
+  memoryPageFacts,
   readMemoryPage,
   saveMemoryPage,
 } from './knowledge/memory-lifecycle.js';
-import { MemoryPageUnavailableError } from './knowledge/memory-maintenance.js';
-import { NotebookError } from './knowledge/notebook.js';
 import {
-  initializeScopedNotebook,
+  assertMemoryPagesNotSuppressed,
+  MemoryPageUnavailableError,
+} from './knowledge/memory-maintenance.js';
+import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
+import { initializeNotebook } from './knowledge/notebook-initialization.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './knowledge/okf.js';
+import {
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
 } from './knowledge/scoped-notebook-owner.js';
@@ -28,11 +39,97 @@ import {
   publicOperationActor,
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
-import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
 import { openUserDb } from './storage/db.js';
 import { userDbPath } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+
+/** First explicit save owns fresh scope creation; existing or lost notebooks are never initialized again. */
+function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {
+  const owner = admitMemoryContext(writer);
+  const path = `${input.pageId}.md`;
+  if (!memoryPageFacts(path, input.content)) throw new NotebookError('invalid_request');
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(owner.notebookRoot, 'notebook.git'),
+  });
+  const ownerScope = { kind: 'user' as const, userId: writer.userDb.userId };
+  const project = (revision: string) => {
+    admitMemoryContext(writer);
+    assertMemoryPagesNotSuppressed(owner.notebookRoot, writer.userDb.userId, [path]);
+    notebook.history({ revision, limit: 1 });
+    const selected = notebook.readRevision(revision);
+    if (
+      selected.files[path] !== input.content ||
+      selected.metadata.changeRequest.requestId !== input.requestId
+    )
+      throw new NotebookError('recovery_required');
+    return {
+      outcome: 'published' as const,
+      ownerScope,
+      baseRevision: null,
+      notebookRevision: revision,
+      changedPageIds: [input.pageId],
+      receiptRef: {
+        operation: 'knowledge.create' as const,
+        requestId: input.requestId,
+        ownerScope,
+      },
+    };
+  };
+  return runIdempotentCommand({
+    store: writer.store,
+    receiptDb: writer.userDb,
+    inflightCommands: writer.inflightCommands,
+    command: 'knowledge.create',
+    requestId: input.requestId,
+    scope: { userId: writer.userDb.userId, actorId: writer.actor!.userId },
+    input,
+    responseKind: 'knowledge_notebook_revision',
+    responseId: (result) => result.notebookRevision,
+    replay: (receipt) => project(receipt.response.id),
+    execute: () => {
+      if (lstatSync(owner.notebookRoot, { throwIfNoEntry: false }))
+        throw new NotebookError('conflict');
+      if (
+        writer.userDb.sqlite
+          .prepare(
+            "SELECT 1 FROM audit_events WHERE action = 'knowledge.notebook.initialize' LIMIT 1"
+          )
+          .get()
+      )
+        throw new NotebookError('recovery_required');
+      const revalidate = () => {
+        admitMemoryContext(writer);
+        const maintenance = writer.runtimeConfigManager
+          .current()
+          .userConfigs.find(({ userId }) => userId === writer.userDb.userId)
+          ?.config.knowledgeMaintenance;
+        if (maintenance?.reviewRequiredPageIds.includes(input.pageId))
+          throw new NotebookError('review_required');
+        return {
+          scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+          reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
+          registeredSources: new Map<string, string | null>(),
+          resolvedReferences: new Map<string, ReadonlySet<string>>(),
+        };
+      };
+      return project(
+        initializeNotebook({
+          notebookRoot: owner.notebookRoot,
+          owner: { kind: 'user', userDb: writer.userDb },
+          files: { [path]: input.content },
+          revalidate,
+          initialization: {
+            requestId: input.requestId,
+            producer: { kind: 'user', id: writer.userDb.userId },
+            instructionReference: `memory.create:${input.requestId}`,
+          },
+        })
+      );
+    },
+  });
+}
 
 /** Fixed public errors preserve scope privacy and never expose Git, decoder or filesystem details. */
 function memoryFailure(error: unknown): never {
@@ -107,36 +204,44 @@ export function createMemoryOperationImplementations(
       }
     });
   return {
-    'memory.notebook.initialize': (input, context) =>
+    'memory.list': (_input, context) =>
+      self(context, (writer) =>
+        MEMORY_OPERATION_DEFINITIONS['memory.list'].outputSchema.parse(listMemoryPages(writer))
+      ),
+    'memory.read': (input, context) =>
+      self(context, (writer) =>
+        MEMORY_OPERATION_DEFINITIONS['memory.read'].outputSchema.parse({
+          page: readMemoryPage(writer, input.pageId),
+        })
+      ),
+    'memory.create': (input, context) =>
       self(
         context,
-        (writer) => ({
-          ownerScope: { kind: 'user' as const, userId: writer.userDb.userId },
-          notebookRevision: initializeScopedNotebook({
-            ...writer,
-            target: { kind: 'user' },
-            initialization: {
-              requestId: input.requestId,
-              instructionReference: `memory.notebook.initialize:${input.requestId}`,
-            },
-          }),
-        }),
-        true
+        async (writer) =>
+          MemoryPublicationSchema.parse(
+            await (input.baseRevision === null
+              ? createFreshMemory(writer, input)
+              : saveMemoryPage(writer, { ...input, baseRevision: input.baseRevision }))
+          ),
+        input.baseRevision === null
       ),
-    'memory.list': (_input, context) => self(context, (writer) => listMemoryPages(writer)),
-    'memory.read': (input, context) =>
-      self(context, (writer) => ({ page: readMemoryPage(writer, input.pageId) })),
-    'memory.create': (input, context) => self(context, (writer) => saveMemoryPage(writer, input)),
-    'memory.update': (input, context) => self(context, (writer) => editMemoryPage(writer, input)),
+    'memory.update': (input, context) =>
+      self(context, async (writer) =>
+        MemoryPublicationSchema.parse(await editMemoryPage(writer, input))
+      ),
     'memory.notebook.history': (input, context) =>
       self(context, (writer) => readMemoryHistory(writer, input)),
     'memory.notebook.diff': (input, context) =>
       self(context, (writer) => diffMemoryHistory(writer, input)),
     'memory.notebook.restore': (input, context) =>
-      self(context, (writer) => restoreMemoryHistory(writer, input)),
+      self(context, async (writer) =>
+        MemoryPublicationSchema.parse(await restoreMemoryHistory(writer, input))
+      ),
     'memory.forget.prepare': (input, context) =>
-      forget(context, input.workspaceId, (writer) => prepareMemoryForget(writer, input)),
+      forget(context, input.workspaceId, (writer) => prepareMemoryForgetCommand(writer, input)),
     'memory.forget': (input, context) =>
-      forget(context, input.workspaceId, (writer) => applyMemoryForget(writer, input)),
+      forget(context, input.workspaceId, async (writer) =>
+        MemoryPublicationSchema.parse(await applyMemoryForget(writer, input))
+      ),
   } satisfies FamilyImplementations<typeof MEMORY_OPERATION_DEFINITIONS>;
 }
