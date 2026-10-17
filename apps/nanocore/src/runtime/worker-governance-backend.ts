@@ -326,19 +326,34 @@ export interface NanoHostFileImportSource {
   open(signal: AbortSignal): AsyncIterable<Uint8Array>;
 }
 
-/** One verified regular file from the immutable generated Context Package. */
+/** One verified file or directory from the immutable AEP, Skill or Context inputs. */
 export type NanoHostContextPackageImport = {
-  /** Exact source byte length from the recomputed inventory. */
-  readonly byteLength: number;
-  /** Lowercase SHA-256 identity from the recomputed inventory. */
-  readonly contentDigest: string;
-  /** Path relative to the declared Context Package slot. */
+  /** Path relative to the declared package slot. */
   readonly relativePath: string;
   /** Exact declared package slot. */
   readonly slot: string;
 } & (
-  | { readonly body: Buffer; readonly source?: never }
-  | { readonly source: NanoHostFileImportSource; readonly body?: never }
+  | {
+      /** A retained directory carries no file metadata or bytes. */
+      readonly entryKind: 'directory';
+      readonly body?: never;
+      readonly source?: never;
+      readonly byteLength?: never;
+      readonly contentDigest?: never;
+      readonly executable?: never;
+    }
+  | ({
+      /** A regular file carries its exact normalized executable flag. */
+      readonly entryKind: 'file';
+      readonly executable: boolean;
+      /** Exact source byte length from the recomputed inventory. */
+      readonly byteLength: number;
+      /** Lowercase SHA-256 identity from the recomputed inventory. */
+      readonly contentDigest: string;
+    } & (
+      | { readonly body: Buffer; readonly source?: never }
+      | { readonly source: NanoHostFileImportSource; readonly body?: never }
+    ))
 );
 
 /** Product-private result returned after one raw export is atomically staged. */
@@ -351,11 +366,11 @@ export interface NanoHostStagedExportResult {
 }
 
 /**
- * Prepares the canonical AEP, then declared worker-supply files, then Context Package imports.
+ * Captures verified immutable inputs and returns AEP, worker-supply, then Context imports.
  *
  * @param environmentPackage Immutable AEP containing the exact generated input and root digest.
  * @param context NanoCore-private roots available to the selected backend.
- * @returns Canonical package-config first, then worker-supply files, then sorted Context Package files.
+ * @returns Canonical package-config first, then complete worker-supply entries, then sorted Context Package files.
  * @throws Error when the AEP, worker-supply snapshot, or Context Package lineage, bytes, or root proof is invalid.
  */
 export async function prepareNanoHostContextPackageImports(
@@ -403,18 +418,19 @@ export async function prepareNanoHostContextPackageImports(
   }
   const canonicalPackage = serializeCanonicalAgentEnvironmentPackage(environmentPackage);
   const packageConfigImport: NanoHostContextPackageImport = {
+    entryKind: 'file',
+    executable: false,
     body: canonicalPackage.body,
     byteLength: canonicalPackage.body.byteLength,
     contentDigest: `sha256:${createHash('sha256').update(canonicalPackage.body).digest('hex')}`,
     relativePath: inputPaths.packageRelativePath,
     slot: 'package-config',
   };
-  const workerSupplyImports = await prepareWorkerSupplyImports(
-    environmentPackage,
-    context.dataRoot
-  );
   if (candidates.length === 0) {
-    return [packageConfigImport, ...workerSupplyImports];
+    return [
+      packageConfigImport,
+      ...(await prepareWorkerSupplyImports(environmentPackage, context.dataRoot)),
+    ];
   }
   const input = canonicalPackage.environmentPackage.workspace.inputs.find(
     (candidate) => candidate.id === expectedInputId
@@ -444,27 +460,34 @@ export async function prepareNanoHostContextPackageImports(
   if (workspaceBundleFileInventoryDigest(fileInventory) !== expectedRootDigest) {
     throw new Error('NanoHost Context Package root digest does not match its file inventory.');
   }
+  // Capture Context first so the existing eligibility check for all selected Skills follows every Context read.
+  const workerSupplyImports = await prepareWorkerSupplyImports(
+    environmentPackage,
+    context.dataRoot
+  );
   return [
     packageConfigImport,
     ...workerSupplyImports,
-    ...files.map((file) => ({
-      source: file.source,
-      byteLength: file.byteLength,
-      contentDigest: file.contentDigest,
-      relativePath: `${inputPaths.contextRelativePath}/${file.path}`,
-      slot: 'context',
-    })),
+    ...files.map(
+      (file): NanoHostContextPackageImport => ({
+        entryKind: 'file',
+        executable: false,
+        source: file.source,
+        byteLength: file.byteLength,
+        contentDigest: file.contentDigest,
+        relativePath: `${inputPaths.contextRelativePath}/${file.path}`,
+        slot: 'context',
+      })
+    ),
   ];
 }
 
 /**
  * Projects the catalog's verified retained entry collection into worker-supply imports.
  *
- * Directory and executable facts remain in the AEP inventory; the existing import contract carries file bytes only.
- *
  * @param environmentPackage Admitted AEP whose exact selection must match retained catalog authority.
  * @param dataRoot Workspace data root holding catalog snapshots.
- * @returns Sorted regular-file imports, or an empty list when no Skills are supplied.
+ * @returns Sorted directory and regular-file imports, or an empty list when no Skills are supplied.
  * @throws CatalogNotFoundError or CatalogIntegrityError when retained supply or its AEP claims are unavailable or changed.
  */
 async function prepareWorkerSupplyImports(
@@ -534,20 +557,25 @@ async function prepareWorkerSupplyImports(
         `Skill version changed during Worker supply admission: ${skill.id}/${digest}`
       );
     }
-    const files = entries
-      .filter((entry) => entry.kind !== 0)
-      .sort((left, right) => left.path.localeCompare(right.path));
-    for (const file of files) {
-      // The shared reader proved both this captured body and its exact inventory row.
-      const body = file.content!;
-      const contentDigest = version.inventory.find((row) => row.path === file.path)!.sha256!;
-      imports.push({
-        body,
-        byteLength: body.byteLength,
-        contentDigest,
-        relativePath: `${inputPaths.supplyRelativePath}/${skill.id}/${file.path}`,
+    for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
+      const destination = {
+        relativePath: `${inputPaths.supplyRelativePath}/${skill.id}/${entry.path}`,
         slot: 'worker-supply',
-      });
+      };
+      if (entry.kind === 0) {
+        imports.push({ ...destination, entryKind: 'directory' });
+      } else {
+        // The shared reader proved this captured body, executable flag and exact inventory row.
+        const body = entry.content!;
+        imports.push({
+          ...destination,
+          entryKind: 'file',
+          executable: entry.kind === 2,
+          body,
+          byteLength: body.byteLength,
+          contentDigest: version.inventory.find((row) => row.path === entry.path)!.sha256!,
+        });
+      }
     }
   }
   return imports;

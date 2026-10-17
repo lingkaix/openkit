@@ -13,7 +13,7 @@ import {
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
 import type { ActorRef, TurnSchema } from '@openkit/protocol';
-import { isEntityId, isSealedTurnTerminal } from '@openkit/protocol';
+import { allocateEntityId, isEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -52,6 +52,7 @@ import {
 } from './auth/nanohost-transport-session.js';
 import {
   authorizeWorkspace,
+  currentWorkspaceAuthority,
   isWorkspaceOperationAuthorized,
   registerOperationAccessGuards,
   requireCurrentDeploymentAdmin,
@@ -75,8 +76,19 @@ import {
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
+import { uuidv5 } from './generative-kernel/uuid.js';
+import {
+  pinKnowledgeManagerExecution,
+  runKnowledgeManagerAgent,
+} from './internal-agents/knowledge-manager-agent.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
+import { askKnowledgeAgent } from './knowledge/knowledge-agent.js';
+import { prepareKnowledgeMaintenance } from './knowledge/knowledge-agent-maintenance.js';
+import { runKnowledgeMaintenanceCommand } from './knowledge/knowledge-maintenance-command.js';
+import { scanDailyKnowledgeMaintenance } from './knowledge/knowledge-maintenance-schedule.js';
 import { checkMemoryForgetIntent } from './knowledge/memory-forget.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
@@ -378,6 +390,8 @@ function workerCoordinatorCandidates(
  * Construction options for the Hono app.
  */
 export interface CreateAppOptions {
+  /** Boot joins this finite preparation callback to the existing recurring scanner. */
+  onKnowledgeMaintenanceReady?: (scan: (instant: string) => void) => void;
   /** Explicit canonical identity for an embedded fixture without Core storage; production resolves the recorded local User. */
   localUserId?: string;
   mode?: CoreMode;
@@ -1433,6 +1447,220 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return resolveProviderProfileToLLMConfig(profile, providerCredentialResolver);
   }
 
+  const knowledgeDependencies = {
+    store: sharedStore,
+    runtimeConfig,
+    dispatcher: llmGatewayDispatcher,
+    resolveGatewayProvider,
+    openWorkspace: repositoryWorkspaceDb,
+    providerCredentialConfigured,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+  };
+  const knowledgeAgent: NonNullable<OperationInvocationDependencies['knowledgeAgent']> = {
+    ask: (input) => askKnowledgeAgent(knowledgeDependencies, input),
+    maintain: (input) => {
+      if (!options.coreDb) throw new Error('Knowledge Manager storage is unavailable.');
+      return runKnowledgeMaintenanceCommand(
+        {
+          store: sharedStore,
+          coreDb: options.coreDb,
+          runtimeConfigManager,
+          workspaceMutationAdmission,
+          openWorkspace: repositoryWorkspaceDb,
+          inflightCommands,
+          pin: (run) => {
+            pinKnowledgeManagerExecution(knowledgeDependencies, run);
+          },
+          run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
+        },
+        input
+      );
+    },
+  };
+  options.onKnowledgeMaintenanceReady?.((instant) => {
+    const coreDb = options.coreDb;
+    if (!coreDb) return;
+    scanDailyKnowledgeMaintenance({
+      now: instant,
+      scopes: runtimeConfig().workspaceConfigs.map(({ workspaceId, config }) => ({
+        ownerScope: { kind: 'workspace' as const, workspaceId },
+        schedule: config.workspace.knowledgeMaintenance?.schedule,
+      })),
+      listTurns: ({ ownerScope }) =>
+        sharedStore
+          .listThreads(ownerScope.workspaceId)
+          .flatMap((thread) => sharedStore.listThreadTurns(ownerScope.workspaceId, thread.id))
+          .filter((turn) => turn.startedAt !== null)
+          .map((turn) => ({
+            startedAt: turn.startedAt!,
+            ...(turn.internalExecution?.knowledge
+              ? {
+                  internalExecution: {
+                    roleId: turn.internalExecution.roleId,
+                    knowledge: {
+                      purpose: turn.internalExecution.knowledge.purpose,
+                      ownerScope: turn.internalExecution.knowledge.ownerScope,
+                      trigger: turn.internalExecution.knowledge.trigger,
+                    },
+                  },
+                }
+              : turn.agentId === 'knowledge-manager' &&
+                  turn.triggerSource?.kind === 'automation' &&
+                  turn.triggerSource.summary === 'Knowledge Manager scheduled maintenance.'
+                ? {
+                    internalExecution: {
+                      roleId: 'knowledge-manager',
+                      knowledge: {
+                        purpose: 'maintenance' as const,
+                        ownerScope,
+                        trigger: 'schedule' as const,
+                      },
+                    },
+                  }
+                : {}),
+          })),
+      prepare: ({ ownerScope }, startedAt) => {
+        const workspaceId = ownerScope.workspaceId;
+        const owner = getWorkspaceRegistryLifecycleFact(coreDb, workspaceId)?.ownerUserId;
+        if (!owner) throw new Error('Knowledge maintenance Workspace owner is unavailable.');
+        const actor = {
+          kind: 'system' as const,
+          id: 'knowledge-manager',
+          responsibleUserId: owner,
+        };
+        const currentAuthority = () => {
+          if (!currentWorkspaceAuthority(coreDb, workspaceId, actor, 'knowledge.write', true))
+            throw new Error('Knowledge maintenance scope authority is unavailable.');
+        };
+        try {
+          const prepared = prepareKnowledgeMaintenance(
+            {
+              store: sharedStore,
+              coreDb,
+              runtimeConfigManager,
+              workspaceMutationAdmission,
+              openWorkspace: repositoryWorkspaceDb,
+              inflightCommands,
+              pin: (run) => {
+                pinKnowledgeManagerExecution(knowledgeDependencies, run);
+              },
+              run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
+            },
+            {
+              workspaceId,
+              requestId: uuidv5(
+                JSON.stringify(['knowledge.maintain', ownerScope, startedAt.slice(0, 10)])
+              ),
+              actor,
+              startedAt,
+              trigger: 'schedule',
+              instructions:
+                'Consolidate admitted recent information, preserve human edits and keep the notebook overview current.',
+              sources: [],
+              signal: new AbortController().signal,
+              currentAdmission: (request) => {
+                const db = repositoryWorkspaceDb(workspaceId);
+                try {
+                  return readWorkspaceNotebookAdmission({
+                    store: sharedStore,
+                    coreDb,
+                    workspaceDb: db,
+                    request,
+                    actor: { kind: 'user', id: owner },
+                    currentAuthority,
+                    runtimeConfigManager,
+                    workspaceMutationAdmission,
+                    notebook: new KnowledgeNotebook({
+                      repositoryPath: join(
+                        coreDb.dataRoot,
+                        'workspaces',
+                        workspaceId,
+                        'knowledge',
+                        'notebook.git'
+                      ),
+                    }),
+                  });
+                } finally {
+                  db.sqlite.close();
+                }
+              },
+            }
+          );
+          return {
+            execute: async () => {
+              await prepared.execute();
+            },
+            fail: () => {
+              prepared.fail();
+            },
+          };
+        } catch {
+          const previous = sharedStore
+            .listThreads(workspaceId)
+            .find((thread) =>
+              sharedStore
+                .listThreadTurns(workspaceId, thread.id)
+                .some(
+                  (turn) =>
+                    turn.agentId === 'knowledge-manager' &&
+                    turn.triggerSource?.summary === 'Knowledge Manager scheduled maintenance.'
+                )
+            );
+          const thread =
+            previous ??
+            sharedStore.createThread(
+              workspaceId,
+              'Knowledge maintenance',
+              undefined,
+              'knowledge-manager',
+              { visibility: 'workspace' }
+            );
+          const completedAt = new Date().toISOString();
+          const turn = sharedStore.createTurn(
+            workspaceId,
+            thread.id,
+            'Scheduled Knowledge maintenance was skipped.',
+            actor,
+            null,
+            {
+              agentId: 'knowledge-manager',
+              executorKind: 'assistant',
+              startedAt,
+              triggerSource: {
+                kind: 'automation',
+                summary: 'Knowledge Manager scheduled maintenance.',
+              },
+            }
+          );
+          sharedStore.createItem({
+            id: allocateEntityId('it'),
+            workspaceId,
+            threadId: thread.id,
+            turnId: turn.id,
+            type: 'status',
+            status: 'failed',
+            level: 'error',
+            title: 'Knowledge maintenance skipped',
+            summary:
+              'Scope, notebook or model admission was unavailable. Start a new explicit run after inspection.',
+            createdAt: completedAt,
+            completedAt,
+          });
+          sharedStore.updateTurn(turn.id, {
+            status: 'failed',
+            completedAt,
+            error: {
+              code: 'knowledge_maintenance_unavailable',
+              message: 'Scheduled maintenance could not be admitted.',
+            },
+          });
+          return null;
+        }
+      },
+      onError: () => console.warn('Knowledge maintenance requires inspection.'),
+    });
+  });
+
   app.use('/api/worker-control/*', browserCors);
   registerWorkerControlRoutes({
     app,
@@ -1459,6 +1687,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-capabilities/*', browserCors);
   registerWorkerMcpRoutes({
+    knowledgeAgent,
     fileAdmission,
     ...(configuredWorkerRuntime?.captureArtifact
       ? { captureArtifact: configuredWorkerRuntime.captureArtifact }
@@ -1749,6 +1978,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   const chatService = createConversationService({
+    knowledgeAgent,
     providerCredentialConfigured,
     coreDb: options.coreDb,
     inflightCommands,
@@ -1944,6 +2174,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerOperationJsonRoutes({
+    knowledgeAgent,
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
@@ -2004,6 +2235,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    knowledgeAgent,
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),

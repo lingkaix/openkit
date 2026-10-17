@@ -12,6 +12,8 @@ it('shows the continuation seen by the model and its inspectable exact history r
     threadId: allocateEntityId('th'),
     turnId: allocateEntityId('tu'),
     type: 'context-summary',
+    strategy: 'rolling',
+    logicalModelId: 'internal-role',
     status: 'completed',
     createdAt: '2026-10-16T00:00:00.000Z',
     completedAt: '2026-10-16T00:00:00.000Z',

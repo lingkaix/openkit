@@ -342,22 +342,32 @@ export const KnowledgeProposalReviewSchema = z
     decision: KnowledgeProposalDecisionSchema,
     actor: ActorRefSchema,
     proposalDigest: KnowledgeProposalContentDigestSchema,
-    knowledgePageId: KnowledgeProposalPageIdSchema,
+    knowledgePageId: KnowledgeProposalPageIdSchema.optional(),
+    changedPageIds: z.array(z.string().min(1)).min(1).max(256).optional(),
     contentDigest: KnowledgeProposalContentDigestSchema,
     targetAbsentAtDecision: z.boolean().nullable(),
     decidedAt: TimestampSchema,
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => (value.knowledgePageId !== undefined) !== (value.changedPageIds !== undefined),
+    'Knowledge Proposal result must identify one complete candidate.'
+  );
 
 /** Knowledge Page result at the exact published commit named by its command. */
 export const KnowledgeProposalApplicationSchema = z
   .object({
-    knowledgePageId: KnowledgeProposalPageIdSchema,
+    knowledgePageId: KnowledgeProposalPageIdSchema.optional(),
+    changedPageIds: z.array(z.string().min(1)).min(1).max(256).optional(),
     contentDigest: KnowledgeProposalContentDigestSchema,
     present: z.boolean(),
     notebookRevision: z.string().min(1),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => (value.knowledgePageId !== undefined) !== (value.changedPageIds !== undefined),
+    'Knowledge Proposal result must identify one complete candidate.'
+  );
 
 /** Response payload after recording one knowledge proposal decision. */
 export const SubmitKnowledgeProposalDecisionResponseSchema = z
@@ -370,7 +380,7 @@ export const SubmitKnowledgeProposalDecisionResponseSchema = z
     const accepted = response.review.decision === 'accepted';
     if (
       (accepted
-        ? response.review.targetAbsentAtDecision === null
+        ? !response.review.changedPageIds && response.review.targetAbsentAtDecision === null
         : response.review.targetAbsentAtDecision !== null) ||
       (accepted ? response.application?.present !== true : response.application !== null)
     ) {
@@ -382,7 +392,9 @@ export const SubmitKnowledgeProposalDecisionResponseSchema = z
     if (
       response.application &&
       (response.application.knowledgePageId !== response.review.knowledgePageId ||
-        response.application.contentDigest !== response.review.contentDigest)
+        response.application.contentDigest !== response.review.contentDigest ||
+        JSON.stringify(response.application.changedPageIds) !==
+          JSON.stringify(response.review.changedPageIds))
     ) {
       context.addIssue({
         code: 'custom',

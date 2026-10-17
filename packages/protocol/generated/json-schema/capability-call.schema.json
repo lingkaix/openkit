@@ -205,6 +205,19 @@
     "extensions": {
       "type": "object",
       "properties": {
+        "openkit.knowledge/delivery": {
+          "type": "object",
+          "properties": {
+            "answer": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "answer"
+          ],
+          "additionalProperties": false
+        },
         "openkit.gateway/routeLineage": {
           "type": "object",
           "properties": {

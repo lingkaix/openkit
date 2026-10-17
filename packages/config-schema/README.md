@@ -66,6 +66,8 @@ The session workspace planner declares `turn-output` for every package at `/open
 
 The NanoHost deployment schema admits optional positive `maxActiveTurnsPerSandbox`; the scheduling owner's current default is 20 when omitted. This schema field and its exported default do not themselves grant execution or prove adapter capacity. The native journal migration widens retained capacity constraints without raising retained declarations. NanoCore runtime consumption is not yet complete, so the schema addition alone does not remove its current single-active-Turn admission limit.
 
+`knowledgeMaintenance.enabled` delegates ordinary notebook publication. The separate `knowledgeMaintenance.schedule.enabled` selects fixed daily Knowledge Manager execution and defaults to `false`; the omitted schedule object also resolves to disabled. Server, User and Workspace settings use this same shape with independent authority. Scheduling grants no publication delegation or source access.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

@@ -1019,7 +1019,8 @@ export function createNanoHostSessionDispatch(
           pending.command.slot
         )}/${String(pending.command.relativePath)}`;
         if (
-          resultBody.byteLength !== pending.command.byteLength ||
+          resultBody.byteLength !==
+            (pending.command.entryKind === 'directory' ? 0 : pending.command.byteLength) ||
           resultBody.reference !== expectedReference
         ) {
           throw effectTransportError(409, 'NanoHost import result disagrees with its command.');
@@ -1713,13 +1714,19 @@ export function registerNanoHostSessionEffectRoutes(
             file,
             {
               ...telemetryHeaders,
-              'content-length': String(file.byteLength),
+              'content-length': file.entryKind === 'file' ? String(file.byteLength) : '0',
               'content-type': FILE_DATA_CONTENT_TYPE,
-              [FILE_DATA_HEADERS.byteLength]: String(file.byteLength),
+              'x-openkit-entry-kind': file.entryKind,
               [FILE_DATA_HEADERS.relativePath]: encodeRelativePath(file.relativePath),
               [FILE_DATA_HEADERS.requestId]: file.requestId,
-              [FILE_DATA_HEADERS.sha256]: file.sha256,
               [FILE_DATA_HEADERS.slot]: file.slot,
+              ...(file.entryKind === 'file'
+                ? {
+                    [FILE_DATA_HEADERS.byteLength]: String(file.byteLength),
+                    [FILE_DATA_HEADERS.sha256]: file.sha256,
+                    'x-openkit-executable': String(file.executable),
+                  }
+                : {}),
             },
             () => {
               fileDataTransferActive = false;
@@ -2175,6 +2182,8 @@ function createStreamedFileDataResponse(
   headers: Readonly<Record<string, string>>,
   release: () => void
 ): Response {
+  if (file.entryKind === 'directory')
+    return createChunkedFileDataResponse(Buffer.alloc(0), headers, release);
   if (file.body) return createChunkedFileDataResponse(file.body, headers, release);
   const controller = new AbortController();
   let iterator: AsyncIterator<Uint8Array> | undefined;
@@ -2236,15 +2245,24 @@ function requireReferenceImportCommand(
   value: Readonly<Record<string, unknown>>,
   requestId: string
 ): Readonly<{
-  body?: Buffer;
-  source?: NanoHostFileImportSource;
-  byteLength: number;
   relativePath: string;
   requestId: string;
   sandboxId: string;
-  sha256: string;
   slot: string;
-}> {
+}> &
+  (
+    | Readonly<{ entryKind: 'directory' }>
+    | (Readonly<{
+        entryKind: 'file';
+        executable: boolean;
+        byteLength: number;
+        sha256: string;
+      }> &
+        (
+          | Readonly<{ body: Buffer; source?: never }>
+          | Readonly<{ source: NanoHostFileImportSource; body?: never }>
+        ))
+  ) {
   if (
     Object.keys(value).some(
       (key) =>
@@ -2253,6 +2271,8 @@ function requireReferenceImportCommand(
           'body',
           'source',
           'byteLength',
+          'entryKind',
+          'executable',
           'leaseId',
           'packageSnapshotId',
           'relativePath',
@@ -2268,6 +2288,30 @@ function requireReferenceImportCommand(
   if (!/^[0-9a-f]{64}$/.test(requestId)) {
     throw effectTransportError(400, 'NanoHost file effect requestId is invalid.');
   }
+  const relativePath = readRelativePath(value.relativePath);
+  const sandboxId = readBoundedIdentity(value.sandboxId, 'sandbox');
+  const slot = readSlot(value.slot);
+  if (value.entryKind === 'directory') {
+    if (
+      slot !== 'worker-supply' ||
+      ['body', 'source', 'byteLength', 'sha256', 'executable'].some((key) =>
+        Object.hasOwn(value, key)
+      )
+    ) {
+      throw effectTransportError(
+        400,
+        'NanoHost directory import requires worker-supply and no file metadata.'
+      );
+    }
+    return { entryKind: 'directory', relativePath, requestId, sandboxId, slot };
+  }
+  if (
+    value.entryKind !== 'file' ||
+    typeof value.executable !== 'boolean' ||
+    (value.executable && slot !== 'worker-supply')
+  ) {
+    throw effectTransportError(400, 'NanoHost file import kind or executable flag is invalid.');
+  }
   const bodyValue = value.body;
   const body = Buffer.isBuffer(bodyValue)
     ? bodyValue
@@ -2275,10 +2319,7 @@ function requireReferenceImportCommand(
       ? Buffer.from(bodyValue)
       : null;
   const byteLength = readCanonicalByteLength(value.byteLength);
-  const relativePath = readRelativePath(value.relativePath);
-  const sandboxId = readBoundedIdentity(value.sandboxId, 'sandbox');
   const sha256 = readSha256(value.sha256);
-  const slot = readSlot(value.slot);
   const source = value.source;
   if (source !== undefined) {
     if (
@@ -2290,6 +2331,8 @@ function requireReferenceImportCommand(
     )
       throw effectTransportError(400, 'NanoHost import source is invalid.');
     return {
+      entryKind: 'file',
+      executable: value.executable,
       source: source as NanoHostFileImportSource,
       byteLength,
       relativePath,
@@ -2305,7 +2348,17 @@ function requireReferenceImportCommand(
     `sha256:${createHash('sha256').update(body).digest('hex')}` !== sha256
   )
     throw effectTransportError(409, 'NanoHost import bytes do not match their identity.');
-  return { body, byteLength, relativePath, requestId, sandboxId, sha256, slot };
+  return {
+    body,
+    byteLength,
+    entryKind: 'file',
+    executable: value.executable,
+    relativePath,
+    requestId,
+    sandboxId,
+    sha256,
+    slot,
+  };
 }
 
 /**
