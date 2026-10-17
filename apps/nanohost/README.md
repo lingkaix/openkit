@@ -137,6 +137,8 @@ The [shared-network-socket operator guidance](../../skills/openkit-ops/reference
 
 A malformed `reference.import` file-data entry with a valid request identity fails before Sandbox execution through the existing typed `effect_failed` result. The journal retains only its fixed admission cause, and an acknowledged rejection leaves the physical session polling. Missing or invalid request identity, physical transport failure and uncertain effects retain the [transport owner](../../docs/specs/20260802-nanohost_runtime_and_transport.md#fixed-nanohost-effect-carriage) rules. Keep App and NanoHost payloads from the same selected source or published release; readiness alone does not prove file-data command compatibility.
 
+Native admission sends and verifies `x-openkit-nanohost-transport-revision` from the same source JSON that Core imports. A missing or different request revision, a typed Core mismatch, or a missing or different success echo produces `nanohost_protocol_mismatch` before readiness or effects. The build embeds that one value; there is no runtime setting or version negotiation. See the [transport owner](../../docs/specs/20260802-nanohost_runtime_and_transport.md#one-authoritative-transport-connection) for its bump rule.
+
 ## Commands
 
 The native TLS transport offers only `h2` with both trust sources. Fresh roots, connection startup, TLS/HTTP2 admission, and the complete readiness acknowledgement share the Epoch owner's 120-second deadline, capped by any remaining rebuild deadline. A ready session has no startup timer. Each successor connection attempt gets one deadline, while an outage preserves the already admitted healthy Epoch.

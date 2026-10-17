@@ -665,6 +665,10 @@ Every declared control, claim, readiness, worker-control, inference, capability,
 
 Connection establishment validates the configured NanoHost identity, protocol and service compatibility, credential state, and deployment lineage against the exact accepted physical connection before the transport-session authority allocates and binds its connection generation. A successful admission response returns that authority-assigned generation; NanoHost never proposes or selects it.
 
+Native admission carries `x-openkit-nanohost-transport-revision` with the single shared value in `apps/nanocore/src/auth/nanohost-transport-revision.json`; a successful response echoes that exact header. After Token and native physical-connection validation and before generation allocation, NanoCore rejects a missing or unequal value with HTTP `409` and `nanohost_protocol_mismatch`. NanoHost rejects that typed response or a missing or unequal successful echo as the same terminal admission failure before readiness or effect polling. The revision adds no negotiation, compatibility range, migration or retained state.
+
+Bump the shared transport revision only when native framing or command contracts change.
+
 The dedicated NanoCore native HTTP/2 server creates one opaque, unforgeable, non-serializable process-local identity for each accepted physical connection and supplies it through server connection context to admission, the transport-session authority, the authoritative dispatcher, and every carried transport route. The admission request body is exactly `{}`; no body field, header, query parameter, serialized value, NanoHost state, App-listener request, or proxy request may supply or select the physical connection identity. A direct `app.request` or other synthetic application request has no physical server connection context and therefore cannot stand in for admission of a physical connection.
 
 ### Fixed Transport Readiness Projection
