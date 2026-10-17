@@ -317,7 +317,7 @@ function pinnedSourcesReadable(
           const currentContent = pinnedPage(current, match[1]!);
           if (
             currentContent !== null &&
-            !pinnedKnowledgeSourceReadable(current, match[1]!, currentContent, visiting)
+            !pinnedKnowledgeSourceReadable(current, match[1]!, currentContent, new Set())
           )
             return false;
         }
