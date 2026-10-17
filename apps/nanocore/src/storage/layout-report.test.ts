@@ -35,6 +35,7 @@ describe('storage layout report', () => {
         'core_0000_setup',
         'core_0001_concurrent_turn_capacity',
         'core_0002_durable_recurring_schedules',
+        'core_0003_notebook_admission',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -42,7 +43,11 @@ describe('storage layout report', () => {
             userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
             userDb: expect.objectContaining({
               exists: true,
-              appliedMigrations: ['user_0000_setup', 'user_0001_thread_read_receipts'],
+              appliedMigrations: [
+                'user_0000_setup',
+                'user_0001_thread_read_receipts',
+                'user_0002_notebook_admission',
+              ],
             }),
           },
         ])
@@ -53,7 +58,11 @@ describe('storage layout report', () => {
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           workspaceDb: expect.objectContaining({
             exists: true,
-            appliedMigrations: ['workspace_0000_setup', 'workspace_0001_assistant_handoff'],
+            appliedMigrations: [
+              'workspace_0000_setup',
+              'workspace_0001_assistant_handoff',
+              'workspace_0002_notebook_admission',
+            ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
         },

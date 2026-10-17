@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -15,13 +15,23 @@ import {
   WorkspaceExportResponseSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { createApp } from '../app.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook-workspace-portability.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  parseOkfDocument,
+  updateOkfFrontmatter,
+} from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
-import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
@@ -30,6 +40,10 @@ import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
 import { applyMigrations } from './migrate.js';
 import { publishRetrievalTrace, retrievalTraceRelativePath } from './retrieval-traces.js';
 import { verifyWorkspaceExportTree } from './workspace-export.js';
+import {
+  readWorkspaceKnowledgePage,
+  serializeUserAuthoredKnowledgePage,
+} from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
 import { readWorkspacePortableFileState } from './workspace-portable-file-state.js';
 
@@ -48,11 +62,83 @@ function readOptionalJsonl(path: string): Array<Record<string, unknown>> {
   return text ? text.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>) : [];
 }
 
+/** Initializes real Git authority for bare directory-inventory fixtures. */
+function initializeNotebook(workspaceRoot: string): KnowledgeNotebook {
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  notebook.initialize({
+    metadata: {
+      summary: 'Initialize portable file fixture',
+      producer: { kind: 'user', id: LOCAL_USER_ID },
+      authority: { kind: 'direct', instructionReference: 'test:portable-file-inventory' },
+      changeRequest: {
+        requestId: randomUUID(),
+        inputDigest: commandInputHash('portable-file-inventory'),
+      },
+      sourceReferences: [],
+    },
+  });
+  mkdirSync(join(workspaceRoot, 'knowledge', 'schema'), { recursive: true });
+  writeFileSync(
+    join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
+    DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT
+  );
+  return notebook;
+}
+
+/** Fresh current Workspace avoids unrelated Demo source disclosure in export-refusal tests. */
+function workspaceFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
+  const coreDb = openCoreDb(dataRoot);
+  onTestFinished(() => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Demo Workspace', {
+    requestId: randomUUID(),
+    producer: { kind: 'user', id: LOCAL_USER_ID },
+    instructionReference: 'test:portable-workspace',
+  });
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: workspace.id });
+  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  return { dataRoot, coreDb, store, workspaceId: workspace.id, workspaceRoot, notebook };
+}
+
+/** Publishes only test-owned content; native human Review uses its real operation below. */
+function publishFixturePages(
+  notebook: KnowledgeNotebook,
+  changes: Record<string, string>,
+  sourceReferences: readonly string[] = []
+): string {
+  const baseRevision = notebook.publishedRevision();
+  const candidateRevision = notebook.prepare({
+    baseRevision,
+    changes,
+    metadata: {
+      summary: 'Publish portable test bytes',
+      producer: { kind: 'user', id: LOCAL_USER_ID },
+      authority: { kind: 'direct', instructionReference: 'test:portable-pages' },
+      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(changes) },
+      sourceReferences: [...sourceReferences],
+    },
+  });
+  notebook.publish({ baseRevision, candidateRevision });
+  return candidateRevision;
+}
+
 describe('workspace portable file state', () => {
   it('rejects a publisher-temp-shaped directory in a retrieval trace directory', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-entry-'));
     try {
-      const threadId = 'th_00000000-0000-7447-99d5-aafec0cacdd4';
+      initializeNotebook(workspaceRoot);
+      const threadId = testEntityId('th', 'portable-trace-owner');
       const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
       mkdirSync(traceDirectory, { recursive: true });
       const tempPath = join(
@@ -76,7 +162,8 @@ describe('workspace portable file state', () => {
   it('ignores a regular publisher temporary file in a retrieval trace directory', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-file-'));
     try {
-      const threadId = 'th_00000000-0000-7447-99d5-aafec0cacdd4';
+      initializeNotebook(workspaceRoot);
+      const threadId = testEntityId('th', 'portable-trace-owner');
       const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
       mkdirSync(traceDirectory, { recursive: true });
       writeFileSync(
@@ -100,25 +187,30 @@ describe('workspace portable file state', () => {
   });
 
   it('preserves authoritative workspace files, append history, and reminted references', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const sourceWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({
+    const {
+      dataRoot,
       coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      store,
       workspaceId: sourceWorkspaceId,
-    });
-    const sourceRoot = join(dataRoot, 'workspaces', sourceWorkspaceId);
+      workspaceRoot: sourceRoot,
+      notebook,
+    } = workspaceFixture();
     const firstTimestamp = '2026-07-06T00:00:00.000Z';
     const secondTimestamp = '2026-07-06T00:00:01.000Z';
-    const knowledge = store.createKnowledgeEntry(sourceWorkspaceId, {
-      kind: 'project-context',
+    const knowledge = {
+      id: 'portable-contract',
+      kind: 'project-context' as const,
       title: 'Portable contract',
       content: 'Portable contract evidence survives workspace transfer.',
       sourceReferences: [],
+      createdAt: firstTimestamp,
+      updatedAt: firstTimestamp,
+    };
+    publishFixturePages(notebook, {
+      [`${knowledge.id}.md`]: serializeUserAuthoredKnowledgePage(knowledge, {
+        kind: 'workspace',
+        workspaceId: sourceWorkspaceId,
+      }),
     });
 
     store.recordKnowledgeObservation({
@@ -213,7 +305,7 @@ describe('workspace portable file state', () => {
       '',
     ].join('\n');
     const workspaceSchema = [
-      'schema_version: "openkit-workspace-knowledge-schema-v2"',
+      'schema_version: "openkit-scope-knowledge-schema-v4"',
       'status: "active"',
       'allowed_types: ["KnowledgePage", "RepoConvention"]',
       'allowed_statuses: ["active"]',
@@ -222,67 +314,55 @@ describe('workspace portable file state', () => {
       'allowed_freshness: ["current"]',
       '',
     ].join('\n');
-    const portablePage = [
-      '---',
-      'type: "RepoConvention"',
-      'title: "Portable file convention"',
-      'schema_version: "openkit-workspace-knowledge-schema-v2"',
-      'openkit_status: "active"',
-      'status: "stable"',
-      'scope: "workspace"',
-      `source_refs: ["knowledge:${knowledge.id}"]`,
-      'review_state: "user-authored"',
-      'sensitivity: "normal"',
-      'freshness: "current"',
-      `created_at: "${firstTimestamp}"`,
-      `updated_at: "${secondTimestamp}"`,
-      '---',
-      'Portable file convention body.',
-      '',
-    ].join('\n');
-
+    const portablePage = updateOkfFrontmatter({
+      path: 'portable-file.md',
+      content: serializeUserAuthoredKnowledgePage(
+        {
+          id: 'portable-file',
+          kind: 'project-context',
+          title: 'Portable file convention',
+          content: 'Portable file convention body.',
+          sourceReferences: [`knowledge:${knowledge.id}`],
+          createdAt: firstTimestamp,
+          updatedAt: secondTimestamp,
+        },
+        { kind: 'workspace', workspaceId: sourceWorkspaceId }
+      ),
+      updates: { type: 'RepoConvention' },
+    });
     mkdirSync(join(sourceRoot, 'config'), { recursive: true });
     writeFileSync(join(sourceRoot, 'config', 'workspace.jsonc'), workspaceConfig);
-    writeFileSync(
-      join(sourceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
-      workspaceSchema
-    );
-    writeFileSync(join(sourceRoot, 'knowledge', 'pages', 'portable-file.md'), portablePage);
+    writeFileSync(join(sourceRoot, 'knowledge', 'schema', 'scope-schema.yaml'), workspaceSchema);
+    publishFixturePages(notebook, { 'portable-file.md': portablePage }, [
+      `knowledge:${knowledge.id}`,
+    ]);
 
-    const knowledgePageBytes = readFileSync(
-      join(sourceRoot, 'knowledge', 'pages', `${knowledge.id}.md`),
-      'utf8'
-    );
-    const knowledgeReference = `knowledge:${knowledge.id}@sha256:${createHash('sha256')
-      .update(knowledgePageBytes)
-      .digest('hex')}`;
+    const knowledgePageBytes = readWorkspaceKnowledgePage(sourceRoot, knowledge.id)!;
+    const knowledgeReference = `knowledge:${knowledge.id}@sha256:${createHash('sha256').update(knowledgePageBytes).digest('hex')}`;
     const acceptedPageId = 'portable-accepted-proposal';
-    const acceptedPageBytes = [
-      '---',
-      'type: "KnowledgePage"',
-      'title: "Portable accepted proposal"',
-      'schema_version: "openkit-workspace-knowledge-schema-v2"',
-      'openkit_status: "active"',
-      'status: "stable"',
-      'scope: "workspace"',
-      `openkit_entry_id: "${acceptedPageId}"`,
-      'openkit_entry_kind: "project-context"',
-      `source_refs: ${JSON.stringify([knowledgeReference])}`,
-      'review_state: "accepted"',
-      'sensitivity: "normal"',
-      'freshness: "current"',
-      `created_at: "${firstTimestamp}"`,
-      `updated_at: "${secondTimestamp}"`,
-      '---',
-      'Exact accepted proposal bytes survive portable transfer.',
-      '',
-    ].join('\n');
+    const acceptedPageBytes = updateOkfFrontmatter({
+      path: `${acceptedPageId}.md`,
+      content: serializeUserAuthoredKnowledgePage(
+        {
+          id: acceptedPageId,
+          kind: 'project-context',
+          title: 'Portable accepted proposal',
+          content: 'Exact accepted proposal bytes survive portable transfer.',
+          sourceReferences: [knowledgeReference],
+          createdAt: firstTimestamp,
+          updatedAt: secondTimestamp,
+        },
+        { kind: 'workspace', workspaceId: sourceWorkspaceId }
+      ),
+      updates: { review_state: 'accepted' },
+    });
     const acceptedPageDigest = `sha256:${createHash('sha256')
       .update(acceptedPageBytes)
       .digest('hex')}`;
     const acceptedProposal = store.createKnowledgeProposal({
       workspaceId: sourceWorkspaceId,
       requestId: '00000000-0000-4000-8000-00000000d911',
+      baseRevision: notebook.publishedRevision(),
       knowledgePageId: acceptedPageId,
       canonicalPageBytes: acceptedPageBytes,
       contentDigest: acceptedPageDigest,
@@ -290,24 +370,28 @@ describe('workspace portable file state', () => {
       rationale: 'Preserve the exact reviewed page as portable Knowledge.',
       confidence: 1,
       verifiedExternalReferences: [],
-      producer: {
-        kind: 'agent',
-        id: 'agent_knowledge',
-        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      },
+      producer: { kind: 'agent', id: 'agent_knowledge', responsibleUserId: LOCAL_USER_ID },
       createdAt: firstTimestamp,
     });
-    store.recordKnowledgeProposalReviewDecision({
-      workspaceId: sourceWorkspaceId,
-      proposalId: acceptedProposal.id,
-      requestId: '00000000-0000-4000-8000-00000000d912',
-      decision: 'accepted',
-      verifiedExternalReferences: [],
-      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      decidedAt: secondTimestamp,
-    });
-
     const app = createApp({ coreDb, dataRoot, store });
+    const review = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.proposal.decide',
+        { workspaceId: sourceWorkspaceId, proposalId: acceptedProposal.id },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            decision: 'accepted',
+            baseRevision: acceptedProposal.baseRevision,
+            candidateRevision: acceptedProposal.candidateRevision,
+            proposalDigest: store.knowledgeProposalDigest(sourceWorkspaceId, acceptedProposal.id),
+          }),
+        }
+      )
+    );
+    expect(review.status, await review.clone().text()).toBe(200);
+    expect(readWorkspaceKnowledgePage(sourceRoot, acceptedPageId)).toBe(acceptedPageBytes);
+
     const retrievalRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.retrieval',
@@ -355,6 +439,13 @@ describe('workspace portable file state', () => {
     });
     const acceptedExportPath = `workspace-files/knowledge/pages/${acceptedPageId}.md`;
     expect(verified.fileContents.get(acceptedExportPath)).toBe(acceptedPageBytes);
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified,
+        targetWorkspaceId: new FsStore().createWorkspace('Import validation').id,
+        targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      })
+    ).not.toThrow();
     for (const [name, alter] of [
       ['missing', (files: Map<string, string>) => files.delete(acceptedExportPath)],
       [
@@ -469,51 +560,51 @@ describe('workspace portable file state', () => {
     expect
       .soft(existsSync(importedConfigPath) ? readFileSync(importedConfigPath, 'utf8') : null)
       .toBe(workspaceConfig);
-    const importedSchemaPath = join(importedRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
+    const importedSchemaPath = join(importedRoot, 'knowledge', 'schema', 'scope-schema.yaml');
     expect
       .soft(existsSync(importedSchemaPath) ? readFileSync(importedSchemaPath, 'utf8') : null)
       .toBe(workspaceSchema);
-    const importedPagePath = join(importedRoot, 'knowledge', 'pages', 'portable-file.md');
-    expect
-      .soft(existsSync(importedPagePath) ? readFileSync(importedPagePath, 'utf8') : null)
-      .toBe(portablePage.replace(`knowledge:${knowledge.id}`, `knowledge:${importedKnowledge.id}`));
-    const importedNativePagePath = join(
-      importedRoot,
-      'knowledge',
-      'pages',
-      `${importedKnowledge.id}.md`
+    expect(existsSync(join(importedRoot, 'knowledge', 'pages'))).toBe(false);
+    const importedPage = readWorkspaceKnowledgePage(importedRoot, 'portable-file')!;
+    expect(importedPage).toBe(
+      updateOkfFrontmatter({
+        path: 'portable-file.md',
+        content: portablePage,
+        updates: {
+          scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
+        },
+      })
     );
-    expect
-      .soft(
-        existsSync(importedNativePagePath) ? readFileSync(importedNativePagePath, 'utf8') : null
-      )
-      .toContain(`openkit_entry_id: "${importedKnowledge.id}"`);
-    const importedAcceptedPagePath = join(
-      importedRoot,
-      'knowledge',
-      'pages',
-      `${importedAcceptedKnowledge.id}.md`
+    const importedNativePage = readWorkspaceKnowledgePage(importedRoot, importedKnowledge.id)!;
+    const importedKnowledgeReference = `knowledge:${importedKnowledge.id}@sha256:${createHash('sha256').update(importedNativePage).digest('hex')}`;
+    expect(importedNativePage).toContain(`openkit_entry_id: "${importedKnowledge.id}"`);
+    const expectedImportedAcceptedPageBytes = updateOkfFrontmatter({
+      path: `${importedAcceptedKnowledge.id}.md`,
+      content: acceptedPageBytes,
+      updates: {
+        scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
+        source_refs: [importedKnowledgeReference],
+      },
+    });
+    expect(readWorkspaceKnowledgePage(importedRoot, importedAcceptedKnowledge.id)).toBe(
+      expectedImportedAcceptedPageBytes
     );
-    const expectedImportedAcceptedPageBytes = acceptedPageBytes
-      .replaceAll(acceptedPageId, importedAcceptedKnowledge.id)
-      .replaceAll(knowledge.id, importedKnowledge.id);
-    expect
-      .soft(
-        existsSync(importedAcceptedPagePath) ? readFileSync(importedAcceptedPagePath, 'utf8') : null
-      )
-      .toBe(expectedImportedAcceptedPageBytes);
     expect(store.listKnowledgeProposals(importedWorkspaceId)).toEqual([]);
     expect(store.listKnowledgeProposalReviewDecisions(importedWorkspaceId)).toEqual([]);
 
     store.updateWorkspace(importedWorkspaceId, { name: 'Persist unrelated imported change' });
-    expect(readFileSync(importedAcceptedPagePath, 'utf8')).toBe(expectedImportedAcceptedPageBytes);
+    expect(readWorkspaceKnowledgePage(importedRoot, importedAcceptedKnowledge.id)).toBe(
+      expectedImportedAcceptedPageBytes
+    );
     const restartedStore = new FsStore({ dataRoot });
     expect(
       restartedStore
         .listKnowledge(importedWorkspaceId)
         .some((entry) => entry.id === importedAcceptedKnowledge.id)
     ).toBe(true);
-    expect(readFileSync(importedAcceptedPagePath, 'utf8')).toBe(expectedImportedAcceptedPageBytes);
+    expect(readWorkspaceKnowledgePage(importedRoot, importedAcceptedKnowledge.id)).toBe(
+      expectedImportedAcceptedPageBytes
+    );
 
     const importedRetrievalRes = await app.request(
       ...knowledgeOperationRequest(
@@ -536,7 +627,7 @@ describe('workspace portable file state', () => {
           scopeId: `page/workspace/${importedWorkspaceId}`,
           objectId: importedAcceptedKnowledge.id,
         },
-        sourceReferences: [knowledgeReference.replaceAll(knowledge.id, importedKnowledge.id)],
+        sourceReferences: [importedKnowledgeReference],
       }),
     ]);
 
@@ -544,19 +635,11 @@ describe('workspace portable file state', () => {
   });
 
   it('fails export before publication when a retained trace source is no longer readable', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-trace-export-access-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId,
+    const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } = workspaceFixture();
+    const thread = store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
+      visibility: 'workspace',
     });
-    const thread = store.listThreads(workspaceId)[0]!;
-    const traceId = 'krt_00000000-0000-7d0b-95d7-2834cc1f705c';
+    const traceId = testEntityId('krt', 'portable-trace-export');
     const reference = {
       scopeId: `retrieval-trace/thread/${workspaceId}/${thread.id}`,
       objectId: traceId,
@@ -566,11 +649,11 @@ describe('workspace portable file state', () => {
       queryContext: {
         serverId: readDataRootLayoutMarker(dataRoot).deploymentId,
         workspaceId,
-        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        actor: { kind: 'user', id: LOCAL_USER_ID },
         threadId: thread.id,
       },
       sourceScope: `page/workspace/${workspaceId}`,
-      notebookRevision: null,
+      notebookRevision: notebook.publishedRevision(),
       caller: 'app-api',
       requestDigest: `sha256:${'8'.repeat(64)}`,
       retrievalParameters: {
@@ -594,13 +677,32 @@ describe('workspace portable file state', () => {
       ],
       createdAt: '2026-07-06T00:00:00.000Z',
     });
+    const portableState = readWorkspacePortableFileState(workspaceRoot, {
+      workspaceId,
+      threads: [{ threadId: thread.id }],
+      turns: [],
+    });
+    expect(() =>
+      assertPortableWorkspaceNotebookDisclosure({
+        dataRoot,
+        workspaceId,
+        notebookRevision: portableState.notebookRevision!,
+        pages: portableState.nativeKnowledgePages,
+        access: {
+          store,
+          coreDb,
+          actor: { kind: 'user', id: LOCAL_USER_ID },
+          requestActor: { kind: 'local', userId: LOCAL_USER_ID },
+        },
+      })
+    ).not.toThrow();
     const app = createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
     );
     const body = await response.text();
 
-    expect(response.status).toBe(503);
+    expect(response.status, body).toBe(503);
     expect(JSON.parse(body)).toMatchObject({ code: 'knowledge_source_unavailable' });
     expect(body).not.toContain('restricted-same-path');
     const workspaceExports = join(dataRoot, 'server', 'exports', 'workspaces', workspaceId);
@@ -609,24 +711,21 @@ describe('workspace portable file state', () => {
   });
 
   it('fails export without disclosure when a selected page becomes restricted', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-trace-export-revoked-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId,
+    const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } = workspaceFixture();
+    const thread = store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
+      visibility: 'workspace',
     });
-    const thread = store.listThreads(workspaceId)[0]!;
-    const page = store.createKnowledgeEntry(workspaceId, {
-      kind: 'project-context',
+    const page = {
+      id: 'revoked-export-selection',
+      kind: 'project-context' as const,
       title: 'Revoked export selection',
       content: 'This content must not leave after revocation.',
       sourceReferences: [],
-    });
+      createdAt: '2026-07-06T00:00:00.000Z',
+      updatedAt: '2026-07-06T00:00:00.000Z',
+    };
+    const pageBytes = serializeUserAuthoredKnowledgePage(page, { kind: 'workspace', workspaceId });
+    publishFixturePages(notebook, { [`${page.id}.md`]: pageBytes });
     const result = await retrieveWorkspaceKnowledge({
       dataRoot,
       workspaceId,
@@ -637,8 +736,8 @@ describe('workspace portable file state', () => {
       access: {
         store,
         coreDb,
-        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+        actor: { kind: 'user', id: LOCAL_USER_ID },
+        requestActor: { kind: 'local', userId: LOCAL_USER_ID },
         outputThreadId: thread.id,
       },
       traceId: 'krt_00000000-0000-7da4-9723-d3b248482ae2',
@@ -652,25 +751,37 @@ describe('workspace portable file state', () => {
       retrievalTraceRelativePath(result.retrievalTraceRef!)
     );
     const originalTrace = readFileSync(tracePath, 'utf8');
-    const pagePath = join(
-      dataRoot,
-      'workspaces',
-      workspaceId,
-      'knowledge',
-      'pages',
-      `${page.id}.md`
-    );
-    writeFileSync(
-      pagePath,
-      readFileSync(pagePath, 'utf8').replace('sensitivity: "normal"', 'sensitivity: "restricted"')
-    );
+    const selectedRevision = notebook.publishedRevision();
+    expect(result.selected).toEqual([
+      expect.objectContaining({
+        reference: { scopeId: `page/workspace/${workspaceId}`, objectId: page.id },
+        contentDigest: `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`,
+        revision: selectedRevision,
+      }),
+    ]);
+    expect(readWorkspaceKnowledgePage(workspaceRoot, page.id)).toBe(pageBytes);
+    const restrictedRevision = publishFixturePages(notebook, {
+      [`${page.id}.md`]: updateOkfFrontmatter({
+        path: `${page.id}.md`,
+        content: readWorkspaceKnowledgePage(workspaceRoot, page.id)!,
+        updates: { sensitivity: 'restricted' },
+      }),
+    });
+    const restrictedBytes = readWorkspaceKnowledgePage(workspaceRoot, page.id)!;
+    const restrictedPage = parseOkfDocument({ path: `${page.id}.md`, content: restrictedBytes });
+    expect(restrictedRevision).not.toBe(selectedRevision);
+    expect(notebook.publishedRevision()).toBe(restrictedRevision);
+    expect(restrictedBytes).not.toBe(pageBytes);
+    expect(restrictedPage.ok).toBe(true);
+    if (!restrictedPage.ok) throw new Error('Restricted fixture page must remain valid OKF.');
+    expect(restrictedPage.document.frontmatter.sensitivity).toBe('restricted');
     const app = createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
     );
     const body = await response.text();
 
-    expect(response.status).toBe(403);
+    expect(response.status, body).toBe(403);
     expect(JSON.parse(body)).toMatchObject({ code: 'workspace_access_denied' });
     expect(body).not.toContain(page.id);
     expect(body).not.toContain('This content must not leave after revocation.');

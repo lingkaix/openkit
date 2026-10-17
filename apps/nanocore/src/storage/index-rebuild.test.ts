@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
-
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,10 +12,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { KnowledgeRetrievalTraceSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -28,8 +29,13 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
+import { serializeUserAuthoredKnowledgePage } from './workspace-file-records.js';
 
-afterEach(closeRetrievalServices);
+const fixtureRoots: string[] = [];
+afterEach(async () => {
+  await closeRetrievalServices();
+  for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 /**
  * Creates a temporary NanoCore data root for index rebuild tests.
@@ -37,15 +43,17 @@ afterEach(closeRetrievalServices);
  * @returns Temporary data root path.
  */
 function createDataRoot(): string {
-  return mkdtempSync(join(tmpdir(), 'openkit-index-rebuild-'));
+  const root = mkdtempSync(join(tmpdir(), 'openkit-index-rebuild-'));
+  fixtureRoots.push(root);
+  return root;
 }
 
 /** Builds trusted local-user access against the exact temporary data root under test. */
 function localRetrievalAccess(dataRoot: string, store = new FsStore({ dataRoot })) {
   return {
     store,
-    actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
-    requestActor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    actor: { kind: 'user' as const, id: LOCAL_USER_ID },
+    requestActor: { kind: 'local' as const, userId: LOCAL_USER_ID },
   };
 }
 
@@ -65,9 +73,10 @@ function sourceReferencePage(knowledgePageId: string, reference: string): string
     '---',
     'type: KnowledgePage',
     'title: Registered source resolution',
-    `schema_version: ${DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION}`,
+    `schema_version: ${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}`,
     'openkit_status: active',
-    'scope: workspace',
+    'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     `source_refs: ${JSON.stringify([reference])}`,
     'review_state: accepted',
     'sensitivity: normal',
@@ -80,6 +89,67 @@ function sourceReferencePage(knowledgePageId: string, reference: string): string
     'Registered capture evidence.',
     '',
   ].join('\n');
+}
+
+/** Publishes exact test-owned bytes through Git, without claiming native mutation admission. */
+function publishPage(workspaceRoot: string, path: string, content: string): void {
+  const notebook = workspaceNotebook(workspaceRoot);
+  const baseRevision = notebook.publishedRevision();
+  const candidateRevision = notebook.prepare({
+    baseRevision,
+    changes: { [path]: content },
+    metadata: {
+      summary: 'Index regression fixture',
+      producer: { kind: 'user', id: LOCAL_USER_ID },
+      authority: { kind: 'direct', instructionReference: 'test-owned-index-content' },
+      changeRequest: { requestId: randomUUID(), inputDigest: sha256Digest(content) },
+      sourceReferences: [],
+    },
+  });
+  notebook.publish({ baseRevision, candidateRevision });
+}
+
+/** Opens the canonical content owner for this fixture. */
+function workspaceNotebook(workspaceRoot: string): KnowledgeNotebook {
+  return new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+}
+
+/** Reads the exact current published page, never a materialized physical copy. */
+function publishedPage(workspaceRoot: string, path: string): string {
+  const notebook = workspaceNotebook(workspaceRoot);
+  return notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!;
+}
+
+let entrySequence = 0;
+/** Creates a managed-view fixture through the same content serializer and Git owner. */
+function publishEntry(
+  dataRoot: string,
+  workspaceId: string,
+  input: Parameters<FsStore['createKnowledgeEntry']>[1]
+) {
+  const entry = {
+    id: `index-fixture-${String(++entrySequence).padStart(4, '0')}`,
+    ...input,
+    createdAt: '2026-10-16T00:00:00.000Z',
+    updatedAt: '2026-10-16T00:00:00.000Z',
+  };
+  publishPage(
+    join(dataRoot, 'workspaces', workspaceId),
+    `${entry.id}.md`,
+    serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId })
+  );
+  return entry;
+}
+
+/** Attributes fresh empty notebooks to the actual fixture creator. */
+function notebookInitialization() {
+  return {
+    requestId: randomUUID(),
+    producer: { kind: 'user' as const, id: LOCAL_USER_ID },
+    instructionReference: 'test-owned-index-workspace',
+  };
 }
 
 describe('workspace derived index rebuild', () => {
@@ -191,10 +261,7 @@ describe('workspace derived index rebuild', () => {
       },
     ];
     for (const entry of cases) {
-      writeFileSync(
-        join(workspaceRoot, 'knowledge', 'pages', `${entry.id}.md`),
-        sourceReferencePage(entry.id, entry.reference)
-      );
+      publishPage(workspaceRoot, `${entry.id}.md`, sourceReferencePage(entry.id, entry.reference));
     }
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
@@ -210,7 +277,7 @@ describe('workspace derived index rebuild', () => {
         validation.records.find((record: { conceptId: string }) => record.conceptId === entry.id),
         entry.id
       ).toMatchObject({
-        conformance: 'Workspace-schema-valid',
+        conformance: 'scope-schema-valid',
         indexed: false,
         errors: entry.resolved
           ? []
@@ -261,37 +328,17 @@ describe('workspace derived index rebuild', () => {
     );
     const reference = `source:${source.id}@${source.contentDigest}`;
     const canonicalPageBytes = sourceReferencePage('accepted-pin', reference);
-    const proposal = store.createKnowledgeProposal({
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      knowledgePageId: 'accepted-pin',
-      canonicalPageBytes,
-      contentDigest: sha256Digest(canonicalPageBytes),
-      sourceReferences: [reference],
-      requestId: '00000000-0000-4000-8000-000000000801',
-      rationale: 'Preserve registered evidence.',
-      confidence: 1,
-      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      verifiedExternalReferences: [],
-      createdAt: '2026-10-08T00:00:00.000Z',
-    });
-    store.recordKnowledgeProposalReviewDecision({
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      proposalId: proposal.id,
-      decision: 'accepted',
-      requestId: '00000000-0000-4000-8000-000000000802',
-      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      verifiedExternalReferences: [],
-      decidedAt: '2026-10-08T00:00:00.000Z',
-    });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
-    const pagePath = join(workspaceRoot, 'knowledge', 'pages', 'accepted-pin.md');
-    const before = readFileSync(pagePath);
-    expect(before).toEqual(Buffer.from(canonicalPageBytes));
+    publishPage(workspaceRoot, 'accepted-pin.md', canonicalPageBytes);
+    const notebookRevision = workspaceNotebook(workspaceRoot).publishedRevision();
+    const before = publishedPage(workspaceRoot, 'accepted-pin.md');
+    expect(Buffer.from(before)).toEqual(Buffer.from(canonicalPageBytes));
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    expect(readFileSync(pagePath)).toEqual(before);
+    expect(workspaceNotebook(workspaceRoot).publishedRevision()).toBe(notebookRevision);
+    expect(publishedPage(workspaceRoot, 'accepted-pin.md')).toBe(before);
     const validation = JSON.parse(
       readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
     );
@@ -319,10 +366,8 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
-    const nestedRoot = join(workspaceRoot, 'knowledge', 'pages', 'nested');
-    mkdirSync(nestedRoot, { recursive: true });
-    writeFileSync(join(nestedRoot, 'index.md'), '# Nested index\n\nNavigation only.\n');
-    writeFileSync(join(nestedRoot, 'log.md'), '# Nested log\n\n## 2026-09-06\n* Update.\n');
+    publishPage(workspaceRoot, 'nested/index.md', '# Nested index\n\nNavigation only.\n');
+    publishPage(workspaceRoot, 'nested/log.md', '# Nested log\n\n## 2026-09-06\n* Update.\n');
 
     expect(() =>
       rebuildWorkspaceDerivedIndexes({
@@ -369,18 +414,18 @@ describe('workspace derived index rebuild', () => {
       },
       'Governed retrieval source.'
     );
-    const selected = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    const selected = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Selected page',
       content: 'retrievalneedle',
       sourceReferences: [sourceReference],
     });
-    const overflow = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    const overflow = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Overflow page',
       content: 'retrievalneedle',
     });
-    const zeroScore = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    const zeroScore = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Unaddressed page',
       content: 'No matching term.',
@@ -415,10 +460,8 @@ describe('workspace derived index rebuild', () => {
     };
 
     const trace = await retrieveWorkspaceKnowledge(input);
-    const selectedPageBytes = readFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', `${selected.id}.md`),
-      'utf8'
-    );
+    const notebookRevision = workspaceNotebook(workspaceRoot).publishedRevision();
+    const selectedPageBytes = publishedPage(workspaceRoot, `${selected.id}.md`);
 
     expect(
       resolveWorkspaceKnowledgeRetrievalPages({
@@ -439,6 +482,7 @@ describe('workspace derived index rebuild', () => {
           objectId: selected.id,
         },
         knowledgePageId: selected.id,
+        notebookRevision,
         contentDigest: sha256Digest(selectedPageBytes),
         kind: 'project-context',
         sourceRefs: [sourceReference],
@@ -464,7 +508,7 @@ describe('workspace derived index rebuild', () => {
         threadId: 'th_00000000-0000-7000-8000-000000000001',
       },
       sourceScope: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
-      notebookRevision: null,
+      notebookRevision,
       caller: 'task-mode',
       requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       retrievalParameters: {
@@ -488,7 +532,7 @@ describe('workspace derived index rebuild', () => {
             scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
             objectId: selected.id,
           },
-          revision: sha256Digest(selectedPageBytes),
+          revision: notebookRevision,
           contentDigest: sha256Digest(selectedPageBytes),
           sourceReferences: [sourceReference],
         },
@@ -499,12 +543,8 @@ describe('workspace derived index rebuild', () => {
             scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
             objectId: overflow.id,
           },
-          revision: sha256Digest(
-            readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${overflow.id}.md`), 'utf8')
-          ),
-          contentDigest: sha256Digest(
-            readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${overflow.id}.md`), 'utf8')
-          ),
+          revision: notebookRevision,
+          contentDigest: sha256Digest(publishedPage(workspaceRoot, `${overflow.id}.md`)),
           sourceReferences: [],
           reason: 'budget_exceeded',
         },
@@ -517,29 +557,39 @@ describe('workspace derived index rebuild', () => {
     expect(JSON.stringify(row)).not.toContain(zeroScore.id);
   });
 
-  it('does not let a persisted retrieval trace authorize an accepted page', async () => {
+  it('does not let a persisted retrieval trace grant access after current Source material is missing', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const knowledgePageId = 'reviewed-task-proof';
-    const evidence = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
-      title: 'Reviewed evidence source',
-      content: 'The current page supplies exact proposal evidence.',
-    });
-    const evidenceBytes = readFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', `${evidence.id}.md`),
-      'utf8'
+    const material = 'The current registered source supplies exact evidence.';
+    const source = store.createKnowledgeSource(
+      {
+        id: testEntityId('ks', 'index-current-evidence'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        kind: 'document',
+        title: 'Current evidence',
+        uri: null,
+        contentDigest: sha256Digest(material),
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: '2026-07-12T00:00:00.000Z',
+        createdAt: '2026-07-12T00:00:00.000Z',
+        updatedAt: '2026-07-12T00:00:00.000Z',
+      },
+      material
     );
-    const sourceReferences = [`knowledge:${evidence.id}@${sha256Digest(evidenceBytes)}`];
+    const sourceReferences = [`source:${source.id}@${source.contentDigest}`];
     const content = [
       '---',
       'type: "KnowledgePage"',
       'title: "Reviewed task proof"',
-      'schema_version: "openkit-workspace-knowledge-schema-v2"',
+      `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
       'openkit_status: "active"',
       'status: "stable"',
-      'scope: "workspace"',
+      'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+      'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
       `source_refs: ${JSON.stringify(sourceReferences)}`,
       'review_state: "accepted"',
       'sensitivity: "normal"',
@@ -552,29 +602,7 @@ describe('workspace derived index rebuild', () => {
       'Only current owners can authorize this reviewed task proof.',
       '',
     ].join('\n');
-    const contentDigest = sha256Digest(content);
-    const proposal = store.createKnowledgeProposal({
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      knowledgePageId,
-      canonicalPageBytes: content,
-      contentDigest,
-      sourceReferences,
-      requestId: '00000000-0000-4000-8000-000000000702',
-      rationale: 'Retain the reviewed page for retrieval.',
-      confidence: 1,
-      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      verifiedExternalReferences: [],
-      createdAt: '2026-07-12T00:00:00.000Z',
-    });
-    store.recordKnowledgeProposalReviewDecision({
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      proposalId: proposal.id,
-      decision: 'accepted',
-      requestId: '00000000-0000-4000-8000-000000000703',
-      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      verifiedExternalReferences: [],
-      decidedAt: '2026-07-12T00:00:00.000Z',
-    });
+    publishPage(workspaceRoot, `${knowledgePageId}.md`, content);
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {
         ...localRetrievalAccess(dataRoot, store),
@@ -596,7 +624,20 @@ describe('workspace derived index rebuild', () => {
         },
       })
     );
-    rmSync(join(workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`));
+    const notebookRevision = workspaceNotebook(workspaceRoot).publishedRevision();
+    expect(retrieval.notebookRevision).toBe(notebookRevision);
+    expect(
+      retrieval.selected.find((row) => row.reference.objectId === knowledgePageId)
+    ).toMatchObject({
+      revision: notebookRevision,
+      contentDigest: sha256Digest(content),
+      sourceReferences,
+    });
+    rmSync(join(workspaceRoot, 'sources', 'materials', source.id, 'content.txt'));
+    expect(publishedPage(workspaceRoot, `${knowledgePageId}.md`)).toBe(content);
+    expect(
+      store.readKnowledgeSourceMaterial('ws_00000000-0000-7000-8000-000000000001', source.id)
+    ).toBeNull();
     const afterStore = new FsStore({ dataRoot });
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
@@ -609,10 +650,16 @@ describe('workspace derived index rebuild', () => {
         retrievalTraceRef: retrieval.retrievalTraceRef!,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
-    ).toThrow('Knowledge retrieval trace no longer matches authoritative pages.');
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'workspace_access_denied',
+        status: 403,
+        message: 'Knowledge trace or source is unavailable.',
+      })
+    );
   });
 
-  it('requires exact page-bound proof for every accepted page', async () => {
+  it('does not expose unpublished physical page identity from accepted metadata', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
@@ -621,10 +668,11 @@ describe('workspace derived index rebuild', () => {
       '---',
       'type: "KnowledgePage"',
       'title: "Accepted page without proof"',
-      'schema_version: "openkit-workspace-knowledge-schema-v2"',
+      `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
       'openkit_status: "active"',
       'status: "stable"',
-      'scope: "workspace"',
+      'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+      'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
       'source_refs: []',
       'review_state: "accepted"',
       'sensitivity: "normal"',
@@ -637,7 +685,9 @@ describe('workspace derived index rebuild', () => {
       'This accepted page must not become retrievable without its authority proof.',
       '',
     ].join('\n');
-    writeFileSync(join(workspaceRoot, 'knowledge', 'pages', `${knowledgePageId}.md`), content);
+    const physicalPagesRoot = join(workspaceRoot, 'knowledge', 'pages');
+    mkdirSync(physicalPagesRoot, { recursive: true });
+    writeFileSync(join(physicalPagesRoot, `${knowledgePageId}.md`), content);
 
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {
@@ -662,25 +712,31 @@ describe('workspace derived index rebuild', () => {
     ) as { records: Array<{ conceptId: string; indexed: boolean }> };
 
     expect(retrieval.selected).toEqual([]);
-    expect(retrieval.excluded).toContainEqual({
-      contentDigest: sha256Digest(content),
-      reference: {
-        scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
-        objectId: knowledgePageId,
+    expect(retrieval.excluded).toEqual([
+      {
+        reference: {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: knowledgePageId,
+        },
+        revision: workspaceNotebook(workspaceRoot).publishedRevision(),
+        contentDigest: null,
+        sourceReferences: [],
+        reason: 'source_unavailable',
       },
-      revision: sha256Digest(content),
-      sourceReferences: [],
-      reason: 'lower_conformance',
-    });
-    expect(validationIndex.records.find((record) => record.conceptId === knowledgePageId)).toEqual(
-      expect.objectContaining({ indexed: false })
-    );
+    ]);
+    expect(
+      validationIndex.records.find((record) => record.conceptId === knowledgePageId)
+    ).toBeUndefined();
+    expect(JSON.stringify(validationIndex)).not.toContain(knowledgePageId);
+    expect(JSON.stringify(retrieval)).not.toContain('Accepted page without proof');
+    expect(JSON.stringify(retrieval)).not.toContain(content);
+    expect(JSON.stringify(retrieval)).not.toContain(sha256Digest(content));
   });
 
   it('publishes one immutable trace beside an interrupted temporary file', async () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Retrieval trace recovery');
+    const workspace = store.createWorkspace('Retrieval trace recovery', notebookInitialization());
     const thread = store.createThread(workspace.id, 'Retrieval owner');
     const traceRoot = join(
       dataRoot,
@@ -723,7 +779,7 @@ describe('workspace derived index rebuild', () => {
   it('rejects a symlinked immutable retrieval-trace target without writing outside', async () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Retrieval trace symlink');
+    const workspace = store.createWorkspace('Retrieval trace symlink', notebookInitialization());
     const thread = store.createThread(workspace.id, 'Retrieval owner');
     const traceId = 'krt_00000000-0000-77b7-88ff-44dd0f21d48d';
     const tracePath = join(
@@ -736,6 +792,7 @@ describe('workspace derived index rebuild', () => {
       `${traceId}.json`
     );
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-index-trace-outside-'));
+    fixtureRoots.push(outsideRoot);
     const outsidePath = join(outsideRoot, 'sentinel.json');
     const input = {
       access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: thread.id },
@@ -772,12 +829,15 @@ describe('workspace derived index rebuild', () => {
       'workspaces',
       'ws_00000000-0000-7000-8000-000000000001',
       'knowledge',
-      'pages'
+      'notebook.git'
     );
     const outsidePagesRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-pages-'));
 
+    // A valid repository makes this a symlink refusal rather than an invalid-Git refusal.
+    cpSync(pagesRoot, outsidePagesRoot, { recursive: true });
     writeFileSync(join(outsidePagesRoot, 'outside.md'), 'External content must not be indexed.\n');
     rmSync(pagesRoot, { recursive: true });
+    fixtureRoots.push(outsidePagesRoot);
     symlinkSync(outsidePagesRoot, pagesRoot, 'dir');
 
     expect(() =>
@@ -798,6 +858,7 @@ describe('workspace derived index rebuild', () => {
       'indexes'
     );
     const outsideIndexesRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-indexes-'));
+    fixtureRoots.push(outsideIndexesRoot);
     const sentinelPath = join(outsideIndexesRoot, 'sentinel.txt');
 
     writeFileSync(sentinelPath, 'outside sentinel\n');
@@ -826,16 +887,18 @@ describe('workspace derived index rebuild', () => {
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'valid.md'),
+    publishPage(
+      workspaceRoot,
+      'valid.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Valid knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: []',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -847,16 +910,18 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'missing-field.md'),
+    publishPage(
+      workspaceRoot,
+      'missing-field.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Missing field knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -867,17 +932,19 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'missing-source.md'),
+    publishPage(
+      workspaceRoot,
+      'missing-source.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Missing source knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
-        'source_refs: ["source:ks_00000000-0000-7e65-a399-d53a84c98ecb"]',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+        'source_refs: ["source:ks_missing"]',
         'review_state: "accepted"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -902,7 +969,7 @@ describe('workspace derived index rebuild', () => {
       records: expect.arrayContaining([
         expect.objectContaining({
           conceptId: 'valid',
-          conformance: 'Workspace-schema-valid',
+          conformance: 'scope-schema-valid',
           indexed: true,
           errors: [],
         }),
@@ -919,7 +986,7 @@ describe('workspace derived index rebuild', () => {
         }),
         expect.objectContaining({
           conceptId: 'missing-source',
-          conformance: 'Workspace-schema-valid',
+          conformance: 'scope-schema-valid',
           indexed: false,
           errors: expect.arrayContaining([
             expect.objectContaining({
@@ -934,17 +1001,17 @@ describe('workspace derived index rebuild', () => {
 
   it('uses the workspace schema when rebuilding extension knowledge pages', () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    createDemoStore({ dataRoot });
+    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     writeFileSync(
-      join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
+      join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
       [
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'status: "active"',
         'allowed_types: ["KnowledgePage", "RepoConvention"]',
         'allowed_statuses: ["active"]',
@@ -954,16 +1021,18 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'repo.md'),
+    publishPage(
+      workspaceRoot,
+      'repo.md',
       [
         '---',
         'type: "RepoConvention"',
         'title: "Repo convention"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: []',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -992,16 +1061,16 @@ describe('workspace derived index rebuild', () => {
 
   it('does not rebuild knowledge pages when the workspace schema is invalid', () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    createDemoStore({ dataRoot });
+    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Schema blocked knowledge',
       content: 'This body should not be indexed.',
     });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     writeFileSync(
-      join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
-      'schema_version: "openkit-workspace-knowledge-schema-v2"\n'
+      join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
+      `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"\n`
     );
 
     rebuildWorkspaceDerivedIndexes({
@@ -1022,13 +1091,13 @@ describe('workspace derived index rebuild', () => {
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    const knowledge = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
     });
 
-    store.createKnowledgeSource({
+    const source = store.createKnowledgeSource({
       id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
@@ -1042,17 +1111,19 @@ describe('workspace derived index rebuild', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'source-backed.md'),
+    publishPage(
+      workspaceRoot,
+      'source-backed.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Source-backed knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
-        'source_refs: ["source:ks_00000000-0000-7e28-9211-1f67fd14ca84"]',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+        `source_refs: ${JSON.stringify([`source:${source.id}`])}`,
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1063,16 +1134,18 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'knowledge-backed.md'),
+    publishPage(
+      workspaceRoot,
+      'knowledge-backed.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Knowledge-backed knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         `source_refs: ["knowledge:${knowledge.id}"]`,
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -1084,17 +1157,19 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'missing-source.md'),
+    publishPage(
+      workspaceRoot,
+      'missing-source.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Missing source knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
-        'source_refs: ["source:ks_00000000-0000-7e65-a399-d53a84c98ecb"]',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+        'source_refs: ["source:ks_missing"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1105,16 +1180,18 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'missing-knowledge.md'),
+    publishPage(
+      workspaceRoot,
+      'missing-knowledge.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Missing knowledge source"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: ["knowledge:kn_missing"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -1126,16 +1203,18 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'external-url.md'),
+    publishPage(
+      workspaceRoot,
+      'external-url.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "External URL knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: ["https://example.com/source"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -1147,16 +1226,18 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'invalid-external.md'),
+    publishPage(
+      workspaceRoot,
+      'invalid-external.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Invalid external source"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: ["not-a-valid-external-reference"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -1209,7 +1290,7 @@ describe('workspace derived index rebuild', () => {
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    const knowledge = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
@@ -1229,16 +1310,18 @@ describe('workspace derived index rebuild', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'source-reference-index.md'),
+    publishPage(
+      workspaceRoot,
+      'source-reference-index.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Source reference index"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         `source_refs: ${JSON.stringify([
           'source:ks_00000000-0000-7e28-9211-1f67fd14ca84',
           `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'a'.repeat(64)}`,
@@ -1354,25 +1437,27 @@ describe('workspace derived index rebuild', () => {
 
   it('rebuilds the knowledge link graph from active file-backed pages', () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
-    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'alpha.md'),
+    publishPage(
+      workspaceRoot,
+      'alpha.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Alpha knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: []',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -1384,16 +1469,18 @@ describe('workspace derived index rebuild', () => {
         '',
       ].join('\n')
     );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'beta.md'),
+    publishPage(
+      workspaceRoot,
+      'beta.md',
       [
         '---',
         'type: "KnowledgePage"',
         'title: "Beta knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'source_refs: []',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
@@ -1664,6 +1751,7 @@ const invalidDerivedIndexCases: InvalidDerivedIndexCase[] = [
     throws: true,
     mutate: (indexesRoot) => {
       const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-index-file-'));
+      fixtureRoots.push(outsideRoot);
       const sentinelPath = join(outsideRoot, 'sentinel.txt');
       writeFileSync(sentinelPath, 'outside sentinel\n');
       rmSync(join(indexesRoot, 'knowledge-links.json'));
@@ -1727,7 +1815,8 @@ function writeCurrentDerivedIndexSet(
   rebuiltAt: string
 ): void {
   mkdirSync(indexesRoot, { recursive: true });
-  const header = { schemaVersion: 1, workspaceId, rebuiltAt };
+  const notebookRevision = workspaceNotebook(dirname(indexesRoot)).publishedRevision();
+  const header = { schemaVersion: 1, workspaceId, rebuiltAt, notebookRevision };
   const files: Record<string, unknown> = {
     'knowledge-links.json': { ...header, edges: [] },
     'knowledge-validation.json': { ...header, records: [] },

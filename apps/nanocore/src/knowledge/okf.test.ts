@@ -1,16 +1,25 @@
+import { allocateEntityId, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   knowledgeReferenceErrors,
   parseOkfDocument,
-  parseWorkspaceKnowledgeSchema,
+  parseScopeKnowledgeSchema,
+  REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
   updateOkfFrontmatter,
   validateOpenKitKnowledgeProfile,
-  validateWorkspaceKnowledgeSchema,
+  validateScopeKnowledgeSchema,
 } from './okf.js';
+
+const workspace = KnowledgeOwnerScopeSchema.options[1].parse({
+  kind: 'workspace',
+  workspaceId: allocateEntityId('ws'),
+});
 
 describe('parseOkfDocument', () => {
   it('parses a concept document frontmatter block and body', () => {
@@ -374,10 +383,11 @@ describe('validateOpenKitKnowledgeProfile', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Project context"',
-        `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+        `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        `scope: ${JSON.stringify(workspace)}`,
+        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -400,7 +410,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
 
     expect(report).toEqual({
       okfSnapshot: 'docs/okf-spec-v0.2-snapshot.md#v0.2',
-      profileVersion: 'openkit-knowledge-profile-v2',
+      profileVersion: 'openkit-knowledge-profile-v4',
       conformance: 'OpenKit-profile-valid',
       errors: [],
     });
@@ -413,10 +423,11 @@ describe('validateOpenKitKnowledgeProfile', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Unsafe page"',
-        `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+        `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        `scope: ${JSON.stringify(workspace)}`,
+        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -480,7 +491,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
     ['schema_version', 2, 'profile.invalid_string_field'],
     ['openkit_status', null, 'profile.invalid_string_field'],
     ['openkit_status', 'paused', 'profile.invalid_openkit_status'],
-    ['scope', {}, 'profile.invalid_string_field'],
+    ['scope', {}, 'profile.invalid_scope'],
     ['review_state', false, 'profile.invalid_string_field'],
     ['sensitivity', 1, 'profile.invalid_string_field'],
     ['freshness', [], 'profile.invalid_string_field'],
@@ -544,17 +555,18 @@ describe('validateOpenKitKnowledgeProfile', () => {
     expect(JSON.stringify(errors)).not.toContain(secretValuePathCanary);
   });
 
-  it('validates active pages against the default workspace schema', () => {
+  it('validates active pages against the default scope schema', () => {
     const parsed = parseOkfDocument({
       path: 'knowledge/pages/project.md',
       content: [
         '---',
         'type: "KnowledgePage"',
         'title: "Project context"',
-        `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+        `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        `scope: ${JSON.stringify(workspace)}`,
+        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -573,23 +585,24 @@ describe('validateOpenKitKnowledgeProfile', () => {
       return;
     }
 
-    expect(validateWorkspaceKnowledgeSchema(parsed.document)).toMatchObject({
-      conformance: 'Workspace-schema-valid',
+    expect(validateScopeKnowledgeSchema(parsed.document)).toMatchObject({
+      conformance: 'scope-schema-valid',
       errors: [],
     });
   });
 
-  it('rejects unknown types when the workspace schema does not allow them', () => {
+  it('rejects unknown types when the scope schema does not allow them', () => {
     const parsed = parseOkfDocument({
       path: 'knowledge/pages/legacy.md',
       content: [
         '---',
         'type: "project-context"',
         'title: "Legacy page"',
-        `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+        `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        `scope: ${JSON.stringify(workspace)}`,
+        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -610,16 +623,16 @@ describe('validateOpenKitKnowledgeProfile', () => {
     expect(validateOpenKitKnowledgeProfile(parsed.document).conformance).toBe(
       'OpenKit-profile-valid'
     );
-    expect(validateWorkspaceKnowledgeSchema(parsed.document)).toMatchObject({
+    expect(validateScopeKnowledgeSchema(parsed.document)).toMatchObject({
       conformance: 'OpenKit-profile-valid',
-      errors: [expect.objectContaining({ code: 'workspace_schema.type_not_allowed' })],
+      errors: [expect.objectContaining({ code: 'scope_schema.type_not_allowed' })],
     });
   });
 
-  it('allows extension types declared by the workspace schema', () => {
-    const schema = parseWorkspaceKnowledgeSchema(
+  it('allows extension types declared by the scope schema', () => {
+    const schema = parseScopeKnowledgeSchema(
       [
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'schema_version: "openkit-scope-knowledge-schema-v4"',
         'status: "active"',
         'allowed_types: ["KnowledgePage", "RepoConvention"]',
         'allowed_statuses: ["active"]',
@@ -635,10 +648,11 @@ describe('validateOpenKitKnowledgeProfile', () => {
         '---',
         'type: "RepoConvention"',
         'title: "Repo convention"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'schema_version: "openkit-scope-knowledge-schema-v4"',
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        `scope: ${JSON.stringify(workspace)}`,
+        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -657,8 +671,8 @@ describe('validateOpenKitKnowledgeProfile', () => {
       return;
     }
 
-    expect(validateWorkspaceKnowledgeSchema(parsed.document, schema.schema)).toMatchObject({
-      conformance: 'Workspace-schema-valid',
+    expect(validateScopeKnowledgeSchema(parsed.document, schema.schema)).toMatchObject({
+      conformance: 'scope-schema-valid',
       errors: [],
     });
   });
@@ -676,10 +690,11 @@ function governedPage(input: {
       '---',
       'type: "KnowledgePage"',
       'title: "Status page"',
-      `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+      `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
       `openkit_status: ${JSON.stringify(input.openkitStatus ?? 'active')}`,
       ...(input.status ? [`status: ${JSON.stringify(input.status)}`] : []),
-      'scope: "workspace"',
+      `scope: ${JSON.stringify(workspace)}`,
+      `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
       `source_refs: ${input.sourceRefsYaml ?? '[]'}`,
       'review_state: "accepted"',
       'sensitivity: "normal"',
@@ -693,3 +708,65 @@ function governedPage(input: {
     ].join('\n'),
   });
 }
+
+describe('governed core semantics', () => {
+  it.each([
+    ['review_state', 'allowedReviewStates'],
+    ['sensitivity', 'allowedSensitivities'],
+    ['freshness', 'allowedFreshness'],
+  ] as const)('rejects unknown %s even when a custom schema permits it', (field, schemaField) => {
+    const parsed = governedPage({});
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('Expected a valid generic fixture.');
+    const document = {
+      ...parsed.document,
+      frontmatter: { ...parsed.document.frontmatter, [field]: 'future-authority' },
+    };
+    expect(
+      parseOkfDocument({
+        path: 'external.md',
+        content: `---\ntype: DomainNote\n${field}: future-authority\n---\nExternal body.`,
+      }).ok
+    ).toBe(true);
+    expect(validateOpenKitKnowledgeProfile(document).errors).toContainEqual(
+      expect.objectContaining({ code: `profile.invalid_${field}`, field })
+    );
+    const report = validateScopeKnowledgeSchema(document, {
+      ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+      [schemaField]: ['future-authority'],
+    });
+    expect(report.conformance).not.toBe('scope-schema-valid');
+  });
+
+  it.each([
+    'allowed_review_states',
+    'allowed_sensitivities',
+    'allowed_freshness',
+    'allowed_statuses',
+  ])('rejects unknown configured governance values in %s before using a schema', (field) => {
+    const content = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
+      new RegExp(`${field}:.*`),
+      `${field}: [future-authority]`
+    );
+    expect(parseScopeKnowledgeSchema(content).ok).toBe(false);
+  });
+
+  it('recognizes restricted sensitivity without widening an existing schema allowlist', () => {
+    const parsed = governedPage({});
+    if (!parsed.ok) throw new Error('Expected a valid generic fixture.');
+    const document = {
+      ...parsed.document,
+      frontmatter: { ...parsed.document.frontmatter, sensitivity: 'restricted' },
+    };
+    expect(validateOpenKitKnowledgeProfile(document).errors).toEqual([]);
+    expect(validateScopeKnowledgeSchema(document).errors).toContainEqual(
+      expect.objectContaining({ code: 'scope_schema.sensitivity_not_allowed' })
+    );
+    expect(
+      validateScopeKnowledgeSchema(document, {
+        ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+        allowedSensitivities: ['restricted'],
+      }).conformance
+    ).toBe('scope-schema-valid');
+  });
+});

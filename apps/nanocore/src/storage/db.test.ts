@@ -40,7 +40,7 @@ function createDataRoot(): string {
 }
 
 describe('scoped storage databases', () => {
-  it('opens and migrates a user-scoped SQLite database with only scope metadata', () => {
+  it('opens and migrates a user-scoped SQLite database with User command and Audit authority', () => {
     const dataRoot = createDataRoot();
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
 
@@ -55,12 +55,14 @@ describe('scoped storage databases', () => {
       ).toBe(true);
       expect(tables).toEqual([
         '__drizzle_migrations',
+        'audit_events',
         'idempotency_requests',
         'thread_read_receipts',
       ]);
       expect(listMigrationIds(userDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
         'user_0001_thread_read_receipts',
+        'user_0002_notebook_admission',
       ]);
     } finally {
       userDb.sqlite.close();
@@ -145,6 +147,7 @@ describe('scoped storage databases', () => {
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
+        'workspace_0002_notebook_admission',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -294,10 +297,12 @@ describe('scoped storage databases', () => {
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
+        'workspace_0002_notebook_admission',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
         'user_0001_thread_read_receipts',
+        'user_0002_notebook_admission',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -599,10 +604,12 @@ process.kill(process.pid, 'SIGKILL');`,
       expect(listMigrationIds(userDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
         'user_0001_thread_read_receipts',
+        'user_0002_notebook_admission',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
+        'workspace_0002_notebook_admission',
       ]);
     } finally {
       userDb.sqlite.close();

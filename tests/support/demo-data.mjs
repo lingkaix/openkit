@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -47,42 +47,11 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const knowledge = [
-    {
-      id: 'mem_project',
-      kind: 'project-context',
-      title: 'Product focus',
-      content: 'Drive the workspace protocol through a real Codex-backed local agent adapter.',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    },
-  ];
   const threadRoot = join(workspaceRoot, 'threads', 'th_00000000-0000-7000-8000-000000000001');
-  const knowledgePage = [
-    '---',
-    'type: "KnowledgePage"',
-    `title: ${JSON.stringify(knowledge[0].title)}`,
-    'schema_version: "openkit-workspace-knowledge-schema-v1"',
-    'status: "active"',
-    'scope: "workspace"',
-    'source_refs: []',
-    'review_state: "accepted"',
-    'sensitivity: "normal"',
-    'freshness: "current"',
-    `openkit_entry_kind: ${JSON.stringify(knowledge[0].kind)}`,
-    `created_at: ${JSON.stringify(knowledge[0].createdAt)}`,
-    `updated_at: ${JSON.stringify(knowledge[0].updatedAt)}`,
-    `openkit_entry_id: ${JSON.stringify(knowledge[0].id)}`,
-    '---',
-    knowledge[0].content,
-    '',
-  ].join('\n');
-
   for (const root of [workspaceRoot, quickChatRoot]) {
     for (const relativePath of [
       'artifacts',
       'config',
-      'knowledge/pages',
       'knowledge/proposals',
       'knowledge/reviews',
       'runtime/agent-sessions',
@@ -125,7 +94,6 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
       2
     )}\n`
   );
-  writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'mem_project.md'), knowledgePage);
 }
 
 /**
@@ -137,14 +105,22 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
 export async function seedDemoWorkspaceAuthority(dataRoot) {
   const [
     { ensureLocalUser: ensureFixtureLocalUser },
-    { openCoreDb },
-    { applyMigrations },
+    { openCoreDb, openWorkspaceDb },
+    { applyMigrations, applyScopedMigrations },
     { recordWorkspaceOwnerMembership },
+    { initializeWorkspaceNotebook },
+    { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT },
+    { serializeUserAuthoredKnowledgePage },
+    { createDemoWorkspaceForUser },
   ] = await Promise.all([
     import('../../apps/nanocore/dist/test-support/local-user.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
     import('../../apps/nanocore/dist/storage/migrate.js'),
     import('../../apps/nanocore/dist/workspace-membership.js'),
+    import('../../apps/nanocore/dist/knowledge/notebook-initialization.js'),
+    import('../../apps/nanocore/dist/knowledge/okf.js'),
+    import('../../apps/nanocore/dist/storage/workspace-file-records.js'),
+    import('../../apps/nanocore/dist/test-support/demo-store.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
 
@@ -156,6 +132,49 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
       ownerUserId: localUserId,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    // Publish this explicit fresh fixture through the same Git owner as authored native pages.
+    // No retained page directory is read or converted.
+    const demo = createDemoWorkspaceForUser(localUserId);
+    for (const workspaceId of [demo.workspace.id, 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28']) {
+      const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+      if (
+        !existsSync(join(workspaceRoot, 'workspace-record.json')) ||
+        existsSync(join(workspaceRoot, 'knowledge', 'notebook.git'))
+      )
+        continue;
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        applyScopedMigrations(workspaceDb);
+        initializeWorkspaceNotebook({
+          workspaceRoot,
+          workspaceId,
+          workspaceDb,
+          initialization: {
+            requestId: randomUUID(),
+            producer: { kind: 'user', id: localUserId },
+            instructionReference: 'test-fixture:demo-workspace',
+          },
+          ...(workspaceId === demo.workspace.id
+            ? {
+                files: Object.fromEntries(
+                  demo.knowledge.map((entry) => [
+                    `${entry.id}.md`,
+                    serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId }),
+                  ])
+                ),
+              }
+            : {}),
+          revalidate: () => ({
+            scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+            reviewRequiredPageIds: [],
+            registeredSources: new Map(),
+            resolvedReferences: new Map(),
+          }),
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    }
   } finally {
     coreDb.sqlite.close();
   }

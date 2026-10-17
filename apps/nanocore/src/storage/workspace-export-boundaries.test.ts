@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -32,10 +33,12 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -136,6 +139,7 @@ function createBoundaryStore(dataRoot: string): FsStore {
   const store = new FsStore({ dataRoot });
   const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   store.importWorkspaceSnapshot({
+    ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
     workspace: demo.workspace,
     threads: [demo.thread],
     knowledge: demo.knowledge,
@@ -277,7 +281,7 @@ function tarHeaderWithDeclaredSize(header: Buffer, size: number): Buffer {
 
 /** Creates one compressed tar fixture without touching a filesystem. */
 async function archiveWithEntry(
-  header: { name: string; type: 'file' | 'symlink'; linkname?: string },
+  header: { name: string; type: 'file' | 'symlink'; linkname?: string; prefix?: string },
   content = Buffer.alloc(0)
 ): Promise<Buffer> {
   const rawHeader = Buffer.alloc(512);
@@ -290,6 +294,7 @@ async function archiveWithEntry(
   if (header.linkname) rawHeader.write(header.linkname, 157, 100, 'utf8');
   rawHeader.write('ustar\0', 257, 6, 'ascii');
   rawHeader.write('00', 263, 2, 'ascii');
+  if (header.prefix) rawHeader.write(header.prefix, 345, 155, 'utf8');
   const canonicalHeader = tarHeaderWithDeclaredSize(rawHeader, content.byteLength);
   const padding = Buffer.alloc((512 - (content.byteLength % 512)) % 512);
   return zstdCompressSync(Buffer.concat([canonicalHeader, content, padding, Buffer.alloc(1024)]));
@@ -593,18 +598,29 @@ describe('workspace export route boundaries', () => {
       dataRoot: sourceDataRoot,
       store: sourceStore,
     });
-    const pagePath = `knowledge/pages/分类/${'a'.repeat(90)}.md`;
-    const sourcePage = join(
-      sourceDataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      pagePath
+    const pagePath = `knowledge/pages/${'a'.repeat(60)}/${'b'.repeat(60)}.md`;
+    const notebookResponse = await sourceApp.request(
+      ...operationRequest('knowledge.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
-    mkdirSync(dirname(sourcePage), { recursive: true });
-    writeFileSync(
-      sourcePage,
-      '---\ntype: "RepoConvention"\ntitle: "Unicode archive"\n---\nPortable.\n'
+    expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
+    const { notebookRevision } = await notebookResponse.json();
+    const created = await sourceApp.request(
+      ...operationRequest(
+        'knowledge.create',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          baseRevision: notebookRevision,
+          knowledgePageId: pagePath.slice('knowledge/pages/'.length, -3),
+          kind: 'project-context',
+          title: 'Unicode archive',
+          content: 'Portable.',
+        },
+        { headers: { 'x-openkit-request-id': '00000000-0000-4000-8000-000000000991' } }
+      )
     );
+    expect(created.status, await created.clone().text()).toBe(200);
     // Create the handle through its native owner so the fixture includes real persisted creator attribution.
     const exportedResponse = await sourceApp.request(
       ...operationRequest('workspace.export', {
@@ -633,6 +649,33 @@ describe('workspace export route boundaries', () => {
     });
 
     expect(targetResponse.status, await targetResponse.clone().text()).toBe(200);
+
+    // Archive intake owns UTF-8 paths; Notebook pages retain their narrower S61 grammar.
+    const unicodePrefix = 'attachments/分类';
+    const unicodeName = `${'c'.repeat(90)}.bin`;
+    const unicodePath = `${unicodePrefix}/${unicodeName}`;
+    const exactBytes = Buffer.from([0, 255, 128, 13, 10, 65]);
+    const unicodeArchive = await archiveWithEntry(
+      { name: unicodeName, prefix: unicodePrefix, type: 'file' },
+      exactBytes
+    );
+    expect(Buffer.byteLength(unicodePath)).toBeGreaterThan(100);
+    expect(readTarRegularFiles(zstdDecompressSync(unicodeArchive)).get(unicodePath)).toEqual(
+      exactBytes
+    );
+    const staged = await stageWorkspaceArchive(
+      new Request('http://localhost/archive', {
+        method: 'POST',
+        headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+        body: unicodeArchive,
+      }),
+      targetDataRoot
+    );
+    try {
+      expect(readFileSync(join(staged.exportRoot, unicodePath))).toEqual(exactBytes);
+    } finally {
+      staged.remove();
+    }
   });
 
   it('fails closed when a worker-backed Turn has no S39 trace', async () => {
@@ -764,7 +807,7 @@ describe('workspace import route handles', () => {
       exportId
     );
     const nestedIndex = '# Imported topic index\n\nKeep this navigation byte-for-byte.\n';
-    const nestedLog = '# Imported topic log\n\nKeep this history byte-for-byte.\n';
+    const nestedLog = '# Imported topic log\n\n## 2026-10-16\n* Keep this history byte-for-byte.\n';
     const input = minimalExportInput(
       exportRoot,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -851,18 +894,21 @@ describe('workspace import route handles', () => {
 
     expect(response.status, await response.clone().text()).toBe(200);
     const result = (await response.json()) as { importedWorkspaceId: string };
-    const pagesRoot = join(
-      dataRoot,
-      'workspaces',
-      result.importedWorkspaceId,
-      'knowledge',
-      'pages'
-    );
-    expect(readFileSync(join(pagesRoot, 'index.md'), 'utf8')).toBe(
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        result.importedWorkspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const published = notebook.readRevision(notebook.publishedRevision()).files;
+    expect(published['topic/index.md']).toBe(nestedIndex);
+    expect(published['topic/log.md']).toBe(nestedLog);
+    expect(published['index.md']).toBe(
       '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n'
     );
-    expect(readFileSync(join(pagesRoot, 'topic', 'index.md'), 'utf8')).toBe(nestedIndex);
-    expect(readFileSync(join(pagesRoot, 'topic', 'log.md'), 'utf8')).toBe(nestedLog);
   });
 
   it.each([
