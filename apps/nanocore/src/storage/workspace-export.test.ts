@@ -1910,7 +1910,11 @@ describe('workspace export verifier', () => {
 
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual(imported);
+    // Each read creates a request-local completion closure; all retained data stays identical.
+    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
+      ...imported,
+      finalizeNotebookKnowledge: expect.any(Function),
+    });
   });
 
   it('normalizes unknown usage ledger fields while reading workspace imports', () => {
@@ -1989,7 +1993,11 @@ describe('workspace export verifier', () => {
 
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual(imported);
+    // Each read creates a request-local completion closure; all retained data stays identical.
+    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
+      ...imported,
+      finalizeNotebookKnowledge: expect.any(Function),
+    });
   });
 
   it('preserves ordinary archived Git push fixture text through verified bytes and retained reads', () => {
@@ -2058,7 +2066,11 @@ describe('workspace export verifier', () => {
         .digest('hex')
     ).toBe(digest);
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual(imported);
+    // Each read creates a request-local completion closure; all retained data stays identical.
+    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
+      ...imported,
+      finalizeNotebookKnowledge: expect.any(Function),
+    });
   });
 
   it('rewrites workspace quarantine records while reading workspace imports', () => {
