@@ -72,6 +72,29 @@ export const TurnTriggerSourceSchema = z.object({
   summary: z.string().min(1).nullable(),
 });
 
+/** Exact run choices for already-included Skills; these are work input, not catalog mutations. */
+export const TurnSkillSelectionsSchema = z
+  .array(
+    z
+      .object({
+        skillId: z.string().min(1),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      })
+      .strict()
+  )
+  .superRefine((selections, context) => {
+    const ids = new Set<string>();
+    for (const [index, selection] of selections.entries()) {
+      if (ids.has(selection.skillId))
+        context.addIssue({
+          code: 'custom',
+          message: 'Run Skill selections must have unique Skill ids.',
+          path: [index, 'skillId'],
+        });
+      ids.add(selection.skillId);
+    }
+  });
+
 /**
  * Shared fields for every user-visible turn status variant.
  */
@@ -87,6 +110,8 @@ const TurnBaseSchema = z.object({
   agentProfileId: AgentProfileIdSchema.nullable().optional(),
   /** Immutable admission preference; absence records no choice. */
   reasoningEffort: ReasoningEffortSchema.optional(),
+  /** Exact explicit Skill versions retained at admission; absence records ordinary resolution. */
+  skillSelections: TurnSkillSelectionsSchema.optional(),
   triggerSource: TurnTriggerSourceSchema.nullable().optional(),
   configVersion: z.number().int().positive().nullable(),
   startedAt: TimestampSchema.nullable(),
