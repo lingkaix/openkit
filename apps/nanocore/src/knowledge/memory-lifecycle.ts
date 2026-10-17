@@ -38,7 +38,7 @@ export type MemoryWriter = MemoryContext &
   Omit<Parameters<typeof publishScopedNotebook>[0], 'actor' | 'coreDb' | 'target' | 'userDb'>;
 
 /** Resolves actual self authority before any owner path, page identity or content is inspected. */
-function admit(input: MemoryContext) {
+export function admitMemoryContext(input: MemoryContext) {
   const context = {
     coreDb: input.coreDb,
     actor: input.actor ? { ...input.actor } : undefined,
@@ -85,7 +85,7 @@ export function memoryPageFacts(path: string, content: string) {
 
 /** Lists only currently authorized source-free personally authored unsuppressed page metadata at one immutable base. */
 export function listMemoryPages(input: MemoryContext) {
-  const owner = admit(input);
+  const owner = admitMemoryContext(input);
   const pinned = pinScopedNotebook(owner.context);
   const suppressed = new Set(
     readMemorySuppressions(owner.notebookRoot, input.userDb.userId).map(
@@ -97,13 +97,13 @@ export function listMemoryPages(input: MemoryContext) {
     const facts = memoryPageFacts(path, content);
     return facts ? [facts] : [];
   });
-  admit(input);
+  admitMemoryContext(input);
   return { notebookRevision: pinned.notebookRevision, pages };
 }
 
 /** Reads the current exact page only after self, suppression, authored state, sensitivity and empty-Source admission. */
 export function readMemoryPage(input: MemoryContext, pageId: string) {
-  const owner = admit(input);
+  const owner = admitMemoryContext(input);
   const path = pathFor(pageId);
   if (
     readMemorySuppressions(owner.notebookRoot, input.userDb.userId).some(
@@ -115,14 +115,14 @@ export function readMemoryPage(input: MemoryContext, pageId: string) {
   const content = pinned.read().files[path];
   if (content === undefined) return null;
   const facts = memoryPageFacts(path, content);
-  admit(input);
+  admitMemoryContext(input);
   return facts ? { ...facts, notebookRevision: pinned.notebookRevision, content } : null;
 }
 
 /** Preserves the original exact command bytes while joining explicit human save/edit to the common scoped publisher. */
 async function changeMemoryPage(input: MemoryWriter, change: MemoryPageChange, existing: boolean) {
   const request = { ...change };
-  const owner = admit(input);
+  const owner = admitMemoryContext(input);
   const path = pathFor(request.pageId);
   assertMemoryPagesNotSuppressed(owner.notebookRoot, input.userDb.userId, [path]);
   const notebook = new KnowledgeNotebook({
@@ -168,7 +168,7 @@ export function recordMemorySuppression(
     readonly digest: string;
   }
 ) {
-  const owner = admit(input);
+  const owner = admitMemoryContext(input);
   pathFor(request.pageId);
   const rows = readMemorySuppressions(owner.notebookRoot, input.userDb.userId);
   const previous = rows.find((row) => row.id === request.requestId);
@@ -186,7 +186,7 @@ export function recordMemorySuppression(
   const page = readMemoryPage(input, request.pageId);
   if (!page || page.notebookRevision !== request.notebookRevision || page.digest !== request.digest)
     throw new NotebookError('conflict');
-  admit(input);
+  admitMemoryContext(input);
   return appendMemorySuppression(owner.notebookRoot, {
     userId: input.userDb.userId,
     pageId: request.pageId,
