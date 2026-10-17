@@ -2,10 +2,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type SubmitTurnFeedbackRequest,
+  TurnFeedbackEntrySchema,
   type TurnFeedbackResponse,
   TurnFeedbackResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { TurnSchema } from '@openkit/protocol';
+import type { ActorRef, TurnSchema } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { writeFileAtomic } from '../storage/workspace-file-records.js';
@@ -13,7 +14,9 @@ import { writeFileAtomic } from '../storage/workspace-file-records.js';
 type Turn = import('zod').infer<typeof TurnSchema>;
 
 /** Owned disk annotations survive rewrites; public responses use the known-field projection. */
-const PersistedTurnFeedbackSchema = TurnFeedbackResponseSchema.passthrough();
+const PersistedTurnFeedbackSchema = TurnFeedbackResponseSchema.extend({
+  history: TurnFeedbackEntrySchema.passthrough().array(),
+}).passthrough();
 
 /**
  * Returns the feedback file path for one turn.
@@ -71,6 +74,7 @@ export function ensureTurnFeedback(
     rating: null,
     turnId: turn.id,
     agentId,
+    history: [],
   };
 
   writeFeedbackFile(path, feedback);
@@ -91,17 +95,19 @@ export function readTurnFeedback(store: FsStore, turnId: string): TurnFeedbackRe
 }
 
 /**
- * Atomically updates feedback for a turn.
+ * Atomically appends an attributable submission and updates the current feedback view.
  *
  * @param store Store that owns the turn.
  * @param turnId Turn id.
  * @param input Feedback update.
+ * @param actor Authenticated submitting actor from trusted invocation context.
  * @returns Updated feedback record.
  */
 export function updateTurnFeedback(
   store: FsStore,
   turnId: string,
-  input: SubmitTurnFeedbackRequest
+  input: SubmitTurnFeedbackRequest,
+  actor: ActorRef
 ): TurnFeedbackResponse {
   const turn = store.getTurnById(turnId);
   const existing =
@@ -117,6 +123,10 @@ export function updateTurnFeedback(
     ...existing,
     note: input.note,
     rating: input.rating,
+    history: [
+      ...existing.history,
+      { actor, submittedAt: new Date().toISOString(), rating: input.rating, note: input.note },
+    ],
   };
 
   writeFeedbackFile(feedbackFilePath(store, turn), updated);
