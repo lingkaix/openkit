@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: completed
+status: implemented
 date: 2026-10-17
 ---
 # Exact Build Revision For Outcome Lineage
