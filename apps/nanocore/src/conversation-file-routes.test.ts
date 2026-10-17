@@ -101,7 +101,7 @@ function fixture(availableBytes?: () => bigint) {
     coreDb,
     dataRoot,
     store,
-    piAiGatewayClient: provider as unknown as PiAiGatewayClient,
+    llmPiAiClient: provider as unknown as PiAiGatewayClient,
     ...(availableBytes
       ? { fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n, availableBytes) }
       : {}),
@@ -483,7 +483,7 @@ describe('Turn-owned conversation originals', () => {
       dataRoot: state.dataRoot,
       store: state.store,
       turnExecutor: executor,
-      piAiGatewayClient: provider as unknown as PiAiGatewayClient,
+      llmPiAiClient: provider as unknown as PiAiGatewayClient,
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
@@ -617,7 +617,7 @@ describe('Turn-owned conversation originals', () => {
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: state.store,
-      piAiGatewayClient: provider as unknown as PiAiGatewayClient,
+      llmPiAiClient: provider as unknown as PiAiGatewayClient,
     });
     const threadsBefore = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
     const response = await app.request('/api/app/operations/conversation.submit', {
