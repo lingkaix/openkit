@@ -102,6 +102,7 @@ import {
   reconstructImportedWorkspaceCatalog,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { PDF_TEXT_LAYER_LIMITS } from '../context/pdf-text-layer.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   canonicalJson,
@@ -2770,12 +2771,36 @@ function readWorkResourceImportState(
           `${sourcePackageRoot}/${entry.originalSnapshotPath}`,
           'Context Package original'
         );
+        // Complete extracted text has its own small processor bound; originals stay path-backed.
+        const representationPath = entry.projection.representationSnapshotPath;
+        const representation = representationPath
+          ? requiredExportFile(context.files, `${sourcePackageRoot}/${representationPath}`)
+          : undefined;
+        if (
+          representation !== undefined &&
+          (Buffer.byteLength(representation) > PDF_TEXT_LAYER_LIMITS.maxOutputBytes ||
+            Buffer.byteLength(representation) !== entry.projection.representationByteLength ||
+            `sha256:${createHash('sha256').update(representation).digest('hex')}` !==
+              entry.projection.representationDigest)
+        )
+          throw new Error('Context Package representation integrity is inconsistent.');
         return {
           ...entry,
           deliveredBytes: Buffer.from(
             requiredExportFile(context.files, `${sourcePackageRoot}/${entry.packagePath}`),
             'utf8'
           ),
+          ...(representation !== undefined
+            ? {
+                openRepresentation: async function* (signal: AbortSignal) {
+                  const bytes = Buffer.from(representation);
+                  for (let offset = 0; offset < bytes.byteLength; offset += 65_536) {
+                    signal.throwIfAborted();
+                    yield bytes.subarray(offset, offset + 65_536);
+                  }
+                },
+              }
+            : {}),
           open: async function* (signal) {
             signal.throwIfAborted();
             const handle = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -2888,8 +2913,13 @@ function readWorkResourceImportState(
         throw new Error(`Worker Context Package source bytes are contradictory: ${file.path}`);
       }
     }
-    for (const entry of sourceFiles)
+    for (const entry of sourceFiles) {
       sourcePackagePaths.add(`${sourcePackageRoot}/${entry.originalSnapshotPath}`);
+      if (entry.projection.representationSnapshotPath)
+        sourcePackagePaths.add(
+          `${sourcePackageRoot}/${entry.projection.representationSnapshotPath}`
+        );
+    }
     const unexpectedSourceFile = [...context.files.keys(), ...context.payloadFiles.keys()].find(
       (path) => path.startsWith(`${sourcePackageRoot}/`) && !sourcePackagePaths.has(path)
     );
@@ -2924,6 +2954,14 @@ function readWorkResourceImportState(
           'Context Package original'
         )
       );
+      if (entry.projection.representationSnapshotPath)
+        workerContextPackageFiles.set(
+          `${targetRoot}/context-package/${entry.projection.representationSnapshotPath}`,
+          requiredExportFile(
+            context.files,
+            `${sourcePackageRoot}/${sourceFiles[index]!.projection.representationSnapshotPath!}`
+          )
+        );
     }
     const targetPackage = createWorkerContextPackageFiles({
       sourceFiles: targetSourceFiles,
@@ -3372,6 +3410,17 @@ function remintContextSourceFile(
     projection: {
       ...entry.projection,
       ...(newRevision ? { sourceRevision: newRevision } : {}),
+      ...(entry.projection.representationSnapshotPath
+        ? {
+            representationSnapshotPath: remintContextSourcePath(
+              entry.projection.representationSnapshotPath,
+              sourceId,
+              targetId,
+              oldRevision,
+              newRevision
+            ),
+          }
+        : {}),
       deliveredDigest: `sha256:${createHash('sha256').update(deliveredBytes).digest('hex')}`,
       byteLength: deliveredBytes.byteLength,
       originalSnapshotPath,

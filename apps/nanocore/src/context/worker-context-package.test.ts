@@ -2427,3 +2427,53 @@ it.each([
   ])
     expect(schema.safeParse(value).success).toBe(false);
 });
+
+describe('S39 complete derived representation publication', () => {
+  it('requires a representation supplier and refuses changed derived bytes before readiness', async () => {
+    const root = mkdtempSync(join(tmpdir(), 's39-derived-representation-'));
+    try {
+      const complete = Buffer.from(
+        'Complete extracted representation retained for later bounded reads.\n'
+      );
+      const preview = complete.subarray(0, 8);
+      const source: WorkerContextPackageSourceFileInput = {
+        ...sourceFixture(),
+        deliveredBytes: preview,
+        projection: {
+          ...sourceFixture().projection,
+          kind: 'excerpt',
+          representationId: 'fixture-derived-utf8',
+          representationDigest: sha256(complete),
+          representationByteLength: complete.length,
+          deliveredDigest: sha256(preview),
+          byteLength: preview.length,
+          ranges: [{ start: 0, end: preview.length }],
+          truncated: true,
+          availability: 'incomplete',
+          representationSnapshotPath: 'representations/artifacts/ar_00000000-0000-7000-8000-0000000003e9/1/text.txt',
+        },
+        async *openRepresentation() {
+          yield Buffer.from('wrong derived bytes');
+        },
+      };
+      expect(() =>
+        createWorkerContextPackageFiles({
+          ...boundedInputs(),
+          sourceFiles: [{ ...source, openRepresentation: undefined }],
+        })
+      ).toThrow(/representation supplier/);
+      const files = createWorkerContextPackageFiles({ ...boundedInputs(), sourceFiles: [source] });
+      const admission = new FileStorageAdmission(root, () => 0n);
+      await expect(writeWorkerContextPackageFiles(root, files, { admission })).rejects.toThrow(
+        /digest mismatch/
+      );
+      const packageRoot = join(root, 'threads', boundedInputs().threadId, 'turns', boundedInputs().turnId, 'context-package');
+      expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
+      expect(existsSync(join(packageRoot, source.projection.representationSnapshotPath!))).toBe(
+        false
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
