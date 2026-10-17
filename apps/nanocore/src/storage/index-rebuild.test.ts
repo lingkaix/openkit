@@ -650,7 +650,13 @@ describe('workspace derived index rebuild', () => {
         retrievalTraceRef: retrieval.retrievalTraceRef!,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
-    ).toThrow('Knowledge page is unavailable.');
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'workspace_access_denied',
+        status: 403,
+        message: 'Knowledge trace or source is unavailable.',
+      })
+    );
   });
 
   it('does not expose unpublished physical page identity from accepted metadata', async () => {

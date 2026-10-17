@@ -64,6 +64,7 @@ import {
 } from './knowledge-manager.js';
 import { verifyKnowledgeProposalWorkHistory } from './knowledge-source-authority.js';
 import {
+  commandRequestKey,
   type FsStore,
   KnowledgeProposalAuthorityError,
   knowledgeAuthorityId,
@@ -84,7 +85,11 @@ import {
   readAuthorizedWorkspaceNotebookPages,
   threadReadable,
 } from './retrieval-knowledge-adapter.js';
-import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
+import {
+  commandInputHash,
+  IdempotencyKeyConflictError,
+  runIdempotentCommand,
+} from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { openWorkspaceDb } from './storage/db.js';
 import {
@@ -1336,6 +1341,37 @@ export function createKnowledgeOperationImplementations(
         summary: proposal.rationale,
       };
       return withGovernedNotebook(request, context, async (owner) => {
+        const reviewId = deriveEntityId('kr', {
+          ownerScope: { kind: 'workspace', workspaceId },
+          proposalId,
+          requestId: commandInput.requestId,
+        });
+        const commandScope = { workspaceId, actorId: context.actorRef.id };
+        const receipt = store.getCommandRequest(
+          'knowledge.proposal.decide',
+          commandInput.requestId,
+          commandScope,
+          owner.workspaceDb
+        );
+        const inflight = inflightCommands
+          .get(store)
+          ?.get(
+            commandRequestKey('knowledge.proposal.decide', commandInput.requestId, commandScope)
+          );
+        if (
+          (receipt && receipt.inputHash !== commandInputHash(input)) ||
+          (inflight && inflight.inputHash !== commandInputHash(input))
+        )
+          throw new IdempotencyKeyConflictError();
+        // A retained terminal decision without completion evidence requires inspection, not resumption.
+        if (
+          !receipt &&
+          !inflight &&
+          store
+            .listKnowledgeProposalReviewDecisions(workspaceId)
+            .some((review) => review.reviewId === reviewId)
+        )
+          throw new NotebookError('recovery_required');
         const current = () => {
           if (
             !coreDb ||
@@ -1359,11 +1395,6 @@ export function createKnowledgeOperationImplementations(
           return owner.revalidate();
         };
         current();
-        const reviewId = deriveEntityId('kr', {
-          ownerScope: { kind: 'workspace', workspaceId },
-          proposalId,
-          requestId: commandInput.requestId,
-        });
         const recordDecision = () =>
           store.recordKnowledgeProposalReviewDecision({
             ...commandInput,
@@ -1444,6 +1475,16 @@ export function createKnowledgeOperationImplementations(
       try {
         const { workspaceId, proposalId } = input;
         const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
+        // A completed request owns its original input before later content conflict checks.
+        const receipt =
+          context.actorRef.kind === 'user'
+            ? store.getCommandRequest('knowledge.proposal.reverse', input.requestId, {
+                workspaceId,
+                actorId: context.actorRef.id,
+              })
+            : null;
+        if (receipt && receipt.inputHash !== commandInputHash(input))
+          throw new IdempotencyKeyConflictError();
         store.projectKnowledgeProposalDraft(workspaceId, proposalId);
         const decision = store.projectKnowledgeProposalDecision(workspaceId, input.reviewId);
         if (

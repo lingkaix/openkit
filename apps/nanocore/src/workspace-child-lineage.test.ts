@@ -205,9 +205,10 @@ async function sendLineageRequest(
 
 let fixture: Awaited<ReturnType<typeof createLineageFixture>>;
 
+// Fresh Git/SQLite publication is fixture setup; it has no product latency contract.
 beforeEach(async () => {
   fixture = await createLineageFixture();
-});
+}, 30_000);
 
 afterEach(() => {
   if (fixture?.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
@@ -251,8 +252,19 @@ describe('Workspace child lineage', () => {
     }
   });
 
-  it('denies foreign Knowledge reads and mutations through an authorized Workspace path', async () => {
-    for (const [id, child] of [
+  it('keeps scoped Knowledge page names and Source identities within the selected Workspace', async () => {
+    const foreignNotebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        fixture.dataRoot,
+        'workspaces',
+        fixture.foreignWorkspace.id,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const foreignRevision = foreignNotebook.publishedRevision();
+    const foreignBytes = foreignNotebook.readRevision(foreignRevision).files;
+    for (const [id, child, status, code] of [
       [
         'knowledge.update',
         {
@@ -261,6 +273,8 @@ describe('Workspace child lineage', () => {
           title: 'Do not update this entry',
           baseRevision: fixture.allowedNotebookRevision,
         },
+        400,
+        'invalid_request',
       ],
       [
         'knowledge.delete',
@@ -271,8 +285,15 @@ describe('Workspace child lineage', () => {
           expectedContentDigest: fixture.foreignKnowledgeDigest,
           confirmRemoval: true,
         },
+        409,
+        'conflict',
       ],
-      ['knowledge.source.read', { sourceId: fixture.foreignKnowledgeSource.id }],
+      [
+        'knowledge.source.read',
+        { sourceId: fixture.foreignKnowledgeSource.id },
+        403,
+        'workspace_access_denied',
+      ],
     ] as const) {
       const response = await fixture.app.request(
         ...knowledgeOperationRequest(
@@ -281,8 +302,22 @@ describe('Workspace child lineage', () => {
           { body: JSON.stringify(child) }
         )
       );
-      expect(response.status).toBe(403);
-      await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      // Page names are Notebook-relative; absent selected-scope pages cannot address another tree.
+      expect(response.status, `${id}: ${await response.clone().text()}`).toBe(status);
+      await expect(response.json()).resolves.toMatchObject({ code });
+      expect(foreignNotebook.publishedRevision()).toBe(foreignRevision);
+      expect(foreignNotebook.readRevision(foreignRevision).files).toEqual(foreignBytes);
+      expect(
+        new KnowledgeNotebook({
+          repositoryPath: join(
+            fixture.dataRoot,
+            'workspaces',
+            fixture.allowedWorkspace.id,
+            'knowledge',
+            'notebook.git'
+          ),
+        }).publishedRevision()
+      ).toBe(fixture.allowedNotebookRevision);
     }
   });
 

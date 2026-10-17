@@ -1,5 +1,6 @@
 import type { CoreClient, WorkspaceRecord } from '@openkit/core-client';
 import { ApiCallError, createRequestId } from '@openkit/core-client';
+import type { ActorRef } from '@openkit/protocol';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
@@ -201,6 +202,13 @@ export interface AuditEventDisplayRow {
   action: string;
   outcome: string;
   summary: string;
+  /** Recorded identity only; responsible-User and display-name metadata are not projected. */
+  actor: Pick<ActorRef, 'kind' | 'id'> | null;
+  /** Recorded coordinates only; a Thread link requires both without a selected-Workspace fallback. */
+  workspaceId: string | null;
+  threadId: string | null;
+  turnId: string | null;
+  requestId: string | null;
   /** occurredAt when recorded, otherwise createdAt; omitted when neither was supplied. */
   recordedAt?: string;
 }
@@ -420,7 +428,7 @@ function recordedInstant(value: unknown): string | undefined {
 }
 
 /**
- * Whitelists and redacts audit and decision metadata before query caching.
+ * Whitelists and redacts recorded audit identity, lineage and decision metadata before query caching.
  * @param audit Server or Workspace audit response.
  * @param decisions Server or Workspace permission response.
  * @returns Only fields displayed by the read-only evidence rows.
@@ -443,6 +451,13 @@ function projectAuditAndDecisions(
       action: projectSafeValue(event.action) as string,
       outcome: projectSafeValue(event.outcome) as string,
       summary: projectSafeValue(event.summary) as string,
+      actor: event.actor
+        ? { kind: event.actor.kind, id: projectSafeValue(event.actor.id) as string }
+        : null,
+      workspaceId: projectSafeValue(event.workspaceId ?? null) as string | null,
+      threadId: projectSafeValue(event.threadId ?? null) as string | null,
+      turnId: projectSafeValue(event.turnId ?? null) as string | null,
+      requestId: projectSafeValue(event.requestId ?? null) as string | null,
       recordedAt: recordedInstant(event.occurredAt) ?? recordedInstant(event.createdAt),
     })),
     permissionDecisions: decisions.permissionDecisions.map((decision) => ({
