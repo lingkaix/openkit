@@ -55,6 +55,8 @@ pnpm --filter @openkit/web brand:generate
 
 Do not hand-edit the generated SVG, PNG, or ICO files.
 
+The selected-Workspace Catalog mounts LightAppDefinitions for definition JSON/history import and export, immutable version inspection, default and pin selection, explicit native app creation and activation, and confirmed local snapshot restoration. It uses definition-derived Core Client operations; query state is a projection and each mutation is an explicit user action without automatic retry. The focused source suite is src/screens/workspace/LightAppDefinitions.test.tsx, and e2e/light-app-catalog.spec.ts proves the actual isolated browser-to-native recovery journey.
+
 ## Commands
 
 ```bash

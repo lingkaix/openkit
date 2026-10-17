@@ -19,7 +19,15 @@ import {
   createOpenKitAccessTokenRecord,
   verifyOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { createLightApp } from '../generative-kernel/commands.js';
+import {
+  createLightApp,
+  createRecord,
+  getRecord,
+  listLightAppSnapshots,
+  rollbackLightAppSnapshot,
+  updateLightAppSchema,
+} from '../generative-kernel/commands.js';
+import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -540,6 +548,97 @@ describe('data-root backup manifest', () => {
         stagingRoot: join(backupRoot, '.restore-staging'),
       })
     ).toThrow('Restore staging root must be outside the backup root.');
+  });
+
+  it('preserves immutable Light App snapshots through hot backup and restore', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-hot-snapshot-'));
+    const dataRoot = join(root, 'source');
+    const backupRoot = join(root, 'backup');
+    const restoredRoot = join(root, 'restored');
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(dataRoot, 'server'), { recursive: true });
+    writeFileSync(
+      join(dataRoot, 'server', 'layout.json'),
+      `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: testEntityId('dep', 'snapshot_backup') })}\n`
+    );
+    const store = createDemoStore({ dataRoot });
+    const context = {
+      dataRoot,
+      store,
+      inflightCommands: new WeakMap(),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user' as const, id: LOCAL_USER_ID },
+      requestId: randomUUID(),
+    };
+    const schema: LightAppSchemaInput = {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Snapshot notes',
+      purpose: 'Local notes.',
+      collections: [
+        {
+          name: 'notes',
+          type: 'base',
+          description: 'Notes.',
+          fields: [
+            { name: 'key', type: 'text', required: false, description: 'Retained key.' },
+            { name: 'note', type: 'text', required: false, description: 'Retained note.' },
+          ],
+          indexes: [],
+        },
+      ],
+    };
+    const app = await createLightApp(context, schema);
+    const record = await createRecord(
+      { ...context, requestId: randomUUID() },
+      app.appId,
+      'notes',
+      app.schemaRevision,
+      { note: 'Before migration' }
+    );
+    const { appId: _appId, schemaRevision: _schemaRevision, ...next } = app.schema!;
+    next.collections[0]!.fields = next.collections[0]!.fields.filter(
+      (field) => field.name !== 'note'
+    );
+    const changed = await updateLightAppSchema(
+      { ...context, requestId: randomUUID() },
+      app.appId,
+      app.appRevision,
+      app.schemaRevision,
+      next
+    );
+    const snapshot = listLightAppSnapshots(dataRoot, context.workspaceId, app.appId).snapshots[0]!;
+    await writeHotDataRootBackup({
+      dataRoot,
+      backupRoot,
+      backupId: testEntityId('drb', 'snapshot_backup'),
+      sourceDeploymentId: testEntityId('dep', 'snapshot_backup'),
+      startedAt: timestamp,
+      completedAt: timestamp,
+    });
+    restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
+    const restoredContext = {
+      ...context,
+      dataRoot: restoredRoot,
+      store: new FsStore({ dataRoot: restoredRoot }),
+      requestId: randomUUID(),
+    };
+    const restored = await rollbackLightAppSnapshot(
+      restoredContext,
+      app.appId,
+      changed.appRevision,
+      snapshot.snapshotId
+    );
+    expect(
+      getRecord(
+        restoredRoot,
+        context.workspaceId,
+        app.appId,
+        'notes',
+        record.id,
+        restored.schemaRevision
+      ).data.note
+    ).toBe('Before migration');
   });
 
   it('verifies captured Light App definition bytes against the app database', async () => {
