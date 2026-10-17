@@ -3818,10 +3818,15 @@ function readRetrievalTraceImportState(
       continue;
     }
     const targetSourceScope = remintImportedPageScope(sourceTrace.sourceScope, context);
+    const userSelection = sourceTrace.retrievalParameters.sourceScope === 'user';
     const expectedSourceScope =
       sourceTrace.retrievalParameters.sourceScope === 'workspace'
         ? `page/workspace/${context.report.exportedWorkspaceId}`
-        : 'page/server';
+        : userSelection
+          ? sourceTrace.queryContext.actor.kind === 'user'
+            ? `page/user/${sourceTrace.queryContext.actor.id}`
+            : null
+          : 'page/server';
     if (sourceTrace.sourceScope !== expectedSourceScope) {
       throw new Error('Portable retrieval trace source selection is contradictory.');
     }
@@ -3844,7 +3849,9 @@ function readRetrievalTraceImportState(
         return {
           ...entry,
           reference,
-          sourceReferences: rewritePortableReferences(entry.sourceReferences, replacements),
+          sourceReferences: userSelection
+            ? entry.sourceReferences
+            : rewritePortableReferences(entry.sourceReferences, replacements),
         };
       }
       if (entry.sourceReferences.some((value) => value.startsWith('context-package:'))) {
@@ -3896,10 +3903,9 @@ function readRetrievalTraceImportState(
         targetSourceScope,
         context
       );
-      const targetSourceReferences = rewritePortableReferences(
-        entry.sourceReferences,
-        replacements
-      );
+      const targetSourceReferences = userSelection
+        ? entry.sourceReferences
+        : rewritePortableReferences(entry.sourceReferences, replacements);
       if (sourceTrace.sourceScope.startsWith('page/workspace/') && entry.contentDigest !== null) {
         if (entry.sourceReferences.some((value) => value.startsWith('context-package:'))) {
           throw new Error(
@@ -3943,7 +3949,8 @@ function readRetrievalTraceImportState(
       requestDigest: sourceTrace.requestDigest,
       queryContext: {
         ...sourceTrace.queryContext,
-        serverId: context.targetServerId,
+        // S51 retains a User query's external authority so a foreign import cannot acquire target self access.
+        serverId: userSelection ? sourceTrace.queryContext.serverId : context.targetServerId,
         workspaceId: context.targetWorkspaceId,
         threadId: targetThreadId,
         ...(targetTurnId ? { turnId: targetTurnId } : { turnId: undefined }),

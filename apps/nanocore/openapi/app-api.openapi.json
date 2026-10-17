@@ -6975,6 +6975,55 @@
         }
       }
     },
+    "/api/app/operations/memory.search": {
+      "post": {
+        "operationId": "memory.search",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Search current self Memory with a separate budget in the existing private Timeline.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.search.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Search current self Memory with a separate budget in the existing private Timeline.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.search.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/memory.source.register": {
       "post": {
         "operationId": "memory.source.register",
@@ -46624,6 +46673,131 @@
           "createdAt": {
             "type": "string",
             "minLength": 1
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "actor": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "agent",
+                            "integration",
+                            "system"
+                          ]
+                        },
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "automation"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "submittedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "rating": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "good",
+                        "bad"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "actor",
+                "submittedAt",
+                "rating",
+                "note"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -46631,7 +46805,8 @@
           "agentId",
           "rating",
           "note",
-          "createdAt"
+          "createdAt",
+          "history"
         ],
         "additionalProperties": false
       },
@@ -51380,7 +51555,8 @@
                 "type": "string",
                 "enum": [
                   "workspace",
-                  "server"
+                  "server",
+                  "user"
                 ]
               }
             },
@@ -53646,6 +53822,441 @@
       "knowledge.delete.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "null"
+      },
+      "memory.search.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "default": 5,
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 20
+          },
+          "pinnedReferences": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scopeId": {
+                  "type": "string"
+                },
+                "objectId": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                }
+              },
+              "required": [
+                "scopeId",
+                "objectId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "states": {
+            "default": [
+              "active"
+            ],
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "active",
+                "draft",
+                "archived",
+                "superseded"
+              ]
+            }
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "query",
+          "limit",
+          "pinnedReferences",
+          "states",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "memory.search.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "queryContext": {
+            "type": "object",
+            "properties": {
+              "serverId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "actor": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "agent",
+                          "integration",
+                          "system"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "responsibleUserId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "responsibleUserId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "automation"
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "responsibleUserId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "responsibleUserId"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "threadId": {
+                "type": "string",
+                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "turnId": {
+                "type": "string",
+                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "serverId",
+              "workspaceId",
+              "actor"
+            ],
+            "additionalProperties": false
+          },
+          "sourceScope": {
+            "type": "string"
+          },
+          "notebookRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caller": {
+            "type": "string",
+            "enum": [
+              "assistant",
+              "task-mode",
+              "app-api"
+            ]
+          },
+          "requestDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "retrievalParameters": {
+            "type": "object",
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 20
+              },
+              "pinnedReferences": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "states": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "draft",
+                    "archived",
+                    "superseded"
+                  ]
+                }
+              },
+              "sourceScope": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server",
+                  "user"
+                ]
+              }
+            },
+            "required": [
+              "limit",
+              "pinnedReferences",
+              "states",
+              "sourceScope"
+            ],
+            "additionalProperties": false
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "score": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "sourceReferences": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "required": [
+                "reference",
+                "revision",
+                "contentDigest",
+                "score",
+                "sourceReferences"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sourceReferences": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "sensitive_content",
+                    "lower_conformance",
+                    "policy_excluded",
+                    "freshness_expired",
+                    "budget_exceeded",
+                    "source_unavailable"
+                  ]
+                }
+              },
+              "required": [
+                "reference",
+                "revision",
+                "contentDigest",
+                "sourceReferences",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "retrievalTraceRef": {
+            "type": "object",
+            "properties": {
+              "scopeId": {
+                "type": "string"
+              },
+              "objectId": {
+                "type": "string",
+                "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "scopeId",
+              "objectId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "queryContext",
+          "sourceScope",
+          "notebookRevision",
+          "caller",
+          "requestDigest",
+          "retrievalParameters",
+          "createdAt",
+          "workspaceId",
+          "selected",
+          "excluded"
+        ],
+        "additionalProperties": false
       },
       "memory.source.register.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -104563,5 +105174,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:183d797cf131af71034ef09b8a935c3401ce935323d794bff1e599a7a1e50f5b"
+  "x-openkit-source-digest": "sha256:12cd73f0ca5d79838d92567f150dc1bacf088b71b2b449a2f92e92f5c3d09e2b"
 }
