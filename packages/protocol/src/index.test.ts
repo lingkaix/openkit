@@ -271,9 +271,10 @@ describe('protocol schemas', () => {
     expect(parsed.workspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
   });
 
-  it('requires request correlation for knowledge deletion commands', () => {
+  it('requires request correlation and a fixed notebook base for knowledge deletion', () => {
     const parsed = DeleteKnowledgeEntryRequestSchema.parse({
       requestId: '0190f4c8-0000-7000-8000-000000000206',
+      baseRevision: 'opaque-notebook-base',
     });
 
     expect(parsed.requestId).toBe('0190f4c8-0000-7000-8000-000000000206');
@@ -283,6 +284,8 @@ describe('protocol schemas', () => {
   it('accepts source references when creating knowledge entries', () => {
     const parsed = CreateKnowledgeEntryRequestSchema.parse({
       requestId: '0190f4c8-0000-7000-8000-000000000207',
+      baseRevision: 'opaque-notebook-base',
+      knowledgePageId: 'plans/release',
       kind: 'project-context',
       title: 'Release plan',
       content: 'Release cadence is weekly.',
@@ -290,12 +293,21 @@ describe('protocol schemas', () => {
     });
 
     expect(parsed.sourceReferences).toEqual(['source:ks_00000000-0000-7b52-90c5-8003864b63f9']);
+    expect(parsed.knowledgePageId).toBe('plans/release');
+    expect(() =>
+      CreateKnowledgeEntryRequestSchema.parse({ ...parsed, baseRevision: undefined })
+    ).toThrow();
+    expect(() =>
+      CreateKnowledgeEntryRequestSchema.parse({ ...parsed, knowledgePageId: undefined })
+    ).toThrow();
   });
 
   it('accepts knowledge list responses from the protocol package', () => {
     const parsed = ListKnowledgeEntriesResponseSchema.parse({
+      notebookRevision: 'opaque-retained-notebook-revision',
       items: [
         {
+          contentDigest: `sha256:${'a'.repeat(64)}`,
           id: 'kn_demo',
           kind: 'preference',
           title: 'Preference',

@@ -48,6 +48,8 @@ export const WorkspaceExportManifestSchema = RecordEnvelopeSchema.safeExtend({
   lineage: RecordLineageSchema.extend({ workspaceId: WorkspaceIdSchema }).passthrough(),
   sourceDeploymentId: DeploymentIdSchema,
   workspaceId: WorkspaceIdSchema,
+  /** Published source Notebook commit; inert provenance after clone/remint. */
+  knowledgeNotebookRevision: z.string().min(1).optional(),
   exportCreatedAt: z.string().datetime({ offset: true }),
   exportFormatVersion: z.literal(WORKSPACE_EXPORT_FORMAT_VERSION),
   contentInventory: z.array(WorkspaceExportInventoryEntrySchema),

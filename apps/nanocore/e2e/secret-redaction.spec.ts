@@ -41,8 +41,17 @@ describe('nanocore e2e secret redaction', () => {
     await harness.stop();
     harness = await startNanoCoreHarness({ dataRoot: harness.dataRoot });
 
+    const notebookResponse = await postJson(
+      `${harness.baseUrl}/api/app/operations/knowledge.list`,
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+    );
+    expect(notebookResponse.status).toBe(200);
+    const notebook = (await notebookResponse.json()) as { notebookRevision: string };
+
     const created = await postJson(`${harness.baseUrl}/api/app/operations/knowledge.create`, {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      baseRevision: notebook.notebookRevision,
+      knowledgePageId: 'safe-knowledge',
       kind: 'project-context',
       title: 'Safe knowledge',
       content: 'No provider secrets should appear here.',

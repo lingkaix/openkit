@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import type { z } from 'zod';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 
 type Thread = z.infer<typeof ThreadSchema>;
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
@@ -107,6 +109,20 @@ export function seedDemoWorkspace(store: FsStore, userId = FIXTURE_LOCAL_USER_ID
       artifacts: [],
       agentSessions: [],
       turnEvents: [],
+      notebookInitialization: {
+        requestId: randomUUID(),
+        producer: { kind: 'user', id: userId },
+        instructionReference: 'test-fixture:demo-workspace',
+      },
+      initialNotebookFiles: Object.fromEntries(
+        demo.knowledge.map((entry) => [
+          `${entry.id}.md`,
+          serializeUserAuthoredKnowledgePage(entry, {
+            kind: 'workspace',
+            workspaceId: demo.workspace.id,
+          }),
+        ])
+      ),
     });
   }
 }

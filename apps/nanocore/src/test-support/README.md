@@ -6,6 +6,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 
 - `execution-attempt.ts` establishes exact prepared Native attempt authority below the dispatcher from a caller-supplied authorized admission. It records an optional submission intent without inventing acceptance, a cleanup fence, or Workspace membership.
 - `demo-store.ts` creates an isolated `FsStore` and explicitly seeds the Demo Workspace fixture.
+- `notebook-import.ts` creates current canonical page bytes and explicit User attribution for synthetic Workspace import fixtures. Retained archive bytes still use the verified import owner; this fixture supplies no current authorization or Review decision.
 - `git-repository.ts` seeds a writable Git repository with one resolvable HEAD commit.
 - `agent-environment.ts` records deterministic production-shaped AEP snapshots for scheduler recovery fixtures. Requested workspace input ids use pinned, credential-free remote Git catalog sources supported by NanoHost; the fixture creates no host repository.
 - `goal-intent.ts` creates a completed user Turn and initial objective Item so Goal fixtures bind a real `createdByItemId` and `currentIntentItemId` lineage.

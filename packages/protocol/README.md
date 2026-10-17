@@ -46,3 +46,5 @@ CapabilityCall admits optional namespaced extensions. `openkit.gateway/routeLine
 Core identifier schemas include `AutomationIdSchema` because Protocol owns the `auto` entity kind. This adds no Automation lifecycle or App runtime configuration schema to the Core package. Conformance fixtures use current canonical identities; explicit malformed and wrong-kind regressions remain separate from positive fixtures.
 
 `context-summary` is an additive known Item variant with completed continuation text, an environment digest and an exact source range. It preserves the closed Item discriminator and required source/evidence digests; unknown descriptive additions remain ignorable. Original Items remain canonical. [Context Management](../../docs/specs/20260902-agent_runtime_context_compaction.md#source-bound-summary-items) owns production and current-source validation.
+
+Knowledge list items project the exact canonical page contentDigest at the response notebookRevision. This read field supports explicit confirmed removal without adding a second digest or revision authority to durable KnowledgeEntry records.
