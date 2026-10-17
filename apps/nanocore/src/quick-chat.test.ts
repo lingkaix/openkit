@@ -12,6 +12,7 @@ import {
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -1543,10 +1544,24 @@ describe('quick chat app API', () => {
 
   it('answers an explicit Knowledge Manager query through S61 without calling QuickChatAgent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-knowledge-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       dataRoot,
-      store: createDemoStore({ dataRoot }),
+      coreDb,
+      store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createResponses: async () => {
@@ -1555,6 +1570,15 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'knowledge',
+        'notebook.git'
+      ),
+    });
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
@@ -1563,6 +1587,8 @@ describe('quick chat app API', () => {
           method: 'POST',
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-00000000c001',
+            baseRevision: notebook.publishedRevision(),
+            knowledgePageId: 'launch-cadence',
             kind: 'project-context',
             title: 'Launch cadence',
             content: 'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
@@ -1628,16 +1654,8 @@ describe('quick chat app API', () => {
 
     expect(replayRes.status).toBe(200);
     expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(parsed);
-    const pageBytes = readFileSync(
-      join(
-        dataRoot,
-        'workspaces',
-        'ws_00000000-0000-7000-8000-000000000001',
-        'knowledge',
-        'pages',
-        `${knowledge.id}.md`
-      )
-    );
+    const pageBytes = notebook.readRevision(notebook.publishedRevision(), [`${knowledge.id}.md`])
+      .files[`${knowledge.id}.md`]!;
     const contentDigest = `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`;
     const traceRoot = join(
       dataRoot,
@@ -1712,6 +1730,15 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'knowledge',
+        'notebook.git'
+      ),
+    });
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
@@ -1720,6 +1747,8 @@ describe('quick chat app API', () => {
           method: 'POST',
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-00000000c002',
+            baseRevision: notebook.publishedRevision(),
+            knowledgePageId: 'workspace-maintenance-notes',
             kind: 'project-context',
             title: 'Workspace maintenance notes',
             content: 'This page is not about the selected Assistant model.',
@@ -1820,6 +1849,15 @@ describe('quick chat app API', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'knowledge',
+          'notebook.git'
+        ),
+      });
       const knowledge = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.create',
@@ -1829,6 +1867,8 @@ describe('quick chat app API', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-00000000c002',
+              baseRevision: notebook.publishedRevision(),
+              knowledgePageId: 'maintenance-report-acceptance',
               kind: 'project-context',
               title: 'Maintenance report acceptance',
               content: 'Maintenance report acceptance: unrelated-knowledge-marker.',
