@@ -17,6 +17,7 @@ import * as assistantCommandOwners from './internal-agents/assistant-command-run
 import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
+import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
@@ -40,6 +41,47 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
+/** Completes the real Assistant loop without an external Provider or automatic handoff. */
+function assistantAnswer() {
+  return {
+    id: 'bounded-answer',
+    object: 'response',
+    status: 'completed',
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'A bounded answer.' }],
+      },
+    ],
+  };
+}
+
+/** Proposes exact shared work through the real Assistant Tools before completing the model run. */
+function proposalProvider(name: 'task_start' | 'goal_create', work: Record<string, string>) {
+  let calls = 0;
+  return {
+    createResponses: vi.fn(async () =>
+      ++calls === 1
+        ? {
+            id: 'work-proposal',
+            object: 'response',
+            status: 'completed',
+            output: [
+              {
+                type: 'function_call',
+                name,
+                call_id: 'propose-exact-work',
+                arguments: JSON.stringify(work),
+              },
+            ],
+          }
+        : assistantAnswer()
+    ),
+  };
+}
+
 /** Uses the real public operation, local authority, command receipts, and canonical Turn tree. */
 function fixture(availableBytes?: () => bigint) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'conversation-files-'));
@@ -54,15 +96,17 @@ function fixture(availableBytes?: () => bigint) {
   const thread = store.createThread(workspaceId, 'File input', undefined, 'conversation', {
     visibility: 'workspace',
   });
+  const provider = { createResponses: vi.fn(async () => assistantAnswer()) };
   const app = createApp({
     coreDb,
     dataRoot,
     store,
+    piAiGatewayClient: provider as unknown as PiAiGatewayClient,
     ...(availableBytes
       ? { fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n, availableBytes) }
       : {}),
   });
-  return { dataRoot, coreDb, store, workspaceId, thread, app };
+  return { dataRoot, coreDb, store, workspaceId, thread, app, provider };
 }
 
 /** Describes exact bytes without decoding them or deriving path identity from the name. */
@@ -328,8 +372,9 @@ describe('Turn-owned conversation originals', () => {
     fault.mockRestore();
     syncBuiltinESMExports();
     const retried = await submit();
-    expect(retried.status, await retried.clone().text()).toBe(202);
+    expect(retried.status, await retried.clone().text()).toBe(200);
     expect((await retried.json()).turn.fileInputs).toEqual(input.fileInputs);
+    expect(state.provider.createResponses).toHaveBeenCalledTimes(1);
   });
 
   it('publishes originals before Assistant execution and sends no original bytes into its assembly', async () => {
@@ -376,21 +421,15 @@ describe('Turn-owned conversation originals', () => {
   it.each([
     'new-task-worker',
     'internal-role:assistant',
-  ])('publishes originals on the actual Worker Turn before %s dispatch', async (targetRef) => {
+  ])('keeps originals with the receiving Turn for %s', async (targetRef) => {
     const state = fixture();
-    const source =
-      targetRef === 'new-task-worker'
-        ? state.store.createThread(
-            state.workspaceId,
-            'Private handoff',
-            undefined,
-            'conversation',
-            {
-              visibility: 'private',
-              privateOwnerUserId: LOCAL_USER_ID,
-            }
-          )
-        : state.thread;
+    const source = state.store.createThread(
+      state.workspaceId,
+      'Private handoff',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
     const privateHistory = 'Unselected private history stays with the Assistant.';
     if (targetRef === 'new-task-worker') {
       const previous = state.store.createTurn(state.workspaceId, source.id, privateHistory, {
@@ -414,6 +453,11 @@ describe('Turn-owned conversation originals', () => {
     }
     const setup = createTestAgentSetup();
     const executor = new SimulatedTurnExecutor({ coreDb: state.coreDb });
+    const launches = vi.spyOn(executor, 'startTurn');
+    const provider = proposalProvider('task_start', {
+      input: 'Implement a focused correction.',
+      agentId: setup.manifest.id,
+    });
     const observed: Array<{ inventory: unknown; bytes: Buffer; threadId: string; turn: string }> =
       [];
     const prepare = vi
@@ -439,6 +483,7 @@ describe('Turn-owned conversation originals', () => {
       dataRoot: state.dataRoot,
       store: state.store,
       turnExecutor: executor,
+      piAiGatewayClient: provider as unknown as PiAiGatewayClient,
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
@@ -453,6 +498,8 @@ describe('Turn-owned conversation originals', () => {
       artifactRefs: [],
       fileInputs: [metadata(bytes)],
     };
+    const threadsBefore = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
+    const artifactsBefore = state.store.listArtifacts(state.workspaceId).length;
     const response = await app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
       headers: {
@@ -464,6 +511,48 @@ describe('Turn-owned conversation originals', () => {
     expect(response.status, await response.clone().text()).toBe(202);
     await new Promise<void>((resolve) => setImmediate(resolve));
     await Promise.allSettled([...getSchedulerPreparationClaims(state.coreDb).values()]);
+    const accepted = await response.json();
+    if (targetRef === 'internal-role:assistant') {
+      expect(accepted.outcome).toBe('clarification-needed');
+      expect(accepted.item).toMatchObject({ type: 'user-input-request' });
+      expect(accepted.item.assistantHandoff).toEqual({
+        kind: 'task',
+        targetWorkspaceId: state.workspaceId,
+        input: input.input,
+        agentId: setup.manifest.id,
+      });
+      expect(accepted.item.prompt).toBe(
+        'Confirm the exact work before it becomes shared execution. Private files are not included. Attach files explicitly when you select a Worker.'
+      );
+      expect(accepted.handoff).toBeNull();
+      expect(accepted.turn.threadId).toBe(source.id);
+      expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
+      expect(
+        readFileSync(
+          turnFilePayloadPath(
+            join(state.dataRoot, 'workspaces', state.workspaceId),
+            source.id,
+            accepted.turn.id,
+            0
+          )
+        )
+      ).toEqual(Buffer.from(bytes));
+      expect(state.store.listThreads(state.workspaceId).map((thread) => thread.id)).toEqual(
+        threadsBefore
+      );
+      expect(state.store.listArtifacts(state.workspaceId)).toHaveLength(artifactsBefore);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(launches).not.toHaveBeenCalled();
+      expect(provider.createResponses).toHaveBeenCalledTimes(2);
+      const replay = await app.request(
+        ...operationRequest('conversation.submit', {}, { body: JSON.stringify(input) })
+      );
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect((await replay.json()).turn.id).toBe(accepted.turn.id);
+      expect(provider.createResponses).toHaveBeenCalledTimes(2);
+      expect(prepare).not.toHaveBeenCalled();
+      return;
+    }
     expect(prepare).toHaveBeenCalled();
     expect(observed.length).toBeGreaterThan(0);
     for (const observation of observed) {
@@ -478,9 +567,8 @@ describe('Turn-owned conversation originals', () => {
         expect(state.store.getThread(state.workspaceId, source.id).visibility).toBe('private');
       }
     }
-    const accepted = await response.json();
     if (targetRef === 'new-task-worker') expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
-    else expect(accepted.turn.fileInputs).toBeUndefined();
+    expect(provider.createResponses).not.toHaveBeenCalled();
     const replay = await app.request(
       ...operationRequest('conversation.submit', {}, { body: JSON.stringify(input) })
     );
@@ -505,19 +593,34 @@ describe('Turn-owned conversation originals', () => {
     }
   });
 
-  it('refuses files before an automatic Goal operation with no receiving input Turn', async () => {
+  it('retains Assistant originals while a Goal proposal creates no execution owners', async () => {
     const state = fixture();
+    const source = state.store.createThread(
+      state.workspaceId,
+      'Private Goal proposal',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
     const bytes = new Uint8Array();
     const input = {
       workspaceId: state.workspaceId,
-      threadId: state.thread.id,
+      threadId: source.id,
       requestId: randomUUID(),
       input: 'Plan a multi-step release goal for NanoCore.',
       targetRef: 'internal-role:assistant',
       artifactRefs: [],
       fileInputs: [metadata(bytes)],
     };
-    const response = await state.app.request('/api/app/operations/conversation.submit', {
+    const provider = proposalProvider('goal_create', { intent: input.input });
+    const app = createApp({
+      coreDb: state.coreDb,
+      dataRoot: state.dataRoot,
+      store: state.store,
+      piAiGatewayClient: provider as unknown as PiAiGatewayClient,
+    });
+    const threadsBefore = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
+    const response = await app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
       headers: {
         'content-type': CONVERSATION_FILE_MEDIA_TYPE,
@@ -525,9 +628,31 @@ describe('Turn-owned conversation originals', () => {
       },
       body: frame(input, [bytes]),
     });
-    expect(response.status, await response.clone().text()).toBe(400);
-    expect((await response.json()).code).toBe('file_inputs_not_applicable');
-    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+    expect(response.status, await response.clone().text()).toBe(202);
+    const accepted = await response.json();
+    expect(accepted.outcome).toBe('clarification-needed');
+    expect(accepted.item.assistantHandoff).toEqual({
+      kind: 'goal',
+      targetWorkspaceId: state.workspaceId,
+      intent: input.input,
+    });
+    expect(accepted.handoff).toBeNull();
+    expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
+    expect(state.store.listThreadTurns(state.workspaceId, source.id)).toHaveLength(1);
+    expect(
+      readFileSync(
+        turnFilePayloadPath(
+          join(state.dataRoot, 'workspaces', state.workspaceId),
+          source.id,
+          accepted.turn.id,
+          0
+        )
+      )
+    ).toEqual(Buffer.from(bytes));
+    expect(state.store.listThreads(state.workspaceId).map((thread) => thread.id)).toEqual(
+      threadsBefore
+    );
+    expect(provider.createResponses).toHaveBeenCalledTimes(2);
     expect(
       state.store.listCommandRequests().some((receipt) => receipt.command === 'goal.create')
     ).toBe(false);
@@ -657,7 +782,7 @@ describe('Turn-owned conversation originals', () => {
       },
       body: frame(input, bytes),
     });
-    expect(response.status, await response.clone().text()).toBe(202);
+    expect(response.status, await response.clone().text()).toBe(200);
     const accepted = await response.json();
     expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
     expect(state.store.listArtifacts(state.workspaceId)).toHaveLength(artifactsBefore);
@@ -671,7 +796,7 @@ describe('Turn-owned conversation originals', () => {
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': input.requestId },
       body: JSON.stringify(input),
     });
-    expect(replay.status).toBe(202);
+    expect(replay.status).toBe(200);
     expect((await replay.json()).turn.id).toBe(accepted.turn.id);
     const fileReplay = await state.app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
@@ -681,8 +806,9 @@ describe('Turn-owned conversation originals', () => {
       },
       body: frame(input, []),
     });
-    expect(fileReplay.status).toBe(202);
+    expect(fileReplay.status).toBe(200);
     expect((await fileReplay.json()).turn.id).toBe(accepted.turn.id);
+    expect(state.provider.createResponses).toHaveBeenCalledTimes(1);
     const turnPath = join(root, 'threads', state.thread.id, 'turns', accepted.turn.id, 'turn.json');
     const retained = JSON.parse(readFileSync(turnPath, 'utf8'));
     retained.fileInputs[1].futureAnnotation = 'Retained descriptive field';
