@@ -331,6 +331,16 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
     origin.kind === 'public'
       ? origin.actor.userId
       : responsibleUserIdForActor(origin.actor as ActorRef);
+  const turn = origin.kind === 'worker' ? store.getTurnById(origin.lineage.turnId) : null;
+  const requestingAgent =
+    turn?.agentId && turn.agentSessionId && actorId
+      ? {
+          kind: 'agent' as const,
+          userId: actorId,
+          agentId: turn.agentId,
+          processId: turn.agentSessionId,
+        }
+      : undefined;
   const authorized =
     origin.kind === 'public'
       ? authorizeWorkspace(coreDb, origin.actor as Actor, record.workspaceId, {
@@ -346,6 +356,7 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
   if (
     !authorized ||
     actorId !== record.responsibleUserId ||
+    (origin.kind === 'worker' && !requestingAgent) ||
     !isThreadIdVisible(
       store,
       record.workspaceId,
@@ -356,7 +367,9 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
           origin.actor.kind === 'local' ||
             origin.actor.adminTokenId ||
             origin.actor.tokenScope === 'server-admin'
-        )
+        ),
+      'workspace.write',
+      requestingAgent
     )
   )
     throw new PendingRequestCommandError(
@@ -372,8 +385,8 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
       409
     );
   if (origin.kind === 'worker') {
-    const turn = store.getTurnById(origin.lineage.turnId);
     if (
+      !turn ||
       turn.workspaceId !== record.workspaceId ||
       turn.threadId !== record.threadId ||
       turn.agentId !== record.agentId ||
