@@ -1398,7 +1398,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     const timestamp = new Date().toISOString();
     f.coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,revision,created_at,updated_at) VALUES ('${DEMO_WORKSPACE_ID}','${FIXTURE_LOCAL_USER_ID}','active','editor',?,1,?,?)`
+        `INSERT INTO workspace_members (workspace_id,user_id,status,joined_at,revision,created_at,updated_at) VALUES ('${DEMO_WORKSPACE_ID}','${FIXTURE_LOCAL_USER_ID}','active',?,1,?,?)`
       )
       .run(timestamp, timestamp, timestamp);
     const token = f.token();
@@ -1412,7 +1412,6 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
       const input = {
         workspaceId: DEMO_WORKSPACE_ID,
         targetUserId: FIXTURE_LOCAL_USER_ID,
-        accessLevel: 'viewer',
         expectedRevision: 2,
         requestId,
       };
@@ -1420,7 +1419,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
       if (transport === 'mcp') {
         const result = await f.call(
           'openkit_call',
-          { operation: 'workspace.member-access-change', input },
+          { operation: 'workspace.member-remove', input },
           token.secret
         );
         expect(result.isError).toBe(true);
@@ -1428,7 +1427,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
         expect(error.status).toBe(409);
       } else {
         const { requestId: identity, ...body } = input;
-        const response = await f.app.request('/api/app/operations/workspace.member-access-change', {
+        const response = await f.app.request('/api/app/operations/workspace.member-remove', {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token.secret}`,
@@ -1444,7 +1443,11 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
         code: 'revision_conflict',
         details: {
           resource: 'membership',
-          current: { userId: FIXTURE_LOCAL_USER_ID, revision: 1, accessLevel: 'editor' },
+          current: {
+            userId: FIXTURE_LOCAL_USER_ID,
+            revision: 1,
+            status: 'active',
+          },
         },
       });
       expect(
@@ -1464,13 +1467,12 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     const input = {
       workspaceId: DEMO_WORKSPACE_ID,
       targetUserId: FIXTURE_LOCAL_USER_ID,
-      accessLevel: 'viewer',
       expectedRevision: 1,
       requestId,
     };
     const accepted = await f.call(
       'openkit_call',
-      { operation: 'workspace.member-access-change', input },
+      { operation: 'workspace.member-remove', input },
       token.secret
     );
     expect(accepted.isError).not.toBe(true);
@@ -1485,7 +1487,7 @@ it('preserves Workspace sharing HTTP/MCP conflict status and safe details withou
     expect(committedReceipt).toHaveLength(1);
     const conflict = await f.call(
       'openkit_call',
-      { operation: 'workspace.member-access-change', input: { ...input, accessLevel: 'editor' } },
+      { operation: 'workspace.member-remove', input: { ...input, expectedRevision: 2 } },
       token.secret
     );
     expect(conflict.isError).toBe(true);

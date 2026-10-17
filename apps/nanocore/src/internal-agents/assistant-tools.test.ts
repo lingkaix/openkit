@@ -43,7 +43,8 @@ function fixture(privateEntry = true) {
 const names = [
   'workspace.dashboard',
   'thread.history.read',
-  'knowledge.retrieval',
+  'knowledge.ask',
+  'knowledge.tell',
   'workspace.create',
   'task.start',
   'goal.create',
