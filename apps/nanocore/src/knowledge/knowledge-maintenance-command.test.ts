@@ -222,13 +222,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
         return toolCall('publish', 'knowledge.notebook.update', {
           summary: 'Integrate the cobalt label rule',
         });
-      return {
-        id: randomUUID(),
-        object: 'response',
-        output: [
-          { type: 'message', content: [{ type: 'output_text', text: 'Maintenance complete.' }] },
-        ],
-      };
+      return toolCall('result', 'knowledge.result', { summary: 'Maintenance complete.' });
     }
   );
   const roleDependencies = {
@@ -280,7 +274,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   };
 }
 
-/** Script and publication requests still cross the actual canonical Tool projection. */
+/** Model Tool requests cross the actual canonical Tool projection. */
 function toolCall(callId: string, name: string, args: Record<string, string>): Response {
   return {
     id: randomUUID(),
@@ -352,6 +346,7 @@ it.each([
   expect(turn.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)).toEqual([
     'knowledge.notebook-workspace.update',
     'knowledge.notebook.update',
+    'knowledge.result',
   ]);
   expect(await f.replay()).toEqual(result);
   expect(f.createResponses).toHaveBeenCalledTimes(3);
