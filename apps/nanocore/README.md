@@ -133,6 +133,8 @@ This release is migration-bearing. The Core native journal `0001_concurrent_turn
 
 ## Commands
 
+The package-specific Turbo build task declares `dist/**` so a cache hit restores the compiled server. Its task override does not inherit the generic build output declaration.
+
 Tests of unrelated AEP consumers use `src/test-support/prepared-agent-environment.ts` for confirmed image evidence and explicit default-off capture fixtures. Capture-admission tests use the production resolver directly so missing historical coverage remains a dispatch refusal.
 
 ```bash
