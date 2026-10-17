@@ -60,6 +60,9 @@ test('completes the local Workspace self-check', async ({ page }) => {
     .click();
   expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
+  // Start shared work from the unbound Workspace composer, outside the private Timeline.
+  await page.getByRole('button', { name: /^Overview$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
