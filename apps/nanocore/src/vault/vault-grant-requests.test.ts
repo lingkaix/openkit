@@ -175,7 +175,7 @@ describe('supported Vault grant request and review', () => {
         ownerScope: 'workspace',
         lifetime: 'workspace',
         injectionPath: 'gateway-only',
-        targetCapabilityId: 'mcp.call_tool',
+        targetCapabilityId: 'mcp.call-tool',
       };
       const raised = await f.send('vault.grant-request', {
         workspaceId,
@@ -199,7 +199,7 @@ describe('supported Vault grant request and review', () => {
         workspaceId,
         threadId,
         requestId: body.approvalRequestId,
-        terms: { ...terms, targetCapabilityId: 'mcp.list_tools' },
+        terms: { ...terms, targetCapabilityId: 'mcp.list-tools' },
       });
       expect(changed.status).toBe(409);
       expect(JSON.stringify(body)).not.toContain('synthetic-private-canary');
@@ -242,7 +242,7 @@ async function prepare(
     ownerScope,
     lifetime: ownerScope,
     injectionPath: 'gateway-only' as const,
-    targetCapabilityId: 'mcp.call_tool' as const,
+    targetCapabilityId: 'mcp.call-tool' as const,
     expiresAt: '2099-01-01T00:00:00.000Z',
   };
   return { workspaceId, threadId, terms };
@@ -314,7 +314,7 @@ it.each([
       ownerScope: scope,
       lifetime: scope,
       allowedInjectionPaths: ['gateway-only'],
-      targetCapabilityId: 'mcp.call_tool',
+      targetCapabilityId: 'mcp.call-tool',
       expiresAt: source.terms.expiresAt,
       approvalId: request.approvalRequestId,
       status: 'active',
@@ -1007,7 +1007,7 @@ it('reads only retained Server shared-MCP delivery lineage, separately from requ
         grantId,
         planId,
         injectionVisibility: 'gateway-only',
-        capabilityId: 'mcp.call_tool',
+        capabilityId: 'mcp.call-tool',
         expirationBehavior: 'grant-lifetime',
         revocationBehavior: 'close-gateway-session',
         redactionRule: 'exact-resolved-material',
