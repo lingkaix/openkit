@@ -103,5 +103,7 @@ describe('Server literal Source owner', () => {
     expect(() => readServerKnowledgeSource(f, source.id)).toThrow(
       'Server Source storage requires recovery.'
     );
+    rmSync(join(f.dataRoot, 'server', 'sources'), { recursive: true });
+    expect(() => listServerKnowledgeSources(f)).toThrow('Server Source storage requires recovery.');
   });
 });
