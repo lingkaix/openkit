@@ -705,7 +705,12 @@ export class PiAiGatewayClient {
     const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const native = isResponsesApi(model.api) && provider.gatewayCapabilities.responses === 'native';
     const { additionalTools, bridgedFunctionTools, bridgeNames, nativeInput } =
-      admitPiResponsesNativeRequest(request, false, !native, native && provider.adapterId === 'xai');
+      admitPiResponsesNativeRequest(
+        request,
+        false,
+        !native,
+        native && provider.adapterId === 'xai'
+      );
     this.assertExplicitCredential(provider);
     const member = { providerId: provider.id, modelId: model.id };
     const envelope: ResponsesNativeEnvelope = {
