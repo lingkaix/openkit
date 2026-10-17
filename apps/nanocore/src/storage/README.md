@@ -92,6 +92,8 @@ CapabilityCall archives use the ledger’s canonical extension validation to pre
 
 Workspace migrations drop retired host repository and Git push tables after replaying unchanged historical setup DDL. No schema module or live repository store remains; archive codecs validate historical metadata without restoring authority.
 
+`data-root-backup.ts` keeps one continuous Core capture pause across tree copy, every SQLite backup, Light App definition checks and verified manifest publication. A single short-lived Node child runs the existing asynchronous SQLite backup API while Core waits synchronously; the child receives resolved native module and database paths on stdin, only fixed locale/time-zone environment values, and no inherited secrets. Pending Core writers resume after capture. Immutable Light App recovery snapshots remain byte copies. The manifest retains its crash-consistent label; external effects, asynchronous staging and stopped-target restore retain their separate limits. Run the complete `data-root-backup.test.ts` and direct `data-root-admin-routes.test.ts` suites for this boundary.
+
 `data-root-admin-operations.ts` joins `backup.create`, `backup.verify` and `storage.layout-report` to the existing hot-backup, inventory verifier and layout owners without HTTP context. The common definition projections enforce current deployment-administrator admission; local backup handles, SQLite coverage and recovery limits remain with the storage owner.
 
 `workspace-transfer-operations.ts` joins the three server-managed JSON transfer definitions to the existing verified-tree export, collision-preview and staged-publication owners in `workspace-transfer-routes.ts`. The archive streaming registrar continues to use those owners without a JSON adapter.
