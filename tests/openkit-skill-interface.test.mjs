@@ -3167,7 +3167,7 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
   const executable = join(root, 'openkit');
   cpSync(cliPath, executable);
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: protocol.allocateEntityId('ws'),
     requestId: '00000000-0000-4000-8000-000000000021',
     expectedRevision: 3,
     activate: false,
@@ -3203,7 +3203,7 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
       contentState: 'retained',
       createdAt: '2026-10-17T00:00:00.000Z',
       inventory: [],
-      producer: { kind: 'user', id: 'fixture-user' },
+      producer: { kind: 'user', id: protocol.allocateEntityId('usr') },
       publisherVersion: null,
       provenance: {
         baseDigest: null,
