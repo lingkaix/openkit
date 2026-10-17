@@ -137,6 +137,11 @@ describe('explicit native User Source intake', () => {
       source,
       content: request.content,
     });
+    expect(readUserKnowledgeSource(f.alice, source.id, 'model')).toEqual({
+      source,
+      content: request.content,
+    });
+    expect(listUserKnowledgeSources(f.alice, 'model')).toEqual([source]);
     expect(existsSync(join(f.dataRoot, 'users', aliceId, 'memory'))).toBe(false);
   });
 
