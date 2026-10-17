@@ -1,7 +1,7 @@
 import type { CoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -23,7 +23,11 @@ const version = {
   inventory: [{ kind: 'file', path: 'SKILL.md', executable: false, size: 5 }],
 };
 
-function fixture(blocked = false, failVersionRead = false) {
+function fixture(
+  blocked = false,
+  failVersionRead = false,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const operations = {
     'catalog.skill-version-list': vi
       .fn()
@@ -43,9 +47,7 @@ function fixture(blocked = false, failVersionRead = false) {
   };
   const client = { operations } as unknown as CoreClient;
   render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+    <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
         <SkillHistory workspaceId={workspaceId} skillId="research" revision={7} blocked={blocked} />
       </CoreClientProvider>
@@ -117,6 +119,44 @@ describe('Skill retained history', () => {
     expect(await screen.findByText('owner/repo')).toBeInTheDocument();
     expect(operations['catalog.skill-version-read']).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['history', 'version', 'content', 'diff'] as const)(
+    'hides retained %s data after the current read is refused',
+    async (read) => {
+      const user = userEvent.setup();
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const operations = fixture(false, false, queryClient);
+      await user.click(await screen.findByRole('button', { name: /Inspect sha256:aaaa/ }));
+      await user.click(await screen.findByRole('button', { name: 'Read SKILL.md' }));
+      expect(await screen.findByText('hello')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /Compare with sha256:bbbb/ }));
+      expect(await screen.findByText('Changed: SKILL.md')).toBeInTheDocument();
+      const operation = {
+        history: 'catalog.skill-version-list',
+        version: 'catalog.skill-version-read',
+        content: 'catalog.skill-content-read',
+        diff: 'catalog.skill-diff',
+      } as const;
+      const keys = {
+        history: ['skill-history', workspaceId, 'research'],
+        version: ['skill-version', workspaceId, 'research', digest],
+        content: ['skill-content', workspaceId, 'research', digest, 'SKILL.md'],
+        diff: ['skill-diff', workspaceId, 'research', digest, olderDigest],
+      };
+      operations[operation[read]].mockRejectedValue(new Error('current read refused'));
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: keys[read], exact: true });
+      });
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      if (read !== 'diff') {
+        expect(screen.queryByText('hello')).not.toBeInTheDocument();
+        expect(screen.queryByRole('link', { name: 'Download exact file bytes' })).not.toBeInTheDocument();
+      }
+      if (read !== 'content') expect(screen.queryByText('Changed: SKILL.md')).not.toBeInTheDocument();
+      if (read === 'history' || read === 'version')
+        expect(screen.queryByText('owner/repo')).not.toBeInTheDocument();
+    }
+  );
 
   it('disables retained operations while disconnected', async () => {
     const operations = fixture(true);
