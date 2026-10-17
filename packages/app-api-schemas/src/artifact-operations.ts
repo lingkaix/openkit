@@ -13,6 +13,8 @@ import {
   IntroduceWorkspaceArtifactRequestSchema,
   IntroduceWorkspaceArtifactResponseSchema,
   ListArtifactReviewsResponseSchema,
+  SelectArtifactReviewCandidateRequestSchema,
+  SelectArtifactReviewCandidateResponseSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   SubmitArtifactReviewDecisionResponseSchema,
 } from './material.js';
@@ -157,6 +159,23 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     target: { kind: 'workspace' },
     policyOperation: 'artifact.read',
     mutating: false,
+  },
+  'artifact.review.select': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Record an attributable choice of one exact available Artifact candidate.',
+    inputSchema: SelectArtifactReviewCandidateRequestSchema.extend({
+      ...workspaceSelector,
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+    }),
+    outputSchema: SelectArtifactReviewCandidateResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'review.apply',
+    mutating: true,
   },
   'artifact.review.decide': {
     binding: 'json',
