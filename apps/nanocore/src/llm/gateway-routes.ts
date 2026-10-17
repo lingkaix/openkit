@@ -37,8 +37,22 @@ import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
 } from '../runtime/worker-control-gateway.js';
+import {
+  initializeWorkerRawOutput,
+  invalidateWorkerRawOutputProof,
+  observeWorkerRawOutput,
+  requireWorkerRawOutputAvailable,
+  settleWorkerRawOutput,
+  WorkerRawOutputAuthorityError,
+  WorkerRawOutputBudgetExceededError,
+} from '../runtime/worker-raw-output.js';
 import { createWorkerRuntimeOriginRef } from '../runtime/worker-runtime-provenance.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openWorkspaceDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
@@ -149,6 +163,12 @@ interface DurableLlmGatewayCall {
   call: ReturnType<typeof startCapabilityCall>;
   /** Whether the capability call and database handle already reached a terminal boundary. */
   finished: boolean;
+  /** Value-free raw-source failure retained even when public stream framing changes. */
+  rawOutputFailureCode?: 'worker_raw_output_exhausted' | 'worker_raw_output_unavailable';
+  /** Releases process-local inference cancellation ownership after the durable call settles. */
+  onFinished?: () => void;
+  /** Seals exact native observation before terminal status becomes visible. */
+  beforeFinished?: (status: 'succeeded' | 'failed' | 'aborted' | 'timed-out') => void;
 }
 
 /**
@@ -431,17 +451,30 @@ function finishDurableLlmGatewayCall(
   if (!durableCall || durableCall.finished) {
     return;
   }
+  durableCall.beforeFinished?.(status);
   durableCall.finished = true;
+  const failureCode = durableCall.rawOutputFailureCode ?? errorCode;
 
   try {
     finishCapabilityCall({
       callId: durableCall.call.id,
-      ...(errorCode ? { errorCode } : {}),
-      status,
+      ...(failureCode ? { errorCode: failureCode } : {}),
+      status: durableCall.rawOutputFailureCode && status === 'succeeded' ? 'failed' : status,
       workspaceDb: durableCall.workspaceDb,
     });
   } finally {
-    durableCall.workspaceDb.sqlite.close();
+    try {
+      durableCall.workspaceDb.sqlite.close();
+    } finally {
+      durableCall.onFinished?.();
+    }
+  }
+  // A dispatcher result is not native coverage. Refuse a non-stream success before its
+  // response escapes; committed streams retain their existing terminal error boundary.
+  if (status === 'succeeded' && durableCall.rawOutputFailureCode) {
+    if (durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted')
+      throw new WorkerRawOutputBudgetExceededError();
+    throw new WorkerRawOutputAuthorityError();
   }
 }
 
@@ -1113,6 +1146,20 @@ function requireTrustedWorkerInferenceRoute(
  * @returns Sanitized worker-facing response.
  */
 function asWorkerInferenceError(error: unknown): Response {
+  if (
+    error instanceof WorkerRawOutputBudgetExceededError ||
+    error instanceof WorkerRawOutputAuthorityError
+  ) {
+    return asWorkerInferenceError(
+      new WorkerInferenceRouteError(
+        error instanceof WorkerRawOutputBudgetExceededError
+          ? 'worker_raw_output_exhausted'
+          : 'worker_raw_output_unavailable',
+        error.message,
+        error instanceof WorkerRawOutputBudgetExceededError ? 409 : 503
+      )
+    );
+  }
   if (error instanceof WorkerInferenceRouteError) {
     return Response.json(
       {
@@ -1703,6 +1750,7 @@ export function registerWorkerInferenceRoutes({
   resolveGatewayProvider,
   runtimeConfig,
   workerControlGateway,
+  onRawOutputStop,
 }: {
   /** Hono application receiving the internal routes. */
   readonly app: Hono<{ Variables: AuthVariables }>;
@@ -1720,7 +1768,19 @@ export function registerWorkerInferenceRoutes({
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
   readonly workerControlGateway: WorkerControlGateway;
+  /** Existing native stop owner; missing coverage blocks Worker inference before Provider access. */
+  readonly onRawOutputStop?: (
+    scope: { workspaceId: string; threadId: string; turnId: string },
+    reason: 'budget_exhausted' | 'error'
+  ) => Promise<void>;
 }): void {
+  const activeRawCalls = new Map<
+    string,
+    {
+      calls: Map<string, { controller: AbortController; call: DurableLlmGatewayCall }>;
+      stopRequested: boolean;
+    }
+  >();
   /**
    * Handles one authenticated worker inference request.
    *
@@ -1813,6 +1873,78 @@ export function registerWorkerInferenceRoutes({
         runtimeCacheLineageRef: null,
         runtimeOriginRef,
       });
+      const scope = environmentPackage.scope;
+      const rawKey = JSON.stringify([scope.workspaceId, scope.threadId, scope.turnId]);
+      const rawGroup = activeRawCalls.get(rawKey) ?? { calls: new Map(), stopRequested: false };
+      activeRawCalls.set(rawKey, rawGroup);
+      const rawController = new AbortController();
+      rawGroup.calls.set(durableCall.call.id, { controller: rawController, call: durableCall });
+      const rawSignal = AbortSignal.any([c.req.raw.signal, rawController.signal]);
+      durableCall.onFinished = () => {
+        rawGroup.calls.delete(durableCall.call.id);
+        if (!rawGroup.calls.size) activeRawCalls.delete(rawKey);
+      };
+      const withRawDb = <T>(operation: (workspaceDb: WorkspaceDb) => T): T => {
+        if (durableCall.workspaceDb.sqlite.open) return operation(durableCall.workspaceDb);
+        // A cancelled stock iterator can settle after public delivery. Its last observed fields
+        // still belong to this attempt; never recreate a deleted Workspace to account for them.
+        const workspaceDb = openBootVerifiedWorkspaceDb(coreDb.dataRoot, scope.workspaceId);
+        try {
+          return operation(workspaceDb);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      };
+      const failRaw = (error: Error): never => {
+        const exhausted = error instanceof WorkerRawOutputBudgetExceededError;
+        if (!exhausted) {
+          try {
+            withRawDb((db) => invalidateWorkerRawOutputProof(db, scope, durableCall.call.id));
+          } catch {
+            /* The existing native stop and session fence retain unknown persistence. */
+          }
+        }
+        for (const entry of rawGroup.calls.values()) {
+          if (!exhausted || !entry.call.rawOutputFailureCode)
+            entry.call.rawOutputFailureCode = exhausted
+              ? 'worker_raw_output_exhausted'
+              : 'worker_raw_output_unavailable';
+          entry.controller.abort(error);
+        }
+        if (!rawGroup.stopRequested) {
+          rawGroup.stopRequested = true;
+          if (onRawOutputStop)
+            void onRawOutputStop(scope, exhausted ? 'budget_exhausted' : 'error').catch(() => {
+              workerControlGateway.unregisterSession(environmentPackage.snapshotId);
+            });
+          else workerControlGateway.unregisterSession(environmentPackage.snapshotId);
+        }
+        throw error;
+      };
+      let rawInitialized = false;
+      const rawObservers: Array<{ pending: number; started: number; events: number }> = [];
+      durableCall.beforeFinished = (status) => {
+        if (!rawInitialized) return;
+        const complete =
+          (status !== 'succeeded' || rawObservers.length > 0) &&
+          rawObservers.every(
+            (observer) => observer.pending === 0 && observer.started > 0 && observer.events > 0
+          );
+        let persisted = false;
+        try {
+          withRawDb((db) => settleWorkerRawOutput(db, scope, durableCall.call.id, complete));
+          persisted = true;
+        } catch {
+          /* A pending proof remains non-completable if persistence fails. */
+        }
+        if (!complete || !persisted) {
+          try {
+            failRaw(new WorkerRawOutputAuthorityError());
+          } catch {
+            /* The durable unavailable marker precedes public terminalization. */
+          }
+        }
+      };
       // Diagnostics follow the last attempt only; routing and closeout remain their existing owners.
       let phase: 'selection' | 'dispatch' | 'stream-prepare' = 'selection';
       let correlation: { corr: string; attempt: number } | undefined;
@@ -1857,6 +1989,32 @@ export function registerWorkerInferenceRoutes({
         }
       }
       try {
+        if (!onRawOutputStop)
+          throw new WorkerInferenceRouteError(
+            'worker_inference_unavailable',
+            'Worker raw output stop coverage is unavailable.',
+            503
+          );
+        try {
+          initializeWorkerRawOutput(durableCall.workspaceDb, durableCall.call, scope);
+          rawInitialized = true;
+          requireWorkerRawOutputAvailable(durableCall.workspaceDb, scope);
+          const previous = durableCall.workspaceDb.sqlite
+            .prepare(
+              "SELECT call_id, status, error_code FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND service_ref = 'worker-inference-gateway' AND call_id <> ? AND (status IN ('running', 'unknown') OR error_code = 'worker_raw_output_unavailable')"
+            )
+            .all(scope.workspaceId, scope.threadId, scope.turnId, durableCall.call.id) as Array<{
+            call_id: string;
+            status: string;
+            error_code: string | null;
+          }>;
+          if (
+            previous.some((call) => call.status !== 'running' || !rawGroup.calls.has(call.call_id))
+          )
+            throw new WorkerRawOutputAuthorityError();
+        } catch (error) {
+          failRaw(error instanceof Error ? error : new WorkerRawOutputAuthorityError());
+        }
         if (!logicalModel) {
           throw new WorkerInferenceRouteError(
             'worker_inference_provider_unavailable',
@@ -1887,7 +2045,7 @@ export function registerWorkerInferenceRoutes({
           requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
           resolveGatewayProvider,
-          signal: c.req.raw.signal,
+          signal: rawSignal,
           onAttemptStart: (context) => {
             correlation = context;
             phase = 'selection';
@@ -1937,6 +2095,8 @@ export function registerWorkerInferenceRoutes({
                 );
               let responseTurnState: string | undefined;
               const requestTurnState = c.req.header('x-codex-turn-state');
+              const rawObserver = { pending: 0, started: 0, events: 0 };
+              rawObservers.push(rawObserver);
               const dispatchContext = {
                 capture: captureForCall(durableCall, corr, attempt),
                 onUsage: (usage: unknown) =>
@@ -1950,6 +2110,36 @@ export function registerWorkerInferenceRoutes({
                   ),
                 ...(subscriptionModels ? { models: subscriptionModels } : {}),
                 transport: {
+                  rawOutput: {
+                    sourceStarted: () => {
+                      rawObserver.started += 1;
+                      rawObserver.pending += 1;
+                      let settled = false;
+                      return () => {
+                        if (!settled) {
+                          settled = true;
+                          rawObserver.pending -= 1;
+                        }
+                      };
+                    },
+                    sourceEvent: () => {
+                      rawObserver.events += 1;
+                    },
+                    observe: (
+                      position: import('./raw-provider-output.js').RawModelOutputPosition
+                    ) => {
+                      const result = withRawDb((db) =>
+                        observeWorkerRawOutput(db, {
+                          ...scope,
+                          ...position,
+                          callId: durableCall.call.id,
+                          attemptId: JSON.stringify([corr, attempt]),
+                        })
+                      );
+                      if (result.exhausted) throw new WorkerRawOutputBudgetExceededError();
+                    },
+                    fail: failRaw,
+                  },
                   deadline: execution.deadline,
                   ...(execution.onProviderHandoff
                     ? { onProviderHandoff: execution.onProviderHandoff }
@@ -1962,7 +2152,7 @@ export function registerWorkerInferenceRoutes({
                     // The stock observer supplies only an actual HTTP rejection, not routing authority.
                     observedHttpRejection = status;
                   },
-                  signal: c.req.raw.signal,
+                  signal: rawSignal,
                 },
               };
 
@@ -1984,11 +2174,13 @@ export function registerWorkerInferenceRoutes({
                     dispatchContext
                   );
                   phase = 'stream-prepare';
+                  const prepared = await execution.prepareStream(stream);
+                  if (!rawObserver.started || !rawObserver.events) {
+                    void prepared.cancel().catch(() => undefined);
+                    failRaw(new WorkerRawOutputAuthorityError());
+                  }
                   return workerInferenceStreamResponse(
-                    rewriteGatewayStreamModel(
-                      await execution.prepareStream(stream),
-                      logicalModel.id
-                    ),
+                    rewriteGatewayStreamModel(prepared, logicalModel.id),
                     durableCall,
                     endpoint,
                     c.req.raw.signal,
@@ -2024,8 +2216,13 @@ export function registerWorkerInferenceRoutes({
                   dispatchContext
                 );
                 phase = 'stream-prepare';
+                const prepared = await execution.prepareStream(stream);
+                if (!rawObserver.started || !rawObserver.events) {
+                  void prepared.cancel().catch(() => undefined);
+                  failRaw(new WorkerRawOutputAuthorityError());
+                }
                 return workerInferenceStreamResponse(
-                  rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
+                  rewriteGatewayStreamModel(prepared, logicalModel.id),
                   durableCall,
                   endpoint,
                   c.req.raw.signal,
@@ -2054,10 +2251,17 @@ export function registerWorkerInferenceRoutes({
         if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
         return result;
       } catch (error) {
-        if (!isGatewayCancellation(error, c.req.raw.signal)) reportFailure(error);
+        // The native stop signal can wrap the private authority failure as cancellation.
+        // Preserve its durable cause instead of reporting a caller disconnect.
+        const failure = durableCall.rawOutputFailureCode
+          ? durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted'
+            ? new WorkerRawOutputBudgetExceededError()
+            : new WorkerRawOutputAuthorityError()
+          : error;
+        if (!isGatewayCancellation(failure, c.req.raw.signal)) reportFailure(failure);
         const cancelled = finishDurableLlmGatewayFailure(
           durableCall,
-          error,
+          failure,
           c.req.raw.signal,
           'worker_inference_failed',
           'worker_inference_cancelled'
@@ -2068,16 +2272,18 @@ export function registerWorkerInferenceRoutes({
             'Worker inference request was cancelled.',
             499
           );
-        const failure = (error as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
+        const providerFailure =
+          (failure as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
         // Unavailable supply can end admitted compaction before a Provider attempt starts.
         if (
+          !durableCall.rawOutputFailureCode &&
           runtimeHint?.requestKind === 'compaction' &&
           !activeExecution?.outputBegan &&
           (activeExecution !== undefined ||
-            error instanceof LogicalModelRoutesExhaustedError ||
-            failure?.kind === 'provider_unavailable' ||
-            failure?.kind === 'auth_rejected') &&
-          failure?.kind !== 'cancelled'
+            failure instanceof LogicalModelRoutesExhaustedError ||
+            providerFailure?.kind === 'provider_unavailable' ||
+            providerFailure?.kind === 'auth_rejected') &&
+          providerFailure?.kind !== 'cancelled'
         ) {
           throw new WorkerInferenceRouteError(
             'context_compaction_unavailable',
@@ -2086,7 +2292,7 @@ export function registerWorkerInferenceRoutes({
             'provider_error'
           );
         }
-        throw error;
+        throw failure;
       }
     } catch (error) {
       return asWorkerInferenceError(error);

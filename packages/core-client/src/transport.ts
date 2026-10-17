@@ -29,6 +29,8 @@ export interface ClientTransport {
     headers: HeadersInit,
     schema: TSchema
   ): Promise<z.infer<TSchema>>;
+  /** Fetches a successful download response without consuming its body or metadata. */
+  getDownload(path: string): Promise<Response>;
   /** Puts a JSON body and validates a JSON response. */
   putJson<TInput, TSchema extends z.ZodType>(
     path: string,
@@ -101,7 +103,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return parseJsonResponse(response, schema);
   };
 
-  const getStream: ClientTransport['getStream'] = async (path, mediaType) => {
+  const getDownload: ClientTransport['getDownload'] = async (path) => {
     const response = await fetcher(url(path), {
       credentials: 'include',
       headers: mergeHeaders(),
@@ -111,6 +113,11 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
       await parseJsonResponse(response, z.never());
       throw new Error('Unreachable response state.');
     }
+    return response;
+  };
+
+  const getStream: ClientTransport['getStream'] = async (path, mediaType) => {
+    const response = await getDownload(path);
     if (response.headers.get('content-type') !== mediaType || !response.body) {
       throw new ProtocolValidationError({
         path: [],
@@ -201,6 +208,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     patchJson: (path, input, schema, headers) => sendJson('PATCH', path, input, schema, headers),
     postJson: (path, input, schema, headers, emptySuccess) =>
       sendJson('POST', path, input, schema, headers, emptySuccess),
+    getDownload,
     postStream,
     putJson: (path, input, schema, headers) => sendJson('PUT', path, input, schema, headers),
     url,

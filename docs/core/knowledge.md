@@ -44,7 +44,7 @@ Sources remain evidence, knowledge remains curated interpretation, and Context P
 
 `Knowledge Review` is an explicit decision by an authorized human to accept, reject, or defer a Knowledge Proposal. For any candidate, changing its proposed content requires a new proposal rather than a combined edit-and-accept transition.
 
-`Knowledge Manager` is the Internal Core Role responsible for source-traceable knowledge query support, context-material preparation, proposal drafting, validation support, and authorized bounded notebook maintenance.
+`Knowledge Manager` is the internal agent role that retrieves, explains, writes, integrates and organizes Memory and Knowledge through governed Core tools. It maintains each OpenKit Knowledge Format (OKF) notebook's root `index.md` as a bounded scope overview.
 
 `Observation` is a low-friction agent-recorded signal about work, source material, or repeated behavior; it is not active knowledge by default.
 
@@ -62,13 +62,17 @@ Knowledge does not own workflow progression, worker execution, final semantic co
 
 Artifacts may become Knowledge Sources, but artifacts are not required between ordinary source ingest and a Knowledge Proposal.
 
-The Knowledge Manager is not a persistent agent runtime, workflow engine, scheduler, retry queue, or independent publication authority.
+The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Its operations are trusted at this stage; review by another model and confidence marks are out of scope. Current authority and required human decisions still apply.
+
+The Knowledge Manager uses existing Thread, Turn and Item owners for conversation continuity. It owns no separate runtime, scheduler, retry queue or publication authority.
 
 ## Authority And Projection
 
 Authorized users or team members own Knowledge Review decisions and direct user-authored knowledge.
 
-The Knowledge Manager prepares source-traceable answers, context material, proposals, and authorized notebook edits through explicit bounded operations.
+Working internal agents and Workers receive the applicable notebook overview and ask the Knowledge Manager for relevant understanding. The Knowledge Manager retrieves with tools, answers with `page@revision` and `source@digest` citations, and states uncertainty. Users provide intent, information and approval; authorized simple direct edits remain available.
+
+The Knowledge Manager prepares answers, context material, proposals and notebook edits under current scope and source authority. One persistent maintenance Thread serves each notebook scope, with requests as Turns and one writer. Users inspect and approve maintenance in that Thread. Independent query runs remain bound to each asker's query context and audience. The [agent and compaction decision](../decisions/20261017-knowledge_manager_agent_and_compaction.md) records this choice.
 
 The Knowledge Store validates and persists knowledge, proposals, reviews, content identity and lineage, and retrieval projections through its existing owners.
 
@@ -76,7 +80,7 @@ The Workflow Coordinator decides how authorized material combines with task inst
 
 The owning Task boundary persists, materializes, and delivers the resulting Context Package for a standalone Task and for a Task a Goal admitted, through the separately owned delivery trace. The Goal's Coordinator uses assembled input and reads, and does not use that package.
 
-A Knowledge selection or preparation result, workspace record, imported record, or diagnostic trace does not prove that a worker received or used knowledge. A bounded body, excerpt, or descriptor retains its delivered digest separately from the canonical page/source digest. Indexing or media extraction does not publish Knowledge. Missing or incomplete representations cannot prove body absence; only the Context Package owner proves exact delivered bytes. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records the decision.
+A Knowledge selection or preparation result, workspace record, imported record, or diagnostic trace does not prove that a worker received or used knowledge. A bounded body, excerpt, or descriptor retains its delivered digest separately from the canonical page/source digest. Indexing or media extraction does not publish Knowledge. Missing or incomplete representations cannot prove body absence. The Context Package owner proves its delivered bytes; an existing capability call records the exact Knowledge Manager answer delivered through a Worker tool. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records the decision.
 
 ## Lifecycle
 
@@ -91,6 +95,8 @@ Capture, successful no-op, draft, required Review, publication, conflict and inc
 Sources preserve evidence identity and lineage; knowledge preserves reusable interpretation.
 
 The same source may support multiple Knowledge Pages, and a Knowledge Page may cite multiple sources.
+
+OKF front matter has a closed core and open extensions. Required fields retain strict validation; users and agents may add descriptive extension fields. No page-level origin or trust field is required. Each notebook commit records its change source through existing producer, authority and source references; an optional origin note is an extension.
 
 Raw sources remain source material until an authorized notebook publication creates curated interpretation. Human-authored, human-reviewed and delegated Agent-authored content remain visibly distinguishable.
 
@@ -116,13 +122,15 @@ Success requires published content plus the existing command and audit evidence.
 
 Archival excludes a retained page from ordinary retrieval. Explicit removal/forgetting retains its required human confirmation. Forgetting blocks active and normal historical retrieval, stale candidate application and automatic resurrection from the same sources; independently retained evidence and backup bytes remain subject to their disclosed retention. Ordinary forgetting does not promise physical erasure. User restoration and import cannot bypass suppression or revoked source authority.
 
+Administrator masking records a tombstone through an ordinary notebook commit. Notebook reads and references honor current masks across retained history without rewriting Git history. Items and backups remain outside this mechanism.
+
 ## Automatic Learning And Evidence Assessment
 
-Automatic extraction selects bounded eligible completed interactions and creates source-linked observations, candidates or authorized notebook revisions. Consolidation compares those observations with current saved understanding; unchanged inputs or no useful finding may complete without a change. It is a bounded operation of the existing Knowledge Manager and runtime, not a separate persistent Agent, scheduler or self-improvement authority. Consolidation and assessment output MUST NOT recursively establish its own factual evidence.
+Automatic extraction, consolidation, usage aging and AI evidence assessment are deferred until after v0.1.0. Explicit user requests and delegated Knowledge Manager maintenance remain available. They use the same notebook publisher and required human decisions; no background learning scheduler is introduced.
 
 Users may explicitly save, inspect, edit or forget personal Memory and eligible Knowledge. A current task instruction overrides a remembered preference for that task without silently rewriting it. Direct user expression is distinguishable from a model inference; inferred learning follows current notebook maintenance authority and any required review. Existing source, candidate, review, page and evidence owners preserve the difference between a proposal, an assessment and an applied change.
 
-Optional AI prove is source-grounded evidence assessment of an exact claim or candidate. It records support, contradiction or insufficient evidence and its limitations; it is neither mathematical proof nor an authorization grant. An authored scope policy may require this assessment for critical generated content, but a positive result never grants maintenance authority or substitutes for a required human Review. Changed content or evidence invalidates the old assessment. User editing remains available without falsely preserving a verified label.
+The deferred optional AI prove is source-grounded evidence assessment of an exact claim or candidate. It records support, contradiction or insufficient evidence and its limitations; it is neither mathematical proof nor an authorization grant. An authored scope policy may require this assessment for critical generated content, but a positive result never grants maintenance authority or substitutes for a required human Review. Changed content or evidence invalidates the old assessment. User editing remains available without falsely preserving a verified label.
 
 Learning that yields a reusable procedure may submit a Skill candidate through Agent Supply. Skill version comparison and rollback retain that owner; factual Memory/Knowledge, procedural Skills, model-generated candidate claims and observed evaluation results remain distinguishable.
 
@@ -134,9 +142,9 @@ Workers MUST NOT silently read all knowledge.
 
 Knowledge selection MUST preserve source references, exact page content digest, freshness, sensitivity, conflict state, and exclusion reasons in the governed retrieval evidence; the owning package trace preserves only its retrieval linkage, delivered page identity and bytes, and any exclusion caused by package-stage budgeting.
 
-Only the owning worker delivery trace proves which exact knowledge-derived bytes or references reached a worker Turn.
+The owning worker delivery trace proves the bytes and references delivered in its Context Package. For a Knowledge Manager tool answer, the existing capability call records the exact delivered answer bytes. Neither record proves that the Worker used the material.
 
-Later citations, evaluation, or learning claims MUST resolve to that delivery trace rather than a current Knowledge Page, mutable index, standalone selection trace, or imported history.
+Later citations, evaluation or learning claims MUST resolve to the applicable delivery evidence. A current Knowledge Page, mutable index, standalone selection trace or imported history cannot substitute for delivered bytes.
 
 ## Scope And Relationships
 
@@ -163,6 +171,6 @@ External domain systems own their raw source-of-truth records; OpenKit may cite,
 - A required Review is not proof of publication. Published revision, exact content and existing operation evidence must agree; missing Audit or command receipt prevents a success or replay claim even when the content ref advanced.
 - Restore and reversal create new exact-base revisions; they preserve old evidence and cannot silently overwrite later edits or undo external effects.
 - Workspace-only, imported, reconstructed, or standalone Knowledge provenance MUST NOT masquerade as completed worker output.
-- Only the owning worker delivery trace may prove that a worker received selected knowledge.
+- Worker receipt of selected Knowledge requires its owning Context Package delivery trace or the exact answer bytes in its existing Knowledge Manager capability call.
 - Knowledge Pages MUST NOT store secret values.
 - Raw external records MUST remain owned by their external system unless explicitly captured as OpenKit source material.

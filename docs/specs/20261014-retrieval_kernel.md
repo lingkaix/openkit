@@ -148,6 +148,16 @@ The proposed tokenizer amendment applies to indexing, query analysis, and Knowle
 
 These mappings govern the required owner amendments listed below. Knowledge Governance, Core Permissions, the Policy Model, and their active-page, forgetting, conflict, confidentiality, and deterministic-selection rules remain binding.
 
+### Generic Digest-Window Scan
+
+The trusted local service also provides a generic bounded digest-window operation over a startup-root-confined regular file. This operation compares SHA-256 digests of fixed byte windows or their canonical unpadded base64url decoding and returns source byte positions only. It reads no retrieval generation and writes no index, cache, source or product record. The source owner selects the comparison digests, interprets matches and makes every admission decision. No raw comparison value, credential identity or product proof selection enters the executable.
+
+Each call names an exact source length and half-open byte range. The executable holds a no-follow descriptor, requires one regular-file link, and verifies unchanged file identity, length and timestamps after the scan. It returns the complete scanned range, exact range digest and sorted unique match positions. This range digest is not a whole-file digest. Source owners that split a scan must supply window overlap, require complete range coverage and verify the exact original before using a clean result. A missing, changed, unsafe or unavailable source fails closed. Restart grants no access and resumes no scan; any retry is a new owner-admitted request.
+
+Implementation ceilings are 16 MiB per range, four patterns, 1,024 encoded bytes per window, 64 comparison digests in total, 1,024 returned positions and 30 seconds per call. Caller bounds can tighten these ceilings. The scanner retains a 64 KiB block, at most 1,023 overlapping bytes, a fixed decode buffer and bounded comparison/result inventories. Byte, time, memory, frame or match exhaustion returns a bounded error, never an empty or truncated clean result. Cancellation terminates the current supervised request without publication ambiguity. Existing retrieval operations, version 1, scope semantics and index identity remain unchanged.
+
+Acceptance requires exact binary and transformed-window offsets, matches across read boundaries, canonical base64url tail-bit checks, empty ranges, overlap across separate calls, and explicit refusal for unsafe paths, symlinks, hardlinks, FIFO, source drift and each resource bound. Run existing retrieval suites unchanged alongside these regressions. A generic match is no proof of credential identity, authorization or publication admission.
+
 ### Source Adapter Registry
 
 Each adapter must answer the same questions: canonical inventory and revision, stable source key, current readable scopes, eligible content, original locator, update/removal trigger, and response validation. The following table names the owners; it does not replace their semantics.
