@@ -7,6 +7,10 @@ import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from '../auth/access-token-store.js';
+import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
   startCapabilityCall,
@@ -19,6 +23,10 @@ import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
+import {
+  admitKnowledgeRetrieval,
+  readAuthorizedServerNotebookPages,
+} from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -173,7 +181,14 @@ async function fixture(withServerKnowledge = false) {
       {
         requestId: randomUUID(),
         baseRevision: initial,
-        changes: [{ path: 'launch-evidence.md', content }],
+        changes: [
+          { path: 'launch-evidence.md', content },
+          {
+            path: 'index.md',
+            content:
+              '---\nokf_version: "0.2"\n---\n# Launch policies\n[Launch evidence](launch-evidence.md)\n',
+          },
+        ],
         summary: 'Record shared launch policy',
       }
     );
@@ -698,6 +713,75 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
     selected: [],
   });
 });
+
+it('refuses an overview-only answer when its Server credential is revoked during the Provider call', async () => {
+  const f = await fixture(true);
+  const tokenId = allocateEntityId('tok');
+  createOpenKitAccessTokenRecord(f.coreDb, {
+    tokenId,
+    ownerUserId: f.userId,
+    scope: 'server-admin',
+    workspaceIds: [],
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  });
+  f.access.serverKnowledgeActor = {
+    kind: 'token',
+    userId: f.userId,
+    tokenId,
+    tokenScope: 'server-admin',
+  };
+  const selection = {
+    dataRoot: f.dataRoot,
+    workspaceId: f.workspace.id,
+    access: f.access,
+    notebookRevision: f.server!.revision,
+    pageIds: ['index'],
+  };
+  expect(readAuthorizedServerNotebookPages(selection).pages).toHaveLength(1);
+  f.createResponses.mockImplementation(async () => {
+    // Revocation changes only the admitted Server credential; the asking Workspace member stays authorized.
+    revokeOpenKitAccessTokenRecord(f.coreDb, tokenId);
+    return message('The Server overview lists the launch policy.');
+  });
+  const outcome = await f.ask().then(
+    (answer) => ({ answer, error: undefined }),
+    (error: unknown) => ({ answer: undefined, error })
+  );
+  expect(f.createResponses).toHaveBeenCalledTimes(1);
+  const messages = f.createResponses.mock.calls[0]![1].input as Array<{
+    role?: string;
+    content?: Array<{ text?: string }>;
+  }>;
+  const initial = JSON.parse(messages.find((item) => item.role === 'user')!.content![0]!.text!);
+  expect(initial.unavailableSources).toEqual([]);
+  expect(initial.overviews).toContainEqual(
+    expect.objectContaining({
+      source: 'server',
+      pageId: 'page/server/index',
+      notebookRevision: f.server!.revision,
+      contentDigest: f.server!.overviewDigest,
+      content: expect.stringContaining('launch-evidence'),
+    })
+  );
+  expect(() => admitKnowledgeRetrieval(selection)).not.toThrow();
+  expect(() => readAuthorizedServerNotebookPages(selection)).toThrow(
+    'Server Knowledge access denied.'
+  );
+  expect(
+    outcome.answer,
+    'Revoked overview evidence must not produce a delivered answer'
+  ).toBeUndefined();
+  expect(outcome.error).toMatchObject({
+    code: 'workspace_access_denied',
+    message: 'Server Knowledge access denied.',
+  });
+  const work = f.store
+    .listThreads(f.workspace.id)
+    .flatMap((thread) => f.store.listThreadTurns(f.workspace.id, thread.id))
+    .find((turn) => turn.agentId === 'knowledge-manager');
+  expect(work).toMatchObject({ status: 'failed' });
+  expect(work!.items.filter((item) => item.type === 'tool-call')).toEqual([]);
+}, 120_000);
 
 it('rejects an unread citation and retains a failed Knowledge Manager Turn instead of a completed answer', async () => {
   const f = await fixture();
