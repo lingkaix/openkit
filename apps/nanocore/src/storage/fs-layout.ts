@@ -409,6 +409,18 @@ export function ensureWorkspaceLayoutRoot(workspaceRoot: string): WorkspaceLayou
   return paths;
 }
 
+/** Resolves the canonical User Memory root without creating or repairing retained storage. */
+export function userMemoryRoot(root: string, userId: string): string {
+  if (!isEntityId('usr', userId))
+    throw new Error('Canonical User identity is required for Memory storage.');
+  return resolveDataRootPath(root, 'users', userId, 'memory');
+}
+
+/** Resolves current-deployment Server Knowledge without creating or repairing retained storage. */
+export function serverKnowledgeRoot(root: string): string {
+  return resolveDataRootPath(root, 'server', 'knowledge');
+}
+
 /**
  * Resolves the server-scope Core SQLite file path.
  *

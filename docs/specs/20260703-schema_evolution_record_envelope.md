@@ -173,6 +173,8 @@ Some record families are line-oriented, such as append-only item logs and observ
 
 The owning storage spec decides the concrete header field names per family; the split-envelope minimum above is normative for all line-oriented canonical families.
 
+User Memory suppression rows are a narrow exception to the split-envelope placement rule: each row in the existing scoped `observations/YYYYMM.jsonl` maintenance family carries the complete canonical envelope, exact User lineage and required `openkit.memory-suppression.v1` feature. Existing line-oriented families have no shared manifest reader/writer that can own this boundary; adding a manifest framework solely for suppression is not required. This exception retains the full envelope's closed required semantics and minimal content-free suppression facts. It does not create another record family, grant human confirmation or activate a public forget/history endpoint.
+
 ## Storage Versus Protocol Strictness
 
 Reader tolerance never relaxes emitted projection strictness.
@@ -224,6 +226,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 
 | Feature | Status | Description |
 | --- | --- | --- |
+| `openkit.memory-suppression.v1` | active | User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression. |
 | `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
 | `openkit.work-observations.v1` | active | Turn-scoped work observations, restricted content publication and exact portable reference closure. |

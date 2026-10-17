@@ -6975,6 +6975,660 @@
         }
       }
     },
+    "/api/app/operations/memory.source.register": {
+      "post": {
+        "operationId": "memory.source.register",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Capture one exact literal document in the authenticated User Source scope.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.source.register.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Capture one exact literal document in the authenticated User Source scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.source.register.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.source.list": {
+      "post": {
+        "operationId": "memory.source.list",
+        "tags": [
+          "memory"
+        ],
+        "summary": "List explicit User Source metadata under current self authority.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.source.list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List explicit User Source metadata under current self authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.source.list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.source.read": {
+      "post": {
+        "operationId": "memory.source.read",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Read the exact captured bytes of one currently authorized User Source.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.source.read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read the exact captured bytes of one currently authorized User Source.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.source.read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.list": {
+      "post": {
+        "operationId": "memory.list",
+        "tags": [
+          "memory"
+        ],
+        "summary": "List current personally authored Memory without disclosing suppressed entries.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List current personally authored Memory without disclosing suppressed entries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.read": {
+      "post": {
+        "operationId": "memory.read",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Read one current personally authored Memory page.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read one current personally authored Memory page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.create": {
+      "post": {
+        "operationId": "memory.create",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Save exact personally authored Memory under a new page identity.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.create.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Save exact personally authored Memory under a new page identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.update": {
+      "post": {
+        "operationId": "memory.update",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Edit exact personally authored Memory at its current notebook base.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.update.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Edit exact personally authored Memory at its current notebook base.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.update.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.notebook.history": {
+      "post": {
+        "operationId": "memory.notebook.history",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Inspect currently authorized Memory history with forgotten details unavailable.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.notebook.history.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Inspect currently authorized Memory history with forgotten details unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.notebook.history.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.notebook.diff": {
+      "post": {
+        "operationId": "memory.notebook.diff",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Compare admitted Memory revisions without exposing suppressed content.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.notebook.diff.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Compare admitted Memory revisions without exposing suppressed content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.notebook.diff.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.notebook.restore": {
+      "post": {
+        "operationId": "memory.notebook.restore",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Restore admitted Memory content as a new fixed-base revision without deleting pages.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.notebook.restore.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restore admitted Memory content as a new fixed-base revision without deleting pages.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.notebook.restore.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.forget.prepare": {
+      "post": {
+        "operationId": "memory.forget.prepare",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Request exact human confirmation of Memory removal, suppression and retained evidence.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.forget.prepare.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request exact human confirmation of Memory removal, suppression and retained evidence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.forget.prepare.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/memory.forget": {
+      "post": {
+        "operationId": "memory.forget",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Consume an exact human Memory forget grant and retain its original outcome on replay.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.forget.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Consume an exact human Memory forget grant and retain its original outcome on replay.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.forget.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/artifact.list": {
       "post": {
         "operationId": "artifact.list",
@@ -52462,6 +53116,1489 @@
       "knowledge.delete.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "null"
+      },
+      "memory.source.register.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "document"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "memory.source.register.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^ks_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "kind": {
+                "type": "string",
+                "const": "document"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uri": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "contentDigest": {
+                "type": "string",
+                "minLength": 1
+              },
+              "originatingThreadId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "originatingTurnId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "originatingFileId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "capturedAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "updatedAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  "userId": {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "title",
+              "uri",
+              "contentDigest",
+              "originatingThreadId",
+              "originatingTurnId",
+              "originatingFileId",
+              "capturedAt",
+              "createdAt",
+              "updatedAt",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "memory.source.list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "memory.source.list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^ks_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "document"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uri": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "originatingThreadId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "originatingTurnId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "originatingFileId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "capturedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ownerScope": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "user"
+                    },
+                    "userId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "userId"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "title",
+                "uri",
+                "contentDigest",
+                "originatingThreadId",
+                "originatingTurnId",
+                "originatingFileId",
+                "capturedAt",
+                "createdAt",
+                "updatedAt",
+                "ownerScope"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "memory.source.read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "pattern": "^ks_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "sourceId"
+        ],
+        "additionalProperties": false
+      },
+      "memory.source.read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^ks_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "document"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uri": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "contentDigest": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "originatingThreadId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "originatingTurnId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "originatingFileId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "capturedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "updatedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "ownerScope": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "userId": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "userId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "title",
+                  "uri",
+                  "contentDigest",
+                  "originatingThreadId",
+                  "originatingTurnId",
+                  "originatingFileId",
+                  "capturedAt",
+                  "createdAt",
+                  "updatedAt",
+                  "ownerScope",
+                  "content"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "memory.list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "memory.list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sensitivity": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "normal",
+                    "internal",
+                    "confidential"
+                  ]
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "id",
+                "path",
+                "title",
+                "sensitivity",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "notebookRevision",
+          "pages"
+        ],
+        "additionalProperties": false
+      },
+      "memory.read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "pageId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pageId"
+        ],
+        "additionalProperties": false
+      },
+      "memory.read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "page": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string",
+                    "maxLength": 243,
+                    "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                  },
+                  "title": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "sensitivity": {
+                    "type": "string",
+                    "enum": [
+                      "public",
+                      "normal",
+                      "internal",
+                      "confidential"
+                    ]
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "notebookRevision": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "path",
+                  "title",
+                  "sensitivity",
+                  "digest",
+                  "notebookRevision",
+                  "content"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "additionalProperties": false
+      },
+      "memory.create.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pageId": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseRevision",
+          "pageId",
+          "content",
+          "summary"
+        ],
+        "additionalProperties": false
+      },
+      "memory.create.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "user"
+              },
+              "userId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "userId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.create",
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.restore",
+                  "knowledge.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  "userId": {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
+        ],
+        "additionalProperties": false
+      },
+      "memory.update.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pageId": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseRevision",
+          "pageId",
+          "content",
+          "summary"
+        ],
+        "additionalProperties": false
+      },
+      "memory.update.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "user"
+              },
+              "userId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "userId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.create",
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.restore",
+                  "knowledge.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  "userId": {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
+        ],
+        "additionalProperties": false
+      },
+      "memory.notebook.history.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      },
+      "memory.notebook.history.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revisions": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "revision": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "parentRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "availability": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "producer": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "integration",
+                                "system"
+                              ]
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "automation"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "changedPaths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 243,
+                        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                      }
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "parentRevision",
+                    "availability",
+                    "summary",
+                    "producer",
+                    "changedPaths"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "revision": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "parentRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "availability": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "parentRevision",
+                    "availability"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "nextRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "notebookRevision",
+          "revisions",
+          "nextRevision"
+        ],
+        "additionalProperties": false
+      },
+      "memory.notebook.diff.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fromRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pageIds": {
+            "minItems": 1,
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "forRestore": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "baseRevision",
+          "fromRevision"
+        ],
+        "additionalProperties": false
+      },
+      "memory.notebook.diff.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fromRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "forRestore": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "changes": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                },
+                "before": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "after": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "before",
+                "after"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "baseRevision",
+          "fromRevision",
+          "forRestore",
+          "truncated",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "memory.notebook.restore.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fromRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pageIds": {
+            "minItems": 1,
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseRevision",
+          "fromRevision",
+          "pageIds",
+          "summary"
+        ],
+        "additionalProperties": false
+      },
+      "memory.notebook.restore.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "user"
+              },
+              "userId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "userId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.create",
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.restore",
+                  "knowledge.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  "userId": {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
+        ],
+        "additionalProperties": false
+      },
+      "memory.forget.prepare.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "pageId": {
+            "type": "string"
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "pageId",
+          "notebookRevision",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "memory.forget.prepare.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "pendingRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "turnId": {
+            "type": "string",
+            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "user"
+              },
+              "userId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "userId"
+            ],
+            "additionalProperties": false
+          },
+          "pageId": {
+            "type": "string"
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "pendingRequestId",
+          "workspaceId",
+          "threadId",
+          "turnId",
+          "itemId",
+          "ownerScope",
+          "pageId",
+          "notebookRevision",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "memory.forget.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "pendingRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "pendingRequestId",
+          "workspaceId",
+          "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "memory.forget.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "user"
+              },
+              "userId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "userId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.create",
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.restore",
+                  "knowledge.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "user"
+                  },
+                  "userId": {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
+        ],
+        "additionalProperties": false
       },
       "artifact.list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -100523,5 +102660,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4850daecb174c8db342ee631e84d3ed8064e3314f0de72118d0f6b793a41ce15"
+  "x-openkit-source-digest": "sha256:52d23ff3a5e248bd71ec1e1b24b10e7e234f82a3bf68ae0d61fcbba057d3ef61"
 }

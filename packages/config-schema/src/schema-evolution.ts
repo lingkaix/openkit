@@ -32,6 +32,12 @@ export interface RequiredFeatureDefinition {
  * Known required features used by fail-closed readers.
  */
 export const REQUIRED_FEATURE_REGISTRY = {
+  'openkit.memory-suppression.v1': {
+    id: 'openkit.memory-suppression.v1',
+    status: 'active',
+    description:
+      'User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression.',
+  },
   'openkit.knowledge-owner-scope.v1': {
     id: 'openkit.knowledge-owner-scope.v1',
     status: 'active',
