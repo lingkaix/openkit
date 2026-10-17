@@ -156,20 +156,24 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
     });
     const app = createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
     const response = await app.request(
-      ...knowledgeOperationRequest('knowledge.create', { workspaceId: f.workspace.id }, {
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          baseRevision: notebook.publishedRevision(),
-          knowledgePageId: 'retained-knowledge',
-          kind: 'project-context',
-          title: 'Retained Knowledge',
-          content: 'k'.repeat(1024 * 1024),
-          sourceReferences: [],
-        }),
-      })
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: f.workspace.id },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            baseRevision: notebook.publishedRevision(),
+            knowledgePageId: 'retained-knowledge',
+            kind: 'project-context',
+            title: 'Retained Knowledge',
+            content: 'k'.repeat(1024 * 1024),
+            sourceReferences: [],
+          }),
+        }
+      )
     );
     expect(response.status, await response.clone().text()).toBe(200);
-    const page = await response.json() as { id: string };
+    const page = (await response.json()) as { id: string };
     const revision = notebook.publishedRevision();
     const path = `${page.id}.md`;
     const before = Buffer.from(notebook.readRevision(revision, [path]).files[path]!);
@@ -194,7 +198,9 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
       )
     ).not.toThrow();
     expect(notebook.publishedRevision()).toBe(revision);
-    const after = Buffer.from(notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!);
+    const after = Buffer.from(
+      notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!
+    );
     expect(after).toEqual(before);
     expect(createHash('sha256').update(after).digest('hex')).toBe(digest);
   } finally {
