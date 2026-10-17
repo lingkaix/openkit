@@ -640,8 +640,10 @@ describe('workspace export route boundaries', () => {
     ).toBe(true);
 
     const targetDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-unicode-target-'));
+    const fileAdmission = new FileStorageAdmission(targetDataRoot, () => 0n);
     const targetResponse = await createApp({
       dataRoot: targetDataRoot,
+      fileAdmission,
       store: createBoundaryStore(targetDataRoot),
     }).request('/api/app/workspace-archives/import-dry-run', {
       body: archive,
@@ -670,7 +672,8 @@ describe('workspace export route boundaries', () => {
         headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
         body: unicodeArchive,
       }),
-      targetDataRoot
+      targetDataRoot,
+      fileAdmission
     );
     try {
       expect(readFileSync(join(staged.exportRoot, unicodePath))).toEqual(exactBytes);
