@@ -1448,7 +1448,9 @@ describe('createConfiguredTurnExecutor', () => {
     expect(contextRefCarriage).toBeLessThan(sandboxCreate);
     expect(sandboxCreate).toBeGreaterThanOrEqual(0);
     expect(prepareImports).toBeGreaterThanOrEqual(0);
-    expect(prepareImports).toBeLessThan(materializeSource?.indexOf('this.evictIncompatibleIdleSandbox(') ?? -1);
+    expect(prepareImports).toBeLessThan(
+      materializeSource?.indexOf('this.evictIncompatibleIdleSandbox(') ?? -1
+    );
     expect(prepareImports).toBeLessThan(imageBuild);
     expect(prepareImports).toBeLessThan(sandboxCreate);
     expect(referenceImport).toBeLessThan(launchSource?.indexOf("'session.open'") ?? -1);
@@ -2828,7 +2830,15 @@ describe('createConfiguredTurnExecutor', () => {
         displayName: 'Repo guidelines',
         expectedRevision: 0,
         producer: resident.scope.triggerActor,
-        tree: [{ kind: 'file', path: 'SKILL.md', contentBase64: Buffer.from('---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRead this Skill.\n').toString('base64') }],
+        tree: [
+          {
+            kind: 'file',
+            path: 'SKILL.md',
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRead this Skill.\n'
+            ).toString('base64'),
+          },
+        ],
         workspaceId: resident.scope.workspaceId,
       });
       const incoming = completeNanoHostPackage({
@@ -2844,27 +2854,54 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb,
         createdAt: incoming.createdAt,
         requestId: incoming.scope.requestId,
-        turn: new FsStore({ dataRoot: coreDb.dataRoot }).getTurnById(incoming.scope.turnId)!,
+        turn: new FsStore({ dataRoot: coreDb.dataRoot }).createTurn(
+          incoming.scope.workspaceId,
+          incoming.scope.threadId,
+          'Use selected Skill',
+          incoming.scope.triggerActor,
+          null,
+          { turnId: incoming.scope.turnId }
+        ),
         triggerActor: incoming.scope.triggerActor,
-        userId: incoming.scope.triggerActor.id,
+        userId:
+          incoming.scope.triggerActor.kind === 'user'
+            ? incoming.scope.triggerActor.id
+            : incoming.scope.triggerActor.responsibleUserId!,
         workspaceRoots: [],
       });
       incoming.supply = preview.supply;
-      writeFileSync(join(skillSnapshotPath(coreDb.dataRoot, incoming.scope.workspaceId, 'repo-guidelines', created.version.digest), 'SKILL.md'), 'corrupt after preview');
+      writeFileSync(
+        join(
+          skillSnapshotPath(
+            coreDb.dataRoot,
+            incoming.scope.workspaceId,
+            'repo-guidelines',
+            created.version.digest
+          ),
+          'SKILL.md'
+        ),
+        'corrupt after preview'
+      );
       anchorNanoHostMaterialization(coreDb, backend, incoming);
       const beforeEffects = f.effects.length;
       const beforeResident = coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all();
       const beforeStorage = coreDb.sqlite.prepare('SELECT * FROM worker_storage_bindings').all();
-      await expect(backend.materialize(incoming, {
-        dataRoot: coreDb.dataRoot,
-        sandboxBindingRef: factoryPackageBinding(coreDb, incoming),
-        workspaceRoots: [],
-      })).rejects.toThrow(/Skill|snapshot|integrity|digest|inventory/i);
+      await expect(
+        backend.materialize(incoming, {
+          dataRoot: coreDb.dataRoot,
+          sandboxBindingRef: factoryPackageBinding(coreDb, incoming),
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow(/Skill|snapshot|integrity|digest|inventory/i);
       expect(eviction).not.toHaveBeenCalled();
       await backend.cleanupSession(backend.planSession(incoming));
       expect(f.effects.slice(beforeEffects)).toEqual([]);
-      expect(coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all()).toEqual(beforeResident);
-      expect(coreDb.sqlite.prepare('SELECT * FROM worker_storage_bindings').all()).toEqual(beforeStorage);
+      expect(coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all()).toEqual(
+        beforeResident
+      );
+      expect(coreDb.sqlite.prepare('SELECT * FROM worker_storage_bindings').all()).toEqual(
+        beforeStorage
+      );
     } finally {
       eviction.mockRestore();
       coreDb.sqlite.close();
@@ -2950,9 +2987,20 @@ describe('createConfiguredTurnExecutor', () => {
             expectedRevision: 0,
             producer: pkg.scope.triggerActor,
             tree: [
-              { kind: 'file', path: 'SKILL.md', contentBase64: Buffer.from('---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRun run.sh.\n').toString('base64') },
+              {
+                kind: 'file',
+                path: 'SKILL.md',
+                contentBase64: Buffer.from(
+                  '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRun run.sh.\n'
+                ).toString('base64'),
+              },
               { kind: 'directory', path: 'empty-dir' },
-              { kind: 'file', path: 'run.sh', executable: true, contentBase64: Buffer.from('#!/bin/sh\nprintf ready\n').toString('base64') },
+              {
+                kind: 'file',
+                path: 'run.sh',
+                executable: true,
+                contentBase64: Buffer.from('#!/bin/sh\nprintf ready\n').toString('base64'),
+              },
             ],
             workspaceId: pkg.scope.workspaceId,
           });
@@ -2964,9 +3012,19 @@ describe('createConfiguredTurnExecutor', () => {
             coreDb,
             createdAt: pkg.createdAt,
             requestId: pkg.scope.requestId,
-            turn: new FsStore({ dataRoot: coreDb.dataRoot }).getTurnById(pkg.scope.turnId)!,
+            turn: new FsStore({ dataRoot: coreDb.dataRoot }).createTurn(
+              pkg.scope.workspaceId,
+              pkg.scope.threadId,
+              'Use retained fixture Skill',
+              pkg.scope.triggerActor,
+              null,
+              { turnId: pkg.scope.turnId }
+            ),
             triggerActor: pkg.scope.triggerActor,
-            userId: pkg.scope.triggerActor.id,
+            userId:
+              pkg.scope.triggerActor.kind === 'user'
+                ? pkg.scope.triggerActor.id
+                : pkg.scope.triggerActor.responsibleUserId!,
             workspaceRoots: [],
           }).supply;
         },
@@ -3239,14 +3297,22 @@ describe('createConfiguredTurnExecutor', () => {
       const originalFixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as typeof normalized;
       expect(normalized).toEqual(originalFixture);
       expect(normalized.filter((effect) => effect.kind === 'file.export')).toHaveLength(2);
-      expect(normalized).toContainEqual(expect.objectContaining({
-        kind: 'reference.import',
-        command: expect.objectContaining({ entryKind: 'directory', slot: 'worker-supply' }),
-      }));
-      expect(normalized).toContainEqual(expect.objectContaining({
-        kind: 'reference.import',
-        command: expect.objectContaining({ entryKind: 'file', executable: true, slot: 'worker-supply' }),
-      }));
+      expect(normalized).toContainEqual(
+        expect.objectContaining({
+          kind: 'reference.import',
+          command: expect.objectContaining({ entryKind: 'directory', slot: 'worker-supply' }),
+        })
+      );
+      expect(normalized).toContainEqual(
+        expect.objectContaining({
+          kind: 'reference.import',
+          command: expect.objectContaining({
+            entryKind: 'file',
+            executable: true,
+            slot: 'worker-supply',
+          }),
+        })
+      );
     } finally {
       client?.destroy();
       if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));

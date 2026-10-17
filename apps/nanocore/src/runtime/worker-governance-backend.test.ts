@@ -122,9 +122,9 @@ describe('NanoHost worker governance helpers', () => {
         relativePath: `${environmentPackage.scope.agentSessionId}/config/package.json`,
         slot: 'package-config',
       });
-      expect(imports[0]?.body[0]).not.toBe(0xef);
-      expect(imports[0]?.body.at(-1)).not.toBe(0x0a);
-      expect(JSON.parse(imports[0]?.body.toString('utf8') ?? '')).toEqual(environmentPackage);
+      expect(imports[0]?.body?.[0]).not.toBe(0xef);
+      expect(imports[0]?.body?.at(-1)).not.toBe(0x0a);
+      expect(JSON.parse(imports[0]?.body?.toString('utf8') ?? '')).toEqual(environmentPackage);
     }
 
     // Contract Evolution ignores inert additions before publishing worker-consumed bytes.
@@ -163,7 +163,10 @@ describe('NanoHost worker governance helpers', () => {
     }
   });
 
-  it.each(['available', 'removed-during-context-read'] as const)('imports only currently eligible verified Skill files after the canonical AEP: %s', async (selection) => {
+  it.each([
+    'available',
+    'removed-during-context-read',
+  ] as const)('imports only currently eligible verified Skill files after the canonical AEP: %s', async (selection) => {
     const skillBody =
       '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n';
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-supply-import-'));
@@ -210,32 +213,54 @@ describe('NanoHost worker governance helpers', () => {
           workspaceRoots: [],
         })
       );
-      const workspaceRoots: Parameters<typeof prepareNanoHostContextPackageImports>[1]['workspaceRoots'] = [];
+      const workspaceRoots: Parameters<
+        typeof prepareNanoHostContextPackageImports
+      >[1]['workspaceRoots'] = [];
       if (selection === 'removed-during-context-read') {
         const inputId = `context_${turn.id}`;
         const pathRef = `threads/${turn.threadId}/turns/${turn.id}/context-package`;
         const sourcePath = join(dataRoot, 'workspaces', turn.workspaceId, ...pathRef.split('/'));
         mkdirSync(sourcePath, { recursive: true });
         environmentPackage.workspace.inputs.push({
-          access: 'read-only', id: inputId, kind: 'generated',
-          materialization: { slotId: 'context', strategy: 'filesystem', contentDigest: `sha256:${createHash('sha256').update('[]').digest('hex')}` },
+          access: 'read-only',
+          id: inputId,
+          kind: 'generated',
+          materialization: {
+            slotId: 'context',
+            strategy: 'filesystem',
+            contentDigest: `sha256:${createHash('sha256').update('[]').digest('hex')}`,
+          },
           source: { kind: 'generated', pathRef },
           target: `/openkit/sessions/${agentSessionId}/context`,
         });
-        (environmentPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace = planSessionWorkspaceMaterialization({ environmentPackage });
-        workspaceRoots.push({ id: inputId, access: 'read-only', sourceKind: 'materialized-dir', sourcePath, workerPath: `/openkit/sessions/${agentSessionId}/context` });
+        (environmentPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+          planSessionWorkspaceMaterialization({ environmentPackage });
+        workspaceRoots.push({
+          id: inputId,
+          access: 'read-only',
+          sourceKind: 'materialized-dir',
+          sourcePath,
+          workerPath: `/openkit/sessions/${agentSessionId}/context`,
+        });
         const readDirectory = fsPromises.readdir;
         let removed = false;
         vi.spyOn(fsPromises, 'readdir').mockImplementation(async (...args) => {
           const result = await readDirectory(...args);
           if (String(args[0]) === sourcePath && !removed) {
             removed = true;
-            removeWorkspaceSkill({ dataRoot, workspaceId: turn.workspaceId, entryId: 'repo-guidelines', expectedRevision: created.catalog.revision });
+            removeWorkspaceSkill({
+              dataRoot,
+              workspaceId: turn.workspaceId,
+              entryId: 'repo-guidelines',
+              expectedRevision: created.catalog.revision,
+            });
           }
           return result;
         });
         syncBuiltinESMExports();
-        await expect(prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })).rejects.toThrow(/catalog entry not found/i);
+        await expect(
+          prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })
+        ).rejects.toThrow(/catalog entry not found/i);
         expect(removed).toBe(true);
         return;
       }
@@ -396,7 +421,9 @@ it.each([
   expect(imported?.contentDigest).toBe(
     `sha256:${createHash('sha256').update(expectedBytes).digest('hex')}`
   );
-  const parsed = AgentEnvironmentPackageSchema.parse(JSON.parse(imported!.body.toString('utf8')));
+  if (imported?.entryKind !== 'file')
+    throw new Error('Expected the canonical package-config file.');
+  const parsed = AgentEnvironmentPackageSchema.parse(JSON.parse(imported.body.toString('utf8')));
   if (recorded) {
     expect(parsed.llm).toHaveProperty('reasoningEffort', 'none');
     expect(parsed.llm.routes[0]).toHaveProperty('reasoningEffortLevels', []);

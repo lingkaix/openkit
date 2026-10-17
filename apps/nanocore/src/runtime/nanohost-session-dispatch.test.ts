@@ -222,9 +222,14 @@ describe('authoritative NanoHost session dispatch', () => {
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
-    const target = { deploymentId: 'skill-import', identityId: 'skill-import', targetId: 'skill-import' };
+    const target = {
+      deploymentId: 'skill-import',
+      identityId: 'skill-import',
+      targetId: 'skill-import',
+    };
     allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      ...target, observedAt: '2026-10-17T00:00:00.000Z',
+      ...target,
+      observedAt: '2026-10-17T00:00:00.000Z',
     });
     const app = new Hono<{ Variables: AuthVariables }>();
     registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
@@ -234,7 +239,11 @@ describe('authoritative NanoHost session dispatch', () => {
     const server = createHttp2Server((request, response) => {
       if (!physical) {
         physical = readNanoHostPhysicalConnectionContext(request)!;
-        authority.admit({ identityId: target.identityId, connectionGeneration: 1, physicalConnection: physical });
+        authority.admit({
+          identityId: target.identityId,
+          connectionGeneration: 1,
+          physicalConnection: physical,
+        });
       }
       void listener(request, response);
     });
@@ -246,7 +255,11 @@ describe('authoritative NanoHost session dispatch', () => {
       if (!address || typeof address === 'string') throw new Error('Missing Skill import address.');
       client = connectHttp2(`http://127.0.0.1:${address.port}`);
       const post = async (path: string, body: unknown) => {
-        const stream = client!.request({ ':method': 'POST', ':path': path, 'content-type': 'application/json' });
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+        });
         const received = once(stream, 'response');
         stream.end(JSON.stringify(body));
         const [headers] = await received;
@@ -256,10 +269,22 @@ describe('authoritative NanoHost session dispatch', () => {
       };
       await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'a'.repeat(64) });
       const path = '/api/nanohost/transport/effects/reference.import';
-      const common = { sandboxId: 'sandbox-skill-import', slot: 'worker-supply', relativePath: 'as_skill/supply/inputs/repo-guidelines/empty-dir' };
+      const common = {
+        sandboxId: 'sandbox-skill-import',
+        slot: 'worker-supply',
+        relativePath: 'as_skill/supply/inputs/repo-guidelines/empty-dir',
+      };
       const directory = { ...common, entryKind: 'directory' };
       const body = Buffer.from('#!/bin/sh\nprintf ready\n');
-      const file = { ...common, relativePath: 'as_skill/supply/inputs/repo-guidelines/run.sh', entryKind: 'file', executable: true, body, byteLength: body.length, sha256: `sha256:${createHash('sha256').update(body).digest('hex')}` };
+      const file = {
+        ...common,
+        relativePath: 'as_skill/supply/inputs/repo-guidelines/run.sh',
+        entryKind: 'file',
+        executable: true,
+        body,
+        byteLength: body.length,
+        sha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+      };
       for (const invalid of [
         { ...directory, body: Buffer.alloc(0) },
         { ...directory, byteLength: 0 },
@@ -273,7 +298,9 @@ describe('authoritative NanoHost session dispatch', () => {
         { ...file, slot: 'context' },
         { ...file, mode: 0o700 },
       ]) {
-        await expect(dispatch.effect({ kind: 'reference.import', requestId: 'e'.repeat(64), input: invalid })).rejects.toThrow(/invalid|unowned|worker-supply/i);
+        await expect(
+          dispatch.effect({ kind: 'reference.import', requestId: 'e'.repeat(64), input: invalid })
+        ).rejects.toThrow(/invalid|unowned|worker-supply/i);
         expect(await dispatch.poll(physical!, 'reference.import')).toBeNull();
       }
       for (const [index, input] of [directory, file].entries()) {
@@ -289,9 +316,15 @@ describe('authoritative NanoHost session dispatch', () => {
         expect(carried.headers['content-length']).toBe(index === 0 ? '0' : String(body.length));
         expect(carried.body).toEqual(index === 0 ? Buffer.alloc(0) : body);
         expect(carried.headers['x-openkit-sha256']).toBe(index === 0 ? undefined : file.sha256);
-        expect(carried.headers['x-openkit-byte-length']).toBe(index === 0 ? undefined : String(body.length));
+        expect(carried.headers['x-openkit-byte-length']).toBe(
+          index === 0 ? undefined : String(body.length)
+        );
         expect(carried.headers['x-openkit-executable']).toBe(index === 0 ? undefined : 'true');
-        const result = { requestId, byteLength: index === 0 ? 0 : body.length, reference: `sandbox://${input.sandboxId}/${input.slot}/${input.relativePath}` };
+        const result = {
+          requestId,
+          byteLength: index === 0 ? 0 : body.length,
+          reference: `sandbox://${input.sandboxId}/${input.slot}/${input.relativePath}`,
+        };
         expect((await post(`${path}/result`, result)).headers[':status']).toBe(204);
         const { requestId: _requestId, ...expected } = result;
         await expect(pending).resolves.toEqual(expected);
@@ -462,7 +495,8 @@ describe('authoritative NanoHost session dispatch', () => {
               ? { accepted: true, integrationReady: true, state: 'open' }
               : kind === 'reference.import'
                 ? {
-                    byteLength: fixture.command.byteLength,
+                    byteLength:
+                      fixture.command.entryKind === 'directory' ? 0 : fixture.command.byteLength,
                     reference: `sandbox://${String(fixture.command.sandboxId)}/${String(fixture.command.slot)}/${String(fixture.command.relativePath)}`,
                   }
                 : kind === 'storage.inspect'
