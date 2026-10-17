@@ -845,6 +845,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(proposalOperationIds, [
     'knowledge.proposal.decide',
     'knowledge.proposal.draft',
+    'knowledge.proposal.read',
     'knowledge.proposal.reverse',
   ]);
   assert.ok(!operationCatalog.some((entry) => entry.id === 'knowledge.reflect'));

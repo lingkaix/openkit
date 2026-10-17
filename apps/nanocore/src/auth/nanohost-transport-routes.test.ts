@@ -2055,7 +2055,7 @@ describe('definition-derived deployment administration cutover', () => {
       ).toEqual(layout);
       const created = await f.mcp('call', { operation: 'backup.create', input: {} });
       expect(created.isError).toBe(false);
-      expect(created.result.manifest.consistency).toBe('crash-consistent');
+      expect(created.result.manifest.consistency).toBe('clean');
       expect(created.result.checkedFiles).toContain('server/db/core.sqlite');
       expect(JSON.stringify(created.result)).not.toContain(f.dataRoot);
       expect(

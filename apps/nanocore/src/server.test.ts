@@ -1816,7 +1816,7 @@ describe('nanocore server', () => {
       manifest: {
         recordType: 'data-root-backup',
         backupMode: 'hot',
-        consistency: 'crash-consistent',
+        consistency: 'clean',
       },
     });
     expect(created.checkedFiles).toContain('server/db/core.sqlite');
