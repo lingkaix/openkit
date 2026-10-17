@@ -92,12 +92,12 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
   expect(prepareKnowledgeOverview(f).text).not.toContain('# Restricted');
   expect(prepareKnowledgeOverview(f).text).toContain('"unavailable":true');
   publishIndex(f, '---\nokf_version: "0.2"\n---\n# Readable again\n');
-  // A Workspace credential with no current membership cannot reuse the pinned projection.
+  // A disabled actor cannot reuse the pinned projection.
   f.coreDb.sqlite
     .prepare(
-      "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ?"
+      "UPDATE users SET status = 'disabled', disabled_at = '2026-10-17T00:00:00.000Z' WHERE id = ?"
     )
-    .run(f.workspaceId);
+    .run(f.userId);
   expect(() => result.assertCurrent()).toThrow();
 });
 
