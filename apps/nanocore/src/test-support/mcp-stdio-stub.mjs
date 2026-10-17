@@ -1,9 +1,22 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { Server } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 
+if (process.env.OPENKIT_MCP_PREVIEW_CONTEXT_FILE) {
+  writeFileSync(
+    process.env.OPENKIT_MCP_PREVIEW_CONTEXT_FILE,
+    JSON.stringify({
+      pid: process.pid,
+      cwd: process.cwd(),
+      dataDirectory: process.env.PLUGIN_DATA,
+      packageRoot: process.env.PLUGIN_ROOT ?? null,
+    })
+  );
+  writeFileSync(join(process.env.PLUGIN_DATA, 'fixture-started'), 'temporary fixture data');
+}
 if (process.env.OPENKIT_MCP_STDERR_FLOOD) {
   process.stderr.write('private-stderr-canary'.repeat(16 * 1024));
 }
