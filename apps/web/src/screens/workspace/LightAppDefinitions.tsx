@@ -630,8 +630,8 @@ function AppActivation({
       {current ? (
         <p className="break-all text-xs text-fg-muted">
           {current.lifecycle} · App revision {current.appRevision} · Schema revision{' '}
-          {current.schemaRevision} · Format {current.kernelFormatVersion} · Active definition{' '}
-          {current.definitionVersion}
+          {current.schemaRevision} · Format {current.kernelFormatVersion ?? 'Unknown'} · Active
+          definition {current.definitionVersion ?? 'Unknown'}
         </p>
       ) : null}
       {current?.lifecycle === 'unavailable' ? (
