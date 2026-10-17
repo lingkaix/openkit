@@ -10,6 +10,12 @@ import { useEffect, useRef, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import { Button, Card, ErrorBanner, TextField } from '../../primitives';
 
+/** An explicitly inspected parent; it applies only to the same authored catalog entry ID. */
+interface DefinitionParent {
+  entryId: string;
+  digest: string;
+}
+
 /** A pending explicit command; each invocation gets one request identity and is never replayed by Query. */
 interface Change {
   run: () => Promise<unknown>;
@@ -52,6 +58,7 @@ export function LightAppDefinitions({
   const client = useCoreClient();
   const connection = useConnection();
   const [entryId, setEntryId] = useState<string | null>(null);
+  const [parent, setParent] = useState<DefinitionParent | null>(null);
   const list = useQuery({
     queryKey: ['light-app-definitions', workspaceId, 'list'],
     queryFn: () => client.operations['catalog.light-app-list']({ workspaceId }),
@@ -83,7 +90,10 @@ export function LightAppDefinitions({
             key={entry.id}
             size="sm"
             isDisabled={readBlocked}
-            onPress={() => setEntryId(entry.id)}
+            onPress={() => {
+              if (entry.id !== entryId) setParent(null);
+              setEntryId(entry.id);
+            }}
           >
             Inspect definition {entry.displayName}
           </Button>
@@ -92,6 +102,7 @@ export function LightAppDefinitions({
         <DefinitionImport
           workspaceId={workspaceId}
           revision={list.data?.revision}
+          parent={parent}
           blocked={writeBlocked}
         />
         {entryId ? (
@@ -99,6 +110,7 @@ export function LightAppDefinitions({
             key={`${workspaceId}:${entryId}`}
             workspaceId={workspaceId}
             entryId={entryId}
+            onChooseVersion={(digest) => setParent({ entryId, digest })}
             blocked={writeBlocked}
           />
         ) : null}
@@ -111,10 +123,12 @@ export function LightAppDefinitions({
 function DefinitionImport({
   workspaceId,
   revision,
+  parent,
   blocked,
 }: {
   workspaceId: string;
   revision: number | undefined;
+  parent: DefinitionParent | null;
   blocked: boolean;
 }) {
   const client = useCoreClient();
@@ -135,8 +149,18 @@ function DefinitionImport({
     entryId,
     historyEntryId,
     displayName,
+    parent,
   });
-  latest.current = { blocked, revision, file, historyFile, entryId, historyEntryId, displayName };
+  latest.current = {
+    blocked,
+    revision,
+    file,
+    historyFile,
+    entryId,
+    historyEntryId,
+    displayName,
+    parent,
+  };
   useEffect(() => {
     active.current = true;
     return () => {
@@ -169,6 +193,7 @@ function DefinitionImport({
         now.entryId !== entryId ||
         now.historyEntryId !== historyEntryId ||
         now.displayName !== displayName ||
+        now.parent !== parent ||
         (history ? now.historyFile : now.file) !== selected
       )
         return;
@@ -209,6 +234,7 @@ function DefinitionImport({
               displayName,
               definition: parsed.data,
               selectDefault: false,
+              ...(parent?.entryId === entryId ? { parentDigest: parent.digest } : {}),
             }),
           completed: () => {
             setFile(null);
@@ -236,6 +262,16 @@ function DefinitionImport({
         description="Use the existing ID to add a version."
         isDisabled={disabled}
       />
+      {parent?.entryId === entryId ? (
+        <p className="break-all text-xs text-fg-muted">
+          Parent version for {entryId}: {parent.digest}
+        </p>
+      ) : (
+        <p className="text-xs text-fg-muted">
+          Choose a retained version to use it as the parent when importing an update for the same
+          catalog ID.
+        </p>
+      )}
       <TextField
         label="Light App display name"
         value={displayName}
@@ -305,10 +341,12 @@ function DefinitionImport({
 function DefinitionDetails({
   workspaceId,
   entryId,
+  onChooseVersion,
   blocked,
 }: {
   workspaceId: string;
   entryId: string;
+  onChooseVersion: (digest: string) => void;
   blocked: boolean;
 }) {
   const client = useCoreClient();
@@ -366,7 +404,10 @@ function DefinitionDetails({
           aria-label={`Choose version ${item.digest}`}
           size="sm"
           isDisabled={blocked || read.isFetching}
-          onPress={() => setDigest(item.digest)}
+          onPress={() => {
+            setDigest(item.digest);
+            onChooseVersion(item.digest);
+          }}
         >
           Choose version {item.digest.slice(7, 19)}
         </Button>

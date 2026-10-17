@@ -81,8 +81,6 @@ test('imports a definition, creates and activates a Light App, then restores its
   await page
     .getByRole('button', { name: `Choose version ${imported.version.digest}`, exact: true })
     .click();
-  await page.getByRole('button', { name: 'Use as default', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Use as default', exact: true })).toBeDisabled();
   const instantiating = page.waitForResponse(
     (response) => new URL(response.url()).pathname === '/api/app/operations/kernel.apps.instantiate'
   );
@@ -128,6 +126,7 @@ test('imports a definition, creates and activates a Light App, then restores its
   const revision = LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS[
     'catalog.light-app-import'
   ].outputSchema.parse(await revisionResponse.json());
+  expect(revision.version.parentDigest).toBe(imported.version.digest);
   await page
     .getByRole('button', { name: `Choose version ${revision.version.digest}`, exact: true })
     .click();

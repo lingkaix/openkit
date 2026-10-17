@@ -192,6 +192,53 @@ describe('Light App definitions in the Workspace Catalog', () => {
     expect(activate).not.toHaveBeenCalled();
   });
 
+  it('uses the inspected version as an explicit parent for a later import with no selected default', async () => {
+    const user = userEvent.setup();
+    const { client, imported, select, activate } = fixture();
+    vi.mocked(client.operations['catalog.light-app-read']).mockResolvedValue({
+      revision: 7,
+      entry: { ...entry, currentDigest: null },
+      versions: [version, { ...version, digest: earlier, parentDigest: null }],
+      pin: null,
+    });
+    await user.click(await screen.findByRole('button', { name: 'Inspect definition Notes' }));
+    await user.click(await screen.findByRole('button', { name: `Choose version ${earlier}` }));
+    expect(screen.getByText(/Default: None/)).toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: 'Light App catalog ID' }), 'notes');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Light App display name' }),
+      'Notes update'
+    );
+    expect(screen.getByText(`Parent version for notes: ${earlier}`)).toBeInTheDocument();
+    await user.upload(
+      screen.getByLabelText('Definition JSON file'),
+      new File([JSON.stringify(definition)], 'update.json', { type: 'application/json' })
+    );
+    await user.click(screen.getByRole('button', { name: 'Import definition' }));
+    await waitFor(() =>
+      expect(imported).toHaveBeenCalledWith(
+        expect.objectContaining({ entryId: 'notes', parentDigest: earlier, selectDefault: false })
+      )
+    );
+    expect(select).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Light App catalog ID' })).toBeEnabled()
+    );
+    await user.type(screen.getByRole('textbox', { name: 'Light App catalog ID' }), 'another-notes');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Light App display name' }),
+      'Another notes'
+    );
+    await user.upload(
+      screen.getByLabelText('Definition JSON file'),
+      new File([JSON.stringify(definition)], 'another.json', { type: 'application/json' })
+    );
+    await user.click(screen.getByRole('button', { name: 'Import definition' }));
+    await waitFor(() => expect(imported).toHaveBeenCalledTimes(2));
+    expect(imported.mock.calls[1]![0]).not.toHaveProperty('parentDigest');
+  });
+
   it('pins and creates the exact chosen definition, then applies it with the selected app revisions', async () => {
     const user = userEvent.setup();
     const { client, activate } = fixture();
@@ -318,6 +365,50 @@ describe('Light App definitions in the Workspace Catalog', () => {
       expect(screen.getByRole('button', { name: 'Import definition' })).toBeDisabled()
     );
     expect(screen.getByText('Selected file: unsaved.json')).toBeInTheDocument();
+  });
+
+  it('offers explicit format upgrade only for a known supported older app', async () => {
+    const user = userEvent.setup();
+    const { client, queryClient } = fixture();
+    const current = await client.operations['kernel.apps.get']({ workspaceId, appId });
+    vi.mocked(client.operations['kernel.apps.get']).mockResolvedValue({
+      ...current,
+      lifecycle: 'unavailable',
+      kernelFormatVersion: 1,
+    });
+    const upgrade = vi
+      .spyOn(client.operations, 'kernel.format.upgrade')
+      .mockRejectedValue(new Error('refused'));
+    await user.click(await screen.findByRole('button', { name: 'Inspect definition Notes' }));
+    await user.click(await screen.findByRole('button', { name: `Choose version ${digest}` }));
+    await user.click(await screen.findByRole('button', { name: 'Inspect app Live notes' }));
+    const upgradeButton = await screen.findByRole('button', { name: 'Upgrade app format to 2' });
+    expect(screen.getByRole('button', { name: 'Apply definition to this app' })).toBeDisabled();
+    expect(upgrade).not.toHaveBeenCalled();
+    await user.click(upgradeButton);
+    await waitFor(() =>
+      expect(upgrade).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId, appId, expectedAppRevision: 8 })
+      )
+    );
+    await screen.findByText(
+      "Couldn't complete that Light App change. Refresh and inspect the current state before trying again."
+    );
+    vi.mocked(client.operations['kernel.apps.get']).mockResolvedValue({
+      ...current,
+      lifecycle: 'unavailable',
+      kernelFormatVersion: null,
+      definitionVersion: null,
+    });
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['light-apps', workspaceId, appId] });
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Upgrade app format to 2' })
+      ).not.toBeInTheDocument()
+    );
+    expect(screen.getByText(/Format Unknown · Active definition Unknown/)).toBeInTheDocument();
   });
 
   it('requires deliberate snapshot confirmation and drops it when the definition target changes', async () => {
