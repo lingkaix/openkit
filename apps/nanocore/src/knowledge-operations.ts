@@ -1340,6 +1340,27 @@ export function createKnowledgeOperationImplementations(
         summary: proposal.rationale,
       };
       return withGovernedNotebook(request, context, async (owner) => {
+        const reviewId = deriveEntityId('kr', {
+          ownerScope: { kind: 'workspace', workspaceId },
+          proposalId,
+          requestId: commandInput.requestId,
+        });
+        const receipt = store.getCommandRequest(
+          'knowledge.proposal.decide',
+          commandInput.requestId,
+          { workspaceId, actorId: context.actorRef.id },
+          owner.workspaceDb
+        );
+        if (receipt && receipt.inputHash !== commandInputHash(input))
+          throw new IdempotencyKeyConflictError();
+        // A retained terminal decision without completion evidence requires inspection, not resumption.
+        if (
+          !receipt &&
+          store
+            .listKnowledgeProposalReviewDecisions(workspaceId)
+            .some((review) => review.reviewId === reviewId)
+        )
+          throw new NotebookError('recovery_required');
         const current = () => {
           if (
             !coreDb ||
@@ -1363,11 +1384,6 @@ export function createKnowledgeOperationImplementations(
           return owner.revalidate();
         };
         current();
-        const reviewId = deriveEntityId('kr', {
-          ownerScope: { kind: 'workspace', workspaceId },
-          proposalId,
-          requestId: commandInput.requestId,
-        });
         const recordDecision = () =>
           store.recordKnowledgeProposalReviewDecision({
             ...commandInput,
