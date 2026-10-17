@@ -7,6 +7,7 @@ import {
   type OperationDefinition,
   PRODUCT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
+import * as policyKernel from '@openkit/policy-kernel';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -267,6 +268,63 @@ afterEach(() => {
 });
 
 describe('central Workspace operation authorizer', () => {
+  it.each([
+    'user',
+    'unattributed Gateway',
+    'Workspace member',
+    'Workspace administrator',
+  ] as const)('requires the current Kernel decision after %s eligibility', async (scope) => {
+    if (scope === 'Workspace administrator') {
+      const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
+        ownerUserId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      fixture.actorState.current = {
+        kind: 'token',
+        userId: issued.record.ownerUserId,
+        tokenId: issued.record.tokenId,
+        tokenScope: 'server-admin',
+        tokenWorkspaceIds: [],
+      };
+    }
+    const send = () => {
+      if (scope === 'unattributed Gateway')
+        return fixture.app.request('/v1/responses', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+      return fixture.app.request(
+        ...(scope === 'user'
+          ? operationRequest('caller.read', {})
+          : operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id }))
+      );
+    };
+    // Establish current eligibility with the real policy before replacing only its mandatory input.
+    expect((await send()).status).toBe(200);
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const evaluate = vi.spyOn(policyKernel, 'evaluateAccess');
+    try {
+      evaluate.mockImplementation((policy, request) =>
+        actualEvaluate({ ...policy, associations: [] }, request)
+      );
+      const denied = await send();
+      expect(denied.status).toBe(403);
+      await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      expect(evaluate).toHaveBeenCalled();
+      evaluate.mockImplementation(() => {
+        throw new Error('Policy dependency unavailable.');
+      });
+      const failed = await send();
+      expect(failed.status).toBe(403);
+      await expect(failed.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    } finally {
+      evaluate.mockRestore();
+    }
+  });
+
   it.each([
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
