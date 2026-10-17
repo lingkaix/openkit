@@ -151,39 +151,54 @@ function unwrap(expression: ts.Expression): ts.Expression {
   return expression;
 }
 
+/** Finds an ordinary lexical binding without following imports or evaluating its initializer. */
+function localBinding(value: ts.Identifier) {
+  for (let scope: ts.Node | undefined = value.parent; scope; scope = scope.parent) {
+    if (ts.isFunctionLike(scope)) {
+      const parameter = scope.parameters.find(
+        (entry) => ts.isIdentifier(entry.name) && entry.name.text === value.text
+      );
+      if (parameter) return parameter;
+    }
+    if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+    for (const statement of scope.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name?.text === value.text)
+        return statement;
+      if (!ts.isVariableStatement(statement)) continue;
+      const declaration = statement.declarationList.declarations.find(
+        (entry) => ts.isIdentifier(entry.name) && entry.name.text === value.text
+      );
+      if (declaration) return declaration;
+    }
+  }
+  return undefined;
+}
+
 /** Reads a literal or one ordinary lexical const binding; computed and imported values stay with runtime admission. */
 function authoredName(expression: ts.Expression | undefined): string | undefined {
   if (!expression) return undefined;
   const value = unwrap(expression);
   if (ts.isStringLiteralLike(value)) return value.text;
   if (!ts.isIdentifier(value)) return undefined;
-  for (let scope: ts.Node | undefined = value.parent; scope; scope = scope.parent) {
-    if (
-      ts.isFunctionLike(scope) &&
-      scope.parameters.some(
-        (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === value.text
-      )
-    )
-      return undefined;
-    if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
-    for (const statement of scope.statements) {
-      if (!ts.isVariableStatement(statement)) continue;
-      for (const declaration of statement.declarationList.declarations) {
-        if (!ts.isIdentifier(declaration.name) || declaration.name.text !== value.text) continue;
-        if (!(statement.declarationList.flags & ts.NodeFlags.Const) || !declaration.initializer)
-          return undefined;
-        const initializer = unwrap(declaration.initializer);
-        return ts.isStringLiteralLike(initializer) ? initializer.text : undefined;
-      }
-    }
-  }
-  return undefined;
+  const binding = localBinding(value);
+  if (
+    !binding ||
+    !ts.isVariableDeclaration(binding) ||
+    !binding.initializer ||
+    !ts.isVariableDeclarationList(binding.parent) ||
+    !(binding.parent.flags & ts.NodeFlags.Const)
+  )
+    return undefined;
+  const initializer = unwrap(binding.initializer);
+  return ts.isStringLiteralLike(initializer) ? initializer.text : undefined;
 }
 
 /** Reads authored Tool descriptors and projection arguments without importing source modules or executing factories. */
 function authoredOperationNames(text: string, fileName: string): string[] {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
   const names: string[] = [];
+  const wrappers = new Map<ts.VariableDeclaration, number>();
+  const calls: ts.CallExpression[] = [];
   const projections = new Set(['operationToolName']);
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
@@ -195,6 +210,7 @@ function authoredOperationNames(text: string, fileName: string): string[] {
     }
   }
   const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) calls.push(node);
     if (ts.isObjectLiteralExpression(node)) {
       const fields = new Map(
         node.properties.flatMap((property) => {
@@ -207,15 +223,33 @@ function authoredOperationNames(text: string, fileName: string): string[] {
       );
       if (fields.has('inputSchema') && (fields.has('description') || fields.has('execute'))) {
         const property = fields.get('name');
-        const name = authoredName(
+        const expression =
           property &&
-            (ts.isPropertyAssignment(property)
-              ? property.initializer
-              : ts.isShorthandPropertyAssignment(property)
-                ? property.name
-                : undefined)
-        );
+          (ts.isPropertyAssignment(property)
+            ? property.initializer
+            : ts.isShorthandPropertyAssignment(property)
+              ? property.name
+              : undefined);
+        const name = authoredName(expression);
         if (name !== undefined) names.push(name);
+        else if (expression) {
+          const value = unwrap(expression);
+          const parameter = ts.isIdentifier(value) ? localBinding(value) : undefined;
+          if (parameter && ts.isParameter(parameter)) {
+            const factory = parameter.parent;
+            // This current wrapper returns the descriptor directly; no general return-flow interpretation is needed.
+            if (
+              ts.isArrowFunction(factory) &&
+              !ts.isBlock(factory.body) &&
+              unwrap(factory.body) === node &&
+              ts.isVariableDeclaration(factory.parent) &&
+              ts.isVariableDeclarationList(factory.parent.parent) &&
+              factory.parent.parent.flags & ts.NodeFlags.Const
+            ) {
+              wrappers.set(factory.parent, factory.parameters.indexOf(parameter));
+            }
+          }
+        }
       }
     }
     if (
@@ -232,6 +266,15 @@ function authoredOperationNames(text: string, fileName: string): string[] {
     ts.forEachChild(node, visit);
   };
   visit(source);
+  for (const call of calls) {
+    if (!ts.isIdentifier(call.expression)) continue;
+    const binding = localBinding(call.expression);
+    const position =
+      binding && ts.isVariableDeclaration(binding) ? wrappers.get(binding) : undefined;
+    if (position === undefined) continue;
+    const name = authoredName(call.arguments[position]);
+    if (name !== undefined) names.push(name);
+  }
   return names;
 }
 
@@ -263,6 +306,24 @@ describe('current operation and Tool names', () => {
     expect(() =>
       assertOperationNames(authoredOperationNames(source, 'new-private-factory.ts'))
     ).toThrow('Invalid operation name: knowledge_ask');
+  });
+
+  it('checks authored names forwarded by a local Tool wrapper parameter', () => {
+    const source = `
+      const tool = (name: string, key: string, execute: unknown): AgentTool => ({
+        name, description: 'Notebook update', inputSchema: {}, execute,
+      });
+      tool('knowledge.notebook-workspace.update', 'script', run);
+      tool('knowledge.notebook.update', 'summary', run);
+      tool('knowledge_bad', 'summary', run);
+    `;
+    const names = authoredOperationNames(source, 'local-wrapper.ts');
+    expect(names).toEqual([
+      'knowledge.notebook-workspace.update',
+      'knowledge.notebook.update',
+      'knowledge_bad',
+    ]);
+    expect(() => assertOperationNames(names)).toThrow('Invalid operation name: knowledge_bad');
   });
 
   it('reads descriptor arrays, constants and projection arguments while excluding opaque names and accounting labels', () => {
