@@ -495,6 +495,7 @@ describe('Turn-owned conversation originals', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  // Allow 60 seconds for real file handoff, scheduler preparation and exact replay in this fixture.
   it.each([
     { targetRef: 'new-task-worker', privateSource: false },
     { targetRef: 'new-task-worker', privateSource: true },
@@ -687,7 +688,7 @@ describe('Turn-owned conversation originals', () => {
       expect(changedBrief.status, await changedBrief.clone().text()).toBe(409);
       expect((await changedBrief.json()).code).toBe('idempotency_key_conflict');
     }
-  });
+  }, 60_000);
 
   it('retains Assistant originals while a Goal proposal creates no execution owners', async () => {
     const state = fixture();
