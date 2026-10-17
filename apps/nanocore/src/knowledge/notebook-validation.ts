@@ -56,6 +56,8 @@ export function validateNotebookCandidate(input: {
   readonly scopeSchemaText: string;
   readonly registeredSources: ReadonlyMap<string, string | null>;
   readonly resolvedReferences: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Trusted current suppression permits an unavailable link, never a readable or restored page. */
+  readonly suppressedPageIds?: readonly string[];
 }): NotebookValidationResult {
   const paths = [
     ...new Set([...Object.keys(input.base.files), ...Object.keys(input.candidate.files)]),
@@ -66,6 +68,9 @@ export function validateNotebookCandidate(input: {
   const changed = new Set(changedPaths);
   const removedPaths = changedPaths.filter((path) => !Object.hasOwn(input.candidate.files, path));
   const removed = new Set(removedPaths);
+  const suppressedPaths = new Set(
+    input.ownerScope.kind === 'user' ? input.suppressedPageIds?.map((pageId) => `${pageId}.md`) : []
+  );
   const knowledgeIds = new Set(
     Object.keys(input.candidate.files)
       .filter((path) => !['index.md', 'log.md'].includes(posix.basename(path)))
@@ -111,6 +116,7 @@ export function validateNotebookCandidate(input: {
     }
     const links = pageLinks(path, parsed.document.body);
     for (const target of links) {
+      if (suppressedPaths.has(target) && !Object.hasOwn(input.candidate.files, target)) continue;
       if (
         (changed.has(path) && !Object.hasOwn(input.candidate.files, target)) ||
         (!changed.has(path) && removed.has(target))
@@ -126,7 +132,7 @@ export function validateNotebookCandidate(input: {
         for (const reference of references) {
           if (typeof reference !== 'string' || !reference.startsWith('knowledge:')) continue;
           const target = reference.slice('knowledge:'.length).split('@', 1)[0]!;
-          if (removed.has(`${target}.md`)) {
+          if (removed.has(`${target}.md`) && !suppressedPaths.has(`${target}.md`)) {
             fail(pageId, 'notebook.unresolved_page_reference');
             break;
           }

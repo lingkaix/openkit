@@ -16,6 +16,7 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb, type UserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { readMemoryPage, recordMemorySuppression } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
 import type { NotebookEdit } from './notebook-publication.js';
 import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
@@ -134,6 +135,63 @@ function notebook(input: Parameters<typeof resolveScopedNotebookOwner>[0]): Know
 }
 
 describe('internal direct User and Server Notebook publication', () => {
+  it('cleans only the exact confirmed suppressed page while its links stay unavailable', async () => {
+    const f = fixture();
+    const ownerScope = resolveScopedNotebookOwner(f.user).ownerScope;
+    const saved = await publishScopedNotebook(f.user, edit(f.initialUser, ownerScope));
+    const referrer = serializeUserAuthoredKnowledgePage(
+      {
+        id: 'other',
+        kind: 'preference',
+        title: 'Other note',
+        content: 'Keep the [unavailable reference](note.md).',
+        sourceReferences: [],
+        createdAt: '2026-10-17T00:00:00.000Z',
+        updatedAt: '2026-10-17T00:00:00.000Z',
+      },
+      ownerScope
+    );
+    const linked = await publishScopedNotebook(f.user, {
+      requestId: randomUUID(),
+      baseRevision: saved.notebookRevision,
+      changes: [{ path: 'other.md', content: referrer }],
+      summary: 'Keep the other note',
+    });
+    const target = readMemoryPage(f.user, 'note')!;
+    const requestId = randomUUID();
+    recordMemorySuppression(f.user, {
+      requestId,
+      pageId: 'note',
+      notebookRevision: linked.notebookRevision,
+      digest: target.digest,
+    });
+    const removal = {
+      requestId,
+      baseRevision: linked.notebookRevision,
+      changes: [{ path: 'note.md', content: null }],
+      summary: 'Confirmed forget; history retained',
+    };
+    await expect(publishScopedNotebook(f.user, removal)).rejects.toThrow(
+      'Memory page unavailable.'
+    );
+    const confirmed = {
+      ...f.user,
+      confirmedForget: {
+        requestId,
+        pageId: 'note',
+        baseRevision: linked.notebookRevision,
+        digest: target.digest,
+        content: target.content,
+      },
+    };
+    const forgotten = await publishScopedNotebook(confirmed, removal);
+    const retained = notebook(f.user).readRevision(forgotten.notebookRevision).files;
+    expect(retained['note.md']).toBeUndefined();
+    expect(retained['other.md']).toBe(referrer);
+    expect(readMemoryPage(f.user, 'note')).toBeNull();
+    expect(await publishScopedNotebook(confirmed, removal)).toEqual(forgotten);
+  });
+
   it.each([
     'user',
     'server',

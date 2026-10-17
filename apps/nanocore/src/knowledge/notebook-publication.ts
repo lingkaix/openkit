@@ -65,6 +65,8 @@ export interface NotebookPublicationAdmission {
   readonly scopeSchemaText: string;
   readonly registeredSources: ReadonlyMap<string, string | null>;
   readonly resolvedReferences: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Existing User suppression makes these references unavailable without requiring prose repair. */
+  readonly suppressedPageIds?: readonly string[];
 }
 
 /** Native dependencies; revalidation must throw on revoked scope, source disclosure or required human authority. */

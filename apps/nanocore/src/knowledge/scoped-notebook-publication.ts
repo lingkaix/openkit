@@ -1,12 +1,17 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { UserDb } from '../storage/db.js';
-import { assertMemoryPagesNotSuppressed } from './memory-maintenance.js';
+import { assertMemoryPagesNotSuppressed, readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
-import { type NotebookEdit, publishNotebook } from './notebook-publication.js';
+import {
+  type NotebookEdit,
+  type NotebookPublicationDependencies,
+  publishNotebook,
+} from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
 import {
@@ -57,6 +62,15 @@ export async function publishScopedNotebook(
     readonly store: FsStore;
     readonly runtimeConfigManager: RuntimeConfigManager;
     readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+    readonly command?: NotebookPublicationDependencies['command'];
+    /** Only the native Item-confirmed forget owner supplies this exact removal after grant consumption. */
+    readonly confirmedForget?: {
+      readonly requestId: string;
+      readonly pageId: string;
+      readonly baseRevision: string;
+      readonly digest: string;
+      readonly content: string;
+    };
   },
   request: NotebookEdit
 ) {
@@ -88,16 +102,57 @@ export async function publishScopedNotebook(
       notebook,
       producer,
       command: {
-        name: 'knowledge.notebook.update',
-        input: { ...request, ownerScope: owner.ownerScope },
+        name: input.command?.name ?? 'knowledge.notebook.update',
+        input: input.command
+          ? { request: input.command.input, ownerScope: owner.ownerScope }
+          : { ...request, ownerScope: owner.ownerScope },
       },
+      ...(input.confirmedForget
+        ? {
+            confirmedRemovals: {
+              [`${input.confirmedForget.pageId}.md`]: input.confirmedForget.content,
+            },
+          }
+        : {}),
       revalidate: () => {
         // Current identity/credential admission precedes every retained read and the publisher's final CAS.
         const currentFiles = pinScopedNotebook(context).read().files;
-        if (userDb) assertMemoryPagesNotSuppressed(owner.notebookRoot, userDb.userId, [
-          ...Object.keys(currentFiles), ...Object.keys(notebook.readRevision(request.baseRevision).files),
-          ...request.changes.map(({ path }) => path),
-        ]);
+        const baseFiles = notebook.readRevision(request.baseRevision).files;
+        const suppressions = userDb
+          ? readMemorySuppressions(owner.notebookRoot, userDb.userId)
+          : [];
+        const forget = input.confirmedForget;
+        const forgetPath = forget ? `${forget.pageId}.md` : null;
+        if (
+          forget &&
+          (!userDb ||
+            forget.requestId !== request.requestId ||
+            forget.baseRevision !== request.baseRevision ||
+            request.changes.length !== 1 ||
+            request.changes[0]?.path !== forgetPath ||
+            request.changes[0]?.content !== null ||
+            baseFiles[forgetPath!] !== forget.content ||
+            forget.digest !==
+              `sha256:${createHash('sha256').update(forget.content).digest('hex')}` ||
+            !suppressions.some(
+              ({ id, payload }) =>
+                id === forget.requestId &&
+                payload.pageId === forget.pageId &&
+                payload.lastRevision === forget.baseRevision &&
+                payload.digest === forget.digest
+            ))
+        )
+          throw new NotebookError('invalid_request');
+        if (userDb)
+          assertMemoryPagesNotSuppressed(
+            owner.notebookRoot,
+            userDb.userId,
+            [
+              ...Object.keys(currentFiles),
+              ...Object.keys(baseFiles),
+              ...request.changes.map(({ path }) => path),
+            ].filter((path) => path !== forgetPath)
+          );
         assertEmptySourceReferences(currentFiles);
         assertEmptySourceReferences(notebook.readRevision(request.baseRevision).files);
         assertEmptySourceReferences(
@@ -117,6 +172,7 @@ export async function publishScopedNotebook(
           reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
           registeredSources: new Map(),
           resolvedReferences: new Map(),
+          suppressedPageIds: suppressions.map(({ payload }) => payload.pageId),
         };
       },
     },
