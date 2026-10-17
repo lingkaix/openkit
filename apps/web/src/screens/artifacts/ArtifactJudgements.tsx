@@ -111,7 +111,6 @@ export function JudgementHistory({ items }: { items: JudgementRecord[] }) {
             <span>{entry.actor.id}</span> ·{' '}
             <time dateTime={entry.recordedAt}>{entry.recordedAt}</time>
           </p>
-          <p className="break-all text-xs text-fg-muted">Request {entry.requestId}</p>
           {entry.target.kind === 'artifact-version' ? (
             <p className="break-all">
               {entry.target.artifactId} · version {entry.target.artifactVersion} ·{' '}
