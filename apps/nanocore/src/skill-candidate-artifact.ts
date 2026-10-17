@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { CatalogTreeFileSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
@@ -14,6 +15,7 @@ import {
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { type CatalogTreeFile, validateCatalogTree } from './catalog/resource-catalog.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
+import { readArtifactFileBytes } from './storage/artifacts/file-records.js';
 import type { CoreDb } from './storage/db.js';
 
 type Artifact = ReturnType<FsStore['getArtifact']>;
@@ -157,13 +159,34 @@ export function readSkillCandidateArtifact(input: {
       ) {
         throw new SkillCandidateArtifactError('stale');
       }
+      if (
+        artifact.content.format !== 'json' &&
+        !(artifact.content.format === 'file' && artifact.content.mediaType === 'application/json')
+      ) {
+        throw new SkillCandidateArtifactError('source_unavailable');
+      }
       return artifact;
     };
     const artifact = readCurrent();
-    if (artifact.content.format !== 'json') {
-      throw new SkillCandidateArtifactError('source_unavailable');
-    }
-    const body = artifact.content.body;
+    let body: string;
+    if (artifact.content.format === 'file') {
+      if (artifact.content.byteLength > MAX_SKILL_CANDIDATE_ARTIFACT_BYTES)
+        throw new SkillCandidateArtifactError('invalid_request');
+      const bytes = readArtifactFileBytes({
+        workspaceRoot: join(input.coreDb.dataRoot, 'workspaces', selection.workspaceId),
+        artifactId: selection.artifactId,
+        version: selection.version,
+        byteLength: artifact.content.byteLength,
+        contentDigest: selection.contentDigest,
+        maximumBytes: MAX_SKILL_CANDIDATE_ARTIFACT_BYTES,
+      });
+      if (bytes === null) throw new SkillCandidateArtifactError('invalid_request');
+      try {
+        body = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+      } catch {
+        throw new SkillCandidateArtifactError('invalid_request');
+      }
+    } else body = artifact.content.body;
     if (Buffer.byteLength(body, 'utf8') > MAX_SKILL_CANDIDATE_ARTIFACT_BYTES) {
       throw new SkillCandidateArtifactError('invalid_request');
     }
@@ -203,8 +226,7 @@ export function readSkillCandidateArtifact(input: {
     }
     const current = readCurrent();
     if (
-      current.content.format !== 'json' ||
-      current.content.body !== body ||
+      JSON.stringify(current.content) !== JSON.stringify(artifact.content) ||
       JSON.stringify(current.origin) !== JSON.stringify(artifact.origin)
     ) {
       throw new SkillCandidateArtifactError('source_unavailable');
