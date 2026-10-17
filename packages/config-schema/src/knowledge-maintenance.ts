@@ -15,7 +15,13 @@ const NotebookPageIdSchema = z
 /** Authored delegation and protected-page selection; native admission still verifies each exact publication. */
 export const KnowledgeMaintenanceSchema = z
   .object({
+    /** Delegates ordinary publication; this does not enable scheduled execution. */
     enabled: z.boolean(),
+    /** Fixed daily execution is independent of publication delegation and stays off by default. */
+    schedule: z
+      .object({ enabled: z.boolean().default(false) })
+      .strip()
+      .default({ enabled: false }),
     reviewRequiredPageIds: z
       .array(NotebookPageIdSchema)
       .refine((ids) => new Set(ids).size === ids.length, 'Protected page ids must be unique.'),

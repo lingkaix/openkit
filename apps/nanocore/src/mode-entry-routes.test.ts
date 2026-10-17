@@ -4452,7 +4452,8 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
         'workspace_state_read',
         'thread_history_read',
-        'knowledge_search',
+        'knowledge_ask',
+        'knowledge_tell',
         'workspace_create',
         'task_start',
         'goal_create',
