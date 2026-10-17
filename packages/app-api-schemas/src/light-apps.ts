@@ -7,6 +7,9 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
+/** Current Light App kernel format supported by this release. */
+export const LIGHT_APP_KERNEL_FORMAT_VERSION = 2;
+
 /** User-authored Light App collection and field names. */
 export const LightAppNameSchema = z
   .string()
@@ -280,6 +283,49 @@ export const LightAppCapabilitiesSchema = z
 /** Catalog lifecycle projected from app authority. */
 export const LightAppLifecycleSchema = z.enum(['active', 'retired', 'unavailable']);
 
+/** Exact Resource Catalog definition selected explicitly for this app. */
+export const LightAppDefinitionSourceSchema = z
+  .object({
+    entryId: z.string().min(1),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+
+/** Explicit source selection retained separately from admitted app identity. */
+export type LightAppDefinitionSource = z.infer<typeof LightAppDefinitionSourceSchema>;
+
+/** A consistent app recovery copy captured before one-way migration. */
+export const LightAppSnapshotSchema = z
+  .object({
+    snapshotId: z.string().uuid(),
+    createdAt: TimestampSchema,
+    reason: z.enum(['definition-migration', 'kernel-format-migration']),
+    appRevision: z.number().int().positive(),
+    schemaRevision: z.number().int().positive(),
+    definitionVersion: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    kernelFormatVersion: z.number().int().positive(),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+
+/** Inspectable recovery-copy metadata. */
+export type LightAppSnapshot = z.infer<typeof LightAppSnapshotSchema>;
+
+/** Available recovery copies for one app. */
+export const ListLightAppSnapshotsResponseSchema = z
+  .object({
+    snapshots: z.array(LightAppSnapshotSchema),
+  })
+  .strict();
+
+/** Exact app revision and explicit recovery copy required for data-discarding restore. */
+export const RollbackLightAppSnapshotRequestSchema = z
+  .object({
+    expectedAppRevision: z.number().int().positive(),
+    snapshotId: z.string().uuid(),
+  })
+  .strict();
+
 /** One Light App catalog row. */
 export const LightAppCatalogItemSchema = z
   .object({
@@ -289,6 +335,12 @@ export const LightAppCatalogItemSchema = z
     appRevision: z.number().int().positive(),
     schemaRevision: z.number().int().positive(),
     schemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    kernelFormatVersion: z.number().int().positive().nullable(),
+    definitionVersion: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .nullable(),
+    definitionSource: LightAppDefinitionSourceSchema.nullable(),
     lifecycle: LightAppLifecycleSchema,
   })
   .strict();
@@ -309,6 +361,9 @@ export const GetLightAppResponseSchema = LightAppCatalogItemSchema.extend({
   schema: LightAppAdmittedSchemaSchema.nullable(),
   capabilities: LightAppCapabilitiesSchema,
 }).strict();
+
+/** Snapshot restore returns the app authority selected by the recovery copy. */
+export const RollbackLightAppSnapshotResponseSchema = GetLightAppResponseSchema;
 
 /** Create-app body is the schema proposal. */
 export const CreateLightAppRequestSchema = LightAppSchemaInputSchema;
@@ -472,3 +527,12 @@ export type UpdateLightAppRecordResponse = z.infer<typeof UpdateLightAppRecordRe
 export type LightAppBatchRequest = z.infer<typeof LightAppBatchRequestSchema>;
 /** Batch result. */
 export type LightAppBatchResponse = z.infer<typeof LightAppBatchResponseSchema>;
+
+/** Snapshot inventory result. */
+export type ListLightAppSnapshotsResponse = z.infer<typeof ListLightAppSnapshotsResponseSchema>;
+/** Explicit snapshot restore request. */
+export type RollbackLightAppSnapshotRequest = z.infer<typeof RollbackLightAppSnapshotRequestSchema>;
+/** Snapshot restore result. */
+export type RollbackLightAppSnapshotResponse = z.infer<
+  typeof RollbackLightAppSnapshotResponseSchema
+>;
