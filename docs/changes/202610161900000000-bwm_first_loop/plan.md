@@ -14,8 +14,8 @@ Implement the engineer-authorized BWM first loop with synthetic and fake-backed 
 
 ## Evidence And Limits
 
-The native fake-backed journey admits actual Tasks, retains a Worker-output Artifact, submits its exact tree as a candidate, records human promotion and pinning, and admits a later Task with the pinned exact version. A deterministic script runs on explicitly synthetic domain facts. The complete BWM file passed 16 tests and NanoCore typecheck passed on85cd2883; the initial unavailable-Worker failure was corrected by supplying actual authored Agent, Provider and Gateway fixtures. Named output remains in external lane evidence. Physical Worker delivery, model quality and real-use acceptance are not established. This increment depends on the separately landed versioned-Skill implementation and remains unlanded.
+The native fake-backed journey admits actual Tasks, retains a Worker-output Artifact, submits its exact tree as a candidate, records human promotion and pinning, and admits a later Task with the pinned exact version. A deterministic script runs on explicitly synthetic domain facts. The complete BWM file passed 16 tests and NanoCore typecheck passed on85cd2883; the initial unavailable-Worker failure was corrected by supplying actual authored Agent, Provider and Gateway fixtures. Named output remains in external lane evidence. Physical Worker delivery, model quality and real-use acceptance are not established. This implementation is in the transferred versioned-Skill source ancestry and remains unlanded.
 
 ## Next Actions
 
-Merge the completed versioned-Skill increment normally, run the required affected-suite gate and independent review, then land through the lane's express path. Preserve the deferred real-use acceptance item in the lane checkpoint.
+L-GO finishes the transferred versioned-Skill source under the coordinator's2026-10-17 handoff. Run the required affected-suite gate and independent review, then land the coherent source cut through the lane's express path. Preserve the deferred real-use acceptance item in the lane checkpoint; source publication does not complete that acceptance.

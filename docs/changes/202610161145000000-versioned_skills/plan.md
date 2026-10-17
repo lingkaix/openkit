@@ -8,6 +8,10 @@ status: in-progress
 
 Deliver ordinary ecosystem Skill import and exact independent version lifecycle through existing catalog, command, Audit and Worker supply owners. Preserve original package membership and source provenance. Candidate submission changes no default. Human decisions, explicit selection, pins and rollback select retained digests. The coordinator split this from Notebook and BWM; no Notebook cutover or BWM-specific owner is in this increment.
 
+## Intent Revision 3
+
+On 2026-10-17 the coordinator transferred the separable native Skills increment from L-AK to L-GO. Finish, gate and land the backend and CLI source with its accepted catalog, candidate, selection and retained-snapshot owners. Preserve the approved source conventions and narrow local CLI sharing exception. Web Skill UI remains with L-WEB; only the existing controls' required pointer alignment is proposed for this cut. Notebook and Memory remain with L-AK. Whole physical Worker delivery waits for the actual first P17 landing, and real BWM acceptance remains deferred by the engineer.
+
 ## Accepted Owners And Amendments
 
 [Skill Catalog Versioning And Pinning](../../specs/20260711-skill_catalog_versioning_pinning.md) owns this lifecycle. [Agent Plugin Packaging And Worker Supply](../../specs/20260907-agent_plugin_packaging_and_worker_supply.md) owns package membership and physical delivery. [Agent Operator Skill](../../specs/20260910-agent_operator_skill.md) permits the engineer-approved narrow CLI bundling exception for the existing stateless parser, discovery, local staging and tree validator. It permits no storage, authority, publication, network acquisition or runtime import. Record that amendment and every shared path in the landing review.
@@ -28,4 +32,4 @@ The independent provenance component first observed its expected failures and no
 
 ## Remaining Work
 
-Finish matching public generation and standalone CLI verification. After L-AW P17 lands, implement the approved existing-import Core/Rust extension and the required real Worker-side Skill probe. Merge real P19/main, refresh final owner/manual/change projections, list all shared paths, obtain the independent exact-head review and complete express local gate. Land and watch the containing main-push CI. BWM is separately tested with synthetic and fake-backed inputs and will land separately; its real-use acceptance remains pending the engineer.
+Finish matching public generation and standalone CLI verification, reconcile the inherited fixtures with current identifier producers, and keep the final Web scope with its current writer. P19 and current main are integrated. Refresh final owner/manual/change projections, list all shared paths, obtain the independent exact-head review and complete express local gate. Land the separable backend/CLI cut and watch the containing main-push CI. The inherited BWM package and fake-backed regression stay in the reviewed source ancestry; their real-use acceptance remains pending the engineer. After the actual first L-AW P17 landing, implement the separately approved existing-import Core/Rust extension and the required real Worker-side Skill probe; neither is claimed by this source cut.

@@ -14,7 +14,13 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.js';
+import {
+  createDemoStore,
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+  seedDemoWorkspace,
+} from '../test-support/demo-store.js';
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { startTurn } from './orchestrator.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
 
@@ -124,7 +130,7 @@ describe('startTurn orchestrator', () => {
         mcp: [],
       },
     ];
-    const before = store.listThreadTurns('ws_demo', 'th_demo');
+    const before = store.listThreadTurns(DEMO_WORKSPACE_ID, DEMO_THREAD_ID);
     await expect(
       startTurn({
         gatewayConfig: createTestGatewayConfig(),
@@ -133,13 +139,13 @@ describe('startTurn orchestrator', () => {
         input: 'Run tests',
         providerRegistry: localProviderRegistry(),
         store,
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
+        threadId: DEMO_THREAD_ID,
+        workspaceId: DEMO_WORKSPACE_ID,
         turnExecutor,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
       })
     ).rejects.toMatchObject({ code: 'conflict', status: 409 });
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before);
+    expect(store.listThreadTurns(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual(before);
     expect(turnExecutor.calls).toEqual([]);
   });
 
