@@ -7,7 +7,10 @@ import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { publishNotebook } from './knowledge/notebook-publication.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './knowledge/okf.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
-import { registerServerKnowledgeSource } from './knowledge/server-knowledge-owner.js';
+import {
+  listServerKnowledgeSources,
+  registerServerKnowledgeSource,
+} from './knowledge/server-knowledge-owner.js';
 import { FsStore } from './lib/store.js';
 import {
   canReadServerKnowledge,
@@ -294,17 +297,54 @@ describe('Server Knowledge through the existing retrieval source', () => {
     );
   });
 
-  it('selects one admitted Server base without an unavailable placeholder or a fabricated query trace', async () => {
+  it('reads a fresh source-free Server overview and page without creating a Source family or a fabricated query trace', async () => {
     const f = fixture();
+    expect(listServerKnowledgeSources(f)).toEqual([]);
+    const bound = { ...f, workspaceId: f.workspace.id };
+    expect(readAuthorizedServerNotebookPages({ ...bound, pageIds: ['index'] }).pages[0]?.id).toBe(
+      'index'
+    );
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.dataRoot, 'server', 'knowledge', 'notebook.git'),
+    });
+    await publishNotebook(
+      {
+        store: f.store,
+        owner: { kind: 'server', coreDb: f.coreDb },
+        notebook,
+        producer: f.access.actor,
+        inflightCommands: new WeakMap(),
+        revalidate: () => ({
+          scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+          reviewRequiredPageIds: [],
+          registeredSources: new Map(),
+          resolvedReferences: new Map(),
+        }),
+      },
+      {
+        requestId: randomUUID(),
+        baseRevision: notebook.publishedRevision(),
+        summary: 'Publish source-free guide',
+        changes: [{ path: 'guide.md', content: page('{kind: server}') }],
+      }
+    );
     const selection = await retrieveWorkspaceKnowledge({
       ...f,
       workspaceId: f.workspace.id,
       access: f.access,
       caller: 'app-api',
-      query: 'Shared deployment guide',
+      query: 'quasar',
       sourceScope: 'server',
     });
-    expect(selection).toMatchObject({ sourceScope: 'page/server', selected: [], excluded: [] });
+    expect(selection).toMatchObject({
+      sourceScope: 'page/server',
+      selected: [
+        expect.objectContaining({ reference: { scopeId: 'page/server', objectId: 'guide' } }),
+      ],
+      excluded: [],
+    });
+    expect(listServerKnowledgeSources(f)).toEqual([]);
+    expect(existsSync(join(f.dataRoot, 'server', 'sources'))).toBe(false);
     expect(selection).not.toHaveProperty('retrievalTraceRef');
   });
 });

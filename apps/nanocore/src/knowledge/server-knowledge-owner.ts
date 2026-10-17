@@ -111,7 +111,7 @@ function project(row: SourceEnvelope): ServerKnowledgeSource {
   };
 }
 /** Reuses the assigned Server Sources root; a lost established family is never recreated. */
-function sourceRoot(input: ServerKnowledgeContext, create = false): string {
+function sourceRoot(input: ServerKnowledgeContext, create = false): string | null {
   requireOwner(input);
   try {
     const server = join(input.coreDb.dataRoot, 'server');
@@ -120,7 +120,6 @@ function sourceRoot(input: ServerKnowledgeContext, create = false): string {
     const root = join(server, 'sources');
     if (!lstatSync(root, { throwIfNoEntry: false })) {
       if (
-        !create ||
         input.coreDb.sqlite
           .prepare('SELECT 1 FROM idempotency_requests WHERE command_name = ? LIMIT 1')
           .get(OPERATION) ||
@@ -129,6 +128,7 @@ function sourceRoot(input: ServerKnowledgeContext, create = false): string {
           .get(OPERATION)
       )
         unavailable();
+      if (!create) return null;
       ensureCanonicalDirectory(root);
       ensureCanonicalDirectory(join(root, 'registry'));
       ensureCanonicalDirectory(join(root, 'materials'));
@@ -178,7 +178,8 @@ function records(input: ServerKnowledgeContext, root: string): SourceEnvelope[] 
 }
 /** Lists Server Source metadata only after current deployment admission. */
 export function listServerKnowledgeSources(input: ServerKnowledgeContext): ServerKnowledgeSource[] {
-  return records(input, sourceRoot(input)).map(project);
+  const root = sourceRoot(input);
+  return root === null ? [] : records(input, root).map(project);
 }
 /** Reads one exact Server literal Source; Workspace Source identities never fall through to another registry. */
 export function readServerKnowledgeSource(
@@ -189,6 +190,7 @@ export function readServerKnowledgeSource(
   if (!KnowledgeSourceIdSchema.safeParse(sourceId).success)
     throw new OperationError('invalid_request', 'Invalid Source identity.', 400);
   const root = sourceRoot(input);
+  if (root === null) return null;
   const row = records(input, root).find((candidate) => candidate.id === sourceId);
   if (!row) return null;
   try {
@@ -230,7 +232,7 @@ export async function registerServerKnowledgeSource(
       return retained.source;
     },
     execute: () => {
-      const root = sourceRoot(input, true);
+      const root = sourceRoot(input, true)!;
       const previous = records(input, root).find(
         (row) => row.lineage.requestId === command.requestId
       );

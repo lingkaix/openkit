@@ -47,11 +47,7 @@ import {
 } from './knowledge-source-authority.js';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
-import {
-  getRetrievalService,
-  type RetrievalDocument,
-  type RetrievalScope,
-} from './retrieval-service.js';
+import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
 import { type CoreDb, openWorkspaceDb, type UserDb } from './storage/db.js';
 import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
 import { assertCanonicalDirectory } from './storage/workspace-file-records.js';
@@ -131,13 +127,28 @@ export function readAuthorizedServerNotebookPages(input: Target) {
   ): boolean => {
     if (visiting.has(id)) return false;
     const parsed = parseOkfDocument({ path: `${id}.md`, content });
-    if (!parsed.ok || parsed.document.reserved) return false;
-    const report = validateScopeKnowledgeSchema(parsed.document, schema.schema, { kind: 'server' });
-    if (report.conformance !== 'scope-schema-valid' || report.errors.length) return false;
+    if (!parsed.ok) return false;
+    if (!parsed.document.reserved) {
+      const report = validateScopeKnowledgeSchema(parsed.document, schema.schema, {
+        kind: 'server',
+      });
+      if (report.conformance !== 'scope-schema-valid' || report.errors.length) return false;
+    }
     const sensitivity = stringFrontmatterField(parsed.document, 'sensitivity');
-    if (sensitivity === 'restricted' || sensitivity === 'confidential') return false;
-    const refs = stringListFrontmatterField(parsed.document, 'source_refs');
-    if (!refs) return false;
+    if (
+      sensitivity === 'restricted' ||
+      sensitivity === 'confidential' ||
+      (parsed.document.frontmatter.sensitivity !== undefined &&
+        !schema.schema.allowedSensitivities.includes(sensitivity ?? ''))
+    )
+      return false;
+    const declaredRefs = stringListFrontmatterField(parsed.document, 'source_refs');
+    if (
+      declaredRefs === null &&
+      (!parsed.document.reserved || parsed.document.frontmatter.source_refs !== undefined)
+    )
+      return false;
+    const refs = declaredRefs ?? [];
     const next = new Set([...visiting, id]);
     for (const reference of refs) {
       if (reference.startsWith('source:')) {
@@ -829,36 +840,6 @@ function textRanges(content: string, body: string): { start: number; end: number
     });
   return ranges.sort((a, b) => a.start - b.start);
 }
-/** Uses the indexed document's selected language while keeping answer coverage on title and body only. */
-export async function analyzeKnowledgePage(input: {
-  dataRoot: string;
-  workspaceId: string;
-  query: string;
-  content: string;
-  title: string;
-  body: string;
-}) {
-  const service = getRetrievalService(
-    input.dataRoot,
-    join(input.dataRoot, 'workspaces', input.workspaceId)
-  );
-  const doc = parseOkfDocument({
-    path: 'knowledge/pages/analysis.md',
-    content: input.content,
-  }).document;
-  const hint = doc ? stringFrontmatterField(doc, 'language') : null;
-  let language: 'zh' | 'ja' | 'unicode';
-  if (hint === 'zh' || hint === 'ja' || hint === 'unicode') language = hint;
-  else {
-    const bytes = Buffer.from(input.content);
-    const searchable = textRanges(input.content, doc?.body ?? input.content)
-      .map((range) => bytes.subarray(range.start, range.end).toString('utf8'))
-      .join('\n');
-    language = (await service.analyze('language', input.title, searchable)).language;
-  }
-  return service.analyze(input.query, input.title, input.body, language);
-}
-
 /** Enumerates one published Git revision after current scope and recursive source admission. */
 export function collectKnowledgeInventory(input: Target): {
   view: RetrievalScope;

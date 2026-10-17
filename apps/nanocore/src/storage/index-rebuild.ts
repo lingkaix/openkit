@@ -588,7 +588,7 @@ export async function retrieveUserMemory(
   return retrieveNotebookSelection(input, true);
 }
 
-/** Shared governed selection for the two currently admitted notebook sources; it supplies facts, never an answer. */
+/** Shared governed selection for the admitted notebook sources; it supplies facts, never an answer. */
 async function retrieveNotebookSelection(
   input: RetrieveWorkspaceKnowledgeInput,
   memory: boolean
