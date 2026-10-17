@@ -81,6 +81,7 @@ import { admitOperation } from './operation-resolvers.js';
 import {
   admitKnowledgeRetrieval,
   knowledgeSourceAudienceReadable,
+  readAuthorizedServerNotebookPages,
   readAuthorizedWorkspaceNotebookPages,
   threadReadable,
 } from './retrieval-knowledge-adapter.js';
@@ -705,7 +706,9 @@ export function createKnowledgeOperationImplementations(
           outputTurnId: context.queryContext?.turnId,
         };
         const citations = result.citations.map((citation) => {
-          const prefix = `page/workspace/${input.workspaceId}/`;
+          const server = citation.reference.startsWith('page/server/');
+          const scopeId = server ? 'page/server' : `page/workspace/${input.workspaceId}`;
+          const prefix = `${scopeId}/`;
           if (
             !citation.reference.startsWith(prefix) ||
             !citation.reference.endsWith(`@${citation.revision}`)
@@ -716,7 +719,7 @@ export function createKnowledgeOperationImplementations(
               500
             );
           const id = citation.reference.slice(prefix.length, -(citation.revision.length + 1));
-          const page = readAuthorizedWorkspaceNotebookPages({
+          const page = (server ? readAuthorizedServerNotebookPages : readAuthorizedWorkspaceNotebookPages)({
             dataRoot,
             workspaceId: input.workspaceId,
             access,
@@ -732,7 +735,7 @@ export function createKnowledgeOperationImplementations(
           const entry = parseOwnedKnowledgeEntry(page.path, page.id, page.content);
           const body = entry.content.replace(/\s+/g, ' ').trim();
           return {
-            reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: id },
+            reference: { scopeId, objectId: id },
             kind: entry.kind,
             title: entry.title,
             excerpt: body.length > 240 ? `${body.slice(0, 237)}...` : body || entry.title,
