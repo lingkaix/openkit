@@ -10,7 +10,7 @@ Finish the approved P20 delivery of the complete selected Skill tree through the
 
 ## Authority and scope
 
-The Skill catalog owner defines immutable tree identity. The Workspace Data Boundary owner defines the bounded existing reference.import extension, fixed helper and transfer limits. P17 is present at6df9b925. The coordinator approved this vertical Core/NanoHost cut in the L-AK handoff; there is no new transfer family, archive, arbitrary mode, ledger, runner or cross-domain transaction.
+The [Skill catalog owner](../../specs/20260711-skill_catalog_versioning_pinning.md) defines immutable tree identity. The [Workspace Data Boundary owner](../../specs/20260801-nanohost_workspace_data_boundary.md) defines the bounded existing reference.import extension, fixed helper and transfer limits. P17 is present at6df9b925. The coordinator approved this vertical Core/NanoHost cut in the L-AK handoff; there is no new transfer family, archive, arbitrary mode, ledger, runner or cross-domain transaction.
 
 ## Representation seam and ownership
 
