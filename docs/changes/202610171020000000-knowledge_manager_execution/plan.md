@@ -1,5 +1,6 @@
 ---
-status: Active
+type: change-plan
+status: in-progress
 ---
 # Knowledge Manager Execution
 

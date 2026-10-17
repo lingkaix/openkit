@@ -11,7 +11,7 @@ Server Knowledge is a shared Knowledge base for Workspaces on the same Server. O
 
 Worker contributions remain Workspace-only. A user, or the Assistant acting for that user, may explicitly contribute to Server Knowledge. Publication needs current Server maintenance delegation or approval by the Server Knowledge owner. Server maintenance uses explicit requests, their admitted Sources and human changes to the Server notebook. Automatic learning across Workspace Threads is outside v0.1.0.
 
-## Reason And Source
+## Reason
 
 At 11:07Z on 2026-10-17, the engineer corrected the coordinator's description of Server scope. The coordinator supplied the read and contribution boundaries at 11:09Z. This clarifies the existing owner model; it does not move Memory into a shared scope or give a Worker Server write authority.
 
