@@ -12,7 +12,7 @@ kind: boundary
 - Task-mode-service-to-Knowledge Manager context material requests.
 - Explicit App API operations for governed proposal drafting, repair suggestions, and health inspection.
 - Knowledge Manager output classes: answer, uncertainty report, context material, proposal draft, repair suggestion, and health report.
-- Parallel request-scoped queries, one persistent maintenance Thread per notebook scope, admitted Tools, publication authority and failure semantics.
+- Parallel request-scoped queries, bounded maintenance runs in one scope Thread, admitted Tools, publication authority and failure semantics.
 
 ## Does Not Own
 
@@ -35,7 +35,7 @@ kind: boundary
 
 ## Summary
 
-Knowledge Manager is an Internal Core Role that retrieves, synthesizes and maintains Memory and Knowledge through governed Tools. Queries use parallel per-request runs. Each notebook scope has one persistent maintenance Thread whose requests arrive as Turns. Users inspect work and approve required changes there.
+Knowledge Manager is an Internal Core Role that retrieves, synthesizes and maintains Memory and Knowledge through governed Tools. Queries use parallel per-request runs. Each notebook scope has one nonresident maintenance Thread for run records and required approvals. Explicit and scheduled requests start bounded runs with fresh context.
 
 The Knowledge Store remains the durable content authority. The shared internal Agent runtime owns execution; existing Thread, Turn and Item records hold conversation history. Knowledge Manager cannot compose final Worker prompts, launch Workers, coordinate workflows or grant itself publication authority.
 
@@ -56,7 +56,7 @@ The Knowledge Store remains the durable content authority. The shared internal A
 - Do not let Knowledge Manager directly launch workers.
 - Do not let Knowledge Manager change content without current explicit instruction or maintenance delegation.
 - Do not add unbounded synthesis or expand source access through notebook maintenance.
-- Do not add passive hooks, scheduled learning, a separate runner, registry, scheduler, ledger or status family.
+- Do not add passive hooks, a separate runner, registry, scheduler, ledger or status family. Scheduled maintenance reuses the existing recurring schedule owner.
 
 ## Decision
 
@@ -64,13 +64,13 @@ Knowledge Manager is the existing Internal Core Role listed in [Core Architectur
 
 - Knowledge Manager only queries and manages its admitted notebook scope. It has no network Tools, external effects or Tools for other work. Ordinary Provider transport remains with the shared runtime.
 - Queries are bounded per-request runs bound to the asker's trusted query context. They may run in parallel without sharing context across audiences.
-- Maintenance uses one persistent Thread per notebook scope and one writer. Each request is a bounded Turn; the Thread is not a second content store.
+- Maintenance uses one nonresident Thread per notebook scope and one writer. Each scheduled or explicit run is a bounded Turn with fresh context; the Thread records work and approvals.
 - The role exposes `answer`, `prepare-context-material`, `draft-proposal`, `suggest-repair`, `health-check` and `maintain`, plus agent-facing `knowledge_ask(question)` and `knowledge_tell(content,sources)`.
 - Working internal agents and Workers receive the admitted scope's bounded OKF root `index.md`, kept current by Knowledge Manager. They ask Knowledge Manager for details.
 - Retrieval uses the one governed Retrieval Kernel owner in [Knowledge Store Implementation](20260703-knowledge_store_implementation.md). Query analysis reuses the Kernel tokenizer. The role adds no tokenizer, selector, policy filter, ranker or trace family.
 - Integration, organization and generated Memory/Knowledge writes go through Knowledge Manager and the existing fixed-base notebook publisher. Users supply intent, information and approval; simple direct edits remain available.
 - Current scoped maintenance delegation permits ordinary publication. Otherwise the exact candidate requires proposal approval; critical content and sensitive effects retain their owning decisions.
-- Knowledge Manager uses OpenKit summary-checkpoint compaction near its configured model threshold, not a durable rolling context window. [Context Compaction](20260902-agent_runtime_context_compaction.md) owns the mechanism.
+- Knowledge Manager uses OpenKit compaction only inside a bounded run near its configured model threshold. Cross-run memory is the notebook and commit history. [Context Compaction](20260902-agent_runtime_context_compaction.md) owns the mechanism.
 - Every internal role uses configurable role profiles. Knowledge Manager selects its logical model through the existing resolver, without a separate model selector.
 
 ## Contract / Expected Behavior
@@ -116,13 +116,17 @@ A query run receives bounded Retrieval Kernel search, page, Source and history r
 
 `knowledge_ask(question)` invokes this query path. `knowledge_tell(content,sources)` sends supplied information and its admitted provenance to the scope's maintenance Thread. A tell is not a publication, an approval or evidence that a Worker completed work. Worker-output provenance still requires the existing exact completed Worker Turn and delivery evidence. Workers can address only their current Task's Workspace Knowledge. Internal-agent admission keeps Memory and Knowledge queries separate.
 
-`maintain` admits an explicit integration or organization request. Its instruction and optional page/Source selections cannot choose actor, owner scope, audience or publication authority. Trusted invocation assembly binds those values. Page and Source IDs select admitted content, never host paths. Its input remains `{instruction,pageIds?,sourceIds?}` plus existing request identity. The scoped route, Core Client and bundled CLI project this same operation.
+`maintain` admits explicit or scheduled integration, consolidation and learning from recent admissible scope Threads. Its instruction and optional page/Source selections cannot choose actor, owner scope, audience or publication authority. Trusted invocation assembly binds those values. Page and Source IDs select admitted content, never host paths. Its input remains `{instruction,pageIds?,sourceIds?}` plus existing request identity. The scoped route, Core Client, bundled CLI and trusted scheduled entry project this same operation.
+
+Each run assembles fresh bounded context from the notebook overview, run inputs and needed authorized Thread records. Retain `baseRevision`, the processed Source range since the previous run, trigger `schedule | request` and instructions in existing Turn/Item records. Failed or incomplete ranges are not silently marked processed. Recent human edits and their commit diffs are inputs and must be preserved; an older generated version cannot overwrite them. Knowledge Manager's own run records never become future learning inputs.
+
+Scheduled maintenance runs daily in v0.1.0 through [Recurring Schedule Triggers](20260711-scheduler_recurring_event_triggers.md#knowledge-manager-daily-maintenance). Each Server, User and Workspace scope has an independent `enabled` boolean, default `false`. Enable it only for acceptance, testing and evaluation at this stage. There are no additional cadence or learning knobs. Enablement grants neither publication delegation nor access to otherwise private history. Missing authority, failed dependencies and skipped work remain visible through existing outcomes. No timer, store, registry or occurrence family is added.
 
 Maintenance receives bounded search, page, Source and history reads, `knowledge.notebook_workspace.update` and `knowledge.notebook.update`. The notebook owner defines the editing Tools: one fixed-base virtual filesystem and submission of its exact candidate to the publisher. There is no raw host shell, Git Tool, arbitrary MCP execution or separate session owner. `knowledge.notebook.update` remains a closed candidate-publication request, not a script or transaction language. The fixed editing snapshot lasts only for that Turn. Knowledge Manager updates the bounded root index with the content it organizes.
 
 All calls reauthorize current actor, scope, source, audience and policy. Missing or denied material remains a typed observation, never permission to widen scope or substitute sources. The Turn ends on its terminal typed result, cancellation or the shared runtime's limits. Maintenance output is one of `published` with `{baseRevision,notebookRevision,changedPageIds,receiptRef}`, `review_required` with `{proposalId,baseRevision,candidateRevision}`, `no_change`, or a bounded `conflict | denied | invalid_request | unavailable | recovery_required` result. An operation may publish at most once; the published or review-required result ends editing, and further changes require a new invocation. Model prose or quiescence cannot prove publication.
 
-Restart/provider failure never resumes a virtual editing session. A new Turn reconstructs current authorized content; exact command replay inspects the existing owner outcome rather than rerunning the model. Cancellation discards unsaved edits, while an explicitly saved Proposal retains its candidate. No result can turn missing command evidence into success. The persistent Thread does not retain an editable filesystem between Turns.
+Restart/provider failure never resumes a virtual editing session. A new Turn reconstructs current authorized content; exact command replay inspects the existing owner outcome rather than rerunning the model. Cancellation discards unsaved edits, while an explicitly saved Proposal retains its candidate. No result can turn missing command evidence into success. The maintenance Thread retains no resident model context or editable filesystem between runs.
 
 ### Callers
 
@@ -135,14 +139,14 @@ The operation caller vocabulary is `assistant`, `task-mode`, `app-api`, `interna
 | `draft-proposal` | `assistant`, `app-api` |
 | `suggest-repair` | `app-api` |
 | `health-check` | `app-api` |
-| `maintain` | `assistant`, `app-api` |
+| `maintain` | `assistant`, `app-api`, `internal-agent` |
 | `knowledge_ask`, `knowledge_tell` | `assistant`, `internal-agent`, `worker` |
 
 - Assistant may call `answer`, or trusted private assembly may call `draft-proposal`/`maintain` for explicit scoped integration. Capture and maintenance permissions remain separate; a private conversation never implicitly authorizes Workspace/Server publication. Ordinary Assistant model Tools do not include the virtual filesystem.
 - Direct Task Mode calls `prepare-context-material` exactly once for its accepted S39 path; that operation delegates to S61 exactly once and returns the existing retrieval trace reference. Task Mode does not call `answer`, S61, or another selector in parallel.
 - Governed App API routes assign `app-api` after authorization and schema validation; an authenticated user remains the audit actor rather than becoming the semantic caller.
 - `answer` and both Task and public `prepare-context-material` share the `knowledge.read` admission in [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) and the one governed retrieval in [Knowledge Store Implementation](20260703-knowledge_store_implementation.md). They keep the caller rows and output views in this section. `task-mode` remains trusted caller context assigned by the Task service and is never a caller-supplied field. Source and audience rules remain in force. The S61 trace remains selection evidence only. Retrieval keeps the mutating posture [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) states when the call updates an authoritative index or trace, and `answer` still never mutates knowledge.
-- No passive or scheduled learning caller is authorized before v0.1.0. A future trigger must be owned by a separately accepted specification and reuse these operations without adding a second lifecycle owner.
+- Daily scheduled `maintain` uses the trusted `internal-agent` caller and the existing recurring schedule owner. It binds current scope and responsible authority without fabricating a Worker or Automation identity. No passive learning hook or other trigger is admitted.
 
 The caller table constrains the operation entries. Worker ask/tell and native internal-role ask/tell are the admitted integrations; they do not broaden the older operation rows. Goal Mode Knowledge calls require a separately accepted update to the Goal owner and this specification before `goal-mode` can enter the caller vocabulary.
 
@@ -168,13 +172,13 @@ An `answer` or `prepare-context-material` result may reference the one governed 
 
 ### Lifecycle and failure semantics
 
-Each query run and maintenance Turn terminates with one schema-valid result or the owning typed failure. The maintenance Thread persists through existing Thread, Turn and Item owners; query context never becomes shared maintenance memory. No Knowledge-specific run store, retry queue, checkpoint store, scheduler, ledger or status family is created.
+Each query run and maintenance Turn terminates with one schema-valid result or the owning typed failure. The nonresident maintenance Thread retains run records and approvals through existing owners. Each new run selects fresh bounded context; query context never becomes shared maintenance memory. No Knowledge-specific run store, retry queue, checkpoint store, scheduler, ledger or status family is created.
 
 `answer` returns a cited answer or `insufficient-evidence` and never mutates knowledge. App API `prepare-context-material` may return bounded selected and excluded projections plus the existing S61 retrieval trace reference, while Task Mode returns exactly `{ retrievalTraceRef }`; neither form assembles or materializes worker context. `draft-proposal` may create only a pending fixed-base notebook-change Knowledge Proposal through the existing proposal store and review flow, with its fixed base/candidate commits and sources durable before success. `suggest-repair` and `health-check` return reports and do not apply repairs, schedule work, or write knowledge.
 
 Authorization keeps the existing authentication mapping, invalid request bodies return `invalid_request` with HTTP 400, a missing addressed resource returns the existing typed not-found response with HTTP 404, and a conflicting proposal request id returns `idempotency_key_conflict` with HTTP 409. When S61's deterministic owner-scope-plus-request proposal exists but the matching proposal-draft receipt is absent, the proposal route returns `recovery_required` with HTTP 409 and performs no additional mutation. Other operation failures return HTTP 500 with `knowledge_manager_answer_failed`, `knowledge_manager_context_failed`, `knowledge_manager_proposal_draft_failed`, `knowledge_manager_repair_suggest_failed`, or `knowledge_manager_health_check_failed` at their owning route. Every public error is a closed typed envelope with bounded, redacted details; caught exception messages, stack traces, local paths, query text, source bytes, credentials, and secret-like values MUST NOT be copied into a response. A failed call must not claim a proposal, repair, health action, context delivery, or worker availability that its owning durable record does not prove. Within these five report/query/proposal operations, proposal drafting is the business mutation and MUST return the same pending proposal on request replay. Each query, context preparation, repair suggestion or health check is a distinct invocation. Usage and selection traces are not retry state.
 
-After restart, reconstruct authorized context from the existing notebook, Proposal/Review records, Thread/Turn/Item history and their owned evidence. Never replay a model run or resume a virtual editing filesystem. Retry failed semantic work as a new Turn. Exact command replay inspects the publisher's existing outcome rather than rerunning the model. Missing or invalid durable content requires store recovery, not reconstruction from provider memory or diagnostics.
+After restart, admit a new bounded run from the current notebook, commit history, run inputs and needed authorized Thread records. Within an admitted run, reconstruct context from the latest valid summary and later canonical Items under the context owner. Never replay a model run or resume a virtual editing filesystem. Retry failed semantic work as a new Turn. Exact command replay inspects the publisher's existing outcome rather than rerunning the model. Missing or invalid durable content requires store recovery, not reconstruction from provider memory or diagnostics.
 
 Retained Proposal, Review, Source, maintenance-ledger and retrieval-trace readers ignore descriptive additions at each object level and project only known fields; normal rewrites preserve owned annotations, immutable Proposal bytes and their referenced digest, and append-only Review order, while proposal and review instructions remain exact. Public Review decision projection and accepted-decision recovery verify the retained ordered decision core, identities, Proposal digest and content digest; descriptive annotations alone do not require recovery.
 
@@ -182,7 +186,7 @@ Retained Proposal, Review, Source, maintenance-ledger and retrieval-trace reader
 
 [Personal Memory And Scoped Knowledge Learning](20260909-personal_memory_and_knowledge_learning.md) owns source intake, scope and audience. [Notebook Editing](20260909-knowledge_notebook_editing.md) owns publication and history. Capture permission never grants publication authority. Facts, observations, model confidence and repeated claims supply no authority. Verify volatile claims against current Sources; report unresolved contradictions and uncertainty.
 
-Automatic extraction, consolidation, usage aging and AI assessment are deferred until after v0.1.0. Explicit asks, tells and organization requests use the current role and publisher.
+Bounded consolidation and learning from recent admissible scope Threads use explicit or daily scheduled maintenance in v0.1.0. The scoped learning owner defines eligible inputs and processed ranges. AI assessment and usage aging remain deferred until after v0.1.0.
 
 ## Bounded Source And Knowledge Context
 
@@ -190,7 +194,7 @@ Knowledge Manager reads and model input follow [Internal Agent Runtime](20260813
 
 ## Current Implementation Projection
 
-NanoCore currently exposes five deterministic Knowledge Manager operations through shared operation definitions, native invocation, App API, Core Client, CLI and remote MCP. They preserve S61's qualified references, current source checks and Task's exact trace-only preparation view. Threadless direct User calls publish no selection trace. Fixed-base agent maintenance, persistent maintenance Threads and Worker ask/tell supply are not implemented. These existing service functions are substrates for the accepted agent path, not its completion.
+NanoCore currently exposes five deterministic Knowledge Manager operations through shared operation definitions, native invocation, App API, Core Client, CLI and remote MCP. They preserve S61's qualified references, current source checks and Task's exact trace-only preparation view. Threadless direct User calls publish no selection trace. Fixed-base agent maintenance, nonresident maintenance Thread admission, daily scheduling and Worker ask/tell supply are not implemented. These existing service functions are substrates for the accepted agent path, not its completion.
 
 The existing resolver is `apps/nanocore/src/internal-agents/profile-resolver.ts`. The maintenance route is `POST <scoped-knowledge-route>/manager/maintenance`, under existing scope authorization. For each role, a User's per-Workspace `user.jsonc` `internalRoles` override Workspace `workspace.jsonc` `internalRoles`; a selected matching profile in `internal-role-profiles.jsonc` supplies role defaults before global/Gateway defaults. Invalid selected profiles fail resolution. An explicit requested logical model must be admitted by the resolved profile. Knowledge Manager reuses this mechanism. The current deployment choice is Grok 4.7; it is configuration, not a product constant.
 
@@ -204,14 +208,15 @@ The existing resolver is `apps/nanocore/src/internal-agents/profile-resolver.ts`
 
 - The Assistant and Task Mode get a stable knowledge support interface.
 - Knowledge maintenance remains governed by the same validation and proposal rules.
-- V1 supports explicit active queries without authorizing passive or scheduled execution.
+- V1 supports explicit queries and bounded maintenance. Daily scheduling remains off by default and reuses the existing schedule owner.
 
 ## Testing Strategy / Acceptance Criteria
 
 - Query runs remain isolated across audiences, use the one Retrieval Kernel and return source-qualified citations or explicit insufficient evidence.
 - Working agents receive the bounded admitted index. Worker ask/tell schemas bind the current Task's Workspace and cannot select personal Memory or another scope.
-- One notebook maintenance Thread serializes agent writes. Users can inspect requests, changes and required approvals there.
-- Model selection reuses role-profile precedence. Knowledge Manager uses summary-checkpoint compaction; it never adopts the durable rolling window.
+- One nonresident notebook maintenance Thread serializes bounded runs with fresh context. Existing records retain base, processed range, trigger and instructions; users inspect exact diffs and required approvals there.
+- Model selection reuses role-profile precedence. In-run compaction stores the existing source-bound context-summary Item with strategy and producing model. Run metadata pins strategy beside role, model and threshold for evaluation.
+- Daily scheduled maintenance is independently off by default in every scope. Enablement grants no publication or history access; failures and skips stay visible. Human edits remain inputs, failed ranges remain unprocessed, and maintenance output never feeds future learning.
 - Fixed-base conflicts preserve the current winner. Failure, cancellation and restart cannot replay a model or repeat a publication; saved Proposals survive.
 - Routes reject caller overrides and keep typed, redacted authorization, validation, not-found, conflict, recovery and operation-failure results.
 - Task preparation retains the S61 trace-only response and S39 exact-byte delivery boundary. Worker ask delivery retains exact answer bytes in its CapabilityCall and makes no claim of cited-page delivery or use.
@@ -233,7 +238,7 @@ S18 alone owns the real Knowledge L6 story. This specification adds no story or 
 - Semantic retrieval and embedding-backed ranking.
 - Implicit cross-Workspace factual sharing; audience-bounded personal scope selection is owned by the scoped Memory extension.
 - Team review rules for shared knowledge.
-- Automatic extraction, consolidation, usage aging, AI assessment and unattended triggers after v0.1.0.
+- Usage aging, AI assessment and triggers beyond the accepted daily maintenance schedule after v0.1.0.
 
 ## Links
 
