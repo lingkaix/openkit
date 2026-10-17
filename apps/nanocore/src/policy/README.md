@@ -22,3 +22,9 @@ Boot self-check decisions use independent canonical `pd` UUIDv7 identities. Thei
 `worker-git-read-maintenance.ts` maps one loaded finite Server assignment and immutable effect facts into the existing NGAC evaluator. It owns no storage or identity lifecycle. Missing, invalid, duplicate, inactive, expired or out-of-scope assignments supply no association; Workspace fixed roles cannot grant this Server operation. The configuration command records the resulting immutable Server PermissionDecision and linked initiating-human Audit before dispatch.
 
 `workspace-access.ts` projects one active-member association through the Policy Kernel for the closed Workspace operation set. Ownership, administrator eligibility, credential intersection, private audiences and owner-specific effects remain separate checks. No membership tier or access-changing command remains.
+
+## Governed Effects
+
+`effect-policy.ts` maps current owner-validated subject, concrete target, registered operation/right and effect eligibility into the existing NGAC evaluator. It combines mandatory product outcomes under Core Permissions and returns the evaluated graph digest through the existing snapshot helper. It does not load a new grant configuration or own effect state. Only a final `allow` admits dispatch; credentials, current resource authority and existing human decisions remain the effect owner's responsibility.
+
+Worker launch retains the actual trigger actor, command, Thread and Turn in its existing PermissionDecision and linked Audit. The existing launch snapshot label remains bound to AgentSession/AEP consumers; the decision context retains the evaluated content digest. Removed Workspace authority still refuses before any decision write. Run the complete `src/policy/effect-policy.test.ts`, `src/policy/permission-decisions.test.ts` and `src/runtime/worker-turn-loop.test.ts` files for this boundary.
