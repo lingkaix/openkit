@@ -2795,6 +2795,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
         const support = Buffer.from(`selected-version=${version}\r\nretained UTF-8: café\n`);
         const entries = [
           { path: 'empty', kind: 'directory' as const },
+          { path: 'scripts', kind: 'directory' as const },
           {
             path: 'SKILL.md',
             kind: 'file' as const,
@@ -2901,7 +2902,6 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
         const output = await readFile(target);
         expect(output).toEqual(support);
         outputs.push(output);
-        await session.close();
       }
       expect(outputs[0]).not.toEqual(outputs[1]);
     },
