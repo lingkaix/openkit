@@ -128,3 +128,79 @@ export const ArtifactSchema = z
       });
     }
   });
+
+/** Immutable version identity and producing lineage, separate from the Artifact's original origin. */
+export const ArtifactVersionSchema = z
+  .object({
+    artifactId: ArtifactIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    artifactVersion: z.number().int().positive(),
+    parentVersion: z.number().int().positive().nullable(),
+    title: z.string().min(1),
+    summary: z.string().nullable(),
+    contentDigest: Sha256DigestSchema,
+    actor: ActorRefSchema,
+    threadId: ThreadIdSchema.nullable(),
+    turnId: TurnIdSchema.nullable(),
+    requestId: z.string().min(1),
+    recordedAt: TimestampSchema,
+  })
+  .superRefine((version, context) => {
+    if (
+      version.parentVersion !== (version.artifactVersion === 1 ? null : version.artifactVersion - 1)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['parentVersion'],
+        message: 'An Artifact version must identify its exact preceding version.',
+      });
+    }
+    if (
+      (version.threadId === null) !== (version.turnId === null) ||
+      (version.artifactVersion > 1 && version.turnId === null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['turnId'],
+        message: 'A work-produced Artifact version requires complete producing lineage.',
+      });
+    }
+  });
+
+/** One exact retained Artifact state and the immutable metadata that identifies its commit. */
+export const ArtifactVersionRecordSchema = z
+  .object({ artifact: ArtifactSchema, version: ArtifactVersionSchema })
+  .superRefine(({ artifact, version }, context) => {
+    if (
+      artifact.id !== version.artifactId ||
+      artifact.workspaceId !== version.workspaceId ||
+      artifact.version !== version.artifactVersion ||
+      artifact.contentDigest !== version.contentDigest ||
+      artifact.title !== version.title ||
+      artifact.summary !== version.summary ||
+      artifact.lastMutationRequestId !== version.requestId ||
+      artifact.updatedAt !== version.recordedAt ||
+      (artifact.version === 1 &&
+        artifact.origin.kind === 'turn-output' &&
+        (artifact.origin.threadId !== version.threadId ||
+          artifact.origin.turnId !== version.turnId)) ||
+      (artifact.version === 1 &&
+        artifact.origin.kind === 'imported' &&
+        (version.threadId !== null ||
+          version.turnId !== null ||
+          version.recordedAt !== artifact.origin.recordedAt ||
+          JSON.stringify(version.actor) !== JSON.stringify(artifact.origin.actor)))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['version'],
+        message: 'Artifact version metadata must match its exact retained Artifact state.',
+      });
+    }
+  });
+
+/** Immutable Artifact version metadata shared by native and product readers. */
+export type ArtifactVersion = z.infer<typeof ArtifactVersionSchema>;
+
+/** Exact retained Artifact state and producing lineage. */
+export type ArtifactVersionRecord = z.infer<typeof ArtifactVersionRecordSchema>;
