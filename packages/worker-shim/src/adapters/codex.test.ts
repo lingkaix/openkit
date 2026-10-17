@@ -2783,6 +2783,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     'consumes exact selected Skill versions through physical reference.import',
     async () => {
       const outputs: Buffer[] = [];
+      const quotePath = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
       for (const version of ['cedar-r1', 'birch-r2']) {
         const roots = await tempRoots();
         closers.push(() => rm(roots.base, { recursive: true, force: true }));
@@ -2871,7 +2872,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
             response,
             { namespace: 'functions', name: 'exec_command' },
             JSON.stringify({
-              cmd: `cat ${JSON.stringify(join(skillRoot, 'SKILL.md'))} && ${JSON.stringify(join(skillRoot, 'scripts/render.sh'))} ${JSON.stringify(target)}`,
+              cmd: `cat ${quotePath(join(skillRoot, 'SKILL.md'))} && ${quotePath(join(skillRoot, 'scripts/render.sh'))} ${quotePath(target)}`,
               yield_time_ms: 1000,
             })
           );
