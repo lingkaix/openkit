@@ -32,7 +32,7 @@ import {
 /**
  * Workspace Skill, MCP, and Agent Plugin catalog (product workflow, not an API console).
  *
- * Live reads use `operations['catalog.read']`. Skill import uploads a SKILL.md file or a Skill folder of regular files. Browser File API uploads cannot preserve executable flags or empty directories. Owners can pin, select, and review candidates. Fresh create/import fields stay empty and show examples only as native placeholders. MCP create stays inactive until enabled; stdio enablement remains a deployment-admin authority on the server. Plugin import takes a package directory. Writes stay disabled while disconnected.
+ * Live reads use `operations['catalog.read']`. Skill import accepts an explicitly chosen ecosystem source, a SKILL.md file, or a Skill folder of regular files. Browser File API uploads cannot preserve executable flags or empty directories. Source imports remain inactive until the user selects a version. Owners can pin, select, and review candidates. Fresh create/import fields stay empty and show examples only as native placeholders. MCP create stays inactive until enabled; stdio enablement remains a deployment-admin authority on the server. Plugin import takes a package directory. Writes stay disabled while disconnected.
  */
 export function CatalogScreen() {
   const workspaceId = useCurrentWorkspaceId();
@@ -50,6 +50,8 @@ export function CatalogScreen() {
   const { checking, failed: disconnected } = useConnection();
   const writeBlocked = checking || disconnected || !workspaceId || catalog.isFetching;
   const [skillName, setSkillName] = useState('');
+  const [skillSource, setSkillSource] = useState('');
+  const [skillSourceName, setSkillSourceName] = useState('');
   const [candidateSummary, setCandidateSummary] = useState('');
   const [mcpId, setMcpId] = useState('');
   const [mcpName, setMcpName] = useState('');
@@ -276,6 +278,69 @@ export function CatalogScreen() {
                 placeholder="Team guidelines"
                 isDisabled={writeBlocked}
               />
+              <TextField
+                label="Skill source"
+                value={skillSource}
+                onChange={setSkillSource}
+                placeholder="Repository or Skill directory URL"
+                isDisabled={writeBlocked || importSkill.isPending}
+              />
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { label: 'Anthropic Skills', source: 'https://github.com/anthropics/skills' },
+                  { label: 'OpenAI Skills', source: 'https://github.com/openai/skills' },
+                  {
+                    label: 'OpenKit Skills',
+                    source: 'https://github.com/lingkaix/openkit/tree/main/skills',
+                  },
+                ].map(({ label, source }) => (
+                  <Button
+                    key={source}
+                    size="sm"
+                    isDisabled={writeBlocked || importSkill.isPending}
+                    onPress={() => {
+                      setSkillSource(source);
+                      setSkillSourceName('');
+                    }}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+              <TextField
+                label="Skill name in source"
+                value={skillSourceName}
+                onChange={setSkillSourceName}
+                placeholder="Required when the source contains several Skills"
+                isDisabled={writeBlocked || importSkill.isPending}
+              />
+              <p className="text-xs text-fg-muted">
+                Load one Skill from a source, then select Use on its retained version.
+              </p>
+              <Button
+                isDisabled={
+                  writeBlocked || importSkill.isPending || !skillName.trim() || !skillSource.trim()
+                }
+                onPress={() => {
+                  if (!workspaceId || writeBlocked || !skillName.trim() || !skillSource.trim())
+                    return;
+                  importSkill.mutate({
+                    workspaceId,
+                    input: {
+                      activate: false,
+                      displayName: skillName.trim(),
+                      expectedRevision: revision,
+                      requestId: createRequestId(),
+                      source: skillSource.trim(),
+                      ...(skillSourceName.trim()
+                        ? { sourceSkillName: skillSourceName.trim() }
+                        : {}),
+                    },
+                  });
+                }}
+              >
+                Load Skill
+              </Button>
               <TextField
                 label="Candidate summary"
                 value={candidateSummary}

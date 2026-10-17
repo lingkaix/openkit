@@ -8,9 +8,13 @@ status: in-progress
 
 Implement the engineer-authorized BWM first loop with synthetic and fake-backed regressions. B01 business inputs are not a build prerequisite. Real-use acceptance remains pending the engineer's further work. Keep BWM and Meta-Skill as ordinary Skill packages under the existing Task, Artifact, catalog, human decision and pin owners.
 
+## Intent Revision 2
+
+The engineer's 2026-10-17 ruling supersedes the unlanded generic author package. Remove openkit-bwm-author and keep the general Task, retained Artifact, candidate, human promotion, pin and later-use regressions with a minimal test-only producer Skill. There is no shipped generic author or release-bundled Skill feature. B01 intake and record-only SIS/Email MCP stubs are synthetic validation artifacts in the external backlog. Do not start BWM Meta-Skill v1 until a separate coordinator brief. See the [accepted curated-source decision](../../decisions/20261017-curated_skill_sources.md).
+
 ## Owners And Scope
 
-[Skill Catalog Versioning And Pinning](../../specs/20260711-skill_catalog_versioning_pinning.md) owns exact version selection and the first-loop boundary. The ordinary authoring Skill describes source admission, bounded domain meaning and the existing candidate Artifact transport. Add no evaluator, background runner, automatic promotion, new store or alternate approval authority. The operations release archive remains unchanged.
+[Skill Catalog Versioning And Pinning](../../specs/20260711-skill_catalog_versioning_pinning.md) owns exact version selection and the general candidate loop. The test-only producer returns fixed synthetic output and defines no authoring procedure. Add no evaluator, background runner, automatic promotion, new store or alternate approval authority. The operations release archive remains unchanged.
 
 ## Evidence And Limits
 
@@ -18,4 +22,4 @@ The native fake-backed journey admits actual Tasks, retains a Worker-output Arti
 
 ## Next Actions
 
-L-GO finishes the transferred versioned-Skill source under the coordinator's2026-10-17 handoff. Run the required affected-suite gate and independent review, then land the coherent source cut through the lane's express path. Preserve the deferred real-use acceptance item in the lane checkpoint; source publication does not complete that acceptance.
+The author-package cut on60f81847 preserves all16 cases and49 original assertions, with two added fixture-boundary assertions. Its complete renamed skill-candidate-loop.test.ts passed16/16. L-GO finishes the transferred versioned-Skill source and three explicit curated-source choices, obtains independent review and the affected-suite gate, then lands through the express path. B01 continues independently outside this repository. Physical Worker delivery remains conditional on actual P17 landing. BWM Meta-Skill v1 and real-use acceptance remain unstarted and unclaimed.

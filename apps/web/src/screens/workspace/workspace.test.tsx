@@ -2138,6 +2138,53 @@ async function changeLiveDirectoryFiles(input: HTMLInputElement, selected: File[
 }
 
 describe('Catalog', () => {
+  it('loads one chosen curated Skill without selecting a version automatically', async () => {
+    const user = userEvent.setup();
+    const importSkill = vi.fn().mockResolvedValue({});
+    const selectSkill = vi.fn();
+    const get = vi
+      .fn()
+      .mockResolvedValue({ revision: 2, candidates: [], skills: [], mcp: [], plugins: [] });
+    renderApp(
+      '/catalog',
+      makeClient({
+        operations: {
+          'catalog.read': get,
+          'catalog.skill-import': importSkill,
+          'catalog.skill-select': selectSkill,
+        },
+      })
+    );
+    const source = await screen.findByRole('textbox', { name: 'Skill source' });
+    const load = screen.getByRole('button', { name: 'Load Skill' });
+    expect(source).toHaveValue('');
+    expect(load).toBeDisabled();
+    for (const [label, location] of [
+      ['Anthropic Skills', 'https://github.com/anthropics/skills'],
+      ['OpenAI Skills', 'https://github.com/openai/skills'],
+      ['OpenKit Skills', 'https://github.com/lingkaix/openkit/tree/main/skills'],
+    ]) {
+      await user.click(screen.getByRole('button', { name: label }));
+      expect(source).toHaveValue(location);
+      expect(importSkill).not.toHaveBeenCalled();
+      expect(selectSkill).not.toHaveBeenCalled();
+    }
+    await user.type(screen.getAllByRole('textbox', { name: 'Display name' })[0], 'Operations');
+    await user.type(screen.getByRole('textbox', { name: 'Skill name in source' }), 'openkit-ops');
+    await user.click(load);
+    await waitFor(() => expect(importSkill).toHaveBeenCalledTimes(1));
+    expect(importSkill).toHaveBeenCalledWith({
+      activate: false,
+      displayName: 'Operations',
+      expectedRevision: 2,
+      requestId: expect.any(String),
+      source: 'https://github.com/lingkaix/openkit/tree/main/skills',
+      sourceSkillName: 'openkit-ops',
+      workspaceId: WORKSPACE_A.id,
+    });
+    expect(selectSkill).not.toHaveBeenCalled();
+  });
+
   it('lists Skill, MCP, and plugin empty states from the selected Workspace catalog', async () => {
     const get = vi
       .fn()

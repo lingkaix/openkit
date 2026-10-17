@@ -18,7 +18,7 @@ This directory owns the existing scoped catalog records and immutable installed 
 - `catalog-portability.ts` preserves installed bytes and historical lineage through the existing Workspace portability boundary. Imported historical selection or review evidence grants no target authority.
 - `turn.start` may select exact versions of Skills already in the composed setup through optional `skillSelections`. The canonical Turn retains this work input. AEP resolution uses run, composed exact version, pin, then current default, and records `selectionSource: run` without moving a shared pointer.
 - Runtime setup and AEP resolve exact versions before materialization. Catalog mutation does not change files in an admitted AgentSession or prove real Worker consumption.
-- Native Skill mutations join the existing receipt and Audit owners, Artifact-origin submission checks retained source authority, and purge checks existing external retention references. Complete physical Worker delivery and real Worker consumption remain open. Component tests do not establish physical delivery or real BWM acceptance. Server catalog scope is an additive shared-owner integration with L-GA; it does not create a second catalog.
+- Native Skill mutations join the existing receipt and Audit owners, Artifact-origin submission checks retained source authority, and purge checks existing external retention references. Complete physical Worker delivery and real Worker consumption remain open. The general candidate-loop regression uses a minimal test-only producer, with no shipped generic author or BWM acceptance claim. Server catalog scope is an additive shared-owner integration with L-GA; it does not create a second catalog.
 
 ## Verification
 

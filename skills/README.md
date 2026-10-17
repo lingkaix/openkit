@@ -2,7 +2,7 @@
 
 OpenKit distributes one independently installable [openkit-ops Skill](openkit-ops/SKILL.md) for installation, configuration, upgrade, diagnosis, recovery and the generated administrator CLI under [Agent Operator Skill](../docs/specs/20260910-agent_operator_skill.md). Ordinary product work uses [remote MCP](../docs/specs/20261002-remote_mcp_interface.md) guide, search, describe and call or Web. The former user-facing package is absent; no fallback, alias or separate CLI package is shipped.
 
-The repository also contains [openkit-bwm-author](openkit-bwm-author/SKILL.md), an ordinary domain-authoring Skill for explicit catalog import and selection. It guides an admitted Task or Goal to return a source-attributed candidate Artifact. It grants no publication or external-effect authority and is not part of the operations release archive. Its synthetic native regression proves the candidate, human decision, pin and later Task selection path; real-use BWM acceptance remains pending.
+The three curated catalog sources are [Anthropic Skills](https://github.com/anthropics/skills), [OpenAI Skills](https://github.com/openai/skills), and [this repository's Skills folder](https://github.com/lingkaix/openkit/tree/main/skills). Users choose which Skill to load, use or update through the ordinary catalog. Recommendations and App releases do not install or refresh Skills automatically. Custom sources remain supported. OpenKit provides no generic Skill author; the future BWM Meta-Skill is outside this increment.
 
 ## Administrator CLI
 
