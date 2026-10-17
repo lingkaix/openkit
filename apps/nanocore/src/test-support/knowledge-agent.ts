@@ -1,7 +1,12 @@
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
+import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { serverKnowledgeRoot } from '../storage/fs-layout.js';
 import { createTestGatewayConfig } from './agent-environment.js';
 import { createApp } from './app.js';
 
@@ -16,6 +21,20 @@ export function createKnowledgeAnswerApp(
   }>,
   failMessage?: string
 ) {
+  const coreDb = options?.coreDb;
+  if (!coreDb) throw new Error('Knowledge answer fixture requires current Core authority.');
+  // Admitted empty Server Knowledge is available evidence, distinct from missing storage.
+  if (!existsSync(serverKnowledgeRoot(coreDb.dataRoot))) {
+    initializeScopedNotebook({
+      coreDb,
+      actor: { kind: 'local', userId: ensureLocalUser(coreDb) },
+      target: { kind: 'server' },
+      initialization: {
+        requestId: randomUUID(),
+        instructionReference: 'Initialize empty shared Knowledge for the query fixture.',
+      },
+    });
+  }
   let planIndex = 0;
   let step = 0;
   const createResponses = vi.fn(async () => {

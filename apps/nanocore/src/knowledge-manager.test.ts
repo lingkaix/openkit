@@ -1114,7 +1114,7 @@ describe('Knowledge Manager answer operation', () => {
     const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'release cadence',
-        pageId: 'release-plan',
+        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/release-plan`,
         answer: 'Release cadence is fortnightly with a Tuesday review.',
         uncertainty: null,
       },
@@ -1347,6 +1347,7 @@ describe('Knowledge Manager answer operation', () => {
     }
   });
 
+  // Two complete queries include real Kernel work and both admitted notebook sources.
   it('answers a one-term query that appears on the selected page', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-one-term-answer-'));
     const store = createDemoStore({ dataRoot });
@@ -1356,11 +1357,16 @@ describe('Knowledge Manager answer operation', () => {
     const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'Cadence',
-        pageId: 'cadence',
+        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/cadence`,
         answer: 'Weekly ship after smoke.',
         uncertainty: null,
       },
-      { query: 'Weekly', pageId: 'cadence', answer: 'Weekly ship after smoke.', uncertainty: null },
+      {
+        query: 'Weekly',
+        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/cadence`,
+        answer: 'Weekly ship after smoke.',
+        uncertainty: null,
+      },
     ]);
     try {
       const createRes = await app.request(
@@ -1423,7 +1429,7 @@ describe('Knowledge Manager answer operation', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('returns only the governed retrieval projection without a second context owner', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-context-retrieval-'));
