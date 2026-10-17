@@ -12,7 +12,7 @@ updated: "2026-10-03"
 - The declarative definition of each public operation, the exact implementation join, and the derivation of its projections.
 - The release-authored internal-only `skill.read` operation for the #144 selected-Skills family.
 - What a definition table may hold, the closed trusted resolvers and the behaviors they preserve, trusted invocation inputs, and the native invocation seam.
-- Canonical operation names, derived transport spelling, and the semantic lifecycle of an operation, including the rules reserved for a later data-defined source.
+- Canonical operation and release-owned agent-facing Tool IDs, their derived model spelling across surfaces, and the semantic lifecycle of an operation, including the rules reserved for a later data-defined source.
 - Projection rules for remote MCP, internal Tools, worker Tools, the operator CLI, and the JSON product route, including what stays at other owners' boundaries.
 - The acceptance criteria for the first implementation slice.
 
@@ -125,7 +125,7 @@ A successful invocation returns one validated output. A classified failure retur
 
 ## Names
 
-Every release-owned agent-facing operation and Tool has one canonical ID of the form `<namespace>.<segment>(.<segment>)*`. Each segment begins with a lowercase ASCII letter and contains lowercase ASCII letters or digits, with single hyphens joining words. Empty words, uppercase letters, colons and underscores are invalid. The first segment identifies the owning Core aspect or its governed resource family; the Agent Interface's own Tools use `openkit`. This rule covers public and internal-only operations, internal-role Tools, built-in Worker MCP Tools and Server MCP Tools. It does not rename third-party Tools, MCP protocol methods, native opaque identifiers or accounting-only labels. The engineer's ruling and rationale are recorded in [Agent-Facing Naming](../decisions/20261017-agent_facing_naming.md).
+Every release-owned agent-facing operation and Tool has one canonical ID of the form `<namespace>.<segment>(.<segment>)*`. Each segment begins with a lowercase ASCII letter and contains lowercase ASCII letters or digits, with single hyphens joining words. Empty words, uppercase letters, colons and underscores are invalid. The first segment identifies the owning Core aspect or its governed resource family; the Agent Interface's own Tools use `openkit`. This rule covers public and internal-only operations, internal-role Tools, built-in Worker MCP Tools, Server MCP Tools and the three built-in `mcp.*` capability route IDs. It does not rename third-party Tools, MCP protocol methods, native opaque identifiers or accounting-only labels. The engineer's ruling and rationale are recorded in [Agent-Facing Naming](../decisions/20261017-agent_facing_naming.md).
 
 The model-visible name replaces every dot with an underscore and changes nothing else. Hyphens remain hyphens. The same canonical Tool has the same model-visible name on every supplied surface. A Tool that projects an operation uses that operation's actual ID, with no separately authored alias. A standalone closure retains its own owner-defined contract; a similar public operation does not make it the same operation. One canonical ID must not name different input, output, authority or effect contracts.
 

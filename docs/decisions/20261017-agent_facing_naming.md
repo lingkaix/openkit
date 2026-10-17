@@ -17,7 +17,7 @@ Verbatim naming excerpt, 09:47 UTC:
 
 > 关于 Knowledge Manager 的设计，我大体上同意你的设计，不过我认为有几点需要注意和讨论。第一是接口的命名, 不论是我们通过 MCP Gateway 向 Worker 提供的接口名称，还是 NanoCore 内部的工具名称，还是我们通过 Server 的 MCP 向外部的 Agent 暴露的接口的名称都应该有一个统一的命名规则(从 first principle 出发，我认为这些之所以明明是统一的，是因为他们就是同一套我们系统提供的机制和工具)。我不清楚现行的状况如何，你可以派出一个 Grok worker 来盘点一下。不过，从 common sense 出发，我认为是否可以命名为 [namesoace(only onw word)]_(or ':'?)[action_name], 我们来讨论。
 
-English translation: I broadly agree with the Knowledge Manager design, but we must discuss several points. First, the names exposed through the Worker MCP Gateway, NanoCore internal Tools and Server MCP must follow one rule, because they are the same system mechanisms and Tools. Inventory the present state. Let us discuss a namespace and action form, using an underscore or perhaps a colon.
+English translation: I broadly agree with the Knowledge Manager design, but we must discuss several points. First, the names exposed through the Worker MCP Gateway, NanoCore internal Tools and Server MCP must follow one rule, because they are the same system mechanisms and Tools. You may send a Grok worker to inventory the present state. Let us discuss a one-word namespace and action form, using an underscore or perhaps a colon.
 
 Verbatim, 10:10 UTC:
 

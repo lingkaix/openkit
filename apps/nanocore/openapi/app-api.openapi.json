@@ -826,9 +826,9 @@
         }
       }
     },
-    "/api/app/operations/provider-subscription.account-login-start": {
+    "/api/app/operations/provider-subscription.login-start": {
       "post": {
-        "operationId": "provider-subscription.account-login-start",
+        "operationId": "provider-subscription.login-start",
         "tags": [
           "provider-subscription"
         ],
@@ -846,7 +846,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/provider-subscription.account-login-start.input"
+                "$ref": "#/components/schemas/provider-subscription.login-start.input"
               }
             }
           }
@@ -857,7 +857,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/provider-subscription.account-login-start.output"
+                  "$ref": "#/components/schemas/provider-subscription.login-start.output"
                 }
               }
             }
@@ -875,9 +875,9 @@
         }
       }
     },
-    "/api/app/operations/provider-subscription.account-login-cancel": {
+    "/api/app/operations/provider-subscription.login-cancel": {
       "post": {
-        "operationId": "provider-subscription.account-login-cancel",
+        "operationId": "provider-subscription.login-cancel",
         "tags": [
           "provider-subscription"
         ],
@@ -895,7 +895,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/provider-subscription.account-login-cancel.input"
+                "$ref": "#/components/schemas/provider-subscription.login-cancel.input"
               }
             }
           }
@@ -906,7 +906,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/provider-subscription.account-login-cancel.output"
+                  "$ref": "#/components/schemas/provider-subscription.login-cancel.output"
                 }
               }
             }
@@ -18940,7 +18940,7 @@
           }
         ]
       },
-      "provider-subscription.account-login-start.input": {
+      "provider-subscription.login-start.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -18962,7 +18962,7 @@
         ],
         "additionalProperties": false
       },
-      "provider-subscription.account-login-start.output": {
+      "provider-subscription.login-start.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
           {
@@ -19476,7 +19476,7 @@
           }
         ]
       },
-      "provider-subscription.account-login-cancel.input": {
+      "provider-subscription.login-cancel.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -19498,7 +19498,7 @@
         ],
         "additionalProperties": false
       },
-      "provider-subscription.account-login-cancel.output": {
+      "provider-subscription.login-cancel.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
           {
@@ -21358,8 +21358,8 @@
           "targetCapabilityId": {
             "type": "string",
             "enum": [
-              "mcp.list_tools",
-              "mcp.call_tool"
+              "mcp.list-tools",
+              "mcp.call-tool"
             ]
           },
           "workspaceId": {
@@ -21551,8 +21551,8 @@
               "targetCapabilityId": {
                 "type": "string",
                 "enum": [
-                  "mcp.list_tools",
-                  "mcp.call_tool"
+                  "mcp.list-tools",
+                  "mcp.call-tool"
                 ]
               },
               "expiresAt": {
@@ -105655,8 +105655,8 @@
           "targetCapabilityId": {
             "type": "string",
             "enum": [
-              "mcp.list_tools",
-              "mcp.call_tool"
+              "mcp.list-tools",
+              "mcp.call-tool"
             ]
           }
         },
@@ -106581,5 +106581,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:db9b35c3eea0e8d9ebe590f2ea8ae1f2de04e3b4dbd5cec2f52f14ff77d3970b"
+  "x-openkit-source-digest": "sha256:4168993804a9b4a87459451c841ee8221d053d19c54cf04e87880c76fdb2cc93"
 }

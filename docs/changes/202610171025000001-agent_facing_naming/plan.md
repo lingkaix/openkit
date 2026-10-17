@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 ---
 # Agent-Facing Naming Cutover
 
@@ -16,7 +16,7 @@ The only story edit changes the recorded MCP capability spelling in an optional 
 
 ## Working Checkpoint
 
-The rename plan was posted before repository implementation. The operation owner and affected references are aligned, and separate bounded implementation branches cover shared naming checks, Worker/Coordinator names and Server/Kernel names. Assistant aliases and the two overlength provider operations are changed with their callers. Current per-call authority remains required; a spelling match must not remove the administration check. The next observable is a complete integrated owner-module gate and an independent review of the actual final diff. Exact red/green output and operational checkpoints remain external execution evidence until closeout.
+The rename plan was posted before repository implementation. The operation owner and affected references are aligned. Shared naming checks, Worker/Coordinator names and Server/Kernel names are normally merged. Assistant aliases, the two overlength provider operations and the distinct delegated configuration Tool are changed with their callers. The current-source descriptor scan supplements factory checks so an added private factory is not dependent on a fixed family list. It reads literals and ordinary lexical constants; computed, imported and spread-derived names remain subject to runtime supply validation. Current per-call authority remains required; a spelling match must not remove the administration check. The next observable is a complete integrated owner-module gate and an independent review of the actual final diff. Exact red/green output and operational checkpoints remain external execution evidence until closeout.
 
 ## Acceptance And Closeout
 
