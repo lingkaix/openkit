@@ -78,7 +78,7 @@ test('records an actually displayed reply and retains it after Core restart', as
     await page.bringToFront();
     const body = page.getByRole('article').getByText(message.text, { exact: true });
     await expect(body).toBeVisible();
-    await body.scrollIntoViewIfNeeded();
+    // Receipt refresh can replace the body; the viewport assertion retries the current locator.
     await expect(body).toBeInViewport();
     await expect.poll(() => displayedItemIds).toEqual([message.id]);
     const readState = { readItemIds: [message.id], unreadItemIds: [] };
