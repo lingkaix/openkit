@@ -1,13 +1,22 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { MEMORY_OPERATION_DEFINITIONS, PrepareMemoryForgetRequestSchema } from './memory.js';
-import { allocateEntityId } from '@openkit/protocol';
 
 describe('explicit self Memory contracts', () => {
   it('keeps Memory search within one current self scope and an independent bounded budget', () => {
     const schema = MEMORY_OPERATION_DEFINITIONS['memory.search'].inputSchema;
     const input = { workspaceId: allocateEntityId('ws'), query: 'personal preference' };
-    expect(schema.parse(input)).toMatchObject({ limit: 5, states: ['active'], pinnedReferences: [] });
-    for (const extra of [{ userId: allocateEntityId('usr') }, { sourceScope: 'workspace' }, { limit: 21 }, { limit: 0 }]) {
+    expect(schema.parse(input)).toMatchObject({
+      limit: 5,
+      states: ['active'],
+      pinnedReferences: [],
+    });
+    for (const extra of [
+      { userId: allocateEntityId('usr') },
+      { sourceScope: 'workspace' },
+      { limit: 21 },
+      { limit: 0 },
+    ]) {
       expect(schema.safeParse({ ...input, ...extra }).success).toBe(false);
     }
   });
