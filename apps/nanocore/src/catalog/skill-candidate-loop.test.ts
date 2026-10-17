@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -50,10 +51,8 @@ import {
   validateCatalogTree,
 } from './resource-catalog.js';
 
-const fixtureRoot = fileURLToPath(new URL('./fixtures/bwm-first-loop/', import.meta.url));
-const authorRoot = fileURLToPath(
-  new URL('../../../../skills/openkit-bwm-author/', import.meta.url)
-);
+const fixtureRoot = fileURLToPath(new URL('./fixtures/skill-candidate-loop/', import.meta.url));
+const producerFixtureRoot = join(fixtureRoot, 'candidate-producer');
 const createdAt = '2026-10-16T09:00:00Z';
 const digest = (body: string | Buffer) =>
   `sha256:${createHash('sha256').update(body).digest('hex')}`;
@@ -63,7 +62,7 @@ afterEach(() => {
   for (const close of cleanup.splice(0).reverse()) close();
 });
 
-/** Test-only packaging of actual authored bytes; production uses the existing Artifact/tree admission. */
+/** Package test fixture bytes through the existing Artifact/tree admission shape. */
 function packageTree(root: string, prefix = ''): CatalogTreeFile[] {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap((entry) => {
     const path = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -83,7 +82,7 @@ function packageTree(root: string, prefix = ''): CatalogTreeFile[] {
 
 /** Real retained Artifact and catalog owners; this fixture does not simulate native Task admission. */
 function fixture(privateOwnerUserId?: string) {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bwm-component-'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-candidate-component-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => coreDb.sqlite.close());
@@ -98,7 +97,7 @@ function fixture(privateOwnerUserId?: string) {
   const actor: Actor = { kind: 'session', userId: LOCAL_USER_ID };
   const thread = store.createThread(
     workspaceId,
-    'Synthetic BWM author output',
+    'Synthetic Skill candidate output',
     undefined,
     'conversation',
     privateOwnerUserId ? { visibility: 'private', privateOwnerUserId } : { visibility: 'workspace' }
@@ -119,7 +118,7 @@ function fixture(privateOwnerUserId?: string) {
     threadId: thread.id,
     turnId: turn.id,
     kind: 'file',
-    title: 'Synthetic BWM candidate',
+    title: 'Synthetic Skill candidate',
     status: 'ready',
     summary: 'Synthetic component output only.',
     version: 1,
@@ -156,7 +155,7 @@ function fixture(privateOwnerUserId?: string) {
   };
 }
 
-/** Explicit component composition; the native Artifact-to-candidate command join is still owned by the primary. */
+/** Component composition of retained Artifact admission and candidate submission. */
 function submit(
   f: ReturnType<typeof fixture>,
   baseDigest: string | null = null,
@@ -214,9 +213,9 @@ const request = {
   sources: sourceMappings,
 };
 
-describe('synthetic BWM Artifact/catalog component', () => {
+describe('synthetic Skill Artifact/catalog component', () => {
   it('runs the synthetic native Task, Artifact, human promotion and later pinned-use loop', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bwm-native-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-candidate-native-'));
     cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
     const coreDb = openCoreDb(dataRoot);
     cleanup.push(() => coreDb.sqlite.close());
@@ -229,28 +228,28 @@ describe('synthetic BWM Artifact/catalog component', () => {
     cleanup.push(() => workspaceDb.sqlite.close());
     applyScopedMigrations(workspaceDb);
     recordTestNativeRuntimeTarget(coreDb);
-    const author = importWorkspaceSkill({
+    const producerSkill = importWorkspaceSkill({
       dataRoot,
       workspaceId,
-      id: 'bwm-author',
-      displayName: 'BWM author',
+      id: 'candidate-producer',
+      displayName: 'Test candidate producer',
       activate: true,
       expectedRevision: 0,
       createdAt,
       producer: { kind: 'user', id: LOCAL_USER_ID },
-      tree: packageTree(authorRoot),
+      tree: packageTree(producerFixtureRoot),
     });
-    const authorSetup = createTestAgentSetup({
-      agentId: 'agent_bwm_author',
-      skillIds: ['bwm-author'],
+    const producerSetup = createTestAgentSetup({
+      agentId: 'agent_candidate_producer',
+      skillIds: ['candidate-producer'],
     });
     const useSetup = createTestAgentSetup({
-      agentId: 'agent_bwm_consumer',
+      agentId: 'agent_candidate_consumer',
       skillIds: ['synthetic-workshop'],
     });
     // Catalog publication reloads authored supply. Keep this fixture's Agents and route on disk.
     mkdirSync(join(dataRoot, 'config/agents'), { recursive: true });
-    for (const setup of [authorSetup, useSetup])
+    for (const setup of [producerSetup, useSetup])
       writeFileSync(
         join(dataRoot, 'config/agents', `${setup.manifest.id}.agent.jsonc`),
         JSON.stringify(setup.manifest)
@@ -276,7 +275,7 @@ describe('synthetic BWM Artifact/catalog component', () => {
       dataRoot,
       store,
       turnExecutor: executor,
-      agentManifests: [authorSetup.manifest, useSetup.manifest],
+      agentManifests: [producerSetup.manifest, useSetup.manifest],
     });
     const candidateTree = packageTree(join(fixtureRoot, 'workshop'));
     let selectedScript: string | null = null;
@@ -291,7 +290,7 @@ describe('synthetic BWM Artifact/catalog component', () => {
       const artifact = createArtifact({
         ...input,
         kind: 'file',
-        title: 'SYNTHETIC BWM output',
+        title: 'SYNTHETIC Skill candidate output',
         summary: 'Fake Worker output; no real business acceptance or external booking.',
         content: { format: 'json', body },
         contentDigest: digest(body),
@@ -304,7 +303,7 @@ describe('synthetic BWM Artifact/catalog component', () => {
         ...operationRequest(operation, {}, { body: JSON.stringify({ workspaceId, ...input }) })
       );
     const start = async (agentId: string, input: string) => {
-      const thread = store.createThread(workspaceId, 'SYNTHETIC BWM Task');
+      const thread = store.createThread(workspaceId, 'SYNTHETIC Skill candidate Task');
       const requestId = randomUUID();
       const response = await call('task.start', { threadId: thread.id, requestId, agentId, input });
       expect(response.status, await response.clone().text()).toBe(202);
@@ -324,8 +323,8 @@ describe('synthetic BWM Artifact/catalog component', () => {
       return { turn: store.getTurnById(result.turn.id), artifact: artifact! };
     };
     const authored = await start(
-      authorSetup.manifest.id,
-      'Use bwm-author to prepare a synthetic workshop Skill candidate. Do not activate it.'
+      producerSetup.manifest.id,
+      'Return the supplied synthetic workshop Skill candidate as an Artifact. Do not activate it.'
     );
     const submittedResponse = await call('catalog.skill-candidate-submit', {
       skillId: 'synthetic-workshop',
@@ -341,7 +340,7 @@ describe('synthetic BWM Artifact/catalog component', () => {
     });
     expect(submittedResponse.status, await submittedResponse.clone().text()).toBe(201);
     const submitted = await submittedResponse.json();
-    expect(submitted.candidate.producer).toEqual({ kind: 'agent', id: authorSetup.manifest.id });
+    expect(submitted.candidate.producer).toEqual({ kind: 'agent', id: producerSetup.manifest.id });
     expect(
       loadWorkspaceResourceCatalog(dataRoot, workspaceId).skills.entries.find(
         (entry) => entry.id === 'synthetic-workshop'
@@ -386,7 +385,10 @@ describe('synthetic BWM Artifact/catalog component', () => {
     const snapshots = listExportableAgentEnvironmentPackageSnapshots(workspaceDb, workspaceId);
     expect(
       snapshots.find((record) => record.turnId === authored.turn.id)?.snapshot.supply.skills[0]
-    ).toMatchObject({ id: 'bwm-author', integrity: { sha256: author.version.digest } });
+    ).toMatchObject({
+      id: 'candidate-producer',
+      integrity: { sha256: producerSkill.version.digest },
+    });
     expect(
       snapshots.find((record) => record.turnId === used.turn.id)?.snapshot.supply.skills[0]
     ).toMatchObject({
@@ -402,14 +404,18 @@ describe('synthetic BWM Artifact/catalog component', () => {
     expect(catalog.skills.pins[0]?.digest).toBe(submitted.candidate.candidateDigest);
   }, 30_000);
 
-  it('admits the reusable ordinary author package with all exact supporting bytes', () => {
+  it('admits only the test fixture without activation and keeps the retired author package absent', () => {
+    expect(
+      existsSync(fileURLToPath(new URL('../../../../skills/openkit-bwm-author/', import.meta.url)))
+    ).toBe(false);
     const f = fixture();
-    const tree = packageTree(authorRoot);
+    const tree = packageTree(producerFixtureRoot);
+    expect(tree.map((entry) => entry.path)).toEqual(['SKILL.md']);
     const imported = importWorkspaceSkill({
       dataRoot: f.dataRoot,
       workspaceId: f.workspaceId,
-      id: 'bwm-author',
-      displayName: 'BWM author',
+      id: 'candidate-producer',
+      displayName: 'Test candidate producer',
       activate: false,
       expectedRevision: 0,
       createdAt,
@@ -419,7 +425,7 @@ describe('synthetic BWM Artifact/catalog component', () => {
     const retained = readWorkspaceSkillSnapshot({
       dataRoot: f.dataRoot,
       workspaceId: f.workspaceId,
-      entryId: 'bwm-author',
+      entryId: 'candidate-producer',
       digest: imported.version.digest,
     });
     expect(retained.version.digest).toBe(validateCatalogTree(tree).digest);
