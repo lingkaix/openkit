@@ -225,8 +225,10 @@ describe('exact retained Worker Skill delivery', () => {
       executable: false,
       slot: 'package-config',
     });
+    const packageConfig = imports[0];
+    if (packageConfig?.entryKind !== 'file') throw new Error('Expected the package-config file.');
     const importedPackage = JSON.parse(
-      imports[0]!.body.toString('utf8')
+      packageConfig.body.toString('utf8')
     ) as AgentEnvironmentPackage;
     expect(importedPackage.supply.skills).toEqual(environmentPackage.supply.skills);
     expect(importedPackage.supply.skills[0]).toMatchObject({
