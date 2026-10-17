@@ -94361,8 +94361,15 @@
                 "type": "object",
                 "properties": {
                   "releaseTag": {
-                    "type": "string",
-                    "pattern": "^v((?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^v((?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "sourceCommit": {
                     "type": "string",
@@ -103565,5 +103572,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:593bb5ec140419c56b5c0fc8d3aa8325226433d5abd7f907f6017d9aa61cbaff"
+  "x-openkit-source-digest": "sha256:0a3235ce4643dce1afdd13ee21f190f06b93fff004b98998e16dff9979310607"
 }
