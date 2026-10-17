@@ -5004,6 +5004,7 @@ describe('app api schemas', () => {
         rating: 'good',
         note: null,
         createdAt: timestamp,
+        history: [],
       }).rating
     ).toBe('good');
     expect(
