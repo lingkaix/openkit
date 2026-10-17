@@ -378,7 +378,10 @@ export function listUnresolvedUserInputRequestItemIds(itemRevisions: readonly It
  * @param next Proposed later revision for the same Item.
  * @throws Error when actor, responsible user, or command causation changes.
  */
-export function assertImmutableItemAttribution(previous: Item, next: Item): void {
+export function assertImmutableItemAttribution(
+  previous: Item | import('@openkit/protocol').ServerItem,
+  next: Item | import('@openkit/protocol').ServerItem
+): void {
   const actorChanged =
     ((previous.type === 'user-message' && next.type === 'user-message') ||
       (previous.type === 'approval-decision' && next.type === 'approval-decision') ||
@@ -2332,7 +2335,7 @@ function isCanonicalThreadEnvelope(input: unknown): boolean {
  * @param destination Absent canonical directory.
  * @param writeContents Writes the complete directory under the staging path.
  */
-function publishNewRecordDirectory(
+export function publishNewRecordDirectory(
   workspaceRoot: string,
   destination: string,
   writeContents: (directory: string) => void
@@ -3173,7 +3176,7 @@ export function preserveDescriptiveRecord(raw: unknown, previous: unknown, next:
 }
 
 /** Validates an existing owned record before preserving annotations on its normal rewrite. */
-function writeOwnedDescriptiveJson(path: string, next: unknown, schema: z.ZodType): void {
+export function writeOwnedDescriptiveJson(path: string, next: unknown, schema: z.ZodType): void {
   const previous = existsSync(path) ? readJson(path) : undefined;
   const core = schema.parse(next);
   const oldCore = previous === undefined ? undefined : schema.parse(previous);
@@ -3197,7 +3200,7 @@ function writeJsonAtomic(path: string, value: unknown): void {
  * @param path Parent path.
  * @returns Sorted directory names.
  */
-function listDirectoryNames(path: string): string[] {
+export function listDirectoryNames(path: string): string[] {
   const metadata = lstatSync(path, { throwIfNoEntry: false });
 
   if (!metadata) {
