@@ -36,6 +36,7 @@ import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { zaiProvider } from '@earendil-works/pi-ai/providers/zai';
 import type { ProviderProfile } from '@openkit/config-schema';
 import { ReasoningEffortSchema } from '@openkit/protocol';
+import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { mergeAdapterCostRates, resolveEffectiveModelMetadata } from './logical-models.js';
 import { admittedModelEvent, type ModelSemanticEvent } from './model-semantic-content.js';
@@ -47,7 +48,10 @@ import type {
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
 import { attachPiAiFailure, type PiAiFailure } from './pi-ai-failure.js';
-import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
+import type {
+  LLMGatewayTransportContext,
+  ProviderHttpErrorDiagnostic,
+} from './provider-dispatcher.js';
 import {
   type SubscriptionInferenceAuth,
   subscriptionInferenceHandle,
@@ -701,7 +705,12 @@ export class PiAiGatewayClient {
     const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const native = isResponsesApi(model.api) && provider.gatewayCapabilities.responses === 'native';
     const { additionalTools, bridgedFunctionTools, bridgeNames, nativeInput } =
-      admitPiResponsesNativeRequest(request, false, !native);
+      admitPiResponsesNativeRequest(
+        request,
+        false,
+        !native,
+        native && provider.adapterId === 'xai'
+      );
     this.assertExplicitCredential(provider);
     const member = { providerId: provider.id, modelId: model.id };
     const envelope: ResponsesNativeEnvelope = {
@@ -740,7 +749,8 @@ export class PiAiGatewayClient {
             transport,
             additionalTools,
             native,
-            envelope
+            envelope,
+            bridgeNames
           ),
           transport,
           (message, failure) => {
@@ -800,7 +810,7 @@ export class PiAiGatewayClient {
     const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const native = isResponsesApi(model.api) && provider.gatewayCapabilities.responses === 'native';
     const { additionalTools, bridgedFunctionTools, bridgeNames, nativeInput } =
-      admitPiResponsesNativeRequest(request, true, !native);
+      admitPiResponsesNativeRequest(request, true, !native, native && provider.adapterId === 'xai');
     this.assertExplicitCredential(provider);
     const member = { providerId: provider.id, modelId: model.id };
     const envelope: ResponsesNativeEnvelope = {
@@ -829,7 +839,8 @@ export class PiAiGatewayClient {
         { ...transport, signal },
         additionalTools,
         native,
-        envelope
+        envelope,
+        bridgeNames
       ),
       signal,
       transport.deadline,
@@ -1236,7 +1247,8 @@ export class PiAiGatewayClient {
     transport: LLMGatewayTransportContext,
     additionalTools: ResponsesAdditionalTools | undefined,
     native: boolean,
-    envelope: ResponsesNativeEnvelope
+    envelope: ResponsesNativeEnvelope,
+    bridgeNames?: ResponsesBridgeNames
   ): StreamOptions & Record<string, unknown> {
     const options: StreamOptions & Record<string, unknown> = { env: {} };
     const cacheRetention = this.cacheRetention(request.prompt_cache_retention);
@@ -1299,7 +1311,7 @@ export class PiAiGatewayClient {
         const event = readRecord(data);
         const item = readRecord(event?.item);
         if (event?.type === 'response.output_item.done' && item)
-          assertCompletedResponsesToolOutput(item, additionalTools);
+          assertCompletedResponsesToolOutput(item, additionalTools, bridgeNames);
         if (event?.type === 'response.output_item.added' && item)
           recordNativePosition(item, event.output_index);
         if (
@@ -1324,7 +1336,7 @@ export class PiAiGatewayClient {
           const item = readRecord(value);
           if (!item) throw new GatewayUnsupportedFeatureError('pi-ai Responses native output');
           recordNativePosition(item, index);
-          assertCompletedResponsesToolOutput(item, additionalTools);
+          assertCompletedResponsesToolOutput(item, additionalTools, bridgeNames);
           if (item.type === 'reasoning') {
             if (typeof item.id === 'string' && representedReasoning.has(item.id)) continue;
             assertExactPreservedResponsesItem(item);
@@ -1964,7 +1976,48 @@ export class PiAiGatewayClient {
   }
 }
 
-/** Preserves native Codex continuity and observes only actual HTTP rejection statuses. */
+/** Reads only bounded, sanitized typed rejection fields; the original response stays with stock pi-ai. */
+async function providerHttpErrorDiagnostic(
+  response: Response,
+  credentials: readonly string[]
+): Promise<ProviderHttpErrorDiagnostic | undefined> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    reader = response.clone().body?.getReader();
+    if (!reader) return undefined;
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 16 * 1024) return undefined;
+      chunks.push(value);
+    }
+    const body = readRecord(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    const error =
+      readRecord(body?.error) ??
+      (body && { ...body, ...(typeof body.error === 'string' ? { message: body.error } : {}) });
+    if (!error) return undefined;
+    const details: Record<string, string> = {};
+    for (const key of ['type', 'code', 'param', 'message'] as const) {
+      if (typeof error[key] !== 'string') continue;
+      let text = error[key];
+      for (const credential of credentials) {
+        if (credential) text = text.split(credential).join('[redacted]');
+      }
+      details[key] = redactInternalAgentText(text).slice(0, 200);
+    }
+    return Object.keys(details).length ? details : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    // Awaiting cancellation of one tee branch can wait for the stock reader and deadlock it.
+    void reader?.cancel().catch(() => {});
+  }
+}
+
+/** Preserves native Codex continuity and observes actual HTTP rejections without routing authority. */
 function applyProviderTransport(
   options: StreamOptions,
   selectedModel: Model<string>,
@@ -1975,13 +2028,24 @@ function applyProviderTransport(
     (selectedModel.api === 'openai-responses' || selectedModel.api === 'openai-completions')
   ) {
     // These stock APIs expose onResponse only after success, then flatten HTTP errors into text.
-    // Observe the unchanged response before that loss; never inspect its headers or body.
+    // Observe selected error details before that loss; stock still receives the unchanged response.
     const upstreamFetch = options.fetch ?? globalThis.fetch;
     options.fetch = async (...args) => {
       const response = await upstreamFetch(...args);
       if (Number.isInteger(response.status) && response.status >= 400 && response.status <= 599) {
         try {
-          transport.onProviderHttpRejection?.(response.status);
+          const headers = new Headers(
+            args[1]?.headers ?? (args[0] instanceof Request ? args[0].headers : undefined)
+          );
+          const authorization = headers.get('authorization');
+          const details = await providerHttpErrorDiagnostic(response, [
+            options.apiKey ?? '',
+            authorization?.replace(/^Bearer\s+/i, '') ?? '',
+            headers.get('x-api-key') ?? '',
+            headers.get('api-key') ?? '',
+          ]);
+          if (details) transport.onProviderHttpRejection?.(response.status, details);
+          else transport.onProviderHttpRejection?.(response.status);
         } catch {
           // Optional diagnostics cannot change inference or routing-bearing failure metadata.
         }
@@ -2504,17 +2568,19 @@ function readResponsesAdditionalTools(
 
 /**
  * Admits Responses features against the selected upstream API capability.
- * Bridged callers restore function-only tools first, then reuse field and history admission. Standard and message-anchored function tools share one namespace projection; custom tools, deferred tools, search and native builtins fail closed.
+ * Chat bridges admit function tools; xAI native Responses lowers admitted local tools through the same request-local identity projection after native history validation.
  *
  * @param request Responses request.
  * @param allowStream Whether this call owns a streaming response.
  * @param bridged Whether the selected provider is a chat-native Responses bridge.
+ * @param functionOnly Whether native Responses needs xAI function tool forms.
  * @returns Admitted declarations, native envelope input and stock function tools.
  */
 function admitPiResponsesNativeRequest(
   request: OpenAICompatibleResponsesRequest,
   allowStream: boolean,
-  bridged: boolean
+  bridged: boolean,
+  functionOnly = false
 ): {
   readonly additionalTools: ResponsesAdditionalTools | undefined;
   readonly nativeInput?: readonly unknown[];
@@ -2555,6 +2621,27 @@ function admitPiResponsesNativeRequest(
       true,
       anchored || preserveHistory
     );
+    if (functionOnly) {
+      // Admission and search activation run first; history never creates callable authority.
+      const definitions = [
+        ...additionalTools.providerTools,
+        ...lowered.flatMap((value) => {
+          const item = readRecord(value);
+          return item?.type === 'additional_tools' ? (item.tools as Record<string, unknown>[]) : [];
+        }),
+      ];
+      const { bridgedFunctionTools, bridgeNames, providerTools } =
+        bridgedFunctionToolsFromAdditionalTools(
+          { ...additionalTools, item: { ...additionalTools.item, tools: definitions } },
+          true
+        );
+      return {
+        additionalTools: { ...additionalTools, providerTools },
+        bridgedFunctionTools,
+        bridgeNames,
+        nativeInput: lowerFunctionOnlyResponsesInput(lowered),
+      };
+    }
     return {
       additionalTools,
       ...(anchored ||
@@ -2611,53 +2698,103 @@ function admitPiResponsesNativeRequest(
 }
 
 /**
- * Restores function-only message-anchored tools for a chat-native Responses bridge.
- * Namespace identity is lowered through an exact request-local inverse; non-function, deferred and search tools fail before credentials.
+ * Restores flat function declarations with the existing request-local namespace inverse.
+ * Chat bridges reject native-only tools; xAI lowers active custom and client-search declarations.
  *
  * @param additionalTools Admitted additional-tools prefix.
- * @returns pi-ai Context tools for the bridged Chat Completions transport.
+ * @param functionOnly Whether to convert xAI custom tools after native admission.
+ * @returns Stock function tools, wire definitions and their inverse identities.
  */
-function bridgedFunctionToolsFromAdditionalTools(additionalTools: ResponsesAdditionalTools): {
+function bridgedFunctionToolsFromAdditionalTools(
+  additionalTools: ResponsesAdditionalTools,
+  functionOnly = false
+): {
   readonly bridgedFunctionTools: NonNullable<Context['tools']>;
   readonly bridgeNames: ResponsesBridgeNames;
+  readonly providerTools: readonly Record<string, unknown>[];
 } {
-  if (additionalTools.hasToolSearch) {
+  if (additionalTools.hasToolSearch && !functionOnly) {
     throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools');
   }
   const names = new Map<string, { name: string; namespace?: string }>();
   const tools = additionalTools.item.tools.flatMap((tool) => {
     const namespace = tool.type === 'namespace' ? (tool.name as string) : undefined;
     const children = tool.type === 'namespace' ? (tool.tools as Record<string, unknown>[]) : [tool];
-    return children.map((child) => {
-      if (child.type !== 'function' || child.defer_loading === true) {
+    return children.flatMap((child) => {
+      if (functionOnly && child.defer_loading === true) return [];
+      if ((!functionOnly && child.type !== 'function') || child.defer_loading === true) {
         throw new GatewayUnsupportedFeatureError('pi-ai Responses function tools');
       }
       const name = child.name as string;
       const providerName = bridgedResponsesToolName(name, namespace);
-      if (names.has(providerName))
+      if (names.has(providerName)) {
+        const previous = names.get(providerName)!;
+        if (
+          functionOnly &&
+          responsesToolKey(previous.name, previous.namespace) === responsesToolKey(name, namespace)
+        )
+          return [];
+        // A repeated definition is harmless; distinct callable identities must never collapse.
         throw new GatewayUnsupportedFeatureError('pi-ai Responses tool mapping collision');
+      }
       names.set(providerName, {
         name,
         ...(namespace !== undefined && !isDefaultResponsesNamespace(namespace)
           ? { namespace }
           : {}),
       });
-      return {
-        ...child,
-        name: providerName,
-        description: [
-          namespace !== undefined && !isDefaultResponsesNamespace(namespace)
-            ? `${namespace}.${name}`
-            : undefined,
-          tool.type === 'namespace' ? tool.description : undefined,
-          child.description,
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
-      };
+      const definition =
+        child.type === 'custom'
+          ? {
+              type: 'function',
+              parameters: toPiNativeTools({
+                ...additionalTools,
+                item: { ...additionalTools.item, tools: [child] },
+              })[0]!.parameters,
+            }
+          : child;
+      return [
+        {
+          ...definition,
+          name: providerName,
+          description: [
+            namespace !== undefined && !isDefaultResponsesNamespace(namespace)
+              ? `${namespace}.${name}`
+              : undefined,
+            tool.type === 'namespace' ? tool.description : undefined,
+            child.description,
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        },
+      ];
     });
   });
-  return { bridgedFunctionTools: toPiTools(tools), bridgeNames: names };
+  return { bridgedFunctionTools: toPiTools(tools), bridgeNames: names, providerTools: tools };
+}
+
+/** Projects admitted native tool history onto xAI's function-only Responses wire form. */
+function lowerFunctionOnlyResponsesInput(input: readonly unknown[]): readonly unknown[] {
+  return input.flatMap((value): unknown[] => {
+    const item = readRecord(value)!;
+    if (item.type === 'additional_tools') return [];
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+      const { namespace, input, ...call } = item;
+      return [
+        {
+          ...call,
+          type: 'function_call',
+          name: bridgedResponsesToolName(item.name as string, namespace as string | undefined),
+          ...(item.type === 'custom_tool_call' ? { arguments: JSON.stringify({ input }) } : {}),
+        },
+      ];
+    }
+    if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
+      const { name: _name, namespace: _namespace, ...result } = item;
+      return [{ ...result, type: 'function_call_output' }];
+    }
+    return [item];
+  });
 }
 
 /** Registers exact local declarations and rejects request-local definition conflicts. */
@@ -3290,7 +3427,8 @@ function readNativeResponsesReasoningItem(
 /** Validates completed native tool bytes before the stock parser can normalize malformed syntax or kind. */
 function assertCompletedResponsesToolOutput(
   item: Record<string, unknown>,
-  additionalTools: ResponsesAdditionalTools | undefined
+  additionalTools: ResponsesAdditionalTools | undefined,
+  bridgeNames?: ResponsesBridgeNames
 ): void {
   if (item.type !== 'function_call' && item.type !== 'custom_tool_call') return;
   const kind = item.type === 'custom_tool_call' ? 'custom' : 'function';
@@ -3314,17 +3452,30 @@ function assertCompletedResponsesToolOutput(
   )
     throw new GatewayUnsupportedFeatureError('pi-ai Responses provider tool output');
   if (kind === 'function') assertNativeResponsesFunctionArguments(item.arguments);
+  const identity = bridgeNames?.get(item.name);
+  if (
+    bridgeNames &&
+    (!identity || kind !== 'function' || !isDefaultResponsesNamespace(item.namespace))
+  )
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses undeclared provider tool output');
+  const declaredKind = additionalTools?.kinds.get(
+    responsesToolKey(
+      identity?.name ?? item.name,
+      identity?.namespace ?? (item.namespace as string | undefined)
+    )
+  );
+  if (
+    identity &&
+    declaredKind === 'custom' &&
+    typeof parseToolArguments(item.arguments).input !== 'string'
+  )
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses custom tool input');
   const search =
     kind === 'function' &&
     item.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
     additionalTools?.hasToolSearch === true &&
     isDefaultResponsesNamespace(item.namespace);
-  if (
-    !search &&
-    additionalTools?.kinds.get(
-      responsesToolKey(item.name, item.namespace as string | undefined)
-    ) !== kind
-  )
+  if (!search && (identity ? declaredKind === undefined : declaredKind !== kind))
     throw new GatewayUnsupportedFeatureError('pi-ai Responses undeclared provider tool output');
 }
 

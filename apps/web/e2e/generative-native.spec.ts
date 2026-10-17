@@ -81,6 +81,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   ];
   let appId: string;
   let recordId: string;
+  let notePresentationId: string;
   try {
     const schema: LightAppSchemaInput = {
       format: 'openkit.light-app',
@@ -295,7 +296,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       await workerMcpGateway.close();
     }
     const collection = app.schema!.collections[0]!;
-    await ui.publishGenerativePresentation(
+    const notePresentation = await ui.publishGenerativePresentation(
       { ...context, requestId: randomUUID() },
       {
         threadId,
@@ -357,6 +358,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
         ],
       }
     );
+    notePresentationId = notePresentation.id;
     const text = 'External source observation: 3 matches.';
     const source = store.createItem({
       id: 'it_00000000-0000-7000-8000-000000000059',
@@ -492,7 +494,24 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   ).toHaveCount(1);
 
   await stack.restartCore();
+  // Reload must reach this presentation's native read before its content assertion starts.
+  const historicalPresentation = page.waitForResponse((response) => {
+    const request = response.request();
+    if (
+      !response.url().endsWith('/api/app/operations/generative-ui.get') ||
+      request.method() !== 'POST'
+    )
+      return false;
+    const selectors = request.postDataJSON() as {
+      workspaceId?: string;
+      presentationId?: string;
+    };
+    return (
+      selectors.workspaceId === workspaceId && selectors.presentationId === notePresentationId
+    );
+  });
   await page.reload();
+  expect((await historicalPresentation).ok()).toBe(true);
   await expect(note).toHaveValue('Original local note');
   const currentObservation = page.waitForResponse(
     (response) =>
