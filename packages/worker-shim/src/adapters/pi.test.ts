@@ -1056,6 +1056,12 @@ describe('Pi controlled channel faults', () => {
         readiness = waitForPiHostReadiness(channel);
       },
     });
+    const loopback = {
+      capabilityBaseUrl: 'http://127.0.0.1:9/capabilities',
+      capabilityCredential: credential(),
+      inferenceBaseUrl: 'http://127.0.0.1:9/inference/v1',
+      inferenceCredential: credential(),
+    };
     const session = await adapter.openSession({
       agentSessionId: 'session-a',
       controlRoot: join(dirs.root, 'control'),
@@ -1065,18 +1071,13 @@ describe('Pi controlled channel faults', () => {
         PI_PEER_MODE: mode,
         ...(marker ? { PI_PEER_MARKER: marker } : {}),
       },
-      loopback: {
-        capabilityBaseUrl: 'http://127.0.0.1:9/capabilities',
-        capabilityCredential: credential(),
-        inferenceBaseUrl: 'http://127.0.0.1:9/inference/v1',
-        inferenceCredential: credential(),
-      },
+      loopback,
       resumeReference: null,
       stateRoot: dirs.stateRoot,
     });
     sessions.push(session);
     await readiness;
-    return { dirs, session };
+    return { dirs, loopback, session };
   }
 
   it.each([
@@ -1120,7 +1121,8 @@ describe('Pi controlled channel faults', () => {
 
   it('keeps a first correlated inference failure non-reusable and preserves its retained bytes on close', async () => {
     let channel!: Duplex;
-    const { dirs, session } = await peer('ordinary', undefined, {
+    const injectedCredential = credential();
+    const { dirs, loopback, session } = await peer('ordinary', undefined, {
       observeChannel: (observed) => {
         channel = observed;
       },
@@ -1130,6 +1132,25 @@ describe('Pi controlled channel faults', () => {
       (line) => {
         const frame = JSON.parse(line);
         if (frame.event === 'turn_settled') {
+          emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({
+                event: 'native',
+                turnId: frame.turnId,
+                data: {
+                  type: 'message_end',
+                  message: {
+                    role: 'assistant',
+                    stopReason: 'error',
+                    content: [],
+                    errorMessage: `Safe native inference explanation ${injectedCredential} ${loopback.inferenceCredential} ${loopback.capabilityCredential} ${'é'.repeat(9_000)}`,
+                    response: { body: 'PRIVATE_PROVIDER_RESPONSE_BODY' },
+                  },
+                },
+              })}\n`
+            )
+          );
           frame.outcome = { status: 'failed', reason: 'pi-inference-failed' };
           frame.nativeHandle = { state: 'unknown' };
         }
@@ -1147,13 +1168,30 @@ describe('Pi controlled channel faults', () => {
       return emit(event, ...args);
     });
     const writes = vi.spyOn(channel, 'write');
-    const turn = await session.startTurn(turnInput(dirs));
-    expect(await turn.settled).toMatchObject({
+    const input = turnInput(dirs);
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: { ...input.runtimeCapture, credentialValues: [injectedCredential] },
+    });
+    const outcome = await turn.settled;
+    expect(outcome).toMatchObject({
       status: 'failed',
       stopReason: 'pi-inference-failed',
       assistantText: null,
       nativeEvidence: { nativeTerminal: true },
     });
+    expect(outcome.diagnostics?.native).toContain('Safe native inference explanation');
+    expect(Buffer.byteLength(outcome.diagnostics?.native ?? '', 'utf8')).toBeLessThanOrEqual(
+      16_384
+    );
+    const diagnostics = JSON.stringify(outcome.diagnostics);
+    for (const secret of [
+      injectedCredential,
+      loopback.inferenceCredential,
+      loopback.capabilityCredential,
+    ])
+      expect(diagnostics).not.toContain(secret);
+    expect(diagnostics).not.toContain('PRIVATE_PROVIDER_RESPONSE_BODY');
     const files = await sessionJsonlFiles(dirs.stateRoot);
     expect(files).toHaveLength(1);
     const retained = await readFile(files[0]!);
