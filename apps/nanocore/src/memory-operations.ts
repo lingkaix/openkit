@@ -30,6 +30,7 @@ import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import { initializeNotebook } from './knowledge/notebook-initialization.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './knowledge/okf.js';
 import {
+  admitUserMemorySources,
   listUserKnowledgeSources,
   readUserKnowledgeSource,
   registerUserKnowledgeSource,
@@ -65,6 +66,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
     assertMemoryPagesNotSuppressed(owner.notebookRoot, writer.userDb.userId, [path]);
     notebook.history({ revision, limit: 1 });
     const selected = notebook.readRevision(revision);
+    admitUserMemorySources(writer, selected.files);
     if (
       selected.files[path] !== input.content ||
       selected.metadata.changeRequest.requestId !== input.requestId
@@ -116,7 +118,8 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
         return {
           scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
           reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
-          registeredSources: new Map<string, string | null>(),
+          registeredSources: admitUserMemorySources(writer, { [path]: input.content })
+            .registeredSources,
           resolvedReferences: new Map<string, ReadonlySet<string>>(),
         };
       };
