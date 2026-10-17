@@ -11,9 +11,9 @@ The engineer ruled at 02:30Z, confirmed by the coordinator's 04:25Z RESUME notic
 
 ## Reason And Scope
 
-Worker API selection must not make an otherwise representable configured route unusable. The existing stock-IR mapping and requested-format projection already serve both forms without another transport. Native xAI admission removes the immediate Worker blocker. Configured uncatalogued models remain usable through the existing conservative Chat transport instead of a catalog allowlist. Local custom tools reuse the existing string-input stock mapping and public custom-call projection; this does not add provider execution authority.
+Worker API selection must not make an otherwise representable configured route unusable. The existing stock-IR mapping and requested-format projection already serve both forms without another transport. Native xAI admission removes the immediate Worker blocker. Configured uncatalogued models remain usable through the existing conservative Chat transport instead of a catalog allowlist.
 
-This ruling does not admit a semantic feature the selected API and existing mapping cannot preserve. Native-only controls, provider-executed tools, deferred declarations and client search on a cross-protocol route retain their existing admission boundary. There is no new account selection, durable field, dependency fork, retry path or public-format detour.
+This ruling does not admit a semantic feature the selected API and existing mapping cannot preserve. Native-only controls, provider-executed tools and cross-protocol custom tools, deferred declarations and client search retain their existing admission boundary. There is no new account selection, durable field, dependency fork, retry path or public-format detour.
 
 ## Affected Owners And Revisit
 
