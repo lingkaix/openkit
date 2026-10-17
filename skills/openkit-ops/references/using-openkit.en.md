@@ -124,6 +124,10 @@ Read current knowledge state before recording a new observation, claim, decision
 
 Perform one knowledge mutation at a time and re-read its durable result. Treat conflicts, stale revisions, reviews, and promotion requirements as governed outcomes rather than local merge prompts.
 
+Workspace page edits use one published Notebook revision. Read `knowledge.list` and retain its `notebookRevision` as the edit's `baseRevision`. Creation also needs an explicit `knowledgePageId` from the described contract. Keep the captured base and request identity during an uncertain retry. A conflict requires reading and comparing the newer content before a new edit; a background refresh does not authorize moving an open draft to that base.
+
+Discover `knowledge.notebook.history`, `knowledge.notebook.diff` and `knowledge.notebook.restore` to inspect or restore Workspace pages. Current source permissions also apply to history. A truncated diff cannot confirm restoration or removal: select fewer paths and inspect the complete preview. Preserve its exact base, historical revision and selected paths. Removal requires the displayed human confirmation. Restoration appends a revision and does not reverse external effects. For saved proposals, preserve the exact proposal digest, base and candidate revisions in the human decision.
+
 Present knowledge proposals and conflicts to the user with their evidence and scope. Resolve or promote them only through an exposed operation and explicit user direction when that decision changes shared knowledge.
 
 A retrieved page is not automatically a sufficient answer. The Knowledge Manager answer operation checks distinct query-term coverage and can return `insufficient-evidence` even when retrieval found a page. Assistant Chat then uses its selected model; explicit Knowledge Manager calls retain the insufficient-evidence result.

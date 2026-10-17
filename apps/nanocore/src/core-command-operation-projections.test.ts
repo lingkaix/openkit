@@ -18,7 +18,9 @@ import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const roots: string[] = [];
+const ownedDatabases: Array<ReturnType<typeof openCoreDb>> = [];
 afterEach(() => {
+  for (const coreDb of ownedDatabases.splice(0)) coreDb.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -54,7 +56,18 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
       visibility: 'workspace',
     }
   );
+  // Current authority and Notebook content belong to the same deployment root.
+  const coreDb = openCoreDb(root);
+  ownedDatabases.push(coreDb);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const app = createAppWithWorkspaceAuthority({
+    coreDb,
     store,
     ...(bootReadiness ? { bootReadiness } : {}),
   });

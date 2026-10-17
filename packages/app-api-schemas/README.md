@@ -40,6 +40,8 @@ Workspace grant creation and narrowing share exact supported Agent, AgentSession
 
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
+Workspace export manifests include optional `knowledgeNotebookRevision` provenance for the exact published source Notebook commit. An imported Workspace creates its own Notebook authority; this source value grants no access and does not become the target revision.
+
 Authentication schemas include optional exact-owner access-token issuance plus canonical-user and current-administrator redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes.
 
 This package no longer projects an AgentSession backend-summary schema. Gateway endpoints, Gateway names, native Sandbox names, retired control transports, and hidden AgentSession continuity are not ordinary public read-model states; protected evidence and operator projections may retain only their separately authorized redacted lineage.

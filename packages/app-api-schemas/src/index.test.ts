@@ -246,8 +246,11 @@ const knowledgeContentDigest = `sha256:${createHash('sha256')
   .update(canonicalKnowledgePageBytes)
   .digest('hex')}`;
 const knowledgeProposalDigest = `sha256:${'2'.repeat(64)}`;
+const knowledgeBaseRevision = 'a'.repeat(40);
+const knowledgeCandidateRevision = 'b'.repeat(40);
 const knowledgeProposalDraftRequest = {
   requestId: '00000000-0000-4000-8000-000000000601',
+  baseRevision: knowledgeBaseRevision,
   knowledgePageId,
   canonicalPageBytes: canonicalKnowledgePageBytes,
   contentDigest: knowledgeContentDigest,
@@ -1255,7 +1258,7 @@ describe('app api schemas', () => {
               conceptId: 'alpha',
               path: 'knowledge/pages/alpha.md',
               title: 'Alpha',
-              conformance: 'Workspace-schema-valid',
+              conformance: 'scope-schema-valid',
               active: true,
               indexed: true,
               errors: [],
@@ -1263,7 +1266,7 @@ describe('app api schemas', () => {
             {
               conceptId: 'missing-source',
               path: 'knowledge/pages/missing-source.md',
-              conformance: 'Workspace-schema-valid',
+              conformance: 'scope-schema-valid',
               active: true,
               indexed: false,
               errors: [
@@ -1493,7 +1496,13 @@ describe('app api schemas', () => {
       proposal: {
         id: 'kp_demo',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        operation: 'create' as const,
+        operation: 'notebook-change' as const,
+        ownerScope: {
+          kind: 'workspace' as const,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
+        baseRevision: request.baseRevision,
+        candidateRevision: knowledgeCandidateRevision,
         knowledgePageId: request.knowledgePageId,
         canonicalPageBytes: request.canonicalPageBytes,
         contentDigest: request.contentDigest,
@@ -1509,7 +1518,7 @@ describe('app api schemas', () => {
         createdAt: timestamp,
       },
       validation: {
-        conformance: 'Workspace-schema-valid' as const,
+        conformance: 'scope-schema-valid' as const,
         generatedFromCompletedWorkHistory: false,
       },
     };
@@ -1772,6 +1781,7 @@ describe('app api schemas', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         exportCreatedAt: timestamp,
         exportFormatVersion: 3,
+        knowledgeNotebookRevision: 'a'.repeat(40),
         contentInventory: [
           {
             path: 'records/workspace-record.json',
@@ -1789,6 +1799,7 @@ describe('app api schemas', () => {
       exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       fileCount: 1,
+      manifest: { knowledgeNotebookRevision: 'a'.repeat(40) },
     });
 
     expect(() =>
@@ -5448,6 +5459,9 @@ describe('app api schemas', () => {
           type: 'knowledge',
           knowledgeProposalId: 'knowledge_proposal_demo',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          proposalDigest: knowledgeProposalDigest,
+          baseRevision: knowledgeBaseRevision,
+          candidateRevision: knowledgeCandidateRevision,
           status: 'pending',
         },
         actions: [
@@ -5598,6 +5612,9 @@ describe('app api schemas', () => {
         SubmitKnowledgeProposalDecisionRequestSchema.parse({
           requestId: requestIds[decision],
           decision,
+          proposalDigest: knowledgeProposalDigest,
+          baseRevision: knowledgeBaseRevision,
+          candidateRevision: knowledgeCandidateRevision,
         }).decision
       ).toBe(decision);
     }
@@ -5607,6 +5624,12 @@ describe('app api schemas', () => {
         reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
         proposalId: 'kp_demo',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        ownerScope: {
+          kind: 'workspace' as const,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
+        baseRevision: knowledgeBaseRevision,
+        candidateRevision: knowledgeCandidateRevision,
         requestId: requestIds.accepted,
         decision: 'accepted' as const,
         actor: { kind: 'user' as const, id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
@@ -5620,6 +5643,7 @@ describe('app api schemas', () => {
         knowledgePageId,
         contentDigest: knowledgeContentDigest,
         present: true as const,
+        notebookRevision: knowledgeCandidateRevision,
       },
     };
 
@@ -5661,12 +5685,20 @@ describe('app api schemas', () => {
       },
     ],
   ])('rejects removed knowledge proposal request %s', (_name, request) => {
-    expect(SubmitKnowledgeProposalDecisionRequestSchema.safeParse(request).success).toBe(false);
+    expect(
+      SubmitKnowledgeProposalDecisionRequestSchema.safeParse({
+        proposalDigest: knowledgeProposalDigest,
+        baseRevision: knowledgeBaseRevision,
+        candidateRevision: knowledgeCandidateRevision,
+        ...request,
+      }).success
+    ).toBe(false);
   });
 
   it('accepts only bounded knowledge proposal reversal projections', () => {
     const request = {
       requestId: '00000000-0000-4000-8000-000000000618',
+      baseRevision: knowledgeCandidateRevision,
       reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
       knowledgePageId,
       expectedContentDigest: knowledgeContentDigest,
@@ -5678,6 +5710,7 @@ describe('app api schemas', () => {
         knowledgePageId: request.knowledgePageId,
         contentDigest: request.expectedContentDigest,
         present: false as const,
+        notebookRevision: 'c'.repeat(40),
       },
     };
 

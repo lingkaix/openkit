@@ -23,6 +23,7 @@ import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -47,6 +48,7 @@ function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   const store = new FsStore({ dataRoot: root });
   const demo = createDemoWorkspaceForUser(FIXTURE_LOCAL_USER_ID);
   store.importWorkspaceSnapshot({
+    ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: [] }),
     workspace: demo.workspace,
     threads: [demo.thread],
     knowledge: [],
@@ -366,8 +368,15 @@ describe('Workspace JSON transfer cutover', () => {
     const sourceWeb = sessionApp(source);
     const targetWeb = sessionApp(target);
     const content = 'Web session archive: café and exact retained content.';
+    const notebookResponse = await sourceWeb.request(
+      ...request('/api/app/operations/knowledge.list', { workspaceId: DEMO_WORKSPACE_ID })
+    );
+    expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
+    const { notebookRevision } = await notebookResponse.json();
     const [createPath, createInit] = request('/api/app/operations/knowledge.create', {
       workspaceId: DEMO_WORKSPACE_ID,
+      baseRevision: notebookRevision,
+      knowledgePageId: 'web-archive-proof',
       title: 'Web archive proof',
       kind: 'project-context',
       content,

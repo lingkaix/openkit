@@ -1,9 +1,12 @@
 // openkit-test-platform: posix
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 
 import {
   readWorkspacePortableFileState,
@@ -25,6 +28,23 @@ const PORTABLE_OWNERS = {
 /** Creates one empty real workspace root. */
 function workspaceRoot(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
+}
+
+/** Publishes exact codec-test page bytes in a fresh Git content owner; this supplies no native admission. */
+function seedNotebook(root: string, files: Readonly<Record<string, string>>): void {
+  new KnowledgeNotebook({ repositoryPath: join(root, 'knowledge', 'notebook.git') }).initialize({
+    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...files },
+    metadata: {
+      summary: 'Portable file codec fixture',
+      changeRequest: {
+        requestId: randomUUID(),
+        inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(files)).digest('hex')}`,
+      },
+      producer: { kind: 'user', id: testEntityId('usr', 'portable-files') },
+      authority: { kind: 'direct', instructionReference: 'test-fixture:portable-files' },
+      sourceReferences: [],
+    },
+  });
 }
 
 /** Writes one exact JSONL fixture and creates its real parent directories. */
@@ -192,29 +212,16 @@ function writePortableFixture(root: string): void {
     '{\n  // exact comment\n  "schemaVersion": 1\n}\n'
   );
   mkdirSync(join(root, 'knowledge', 'schema'), { recursive: true });
-  writeFileSync(join(root, 'knowledge', 'schema', 'workspace-schema.yaml'), 'custom: true\n');
-  mkdirSync(join(root, 'knowledge', 'pages'), { recursive: true });
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'native.md'),
-    '---\ntype: "RepoConvention"\ntitle: "Native"\n---\nNative page.\n'
-  );
-  mkdirSync(join(root, 'knowledge', 'pages', 'nested'), { recursive: true });
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'nested', 'native.md'),
-    '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n'
-  );
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'nested', 'index.md'),
-    '# Nested authored index\n\nKeep this navigation byte-for-byte.\n'
-  );
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'nested', 'log.md'),
-    '# Nested authored log\n\nKeep this history byte-for-byte.\n'
-  );
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'kn_owned.md'),
-    '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n'
-  );
+  writeFileSync(join(root, 'knowledge', 'schema', 'scope-schema.yaml'), 'custom: true\n');
+  seedNotebook(root, {
+    'native.md': '---\ntype: "RepoConvention"\ntitle: "Native"\n---\nNative page.\n',
+    'nested/native.md':
+      '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n',
+    'nested/index.md': '# Nested authored index\n\nKeep this navigation byte-for-byte.\n',
+    'nested/log.md': '# Nested authored log\n\nKeep this history byte-for-byte.\n',
+    'kn_owned.md':
+      '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n',
+  });
   const packageRoot = join(root, 'threads', PORTABLE_TURN.threadId, 'turns', PORTABLE_TURN.turnId);
   mkdirSync(join(packageRoot, 'context-package'), { recursive: true });
   writeFileSync(
@@ -260,6 +267,16 @@ describe('workspace portable file-state IO', () => {
     const state = readWorkspacePortableFileState(source, PORTABLE_OWNERS);
     expect(JSON.stringify([...state.retrievalTraceFiles.values()])).not.toContain('futureNote');
     expect(readFileSync(retrievalPath, 'utf8')).toContain('futureNote');
+    // The import coordinator owns content publication; the file-state writer owns only its other families.
+    seedNotebook(
+      target,
+      Object.fromEntries(
+        [...state.nativeKnowledgePages].map(([path, content]) => [
+          path.slice('knowledge/pages/'.length),
+          content,
+        ])
+      )
+    );
     writeWorkspacePortableFileState(target, state);
     const reopened = readWorkspacePortableFileState(target, PORTABLE_OWNERS);
     expect(reopened.retrievalTraceFiles).toEqual(state.retrievalTraceFiles);
@@ -289,10 +306,7 @@ describe('workspace portable file-state IO', () => {
     writePortableFixture(sourceRoot);
     mkdirSync(join(targetRoot, 'knowledge', 'schema'), { recursive: true });
     mkdirSync(join(targetRoot, 'knowledge', 'pages'), { recursive: true });
-    writeFileSync(
-      join(targetRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
-      'default: true\n'
-    );
+    writeFileSync(join(targetRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'default: true\n');
     writeFileSync(
       join(targetRoot, 'knowledge', 'pages', 'kn_target.md'),
       '---\nopenkit_entry_id: "kn_target"\n---\nTarget owned page.\n'
@@ -310,6 +324,7 @@ describe('workspace portable file-state IO', () => {
       'resolved',
     ]);
     expect([...state.nativeKnowledgePages.keys()]).toEqual([
+      'knowledge/pages/index.md',
       'knowledge/pages/kn_owned.md',
       'knowledge/pages/native.md',
       'knowledge/pages/nested/index.md',
@@ -334,6 +349,15 @@ describe('workspace portable file-state IO', () => {
       ],
     ]);
 
+    seedNotebook(
+      targetRoot,
+      Object.fromEntries(
+        [...state.nativeKnowledgePages].map(([path, content]) => [
+          path.slice('knowledge/pages/'.length),
+          content,
+        ])
+      )
+    );
     writeWorkspacePortableFileState(targetRoot, state);
 
     const roundTripped = readWorkspacePortableFileState(targetRoot, PORTABLE_OWNERS);
@@ -343,9 +367,9 @@ describe('workspace portable file-state IO', () => {
     expect(readFileSync(join(targetRoot, 'config', 'workspace.jsonc'), 'utf8')).toBe(
       state.workspaceConfig
     );
-    expect(
-      readFileSync(join(targetRoot, 'knowledge', 'schema', 'workspace-schema.yaml'), 'utf8')
-    ).toBe('custom: true\n');
+    expect(readFileSync(join(targetRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')).toBe(
+      'custom: true\n'
+    );
     expect(readFileSync(join(targetRoot, 'knowledge', 'claims', '202607.jsonl'), 'utf8')).toBe(
       `${(state.claims.get('202607') ?? []).map((row) => JSON.stringify(row)).join('\n')}\n`
     );
@@ -383,7 +407,7 @@ describe('workspace portable file-state IO', () => {
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched\n');
     symlinkSync(
       join(outsideRoot, 'sentinel.txt'),
-      join(linkedRoot, 'knowledge', 'pages', 'linked.md')
+      join(linkedRoot, 'knowledge', 'claims', '202608.jsonl')
     );
     expect(() => readWorkspacePortableFileState(linkedRoot, PORTABLE_OWNERS)).toThrow(
       /symbolic link/i

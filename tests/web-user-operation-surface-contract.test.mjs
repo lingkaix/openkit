@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 265;
+const EXPECTED_CATALOG_SIZE = 269;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 187;
+const EXPECTED_INCLUDED_SIZE = 191;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -148,6 +148,10 @@ const WEB_OPERATION_GROUPS = {
     'evidence.runtime-list': { disposition: 'live', surface: 'Debug' },
   },
   'Knowledge Manager': {
+    'knowledge.notebook.history': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.diff': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.restore': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.update': { disposition: 'workflow', surface: 'Knowledge' },
     'knowledge.answer': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.health.check': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.proposal.draft': { disposition: 'roadmap', roadmap: 'R070' },

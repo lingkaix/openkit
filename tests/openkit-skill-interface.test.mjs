@@ -848,6 +848,9 @@ test('one catalog covers the checked App API and public Core projection', async 
   const proposalDecisionInput = {
     workspaceId: 'ws_00000000-0000-7588-a4ef-fda698630734',
     proposalId: 'proposal_1',
+    baseRevision: '1'.repeat(40),
+    candidateRevision: '2'.repeat(40),
+    proposalDigest: `sha256:${'b'.repeat(64)}`,
     requestId: '00000000-0000-4000-8000-000000000001',
     decision: 'accepted',
   };
@@ -873,10 +876,12 @@ test('one catalog covers the checked App API and public Core projection', async 
   const proposalReverseInput = {
     workspaceId: 'ws_00000000-0000-7588-a4ef-fda698630734',
     proposalId: 'proposal_1',
+    baseRevision: '2'.repeat(40),
     requestId: '00000000-0000-4000-8000-000000000002',
     reviewId: 'kr_00000000-0000-5000-8000-000000000001',
     knowledgePageId: 'lessons/release-review',
     expectedContentDigest: `sha256:${'a'.repeat(64)}`,
+    confirmRemoval: true,
   };
   assert.equal(proposalReverse.clientMethod, 'operations.knowledge.proposal.reverse');
   assert.equal(proposalReverse.appOperationId, 'knowledge.proposal.reverse');

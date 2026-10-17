@@ -882,6 +882,7 @@ describe('worker Context Package owner', () => {
       objectId: retrievalTraceId,
     };
     const contentDigest = sha256(KNOWLEDGE_PAGE_BYTES);
+    const notebookRevision = 'a'.repeat(40);
     const packageFiles = createWorkerContextPackageFiles({
       contextBudgetTokens: 4_096,
       includedItemIds: ['it_00000000-0000-7a3c-ae74-d9d096838a5d'],
@@ -889,6 +890,7 @@ describe('worker Context Package owner', () => {
         {
           content: KNOWLEDGE_PAGE_BYTES,
           contentDigest,
+          notebookRevision,
           knowledgePageId: 'lessons/task-mode',
           sourceRefs: [
             'source:ks_00000000-0000-7930-9f0d-0ed5d41a7410',
@@ -907,6 +909,7 @@ describe('worker Context Package owner', () => {
 
     const expectedSelection = {
       contentDigest,
+      notebookRevision,
       knowledgePageId: 'lessons/task-mode',
       packagePath: 'knowledge/pages/lessons/task-mode.md',
       sourceRefs: [

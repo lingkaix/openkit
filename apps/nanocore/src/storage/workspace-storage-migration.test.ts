@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -18,6 +18,7 @@ import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -104,6 +105,19 @@ function createOwnerNestedWorkspaceRoot(
     )}\n`
   );
 
+  // This fixture varies the outer storage layout, not the current Notebook content format.
+  new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  }).initialize({
+    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+    metadata: {
+      summary: 'Storage-layout fixture',
+      producer: { kind: 'user', id: ownerUserId },
+      authority: { kind: 'direct', instructionReference: 'test-fixture:storage-layout' },
+      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'0'.repeat(64)}` },
+      sourceReferences: [],
+    },
+  });
   return workspaceRoot;
 }
 

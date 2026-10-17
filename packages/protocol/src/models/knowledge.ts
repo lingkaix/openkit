@@ -10,7 +10,7 @@ export const KnowledgeEntrySchema = z.object({
   id: KnowledgeEntryIdSchema,
   kind: z.enum(['preference', 'project-context', 'task-summary']),
   title: z.string().min(1),
-  content: z.string().min(1),
+  content: z.string(),
   sourceReferences: z.array(z.string().min(1)).optional(),
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
