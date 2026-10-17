@@ -53,7 +53,14 @@ describe('createDiagnosticsSnapshot', () => {
     expect(snapshot).toMatchObject({
       auth: { mode: 'local' },
       dataRoot: 'configured',
-      migrations: { applied: ['core_0000_setup', 'core_0001_concurrent_turn_capacity'] },
+      migrations: {
+        applied: [
+          'core_0000_setup',
+          'core_0001_concurrent_turn_capacity',
+          'core_0002_durable_recurring_schedules',
+          'core_0003_equal_workspace_members',
+        ],
+      },
       mode: 'local',
       providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
       agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],

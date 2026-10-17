@@ -1,3 +1,4 @@
+import type { AutomationRecord } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { parseWorkspaceSharingError } from './app.js';
 import { type CoreClient, createCoreClient } from './client.js';
@@ -502,17 +503,28 @@ function userMessageItem() {
   };
 }
 
-/** Returns one valid automation record. */
-function automation() {
+/** Returns one paused schedule with its immutable automation actor. */
+function automation(): AutomationRecord {
   return {
     id: 'auto_00000000-0000-7934-bc11-14512d3a737a',
     name: 'Demo automation',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    cron: '0 9 * * *',
+    threadId: 'th_00000000-0000-7723-8254-2805c5537655',
+    intervalSeconds: 3600,
     prompt: 'Summarize status.',
+    responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+    actor: {
+      kind: 'automation',
+      id: 'auto_00000000-0000-7934-bc11-14512d3a737a',
+      responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+    },
     status: 'paused',
+    revision: 1,
+    nextScheduledAt: null,
+    greatestAccountedScheduledAt: null,
     createdAt: timestamp,
     updatedAt: timestamp,
+    deletedAt: null,
   };
 }
 
@@ -4428,9 +4440,9 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/operations/diagnostics.setup': { body: setupDiagnostics() },
       'POST /api/app/operations/automation.list': { body: { items: [automation()] } },
-      'POST /api/app/operations/automation.create': { body: automation() },
+      'POST /api/app/operations/automation.create': { body: automation(), status: 201 },
       'POST /api/app/operations/automation.update': {
-        body: { ...automation(), status: 'enabled' },
+        body: { ...automation(), status: 'active', revision: 2, nextScheduledAt: timestamp },
       },
       'POST /api/app/operations/turn.feedback': {
         body: {
@@ -4513,18 +4525,23 @@ describe('createCoreClient', () => {
       client.operations['automation.create']({
         name: 'Demo automation',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        cron: '0 9 * * *',
+        threadId: automation().threadId,
+        intervalSeconds: 3600,
         prompt: 'Summarize status.',
       })
     ).resolves.toEqual(automation());
     await expect(
       client.operations['automation.update']({
         automationId: 'auto_00000000-0000-7934-bc11-14512d3a737a',
-        status: 'enabled',
+        expectedRevision: 1,
+        status: 'active',
+        scheduledAt: timestamp,
       })
     ).resolves.toEqual({
       ...automation(),
-      status: 'enabled',
+      status: 'active',
+      revision: 2,
+      nextScheduledAt: timestamp,
     });
     await expect(
       client.operations['turn.feedback']({
