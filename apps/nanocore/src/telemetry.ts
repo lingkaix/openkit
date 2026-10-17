@@ -1,4 +1,13 @@
-import { INVALID_SPAN_CONTEXT, type Span, SpanKind, trace } from '@opentelemetry/api';
+import {
+  type Context,
+  INVALID_SPAN_CONTEXT,
+  ROOT_CONTEXT,
+  type Span,
+  SpanKind,
+  trace,
+} from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import {
@@ -32,6 +41,8 @@ const INVALID_ENDPOINT_DIAGNOSTIC =
 const START_FAILURE_DIAGNOSTIC = 'Telemetry export could not start; product boot continues.';
 
 let activeProvider: NodeTracerProvider | null = null;
+let activeContextManager: AsyncLocalStorageContextManager | null = null;
+const traceContextPropagator = new W3CTraceContextPropagator();
 
 /**
  * Resolves nested process.telemetry truth conditions from standard OTEL env vars.
@@ -116,6 +127,7 @@ export function startTelemetry(options: {
       }),
       spanProcessors: [processor],
     });
+    activeContextManager = new AsyncLocalStorageContextManager().enable();
     activeProvider = provider;
   } catch {
     console.warn(START_FAILURE_DIAGNOSTIC);
@@ -129,7 +141,10 @@ export function startTelemetry(options: {
  */
 export async function shutdownTelemetry(): Promise<void> {
   const provider = activeProvider;
+  const contextManager = activeContextManager;
   activeProvider = null;
+  activeContextManager = null;
+  contextManager?.disable();
   try {
     if (provider) {
       await provider.shutdown();
@@ -150,22 +165,97 @@ export async function shutdownTelemetry(): Promise<void> {
 export function createHttpTelemetryMiddleware(): MiddlewareHandler {
   return async (c, next) => {
     const span = activeProvider
-      ? activeProvider.getTracer(SERVICE_NAME).startSpan('http.server.request', {
-          kind: SpanKind.SERVER,
-          attributes: {
-            'http.request.method': c.req.method,
+      ? activeProvider.getTracer(SERVICE_NAME).startSpan(
+          'http.server.request',
+          {
+            kind: SpanKind.SERVER,
+            attributes: {
+              'http.request.method': c.req.method,
+            },
           },
-        })
+          ROOT_CONTEXT
+        )
       : trace.wrapSpanContext(INVALID_SPAN_CONTEXT);
 
-    try {
-      await next();
-      recordHttpHandoff(span, c.req.method, c.req.matchedRoutes, c.res.status);
-    } catch (error) {
-      recordHttpHandoff(span, c.req.method, c.req.matchedRoutes, c.res.status || 500);
-      throw error;
-    }
+    const handle = async () => {
+      try {
+        await next();
+        recordHttpHandoff(span, c.req.method, c.req.matchedRoutes, c.res.status);
+      } catch (error) {
+        recordHttpHandoff(span, c.req.method, c.req.matchedRoutes, c.res.status || 500);
+        throw error;
+      }
+    };
+    return activeContextManager
+      ? activeContextManager.with(trace.setSpan(ROOT_CONTEXT, span), handle)
+      : handle();
   };
+}
+
+/**
+ * Starts one Turn's dispatch under its private context and ends the initiation span immediately.
+ * Async work keeps the ended parent context without holding a span through effect delivery waits.
+ * @param turnId Existing accepted Turn identity, never minted for telemetry.
+ * @param dispatch Existing dispatch invocation; its return value and errors are unchanged.
+ * @returns The invocation's original result, including its unmodified Promise when asynchronous.
+ */
+export function withTurnDispatchTelemetry<T>(turnId: string, dispatch: () => T): T {
+  const manager = activeContextManager;
+  if (!activeProvider || !manager) return dispatch();
+  const span = activeProvider.getTracer(SERVICE_NAME).startSpan(
+    'worker.turn.dispatch',
+    {
+      attributes: { 'openkit.turn.id': turnId },
+    },
+    manager.active()
+  );
+  try {
+    return manager.with(trace.setSpan(manager.active(), span), dispatch);
+  } finally {
+    span.end();
+  }
+}
+
+/** Returns only the current private initiating context, without consulting global instrumentation. */
+export function captureTelemetryContext(): Context | undefined {
+  return activeProvider ? activeContextManager?.active() : undefined;
+}
+
+/**
+ * Injects admitted stock W3C context into command response headers, outside command identity.
+ * @param initiatingContext Context captured when the process-local effect was enqueued.
+ * @param headers Native response header carrier; command bytes are never changed.
+ */
+export function injectTelemetryContext(
+  initiatingContext: Context | undefined,
+  headers: Record<string, string>
+): void {
+  if (!activeProvider || !initiatingContext) return;
+  traceContextPropagator.inject(initiatingContext, headers, {
+    set: (carrier, name, value) => {
+      carrier[name] = value;
+    },
+  });
+}
+
+/**
+ * Records one short accepted-result boundary using only the returned host context.
+ * Invoke after ordinary first settlement; refused/deferred results and duplicate delivery do not emit spans.
+ * @param headers Existing native result request headers; no header becomes a span attribute.
+ */
+export function recordNanoHostEffectAcceptance(headers: Headers | undefined): void {
+  if (!activeProvider) return;
+  try {
+    const parent = headers
+      ? traceContextPropagator.extract(ROOT_CONTEXT, headers, {
+          keys: (carrier) => [...carrier.keys()],
+          get: (carrier, name) => carrier.get(name) ?? undefined,
+        })
+      : ROOT_CONTEXT;
+    activeProvider.getTracer(SERVICE_NAME).startSpan('nanohost.effect.accept', {}, parent).end();
+  } catch {
+    // Optional telemetry cannot change an already accepted product result.
+  }
 }
 
 /** Returns the first nonempty unsupported exporter-header env var name. */

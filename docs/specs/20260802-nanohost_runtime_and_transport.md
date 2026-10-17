@@ -783,6 +783,8 @@ The control session may carry immutable references, digests, lengths, bounded ma
 
 ## Transport Envelope And Worker-Control Liveness
 
+Native command responses and their result requests may carry optional W3C `traceparent` and `tracestate` headers. Stock propagation validates this diagnostic context; absent or malformed context supplies no remote parent and does not change command admission or execution. Context remains outside command input, result identity and their fingerprints, supplies no identity, authority or routing, and changes no readiness, delivery, retry or uncertainty rule. The [telemetry owner](20260731-operational_telemetry_standardization.md#nanohost-correlation) defines bounded span lifetimes and the single link to prior Epoch startup; no trace state is persisted.
+
 Route separation on a shared HTTP/2 connection MUST NOT be implemented through HTTP/2 stream priority. The RFC 9113 priority scheme is deprecated and is not meaningfully implemented by the accepted server or client stacks, so a design that depends on it has no mechanism. This specification therefore names the mechanisms that do exist and the numbers they must satisfy.
 
 ### Nested Flow Control Is The Primary Hazard
