@@ -913,7 +913,7 @@ function pluginEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatalog>)
 }
 
 /** Classifies known native catalog refusals locally; unexpected exceptions keep their identity. */
-function catalogFailure(error: unknown, code: string): never {
+export function catalogFailure(error: unknown, code: string): never {
   if (error instanceof OperationError) throw error;
   if (error instanceof SkillSourceInputError)
     throw new OperationError('invalid_request', error.message, 400, { cause: error });

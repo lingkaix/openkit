@@ -447,6 +447,14 @@ Publish and verify bounded snapshot bytes before one compare-and-set catalog rev
 
 Catalog storage and versioned resource delivery are accepted targets and are not implemented by the current static Skill metadata and mutable MCP configuration. Their lifecycle owners are `docs/specs/20260711-skill_catalog_versioning_pinning.md`, `docs/specs/20260907-mcp_catalog_management.md`, and `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
 
+### Light App Definition Versions And Migration Copies
+
+Reusable Light App definitions extend the existing Workspace Resource Catalog document with lightApps entries, immutable versions and pins; they do not create another catalog file or version store. Inline definitionJson carries the strict bounded declarative schema, and each version retains its digest, parent, producer and creation time. The owning lifecycle is [Generative Kernel Data Operations](20260908-generative_kernel_data_operations.md). Definition selection is separate from the live app data owner and never changes that data implicitly.
+
+Each app continues to own one light-apps/<appId>/data.sqlite. Its kernel_format_version and schema_digest are the kernel-format and active-definition markers. Optional definition_source_json records the template entry/digest as provenance, not a second active-schema pointer. Existing immutable definitions/<sha256>.json files bind the actual admitted app schema. The existing native app journal owns ordinary format migrations; no legacy reader or conversion migration is introduced.
+
+Automatic pre-migration SQLite snapshots and their minimal inspection metadata live beneath that same app root. They are immutable recovery copies, not another business-data authority or a migration ledger. Copy publication precedes definition or format DDL. Snapshot rollback validates the selected app/Workspace and current revision, restores the consistent data copy by atomic placement and retains the existing local command receipt and Audit; it runs no inverse DDL. Backup includes these local recovery files. Missing or corrupt copies fail only the requested operation. The Kernel owner defines the old-format unavailable/explicit-upgrade behavior and the native journal's separate commit boundary.
+
 ## Artifact File Payloads And Derived Media
 
 The existing Artifact record owns each arbitrary-byte original by Artifact id and version. Store file-backed payloads at `artifacts/<artifactId>/versions/<version>/payload` within that Artifact's existing scope. This is a version-owned file, not a new object registry or cross-scope deduplication service. Retained inline text keeps its original bytes and digest; changing representation cannot lose retained data. Artifact/upload semantics follow [Work Resource Interaction](20260713-work_resource_interaction_model.md#file-admission-publication-and-download).

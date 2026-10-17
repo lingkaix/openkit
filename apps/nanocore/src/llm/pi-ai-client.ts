@@ -1183,7 +1183,7 @@ export class PiAiGatewayClient {
     if (request.parallel_tool_calls !== undefined)
       options.samplingParams = { parallel_tool_calls: request.parallel_tool_calls };
     this.applyRequestPayloadOverlay(options, model, maxTokens, request.parallel_tool_calls);
-    applyCodexTransport(options, model, transport);
+    applyProviderTransport(options, model, transport);
     this.bindFinalRequestAdmission(options, model, transport);
     this.bindRawOutput(options, model, transport);
     return options;
@@ -1348,7 +1348,7 @@ export class PiAiGatewayClient {
         }
         envelope.output = envelope.output.toSorted((left, right) => left.index - right.index);
       };
-    applyCodexTransport(options, selectedModel, transport);
+    applyProviderTransport(options, selectedModel, transport);
     this.bindFinalRequestAdmission(options, selectedModel, transport);
     this.bindRawOutput(options, selectedModel, transport);
     return options;
@@ -2016,12 +2016,31 @@ export class PiAiGatewayClient {
   }
 }
 
-/** Applies the stock native Codex transport and caller-held header continuity to either public format. */
-function applyCodexTransport(
+/** Preserves native Codex continuity and observes only actual HTTP rejection statuses. */
+function applyProviderTransport(
   options: StreamOptions,
   selectedModel: Model<string>,
   transport: LLMGatewayTransportContext
 ): void {
+  if (
+    transport.onProviderHttpRejection &&
+    (selectedModel.api === 'openai-responses' || selectedModel.api === 'openai-completions')
+  ) {
+    // These stock APIs expose onResponse only after success, then flatten HTTP errors into text.
+    // Observe the unchanged response before that loss; never inspect its headers or body.
+    const upstreamFetch = options.fetch ?? globalThis.fetch;
+    options.fetch = async (...args) => {
+      const response = await upstreamFetch(...args);
+      if (Number.isInteger(response.status) && response.status >= 400 && response.status <= 599) {
+        try {
+          transport.onProviderHttpRejection?.(response.status);
+        } catch {
+          // Optional diagnostics cannot change inference or routing-bearing failure metadata.
+        }
+      }
+      return response;
+    };
+  }
   if (selectedModel.api === 'openai-codex-responses') {
     options.transport = 'sse';
     if (transport.codexTurnState)

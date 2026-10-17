@@ -103,7 +103,7 @@ export function createSchemaDdl(schema: LightAppAdmittedSchema): string[] {
 }
 
 /**
- * Builds ALTER TABLE statements that add newly admitted nullable columns.
+ * Builds transactional DDL for admitted additions and actual field removal.
  *
  * @param previous Previously admitted schema.
  * @param next Newly admitted schema.
@@ -117,9 +117,52 @@ export function additiveSchemaDdl(
   for (const collection of next.collections) {
     const prior = previous.collections.find((candidate) => candidate.id === collection.id);
     if (!prior) {
+      statements.push(
+        ...createSchemaDdl(next).filter(
+          (statement) =>
+            statement.startsWith(
+              `CREATE TABLE ${quoteIdent(collectionTableName(collection.id))} `
+            ) || statement.includes(` ON ${quoteIdent(collectionTableName(collection.id))} `)
+        )
+      );
       continue;
     }
     const table = quoteIdent(collectionTableName(collection.id));
+    const removed = prior.fields.filter(
+      (field) => !collection.fields.some((nextField) => nextField.id === field.id)
+    );
+    if (removed.length > 0) {
+      // A table rebuild also removes table-level relation constraints.
+      // Deferred checks keep inbound relations valid until the same stable table is back.
+      const temporary = quoteIdent(`${collectionTableName(collection.id)}_migration`);
+      const ddl = createSchemaDdl(next).filter(
+        (statement) =>
+          statement.startsWith(`CREATE TABLE ${table} `) || statement.includes(` ON ${table} `)
+      );
+      statements.push('PRAGMA defer_foreign_keys = ON');
+      statements.push(ddl[0]!.replace(`CREATE TABLE ${table} `, `CREATE TABLE ${temporary} `));
+      const columns = [
+        'id',
+        'revision',
+        'created',
+        'updated',
+        'creator_json',
+        'last_mutator_json',
+        'create_request_id',
+        'last_request_id',
+        'write_schema_revision',
+        ...collection.fields
+          .filter((field) => prior.fields.some((old) => old.id === field.id))
+          .map((field) => fieldColumnName(field.id)),
+      ]
+        .map(quoteIdent)
+        .join(', ');
+      statements.push(`INSERT INTO ${temporary} (${columns}) SELECT ${columns} FROM ${table}`);
+      statements.push(`DROP TABLE ${table}`);
+      statements.push(`ALTER TABLE ${temporary} RENAME TO ${table}`);
+      statements.push(...ddl.slice(1));
+      continue;
+    }
     const known = new Set(prior.fields.map((field) => field.id));
     for (const field of collection.fields) {
       if (known.has(field.id)) {
@@ -128,7 +171,7 @@ export function additiveSchemaDdl(
       const column = quoteIdent(fieldColumnName(field.id));
       const check = fieldCheckSql(field, column);
       statements.push(
-        `ALTER TABLE ${table} ADD COLUMN ${column} ${sqliteTypeForField(field)}${check ? ` CHECK (${check})` : ''}`
+        `ALTER TABLE ${table} ADD COLUMN ${column} ${sqliteTypeForField(field)}${check ? ` CHECK (${check})` : ''}${field.type === 'relation' ? ` REFERENCES ${quoteIdent(collectionTableName((field.options as { collection: string }).collection))}(id) ON DELETE RESTRICT` : ''}`
       );
     }
   }

@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createDemoStore } from '../test-support/demo-store.js';
 import type { KernelCommandContext } from './commands.js';
 import {
@@ -17,6 +17,11 @@ import {
   updateRecord,
 } from './commands.js';
 import { KernelCommandError } from './errors.js';
+
+const temporaryRoots: string[] = [];
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 const MAPPING_SCHEMA: LightAppSchemaInput = {
   format: 'openkit.light-app',
@@ -69,6 +74,7 @@ const MAPPING_SCHEMA: LightAppSchemaInput = {
  */
 function createContext(requestId = randomUUID()): KernelCommandContext & { workspaceId: string } {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-kernel-'));
+  temporaryRoots.push(dataRoot);
   const store = createDemoStore({ dataRoot });
   return {
     store,

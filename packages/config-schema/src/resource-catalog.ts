@@ -84,6 +84,48 @@ export const SkillPinRecordSchema = z
   })
   .strict();
 
+/** Immutable declarative Light App template revision; native admission validates its exact definition. */
+export const LightAppDefinitionVersionRecordSchema = z
+  .object({
+    createdAt: z.string().min(1),
+    definitionJson: z
+      .string()
+      .min(1)
+      .max(262_144)
+      .refine(
+        (value) => Buffer.byteLength(value, 'utf8') <= 262_144,
+        'Light App definition exceeds the 256 KiB UTF-8 limit.'
+      ),
+    digest: ResourceDigestSchema,
+    entryId: ResourceCatalogIdSchema,
+    parentDigest: ResourceDigestSchema.nullable(),
+    producer: CatalogProducerSchema,
+  })
+  .strict();
+
+/** Workspace-owned reusable Light App definition identity and future-use default. */
+export const LightAppDefinitionEntryRecordSchema = z
+  .object({
+    availability: z.enum(['available', 'removed']),
+    currentDigest: ResourceDigestSchema.nullable(),
+    displayName: z.string().min(1),
+    id: ResourceCatalogIdSchema,
+  })
+  .strict();
+
+/** Exact Light App template pin for explicit future creation or activation. */
+export const LightAppDefinitionPinRecordSchema = z
+  .object({ digest: ResourceDigestSchema, entryId: ResourceCatalogIdSchema })
+  .strict();
+
+const LightAppDefinitionCatalogSchema = z
+  .object({
+    entries: z.array(LightAppDefinitionEntryRecordSchema).default([]),
+    pins: z.array(LightAppDefinitionPinRecordSchema).default([]),
+    versions: z.array(LightAppDefinitionVersionRecordSchema).default([]),
+  })
+  .strict();
+
 /** Bounded Skill candidate requesting promotion review. */
 export const SkillCandidateRecordSchema = z
   .object({
@@ -268,6 +310,7 @@ export const PluginInstallationRecordSchema = z
 /** One owner-scope catalog document. */
 export const ResourceCatalogDocumentSchema = z
   .object({
+    lightApps: LightAppDefinitionCatalogSchema.default({ entries: [], pins: [], versions: [] }),
     mcp: z
       .object({
         bindings: z.array(McpBindingRecordSchema).default([]),
@@ -328,6 +371,19 @@ const McpConfigVersionRecordReaderSchema = McpConfigVersionRecordSchema.safeExte
 
 /** Retained catalog reader preserving owned descriptive history while keeping effect declarations exact. */
 export const ResourceCatalogDocumentReaderSchema = ResourceCatalogDocumentSchema.safeExtend({
+  lightApps: LightAppDefinitionCatalogSchema.safeExtend({
+    entries: z.array(LightAppDefinitionEntryRecordSchema.passthrough()).default([]),
+    pins: z.array(LightAppDefinitionPinRecordSchema.passthrough()).default([]),
+    versions: z
+      .array(
+        LightAppDefinitionVersionRecordSchema.safeExtend({
+          producer: CatalogProducerReaderSchema,
+        }).passthrough()
+      )
+      .default([]),
+  })
+    .passthrough()
+    .default({ entries: [], pins: [], versions: [] }),
   skills: ResourceCatalogDocumentSchema.shape.skills
     .safeExtend({
       candidates: z.array(SkillCandidateRecordReaderSchema).default([]),
@@ -372,6 +428,19 @@ export const ResourceCatalogDocumentReaderSchema = ResourceCatalogDocumentSchema
 
 /** Known catalog projection for public and effect consumers; retained annotations stay at the owner. */
 export const ResourceCatalogDocumentViewSchema = ResourceCatalogDocumentSchema.safeExtend({
+  lightApps: LightAppDefinitionCatalogSchema.safeExtend({
+    entries: z.array(LightAppDefinitionEntryRecordSchema.strip()).default([]),
+    pins: z.array(LightAppDefinitionPinRecordSchema.strip()).default([]),
+    versions: z
+      .array(
+        LightAppDefinitionVersionRecordSchema.safeExtend({
+          producer: CatalogProducerSchema.strip(),
+        }).strip()
+      )
+      .default([]),
+  })
+    .strip()
+    .default({ entries: [], pins: [], versions: [] }),
   skills: ResourceCatalogDocumentSchema.shape.skills
     .safeExtend({
       candidates: z
@@ -470,6 +539,11 @@ export const PortableSkillEntrySchema = z
   })
   .strict();
 
+/** Historical Light App definition identity without target selection authority. */
+export const PortableLightAppDefinitionEntrySchema = LightAppDefinitionEntryRecordSchema.omit({
+  currentDigest: true,
+}).extend({ sourceCurrentDigest: ResourceDigestSchema.nullable() });
+
 /** MCP version metadata that cannot reconstruct a runnable declaration. */
 export const PortableMcpVersionSchema = z
   .object({
@@ -493,6 +567,14 @@ export const PortableMcpVersionSchema = z
 /** Strict whitelist projection of one Workspace resource catalog. */
 export const PortableAgentResourceCatalogSchema = z
   .object({
+    lightApps: z
+      .object({
+        entries: z.array(PortableLightAppDefinitionEntrySchema),
+        pins: z.array(LightAppDefinitionPinRecordSchema),
+        versions: z.array(LightAppDefinitionVersionRecordSchema),
+      })
+      .strict()
+      .default({ entries: [], pins: [], versions: [] }),
     mcp: z
       .object({
         entries: z.array(McpEntryRecordSchema.omit({ currentVersionDigest: true })),
@@ -528,6 +610,13 @@ export const PortableSkillPayloadSchema = z
 
 /** Parsed resource catalog document. */
 export type ResourceCatalogDocument = z.infer<typeof ResourceCatalogDocumentSchema>;
+/** Parsed reusable Light App definition entry. */
+export type LightAppDefinitionEntryRecord = z.infer<typeof LightAppDefinitionEntryRecordSchema>;
+/** Parsed immutable Light App template revision. */
+export type LightAppDefinitionVersionRecord = z.infer<typeof LightAppDefinitionVersionRecordSchema>;
+/** Parsed future-use template pin. */
+export type LightAppDefinitionPinRecord = z.infer<typeof LightAppDefinitionPinRecordSchema>;
+
 /** Parsed Skill entry. */
 export type SkillEntryRecord = z.infer<typeof SkillEntryRecordSchema>;
 /** Parsed Skill version. */
