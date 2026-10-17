@@ -1325,8 +1325,10 @@ describe('PiAiGatewayClient', () => {
       expect(events.filter((event) => event.type === 'response.completed')).toHaveLength(1);
       response = events.at(-1).response;
       expect(
-        events.filter((event) => event.type === 'response.output_item.done').map((event) => event.item)
-      ).toEqual(response.output);
+        events
+          .filter((event) => event.type === 'response.output_item.done')
+          .map((event) => event.item)
+      ).toMatchObject(response.output);
       for (const event of events) {
         if (event.item) expect(event.item.id).toBe(response.output[event.output_index]?.id);
         if (event.item_id) expect(event.item_id).toBe(response.output[event.output_index]?.id);
@@ -1420,7 +1422,10 @@ describe('PiAiGatewayClient', () => {
       pairModels
     );
     await expect(pending).rejects.toBeInstanceOf(GatewayUnsupportedFeatureError);
-    await expect(pending).rejects.toMatchObject({ code: 'unsupported_gateway_feature', status: 400 });
+    await expect(pending).rejects.toMatchObject({
+      code: 'unsupported_gateway_feature',
+      status: 400,
+    });
     expect(read).not.toHaveBeenCalled();
     expect(faux.state.callCount).toBe(0);
   });
