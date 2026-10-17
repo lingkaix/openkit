@@ -190,7 +190,7 @@ describe('administration conversation route', () => {
           'NanoHost is the execution host, not an LLM Provider.'
         );
         expect(request.instructions).toContain(
-          'Use nanohost.runtime-target to read host RuntimeTarget readiness'
+          'Use nanohost_runtime-target to read host RuntimeTarget readiness'
         );
         expect(request.instructions).toContain(
           'returns Core stored projection at observedAt rather than a live host probe'
@@ -199,9 +199,7 @@ describe('administration conversation route', () => {
           'Never infer that NanoHost is unconfigured or unready from Provider catalog absence or zero Worker environments.'
         );
         expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual([
-          ...ADMINISTRATION_TOOL_NAMES.map((name) =>
-            name.replaceAll('.', '_').replaceAll('-', '_')
-          ),
+          ...ADMINISTRATION_TOOL_NAMES.map((name) => name.replaceAll('.', '_')),
         ]);
         primaryConfigured = true;
         return {
