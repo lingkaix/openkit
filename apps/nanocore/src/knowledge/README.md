@@ -31,4 +31,4 @@ Fresh Workspace Notebook initialization adds the OKF root version and initial na
 
 Retained trace reads keep their exact Notebook commit and also check current recursive Knowledge source sensitivity and audience. Later source restrictions cannot be bypassed with an older trace. Trace refusals use the existing redacted trace error; no source identity or content appears in the refusal.
 
-Workspace direct-read and dashboard Knowledge counts use the current authorized published Notebook entry projection, so a native publication is visible before restart and revoked Source audiences do not disclose a page count. Canonical page bytes remain Git-owned; cached Workspace counts do not own this projection.
+Workspace collection, direct-read and dashboard Knowledge counts use the current authorized published Notebook entry projection, so a native publication is visible before restart and revoked Source audiences do not disclose a page count. Canonical page bytes remain Git-owned; cached Workspace counts do not own this projection.

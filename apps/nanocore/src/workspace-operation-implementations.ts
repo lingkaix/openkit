@@ -242,12 +242,33 @@ export function createWorkspaceOperationImplementations(
       try {
         const workspaceIds =
           context.scope.kind === 'authorized-workspace-set' ? context.scope.workspaceIds : [];
-        return readAuthorizedWorkspaces(
-          dependencies.coreDb!,
-          dependencies.store!,
-          publicOperationActor(context),
-          workspaceIds
-        );
+        const store = dependencies.store!;
+        const actor = publicOperationActor(context);
+        const result = readAuthorizedWorkspaces(dependencies.coreDb!, store, actor, workspaceIds);
+        const dataRoot = store.getDataRoot();
+        if (!dataRoot) return result;
+        return {
+          ...result,
+          items: result.items.map((entry) => ({
+            ...entry,
+            workspace: {
+              ...entry.workspace,
+              counts: {
+                ...entry.workspace.counts,
+                knowledgeEntryCount: readAuthorizedWorkspaceNotebookPages({
+                  dataRoot,
+                  workspaceId: entry.workspace.id,
+                  access: {
+                    store,
+                    coreDb: dependencies.coreDb,
+                    actor: { kind: 'user', id: actor.userId },
+                    requestActor: actor,
+                  },
+                }).pages.length,
+              },
+            },
+          })),
+        };
       } catch (error) {
         if (error instanceof StoreRecordNotFoundError)
           throw new OperationError('not_found', error.message, 404, { cause: error });
