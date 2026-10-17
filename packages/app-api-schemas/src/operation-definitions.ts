@@ -17,6 +17,7 @@ import {
 import { DATA_ROOT_ADMIN_OPERATION_DEFINITIONS } from './data-root-admin-operations.js';
 import { DIAGNOSTICS_OPERATION_DEFINITIONS } from './diagnostics-operations.js';
 import { ENVIRONMENT_OPERATION_DEFINITIONS } from './environment-operations.js';
+import { EVALUATION_JUDGEMENT_OPERATION_DEFINITIONS } from './evaluation-judgement-operations.js';
 import { EVALUATION_OPERATION_DEFINITIONS } from './evaluation-operations.js';
 import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
@@ -132,7 +133,8 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   WORKER_OPERATION_DEFINITIONS,
   GOVERNANCE_OPERATION_DEFINITIONS,
   MATERIAL_OPERATION_DEFINITIONS,
-  EVALUATION_OPERATION_DEFINITIONS
+  EVALUATION_OPERATION_DEFINITIONS,
+  EVALUATION_JUDGEMENT_OPERATION_DEFINITIONS
 );
 
 /** Static composition of the implemented families; this is not a registration surface. */

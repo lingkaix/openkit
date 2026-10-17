@@ -16,6 +16,10 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { ArtifactReviewDecisionSchema } from './action-center.js';
+import { JudgementRecordSchema } from './evaluation.js';
+import { ArtifactReviewRangeFeedbackSchema } from './material-range.js';
+
+export { ArtifactReviewRangeFeedbackSchema } from './material-range.js';
 
 /** Opaque non-empty identifier used by app-local Material contracts. */
 const opaqueIdSchema = z.string().min(1);
@@ -112,6 +116,7 @@ export const WorkspaceMaterialRevisionSummarySchema = z
 /** Closed public view of one immutable Workspace Material revision and its canonical content. */
 export const WorkspaceMaterialRevisionViewSchema = WorkspaceMaterialRevisionSummarySchema.extend({
   content: z.string(),
+  judgements: z.array(JudgementRecordSchema).default([]),
 }).strict();
 
 /** Immutable Material target and base captured by one Artifact Review. */
@@ -122,22 +127,6 @@ export const ArtifactMaterialProposalSchema = z
     baseContentDigest: contentDigestSchema,
   })
   .strict();
-
-/** Exact original-source UTF-16 range on one immutable Material proposal base. */
-export const ArtifactReviewRangeFeedbackSchema = z
-  .object({
-    materialId: MaterialIdSchema,
-    revisionId: MaterialRevisionIdSchema,
-    contentDigest: contentDigestSchema,
-    start: z.number().int().nonnegative(),
-    end: z.number().int().positive(),
-    originalText: z.string().min(1),
-  })
-  .strict()
-  .refine((range) => range.start < range.end, {
-    message: 'The range end must follow its start.',
-    path: ['end'],
-  });
 
 /** Attributable choice evidence retained on its exact version-owned Review. */
 export const ArtifactReviewCandidateSelectionSchema = z
@@ -166,6 +155,7 @@ export const ArtifactReviewViewSchema = z
     feedback: z.string().min(1).nullable(),
     rangeFeedback: ArtifactReviewRangeFeedbackSchema.nullable().optional(),
     candidateSelections: z.array(ArtifactReviewCandidateSelectionSchema).default([]),
+    judgements: z.array(JudgementRecordSchema).default([]),
     decidedAt: TimestampSchema.nullable(),
     followUpTurnId: TurnIdSchema.nullable(),
     appliedMaterialRevisionId: MaterialRevisionIdSchema.nullable(),

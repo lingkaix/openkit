@@ -25,6 +25,7 @@ import { z } from 'zod';
 import type { WorkspaceDb } from './storage/db.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
 import {
+  assertWorkspaceMaterialRange,
   getWorkspaceMaterial,
   getWorkspaceMaterialRevision,
   saveWorkspaceMaterialRevision,
@@ -191,8 +192,12 @@ export type DecideArtifactReviewInput = ReplayArtifactReviewDecisionInput & {
 /** Raw Artifact Review authority row including private request proof. */
 type ArtifactReviewRow = Omit<
   typeof artifactReviews.$inferSelect,
-  'rangeFeedback' | 'candidateSelections'
-> & { readonly rangeFeedbackJson: string | null; readonly candidateSelectionsJson: string };
+  'rangeFeedback' | 'candidateSelections' | 'judgements'
+> & {
+  readonly rangeFeedbackJson: string | null;
+  readonly candidateSelectionsJson: string;
+  readonly judgementsJson: string;
+};
 
 /** Portable Review owner retaining private decision request lineage. */
 export type ExportableArtifactReview = ArtifactReviewView & {
@@ -210,6 +215,7 @@ const REVIEW_SELECT = `SELECT
   decision, decision_actor_id AS decisionActorId,
   decision_request_id AS decisionRequestId, feedback, decided_at AS decidedAt,
   range_feedback AS rangeFeedbackJson, candidate_selections AS candidateSelectionsJson,
+  judgements AS judgementsJson,
   follow_up_turn_id AS followUpTurnId,
   applied_material_revision_id AS appliedMaterialRevisionId, created_at AS createdAt
 FROM artifact_reviews`;
@@ -523,29 +529,12 @@ function assertRangeFeedback(
     range.contentDigest !== proposal.baseContentDigest
   )
     throw reviewError(code, 'Range feedback must identify the recorded Material proposal base.');
-  const base = getWorkspaceMaterialRevision(
-    workspaceDb,
-    proposal.materialId,
-    proposal.baseRevisionId
-  );
-  const content = base.content;
-  /** A UTF-16 source boundary cannot separate a high and low surrogate. */
-  const splitsPair = (offset: number) =>
-    offset > 0 &&
-    offset < content.length &&
-    content.charCodeAt(offset - 1) >= 0xd800 &&
-    content.charCodeAt(offset - 1) <= 0xdbff &&
-    content.charCodeAt(offset) >= 0xdc00 &&
-    content.charCodeAt(offset) <= 0xdfff;
-  if (
-    range.start < 0 ||
-    range.start >= range.end ||
-    range.end > content.length ||
-    splitsPair(range.start) ||
-    splitsPair(range.end) ||
-    content.slice(range.start, range.end) !== range.originalText
-  )
+  try {
+    assertWorkspaceMaterialRange(workspaceDb, range);
+  } catch (error) {
+    if (!hasErrorCode(error, 'stale')) throw error;
     throw reviewError(code, 'Range feedback does not match the exact original Material source.');
+  }
   return proposal;
 }
 
@@ -972,6 +961,7 @@ function toView(row: ArtifactReviewRow): ArtifactReviewView {
     feedback: row.feedback,
     rangeFeedback: parseReviewJson(row.rangeFeedbackJson),
     candidateSelections: parseReviewJson(row.candidateSelectionsJson),
+    judgements: parseReviewJson(row.judgementsJson),
     decidedAt: row.decidedAt,
     followUpTurnId: row.followUpTurnId,
     appliedMaterialRevisionId: row.appliedMaterialRevisionId,

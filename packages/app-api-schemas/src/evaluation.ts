@@ -7,7 +7,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { ConversationArtifactReferenceSchema } from './chat-mode.js';
-import { ArtifactReviewRangeFeedbackSchema } from './material.js';
+import { ArtifactReviewRangeFeedbackSchema } from './material-range.js';
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const descriptiveExtensions = z.record(z.string(), z.json());

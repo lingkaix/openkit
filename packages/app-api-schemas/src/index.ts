@@ -22,6 +22,7 @@ export * from './diagnostics.js';
 export * from './diagnostics-operations.js';
 export * from './environment-operations.js';
 export * from './evaluation.js';
+export * from './evaluation-judgement-operations.js';
 export * from './evaluation-operations.js';
 export * from './evidence-bundles.js';
 export * from './feedback.js';

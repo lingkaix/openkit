@@ -1,3 +1,4 @@
+import type { JudgementRecord } from '@openkit/app-api-schemas';
 import { sql } from 'drizzle-orm';
 import { check, index, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
@@ -68,6 +69,11 @@ export const workspaceMaterialRevisions = sqliteTable(
     contentDigest: text('content_digest').notNull(),
     /** Exact canonical UTF-8 Material content. */
     content: text('content').notNull(),
+    /** Append-only human annotations; canonical content and revision lineage remain immutable. */
+    judgements: text('judgements', { mode: 'json' })
+      .$type<JudgementRecord[]>()
+      .notNull()
+      .default(sql`'[]'`),
     /** Actor that authored the revision. */
     authorId: text('author_id').notNull(),
     /** Request that created this immutable revision. */
