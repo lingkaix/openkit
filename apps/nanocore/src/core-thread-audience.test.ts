@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { recordWorkspaceAuditEvent } from './audit-events.js';
+import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath, readTurnFeedback } from './runtime/feedback.js';
@@ -91,6 +91,21 @@ function createCoreAudienceFixture() {
   );
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
+  const initialNotebookAuditEvents = listWorkspaceAuditEvents(workspaceDb, workspace.id);
+  expect(initialNotebookAuditEvents).toMatchObject(
+    ['knowledge.notebook.admit', 'knowledge.notebook.initialize'].map((action) => ({
+      action,
+      workspaceId: workspace.id,
+      threadId: null,
+      turnId: null,
+      actor: { kind: 'system', id: 'notebook-initializer', responsibleUserId: null },
+      notebookAdmission: {
+        baseRevision: null,
+        ownerScope: { kind: 'workspace', workspaceId: workspace.id },
+        authority: { kind: 'direct', instructionReference: 'workspace.create:empty-notebook-seed' },
+      },
+    }))
+  );
   for (const [turn, requestId, requestItemId] of [
     [approvalTurn, 'ap_local_private', 'it_00000000-0000-7e55-98df-414094b7707e'],
     [deniedApprovalTurn, 'ap_other_private', 'it_00000000-0000-7b56-bcdb-1d8dc2f6af03'],
@@ -194,6 +209,7 @@ function createCoreAudienceFixture() {
     deniedGate,
     deniedTurn,
     gate,
+    initialNotebookAuditEvents,
     own,
     ownTurn,
     shared,
@@ -403,6 +419,7 @@ describe('core Thread audience', () => {
       expect(first.status).toBe(200);
       const history = await first.json();
       expect(history.auditEvents).toEqual([
+        ...fixture.initialNotebookAuditEvents,
         expect.objectContaining({
           action: 'turn.interrupt',
           category: 'command',
@@ -471,7 +488,10 @@ describe('core Thread audience', () => {
           )
         );
         expect(response.status).toBe(200);
-        expect((await response.json()).auditEvents).toEqual(visible ? [event] : []);
+        expect((await response.json()).auditEvents).toEqual([
+          ...fixture.initialNotebookAuditEvents,
+          ...(visible ? [event] : []),
+        ]);
       }
     } finally {
       fixture.close();
