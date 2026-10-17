@@ -699,6 +699,8 @@ export function prepareKnowledgeMaintenance(
                 humanEdits,
                 overview: excerpt(files['index.md'] ?? '', 16 * 1024),
                 sources: selectedSources,
+                sourceHistory:
+                  'Supplied Source content is the authorized retained human input. Source material digests and Turn IDs are not history Item range coordinates. thread.history.read accepts only exact current-run compaction ranges.',
                 omittedEligibleTurns: Math.max(0, eligible.length - 8),
               }),
             },
@@ -723,7 +725,8 @@ export function prepareKnowledgeMaintenance(
       },
       validateResult: () => {
         assertCurrent();
-        if (!outcome) throw new NotebookError('invalid_request');
+        if (!outcome)
+          return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
         history.assertCurrent();
         recordOutcome();
       },
