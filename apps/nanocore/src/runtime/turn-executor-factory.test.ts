@@ -3158,7 +3158,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   }, 60_000);
 
-  // Real resident setup and SQLite/Git publication share this runner budget; product deadlines stay unchanged.
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     'missing-lease',
     'contradictory-route',
@@ -11128,7 +11128,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  // Real resident setup and SQLite/Git publication share this runner budget; product deadlines stay unchanged.
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     null,
     'eviction-cleanup-required',
