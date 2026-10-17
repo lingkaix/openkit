@@ -48,7 +48,8 @@ function initialNotebookFiles(
   } else {
     const parsed = parseOkfDocument({ path: 'index.md', content: index });
     if (!parsed.ok) throw new NotebookError('invalid_request');
-    if (!index.startsWith('---')) index = `---\nokf_version: "0.2"\n---\n${index}`;
+    if (parsed.document.frontmatter.okf_version === undefined)
+      index = `---\nokf_version: "0.2"\n---\n${index}`;
     else if (parsed.document.frontmatter.okf_version !== '0.2')
       throw new NotebookError('invalid_request');
   }

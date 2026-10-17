@@ -138,9 +138,14 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     });
   });
 
-  it('adds only the required version block to a fresh body-only root index', () => {
+  it.each([
+    { name: 'heading', body: '# Human navigation\n\nKeep every original body byte.\n' },
+    {
+      name: 'horizontal rule',
+      body: '----\n# Human navigation\n\nKeep every original body byte.\n',
+    },
+  ])('adds only the required version block to a fresh body-only root index ($name)', ({ body }) => {
     const f = fixture();
-    const body = '# Human navigation\n\nKeep every original body byte.\n';
     const revision = initializeWorkspaceNotebook({ ...f, files: { 'index.md': body } });
     expect(f.notebook().readRevision(revision).files['index.md']).toBe(
       `---\nokf_version: "0.2"\n---\n${body}`
