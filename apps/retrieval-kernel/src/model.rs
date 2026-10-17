@@ -260,6 +260,9 @@ pub(crate) fn error(code: &str, message: &str) -> Error {
         message: message.into(),
     }
 }
+/// Filesystem growth failures abort publication instead of becoming per-document coverage.
+pub(crate) const FILESYSTEM_GROWTH_REFUSED: &str = "retrieval filesystem growth refused";
+
 /// Classify exhausted filesystem capacity without copying untrusted diagnostics.
 pub(crate) fn io_error(failure: impl std::fmt::Display + 'static) -> Error {
     let failure = &failure as &dyn std::any::Any;
@@ -288,7 +291,7 @@ pub(crate) fn io_error(failure: impl std::fmt::Display + 'static) -> Error {
                 | std::io::ErrorKind::QuotaExceeded
         )
     }) {
-        return error("resource-limited", "retrieval filesystem growth refused");
+        return error("resource-limited", FILESYSTEM_GROWTH_REFUSED);
     }
     error(
         "io",
