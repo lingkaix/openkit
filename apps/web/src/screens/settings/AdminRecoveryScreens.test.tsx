@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -158,6 +158,43 @@ describe('Web admin recovery and user disable', () => {
     await userEvent.type(screen.getByLabelText('Workspace ID'), '2');
     expect(screen.queryByText('usr_00000000-0000-7011-88df-c2b1e8466b6f')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add myself as editor' })).toBeDisabled();
+  });
+
+  it('blocks recovery effects while the current administrator read is paused', async () => {
+    const client = makeClient();
+    const { queryClient, unmount } = renderScreen(client);
+    const wasOnline = onlineManager.isOnline();
+    const authorityKey = ['settings', 'workspace-access-recovery', 'admin-access'];
+    try {
+      await loadRecovery();
+      await userEvent.type(
+        screen.getByLabelText('Confirm workspace ID'),
+        RECOVERY.recovery.workspaceId
+      );
+      const editor = screen.getByRole('button', { name: 'Add myself as editor' });
+      const transfer = screen.getByRole('button', { name: 'Transfer ownership to myself' });
+      expect(editor).toBeEnabled();
+      expect(transfer).toBeEnabled();
+      const mutationCount = queryClient.getMutationCache().getAll().length;
+
+      await act(async () => {
+        onlineManager.setOnline(false);
+        void queryClient.invalidateQueries({ queryKey: authorityKey, exact: true });
+      });
+      await waitFor(() =>
+        expect(queryClient.getQueryState(authorityKey)?.fetchStatus).toBe('paused')
+      );
+      await waitFor(() => expect(editor).toBeDisabled());
+      expect(transfer).toBeDisabled();
+      await userEvent.click(editor);
+      await userEvent.click(transfer);
+      expect(queryClient.getMutationCache().getAll()).toHaveLength(mutationCount);
+      expect(client.operations['workspace.access-recover']).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      queryClient.clear();
+      onlineManager.setOnline(wasOnline);
+    }
   });
 
   it('starts disable dry, requires matching confirmation, and projects only lifecycle fields', async () => {
