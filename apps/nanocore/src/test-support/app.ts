@@ -55,7 +55,7 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
   const fileAdmission =
     options.fileAdmission ??
     new FileStorageAdmission(
-      options.dataRoot ?? options.store?.dataRoot ?? options.coreDb?.dataRoot ?? '.',
+      options.dataRoot ?? options.store?.getDataRoot() ?? options.coreDb?.dataRoot ?? '.',
       () =>
         BigInt(
           options.runtimeConfigManager?.current().openKitConfig.server?.fileReserveBytes ??
