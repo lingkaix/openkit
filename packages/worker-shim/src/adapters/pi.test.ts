@@ -2025,6 +2025,69 @@ export default function(pi) { pi.on('session_start', () => {
 );
 
 it(
+  'keeps admitted Pi work at the collector after native history is removed',
+  async () => {
+    const prompt = 'Keep the echo work and its result.';
+    const answer = 'The echo result is retained.';
+    const replies: InferenceReply[] = [
+      { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'retained-input' } } },
+      { text: answer },
+    ];
+    const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'unexpected' });
+    f.capability.bound = true;
+    const session = await f.open();
+    const input = turnInput(f.dirs, { prompt });
+    const collected: Array<{ record: RuntimeObservation; body?: string }> = [];
+    const result = await (
+      await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value: 'on' },
+          emit: async (record, body) => {
+            collected.push({ record, ...(body ? { body: Buffer.from(body).toString() } : {}) });
+          },
+        },
+      })
+    ).settled;
+    await session.close();
+    expect(await sessionJsonlFiles(f.dirs.stateRoot)).not.toHaveLength(0);
+    await rm(f.dirs.stateRoot, { recursive: true });
+
+    expect(requestTexts(f.inference.requests[0]!).join(' ')).toContain(prompt);
+    expect(result).toMatchObject({
+      assistantText: answer,
+      status: 'completed',
+      stopReason: 'stop',
+      nativeEvidence: { nativeTerminal: true },
+    });
+    const tool = collected.filter(({ record }) => record.fact.kind === 'tool');
+    const started = tool.find(({ record, body }) => record.fact.phase === 'started' && body);
+    const completed = tool.find(({ record, body }) => record.fact.phase === 'completed' && body);
+    expect(started?.record.fact.toolName).toBe('mcp__openkit_work__echo');
+    expect(started?.body).toBe('{"text":"retained-input"}');
+    expect(completed?.record.fact.callRef).toBe(started?.record.fact.callRef);
+    expect(completed?.body).toContain('echo:retained-input');
+    expect(collected).toContainEqual({
+      record: expect.objectContaining({
+        fact: expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
+      }),
+      body: answer,
+    });
+    expect(collected.map(({ record }) => record.fact)).toContainEqual(
+      expect.objectContaining({ kind: 'origin', phase: 'completed' })
+    );
+    expect(collected.map(({ record }) => record.fact)).toContainEqual(
+      expect.objectContaining({ kind: 'coverage', coverage: 'ended' })
+    );
+    const retained = JSON.stringify(collected);
+    expect(retained).not.toContain(f.inferenceCredential);
+    expect(retained).not.toContain(f.capabilityCredential);
+  },
+  TIMEOUT
+);
+
+it(
   'M4 adapter discovers and calls default-exposure local MCP without a second managed owner',
   async () => {
     const replies: InferenceReply[] = [
