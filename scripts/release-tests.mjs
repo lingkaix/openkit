@@ -272,7 +272,7 @@ export function packageSuite(owner, { root = process.cwd(), run = guardedExecuti
   const errors = run({ cwd: root, command: ['pnpm', '--filter', owner.name, 'test'] });
   if (errors.length) throw Error(`${owner.name}: ${errors.join('; ')}`);
 }
-/** Build the selected coverage owner's existing dependency graph before collection or execution. */
+/** Build selected owners' dependencies and required compiled projection inputs before collection or execution. */
 export function prepareCoverage(owners, { root = process.cwd() } = {}) {
   const command = (args) => {
     const r = spawnSync(args[0], args.slice(1), { cwd: root, stdio: 'inherit' });
@@ -288,8 +288,10 @@ export function prepareCoverage(owners, { root = process.cwd() } = {}) {
       'build',
       ...owners.map((o) => `--filter=${o.name}^...`),
     ]);
-  if (owners.some((o) => o.name === '@openkit/nanocore'))
+  if (owners.some((o) => o.name === '@openkit/nanocore')) {
+    command(['pnpm', '--filter', '@openkit/nanocore', 'build']);
     command(['pnpm', '--filter', '@openkit/retrieval-kernel', 'build']);
+  }
 }
 /** Derive every root and recursive script Node test owner from files and the existing full host lane. */
 export function rootNodeInventory(root = process.cwd()) {
