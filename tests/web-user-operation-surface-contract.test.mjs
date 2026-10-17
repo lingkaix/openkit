@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 249;
+const EXPECTED_CATALOG_SIZE = 251;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 189;
+const EXPECTED_INCLUDED_SIZE = 191;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -146,6 +146,8 @@ const WEB_OPERATION_GROUPS = {
     'workspace.dashboard': { disposition: 'live', surface: 'Overview' },
     'attention.list': { disposition: 'live', surface: 'Overview' },
     'thread.items': { disposition: 'live', surface: 'Chat' },
+    'thread.read-state': { disposition: 'live', surface: 'Chat' },
+    'thread.mark-read': { disposition: 'live', surface: 'Chat' },
   },
   'Diagnostics and evidence': {
     'usage.read': { disposition: 'live', surface: 'Usage & audit' },

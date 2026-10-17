@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: implemented
+status: verified
 date: "2026-10-16"
 branch: lane/web
 ---
@@ -55,3 +55,9 @@ The corrected full gate passed all 1,327 unit tests and 24 of 25 browser cases. 
 ## Intent Revision 2: Combined P28 Landing
 
 The coordinator's 20:15Z instruction on 2026-10-16 lifts P14 priority after main553ea24b and Goal67153ca4, and requires combining ready candidates that touch the same modules. Land this Recovery feature with the implemented private Administration admission correction as one P28 cut. This supersedes the earlier separate-landing method; behavior, owners and exclusions remain unchanged. Use the complete affected Settings, Operations, Portability and Account module suites plus complete Web e2e and the standard local gate, rather than repeating whole-app suites covered by main CI. The Goal merge resolves the existing second-answer browser observation to exactly two recorded answers within its existing15-second budget, without removing later assertions. Prior failures remain external evidence. Final named-head independent review, generation, gate and containing main-push CI remain required.
+
+## Implementation Summary and Final Verification Evidence
+
+Recovery and private Administration landed together on main at `d489e44179fb0fe85aed7aebdde9a2f0bb076945` on 2026-10-16 at 21:06Z. Independent review `L-WEB-b12d989f4ba8.md` approves the source before one clean, unedited main merge. Exact merged-head local gate passed 529 documentation checks, all lint and typecheck tasks, 534 complete affected Web module tests in 23 files, matching dependency and application builds, and all 25 browser cases. The containing [main-push CI run](https://github.com/lingkaix/openkit/actions/runs/38967022267) completed successfully. Original failed and setup attempts remain external evidence and are not passing results.
+
+The combined implementation cut changes 26 paths and one owning specification. Seven existing design owners govern the two features; no public operation, durable owner or closed registry was added. The landing window was released, and completed owned temporary files were removed. This verifies the assigned bounded Web behavior through local and main CI checks. Deployed real-authentication acceptance stays with L-OPS. It does not complete the later Skill-version or unavailable update-operation surfaces, physical Worker qualification or whole-server backup.

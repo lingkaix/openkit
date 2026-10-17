@@ -201,11 +201,12 @@ export const ConversationNavigationResponseSchema = z.object({
       activity: z.enum(['chat', 'task', 'goal', 'unknown']),
       state: z.enum(['working', 'needs-you', 'idle']),
       lastActivityAt: TimestampSchema,
+      unreadCount: z.number().int().nonnegative(),
     })
   ),
 });
 
-/** Navigation activity is a projection, never a durable Thread kind or read receipt. */
+/** Navigation activity and unread counts project current source records and User-owned receipts. */
 export type ConversationNavigationResponse = z.infer<typeof ConversationNavigationResponseSchema>;
 
 /** Workspace dashboard response payload. */
