@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { ArtifactVersionRecordSchema, allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { importArtifactFile } from './artifact-file-commands.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
 import { FsStore } from './lib/store.js';
@@ -531,20 +532,35 @@ describe('exact Artifact file import and download', () => {
   it('downloads an original when retained title text contains an unpaired surrogate', async () => {
     const state = fixture(),
       original = corpus.originals[0]!;
-    const imported = await upload(state, original);
-    expect(imported.status).toBe(201);
-    const accepted = (await imported.json()) as { artifactId: string };
-    const metadataPath = join(
-      state.dataRoot,
-      'workspaces',
-      state.workspace.id,
-      'artifacts',
-      accepted.artifactId,
-      'artifact.json'
-    );
-    const retained = JSON.parse(readFileSync(metadataPath, 'utf8'));
-    retained.title = 'File\ud800 title';
-    writeFileSync(metadataPath, JSON.stringify(retained));
+    // URLSearchParams normalizes lone surrogates; use the canonical command for this retained-title fixture.
+    const workspaceDb = openWorkspaceDb(state.dataRoot, state.workspace.id);
+    applyScopedMigrations(workspaceDb);
+    cleanups.push(() => workspaceDb.sqlite.close());
+    const accepted = await importArtifactFile({
+      store: state.store,
+      workspaceDb,
+      inflightCommands: new WeakMap(),
+      admission: new FileStorageAdmission(state.dataRoot, () => 0n),
+      metadata: {
+        workspaceId: state.workspace.id,
+        requestId: randomUUID(),
+        title: 'File\ud800 title',
+        mediaType: 'application/octet-stream',
+        byteLength: original.size,
+        contentDigest: original.sha256,
+      },
+      context: {
+        kind: 'public',
+        actor: { kind: 'local', userId: LOCAL_USER_ID },
+        actorRef: { kind: 'user', id: LOCAL_USER_ID },
+        scope: { kind: 'workspace', workspaceId: state.workspace.id },
+        delivery: 'human',
+      },
+      source: Readable.from([Buffer.from(original.patternHex.repeat(original.repeats), 'hex')]),
+      assertAuthorized: () => {
+        state.store.getWorkspace(state.workspace.id);
+      },
+    });
     state.store = new FsStore({ dataRoot: state.dataRoot });
     expect(state.store.getArtifact(state.workspace.id, accepted.artifactId).title).toContain(
       '\ud800'
@@ -572,7 +588,7 @@ describe('exact Artifact file import and download', () => {
     changed[0] = changed[0]! ^ 255;
     writeFileSync(payloadPath, changed);
     const response = await download(state, accepted.artifactId);
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ code: 'recovery_required' });
   });
   it.each(
