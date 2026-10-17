@@ -40,6 +40,7 @@ import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
 import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
 import { createMaterialOperationImplementations } from './material-operation-implementations.js';
+import { createMemoryOperationImplementations } from './memory-operations.js';
 import type { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import type {
   AssistantOperationInvocationContext,
@@ -212,6 +213,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),
     createTaskConversationOperationImplementations(dependencies),
