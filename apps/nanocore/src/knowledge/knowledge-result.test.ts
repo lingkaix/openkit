@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { expect, it, onTestFinished } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -45,6 +46,17 @@ function call(name: string, value: unknown) {
       },
     ],
   };
+}
+
+/** Reads only delivered feedback; the dispatcher's private context contains a live database. */
+function latestToolOutput(f: ReturnType<typeof fixture>): string {
+  const [, request] = f.createResponses.mock.calls.at(-1) as unknown as Parameters<
+    LLMGatewayProviderDispatcher['createResponses']
+  >;
+  const input = request.input as Array<{ type?: string; output?: string }>;
+  const latest = input.findLast((entry) => entry.type === 'function_call_output');
+  expect(latest?.output).toEqual(expect.any(String));
+  return latest!.output!;
 }
 
 /** Deliberately invalid final text, matching the real Provider probe. */
@@ -156,7 +168,7 @@ it('repairs a premature maintenance result with one native no-change submission'
   let step = 0;
   f.createResponses.mockImplementation(async () => {
     if (++step === 2) {
-      expect(JSON.stringify(f.createResponses.mock.calls.at(-1))).toContain(
+      expect(latestToolOutput(f)).toContain(
         'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.'
       );
       return call('knowledge.notebook.update', { summary: 'No changes are needed.' });
@@ -212,7 +224,7 @@ it('refuses a duplicate notebook submission during maintenance result repair', a
     if (++step === 1 || step === 3)
       return call('knowledge.notebook.update', { summary: 'No changes are needed.' });
     if (step === 2) return markdown();
-    expect(JSON.stringify(f.createResponses.mock.calls.at(-1))).toContain(
+    expect(latestToolOutput(f)).toContain(
       'Repair cannot repeat notebook effects. Start a new request.'
     );
     return call('knowledge.result', { summary: 'No changes are needed.' });
