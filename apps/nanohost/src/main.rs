@@ -22,6 +22,7 @@ mod openshell_release;
 mod persistent_volume;
 mod sandbox_bridge;
 mod start_barrier;
+mod telemetry;
 mod workspace_collect;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -357,6 +358,25 @@ fn execute_effect_command(
     coordinator: &mut EpochCoordinator,
     command: &mut PolledEffectCommand,
 ) -> Result<ExecutedEffectResult, &'static str> {
+    let mut observation = telemetry::Observation::start(
+        if matches!(
+            command.kind,
+            RuntimeEffectKind::OpenBridge | RuntimeEffectKind::CloseBridge
+        ) {
+            "nanohost.bridge"
+        } else {
+            "nanohost.effect"
+        },
+        &command.trace_context,
+        vec![opentelemetry::KeyValue::new(
+            "openkit.operation",
+            OuterSessionOperation::from(command.kind).as_str(),
+        )],
+        Some(coordinator.startup_context()),
+    );
+    command.trace_context = observation.context();
+    // This owner is synchronous. Never retain an attached context across an await.
+    let _active = command.trace_context.clone().attach();
     let string = |name: &str| {
         command
             .input
@@ -365,7 +385,7 @@ fn execute_effect_command(
             .filter(|value| !value.is_empty() && !value.contains(['\r', '\n', '\0']))
             .ok_or("effect command field invalid")
     };
-    match command.kind {
+    let result = match command.kind {
         RuntimeEffectKind::CreateSandbox
         | RuntimeEffectKind::DeleteSandbox
         | RuntimeEffectKind::CloseBridge => {
@@ -724,7 +744,9 @@ fn execute_effect_command(
                 workspace_collect::execute_collect(coordinator, &command.request_id, &input),
             ))
         }
-    }
+    };
+    observation.finish(result.is_ok());
+    result
 }
 
 /// Applies the existing reconnect retention rule to the actual pending-result slot.
@@ -1361,9 +1383,12 @@ fn main() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("nanohost TLS provider installation failed");
+    let telemetry = telemetry::initialize();
     let runtime =
         tokio::runtime::Runtime::new().expect("nanohost Tokio runtime construction failed");
-    if let Err(message) = runtime.block_on(run()) {
+    let result = runtime.block_on(run());
+    telemetry::shutdown(telemetry);
+    if let Err(message) = result {
         eprintln!("{message}");
         std::process::exit(message.process_exit_status());
     }
@@ -2132,9 +2157,13 @@ mod tests {
         );
 
         let main = production
-            .split_once("if let Err(message) = runtime.block_on(run())")
-            .expect("Tokio runtime failure branch")
+            .split_once("let result = runtime.block_on(run());")
+            .expect("saved Tokio runtime result")
             .1;
+        let (shutdown, main) = main
+            .split_once("if let Err(message) = result")
+            .expect("Tokio runtime failure branch");
+        assert!(shutdown.contains("telemetry::shutdown(telemetry);"));
         assert!(main.contains("eprintln!(\"{message}\")"));
     }
 
@@ -2345,9 +2374,13 @@ mod tests {
         assert!(reconnect < terminal);
         assert!(!run[reconnect..terminal].contains("eprintln!"));
         let main = production
-            .split_once("if let Err(message) = runtime.block_on(run())")
-            .expect("one runtime failure exit path")
+            .split_once("let result = runtime.block_on(run());")
+            .expect("saved Tokio runtime result")
             .1;
+        let (shutdown, main) = main
+            .split_once("if let Err(message) = result")
+            .expect("one runtime failure exit path");
+        assert!(shutdown.contains("telemetry::shutdown(telemetry);"));
         assert_eq!(main.matches("eprintln!(").count(), 1);
         assert_eq!(main.matches("std::process::exit(").count(), 1);
         assert!(main.contains("std::process::exit(message.process_exit_status())"));
