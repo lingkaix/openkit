@@ -7,6 +7,8 @@ import {
 import type { Context, Hono } from 'hono';
 import { apiErrorPayload } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
+import { submitConversationFiles } from './conversation-file-routes.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import {
@@ -17,7 +19,7 @@ import type { OperationInvocationContext } from './operation-contract.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { parseOperationInput } from './operation-resolvers.js';
 
-/** JSON framing assembles trusted headers and per-request facts; native invocation owns complete parsing and admission. */
+/** Operation framing selects JSON or conversation file bodies; native invocation owns complete parsing and admission. */
 export function registerOperationJsonRoutes(
   dependencies: OperationInvocationDependencies & {
     app: Hono<{ Variables: AuthVariables }>;
@@ -34,6 +36,23 @@ export function registerOperationJsonRoutes(
       try {
         if (operationUsesBootstrapSecret(definition) && c.get('bootstrapSecretAdmission') !== true)
           throw new OperationError('core.auth.unauthenticated', 'Authentication required.', 401);
+        if (
+          id === 'conversation.submit' &&
+          c.req.header('content-type') === CONVERSATION_FILE_MEDIA_TYPE
+        ) {
+          if (!dependencies.conversationService || !dependencies.fileAdmission)
+            throw new OperationError(
+              'operation_storage_unavailable',
+              'File storage is unavailable.',
+              503
+            );
+          return await submitConversationFiles(c, {
+            ...dependencies,
+            conversationService: dependencies.conversationService,
+            fileAdmission: dependencies.fileAdmission,
+            dataRoot: dependencies.dataRoot ?? null,
+          });
+        }
         const body: unknown = await c.req.json().catch((error: unknown) => {
           if (error instanceof SyntaxError) return null;
           throw error;

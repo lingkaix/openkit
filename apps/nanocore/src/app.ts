@@ -72,7 +72,6 @@ import {
   RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
-import { registerConversationFileRoutes } from './conversation-file-routes.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { AutomationStore } from './lib/automation-store.js';
@@ -1882,16 +1881,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workspaceMutationAdmission,
     dataRoot,
     fileAdmission,
-  });
-
-  registerConversationFileRoutes({
-    app,
-    coreDb: options.coreDb,
-    requestStore,
-    workspaceMutationAdmission,
-    conversationService: chatService,
-    fileAdmission,
-    dataRoot,
   });
 
   registerOperationJsonRoutes({
