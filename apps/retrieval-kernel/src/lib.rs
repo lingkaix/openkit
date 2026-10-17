@@ -1,4 +1,5 @@
 //! The domain-free Retrieval Kernel. Canonical files remain with their adapters.
+pub mod digest_window;
 pub mod directory;
 mod model;
 mod query;

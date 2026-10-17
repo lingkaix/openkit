@@ -76,6 +76,11 @@ import type {
 } from './runtime/worker-mcp-gateway.js';
 import { WorkerMcpGatewayCallError } from './runtime/worker-mcp-gateway.js';
 import {
+  requireWorkerRawOutputAvailable,
+  WorkerRawOutputAuthorityError,
+  WorkerRawOutputBudgetExceededError,
+} from './runtime/worker-raw-output.js';
+import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
@@ -130,6 +135,8 @@ interface WorkerMcpToolCallInput {
 export interface RegisterWorkerMcpRoutesInput {
   /** Existing configured-runtime capture; no secondary backend or registry. */
   readonly captureArtifact?: WorkerArtifactCapture;
+  /** Shared Data Root capacity owner for live Artifact capture. */
+  readonly fileAdmission?: import('./storage/artifacts/file-admission.js').FileStorageAdmission;
   /** Startup-owned deployment push approval policy. */
   readonly approvalPolicy?: OpenKitConfig['policy'];
   /** Hono application receiving the private route. */
@@ -394,6 +401,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 environmentPackage.scope.workspaceId
               );
               applyScopedMigrations(activeWorkspaceDb);
+              requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               if (workBuiltin && request.params.name === 'work_request_input') {
                 try {
                   const duplicate = preflightWorkRequestInput(
@@ -431,10 +439,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       environmentPackage,
                       store: input.store,
                       workspaceDb: activeWorkspaceDb,
+                      ...(input.fileAdmission ? { fileAdmission: input.fileAdmission } : {}),
                       ...(input.captureArtifact ? { captureArtifact: input.captureArtifact } : {}),
                       signal: toolCancellation.signal,
                       requireAdmission: () => {
                         requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+                        requireRawOutputCapabilityAdmission(activeWorkspaceDb!, environmentPackage);
                         requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
                         if (request.params.name === 'work_submit_artifact')
                           requireCurrentArtifactWorkspaceAuthority(
@@ -648,6 +658,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 environmentPackage.scope.workspaceId
               );
               applyScopedMigrations(activeWorkspaceDb);
+              requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               return await callWorkerMcpTool({
                 arguments: request.params.arguments ?? {},
                 environmentPackage,
@@ -2164,6 +2175,27 @@ function hasCurrentMcpWorkspaceAuthority(
       true
     )
   );
+}
+
+/** No new capability effect may pass a proved exhausted or unmeasurable Worker output bound. */
+function requireRawOutputCapabilityAdmission(
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage
+): void {
+  try {
+    requireWorkerRawOutputAvailable(workspaceDb, environmentPackage.scope);
+  } catch (error) {
+    if (
+      error instanceof WorkerRawOutputBudgetExceededError ||
+      error instanceof WorkerRawOutputAuthorityError
+    )
+      throw new WorkerControlGatewayError(
+        'worker_raw_output_unavailable',
+        'Worker output admission is unavailable.',
+        503
+      );
+    throw error;
+  }
 }
 
 /** Rejects every capability admission after an exact same-Turn Gate becomes durable. */

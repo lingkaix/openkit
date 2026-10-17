@@ -46,8 +46,8 @@ use crate::openshell_client::{
 use crate::openshell_release;
 use crate::persistent_volume::{PersistentVolumeStore, StorageAttachmentRequest, StorageMount};
 use crate::sandbox_bridge::{
-    EffectCarriage, FILE_EFFECT_CHUNK_BYTES, FileEffectKind, FileEffectPresence, FileEffectRequest,
-    OpenSandboxBridge, RetainedExportResult, read_import_staging, stage_export,
+    EffectCarriage, FileEffectKind, FileEffectPresence, FileEffectRequest, OpenSandboxBridge,
+    RetainedExportResult, read_import_staging, stage_export,
 };
 
 /// systemd slice containing NanoHost and every Runtime Epoch member.
@@ -1270,6 +1270,7 @@ pub struct EpochCoordinator {
     /// Ended local startup observation; never a readiness or delivery witness.
     startup_context: opentelemetry::trace::SpanContext,
     run_root: PathBuf,
+    file_staging_root: PathBuf,
     bridge: Option<OpenSandboxBridge>,
     route_projection: OuterRouteProjection,
     current_sandbox: Option<SandboxRef>,
@@ -2033,6 +2034,7 @@ impl EpochCoordinator {
             physical_epoch,
             startup_context,
             run_root: plan.run_root().to_path_buf(),
+            file_staging_root: plan.epoch_root().join("file-transfer"),
             bridge: None,
             route_projection: OuterRouteProjection::new(),
             current_sandbox: None,
@@ -2132,6 +2134,7 @@ impl EpochCoordinator {
                 physical_epoch: "a".repeat(64),
                 startup_context: opentelemetry::trace::SpanContext::empty_context(),
                 run_root: root.join("epoch"),
+                file_staging_root: root.join("file-transfer"),
                 bridge: None,
                 route_projection: OuterRouteProjection::new(),
                 current_sandbox: None,
@@ -2630,7 +2633,7 @@ impl EpochCoordinator {
         relative_path: &Path,
         sha256: &str,
         byte_length: u64,
-        file_data: &[u8],
+        file_data: &crate::file_transfer::VerifiedFile,
     ) -> Result<EffectCarriage, &'static str> {
         let sandbox = self
             .current_sandbox
@@ -2650,53 +2653,9 @@ impl EpochCoordinator {
         request
             .validate()
             .map_err(|_| "reference.import request rejected")?;
-        let staging_root = self.run_root.join("file-import");
-        let source = staging_root.join(format!(
-            "{:x}",
-            Sha256::digest(request.request_id.as_bytes())
-        ));
-        let temporary = staging_root.join(format!(
-            ".{:x}.partial",
-            Sha256::digest(request.request_id.as_bytes())
-        ));
-        let _ = fs::remove_file(&temporary);
-        let _ = fs::remove_file(&source);
-        let staged = (|| {
-            DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(&staging_root)
-                .map_err(|_| "reference.import staging unavailable")?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)
-                .map_err(|_| "reference.import staging unavailable")?;
-            for chunk in file_data.chunks(FILE_EFFECT_CHUNK_BYTES) {
-                file.write_all(chunk)
-                    .map_err(|_| "reference.import staging unavailable")?;
-            }
-            file.sync_all()
-                .map_err(|_| "reference.import staging unavailable")?;
-            fs::rename(&temporary, &source).map_err(|_| "reference.import staging unavailable")?;
-            OpenOptions::new()
-                .read(true)
-                .open(&staging_root)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|_| "reference.import staging unavailable")
-        })();
-        if staged.is_err() {
-            let _ = fs::remove_file(&temporary);
-            let _ = fs::remove_file(&source);
-            let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
-            return Err("reference.import failed or unknown");
-        }
-        let bytes = match read_import_staging(&source, &request) {
-            Ok(bytes) => bytes,
+        let mut source = match read_import_staging(file_data, &request) {
+            Ok(source) => source,
             Err(_) => {
-                let _ = fs::remove_file(&temporary);
-                let _ = fs::remove_file(&source);
                 let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
                 return Err("reference.import failed or unknown");
             }
@@ -2704,23 +2663,24 @@ impl EpochCoordinator {
         let command = match request.helper_command() {
             Ok(command) => command,
             Err(_) => {
-                let _ = fs::remove_file(&source);
                 let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
                 return Err("reference.import failed or unknown");
             }
         };
+        let expected = format!("{} {}\n", request.sha256, request.byte_length);
+        let mut acknowledgement = Vec::new();
         let result = tokio::task::block_in_place(|| {
             self.runtime.block_on(self.client.exec_sandbox_interactive(
                 &sandbox.id,
                 &command,
-                &bytes,
-                crate::sandbox_bridge::FILE_EFFECT_MAX_BYTES as usize,
+                &mut source,
+                byte_length as usize,
+                &mut acknowledgement,
+                expected.len(),
             ))
         });
-        let expected = format!("{} {}\n", request.sha256, request.byte_length);
         match result {
-            Ok(result) if result.exit_status == 0 && result.stdout == expected.as_bytes() => {
-                let _ = fs::remove_file(&source);
+            Ok(result) if result.exit_status == 0 && acknowledgement == expected.as_bytes() => {
                 let carriage = EffectCarriage::reference(
                     &request.request_id,
                     &format!(
@@ -2738,12 +2698,10 @@ impl EpochCoordinator {
             }
             Ok(_) => {
                 eprintln!("stage=reference-import outcome=stdout-acknowledgement");
-                let _ = fs::remove_file(&source);
                 let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
                 Err("reference.import failed or unknown")
             }
             Err(_) => {
-                let _ = fs::remove_file(&source);
                 let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
                 Err("reference.import failed or unknown")
             }
@@ -2779,37 +2737,35 @@ impl EpochCoordinator {
             .validate()
             .map_err(|_| "file.export request rejected")?;
         let command = request.helper_command()?;
+        let mut stage = crate::file_transfer::FileStage::create(
+            &self.file_staging_root,
+            request.byte_length,
+            0,
+        )
+        .map_err(|_| "file.export capacity unavailable")?;
+        let mut empty = std::io::empty();
         let result = tokio::task::block_in_place(|| {
             self.runtime.block_on(self.client.exec_sandbox_interactive(
                 &sandbox.id,
                 &command,
-                // The export helper reads the sandbox path and receives no input bytes.
-                &[],
+                &mut empty,
+                0,
+                &mut stage,
                 request.byte_length as usize,
             ))
         });
-        let staging_root = self.run_root.join("file-export");
         match result {
             Ok(result) if result.exit_status == 0 => {
-                let retained_export_result = stage_export(
-                    &staging_root,
-                    request,
-                    result.stdout,
-                    terminal_barrier_proved,
-                );
-                if retained_export_result.is_err() {
-                    let _ = fs::remove_file(staging_root.join(&request.request_id));
-                    let _ = fs::remove_file(
-                        staging_root.join(format!(".{}.partial", request.request_id)),
-                    );
+                let retained = stage_export(request, stage, terminal_barrier_proved);
+                if retained.is_err() {
                     let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
                 }
-                // The caller retains this exact complete result for successor-only resend.
-                retained_export_result.map(Some)
+                // Retain this exact disk source for successor delivery; never re-export a changed Worker file.
+                retained.map(Some)
             }
             Ok(result)
                 if result.exit_status == 2
-                    && result.stdout.is_empty()
+                    && result.stdout_bytes == 0
                     && request.presence == FileEffectPresence::Optional =>
             {
                 Ok(None)
@@ -2817,18 +2773,20 @@ impl EpochCoordinator {
             Ok(result)
                 if request.artifact_submission
                     && result.exit_status == 3
-                    && result.stdout.is_empty() =>
+                    && result.stdout_bytes == 0 =>
             {
                 Err("artifact_file_not_regular")
             }
             Ok(_) | Err(_) => {
-                let _ = fs::remove_file(staging_root.join(&request.request_id));
-                let _ =
-                    fs::remove_file(staging_root.join(format!(".{}.partial", request.request_id)));
                 let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
                 Err("file.export failed or unknown")
             }
         }
+    }
+
+    /// Selects disk-backed private carriage beneath this Epoch's existing state root.
+    pub fn file_staging_root(&self) -> &Path {
+        &self.file_staging_root
     }
 
     /// Waits for the monitor's terminal member event while effects remain callable.
@@ -3578,6 +3536,7 @@ mod tests {
             &mut sender,
             &mut cursor,
             false,
+            &root,
         )
         .await
         .unwrap()
@@ -6030,9 +5989,7 @@ mod tests {
         assert!(compact_export.contains(
             "if request.kind != FileEffectKind::ExportFile || (!request.artifact_submission && (!terminal_barrier_proved || !final_status)) {"
         ));
-        assert!(compact_export.contains(
-            "Ok(result) if result.exit_status == 2 && result.stdout.is_empty() && request.presence == FileEffectPresence::Optional =>"
-        ));
+        assert!(compact_export.contains("result.exit_status == 2 && result.stdout_bytes == 0"));
         assert!(export.contains("exec_sandbox_interactive"));
         for harness_lifetime_fact in [
             "worker_terminal_barrier_proved",
@@ -6279,7 +6236,7 @@ mod tests {
         assert!(import.contains("sandbox_id: sandbox.name.clone()"));
         assert!(import.contains("exec_sandbox_interactive(\n                &sandbox.id"));
         let acknowledgement_success = import
-            .find("Ok(result) if result.exit_status == 0 && result.stdout == expected.as_bytes()")
+            .find("Ok(result) if result.exit_status == 0 && acknowledgement == expected.as_bytes()")
             .expect("exact helper acknowledgement success");
         let acknowledgement_mismatch = import
             .find("Ok(_) =>")
@@ -6319,7 +6276,7 @@ mod tests {
             .expect("end of file export owner")
             .0;
         assert!(export.contains("terminal_barrier_proved"));
-        assert!(export.contains("retained_export_result"));
+        assert!(export.contains("stage_export(request, stage, terminal_barrier_proved)"));
         assert!(export.contains("successor"));
         assert!(export.contains("sandbox.name.as_str()"));
         assert!(export.contains("exec_sandbox_interactive(\n                &sandbox.id"));

@@ -45,6 +45,10 @@ CapabilityCall admits optional namespaced extensions. `openkit.gateway/routeLine
 
 Core identifier schemas include `AutomationIdSchema` because Protocol owns the `auto` entity kind. This adds no Automation lifecycle or App runtime configuration schema to the Core package. Conformance fixtures use current canonical identities; explicit malformed and wrong-kind regressions remain separate from positive fixtures.
 
+A retained Task-to-Goal status Item keeps its immutable `goalId` separately from its opaque Item identity. Ordinary status Items omit this field. The [Task Mode owner](../../docs/specs/20260704-task_mode_worker_delegation.md#retained-task-to-goal-identifier-projection) owns exact replay admission and derived names.
+
+`Turn.fileInputs` is the optional ordered inventory of exact original conversation files. Its immutable array position is the input ordinal; names are display metadata and never path segments. Canonical original bytes remain under the receiving Turn outside its JSON record. Retained absence means no file inputs. New request validation and current admission belong to the conversation and storage owners; this inventory grants no access or Worker delivery.
+
 `context-summary` is an additive known Item variant with completed continuation text, an environment digest and an exact source range. It preserves the closed Item discriminator and required source/evidence digests; unknown descriptive additions remain ignorable. Original Items remain canonical. [Context Management](../../docs/specs/20260902-agent_runtime_context_compaction.md#source-bound-summary-items) owns production and current-source validation.
 
 Knowledge list items project the exact canonical page contentDigest at the response notebookRevision. This read field supports explicit confirmed removal without adding a second digest or revision authority to durable KnowledgeEntry records.

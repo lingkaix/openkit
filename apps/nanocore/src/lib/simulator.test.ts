@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -13,6 +13,7 @@ import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openk
 import { AgentSessionIdSchema, deriveEntityId } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as artifactReviews from '../artifact-reviews.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -27,6 +28,8 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import * as filePayload from '../storage/artifacts/file-payload.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -43,6 +46,17 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
 import type { FsStore } from './store.js';
+
+/** Test-only view for fault injection at the real admitted simulator publication boundary. */
+interface MaterialProposalPublisher {
+  publishMaterialProposals(
+    store: FsStore,
+    pkg: AgentEnvironmentPackage,
+    trace: WorkerContextPackageTrace,
+    db: WorkspaceDb,
+    recordedAt: string
+  ): Promise<void>;
+}
 
 /**
  * Opens a migrated Core database for simulator route tests.
@@ -718,11 +732,216 @@ describe('SimulatedTurnExecutor', () => {
     }
   });
 
-  it('strictly projects and consumes bound Material and publishes per-file candidates without declarations', async () => {
+  it('strictly projects and consumes bound Material with shared file admission', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const capacity = 16_000_000n;
+    let configuredReserve = 2_000_000n;
+    const admission = new FileStorageAdmission(
+      coreDb.dataRoot,
+      () => configuredReserve,
+      () => capacity
+    );
+    const executions = vi.spyOn(SimulatedTurnExecutor.prototype, 'startTurn');
+    const publisher = SimulatedTurnExecutor.prototype as unknown as MaterialProposalPublisher;
+    const publish = publisher.publishMaterialProposals;
+    let admissionProof: Promise<void> | undefined;
+    const publication = vi
+      .spyOn(publisher, 'publishMaterialProposals')
+      .mockImplementationOnce(function (this: SimulatedTurnExecutor, ...args) {
+        // These are the App/factory executor's real package, live Turn, and accepted S39 trace.
+        admissionProof = (async () => {
+          const [actualStore, pkg, trace, db] = args;
+          expect(actualStore).toBe(store);
+          expect(pkg.scope.turnId).toBe(trace.turnId);
+          expect(trace.materialSelections).toHaveLength(1);
+          const beforeArtifacts = store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
+          const beforeItems = store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          );
+          const beforeReviews = db.sqlite
+            .prepare('SELECT * FROM artifact_reviews ORDER BY artifact_id')
+            .all();
+          const stagingRoot = join(coreDb.dataRoot, 'workspaces', '.staging');
+          const stages = () => (existsSync(stagingRoot) ? readdirSync(stagingRoot).sort() : []);
+          const beforeStages = stages();
+          const fullCapacity = {
+            stagingBytes: capacity - configuredReserve,
+            extractionBytes: 0n,
+            derivativeBytes: 0n,
+            publicationBytes: 0n,
+          };
+          const assertUnchanged = () => {
+            expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(
+              beforeArtifacts
+            );
+            expect(
+              store.listThreadItems(
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001'
+              )
+            ).toEqual(beforeItems);
+            expect(
+              db.sqlite.prepare('SELECT * FROM artifact_reviews ORDER BY artifact_id').all()
+            ).toEqual(beforeReviews);
+            expect(stages()).toEqual(beforeStages);
+          };
+          const assertReleased = () => {
+            const available = admission.reserve(fullCapacity);
+            available.release();
+          };
+          const reserve = vi.spyOn(admission, 'reserve');
+          try {
+            // An independent upload owns the remaining writable capacity. The actual simulator must compete with it.
+            const competingUpload = admission.reserve(fullCapacity);
+            try {
+              await expect(publish.apply(this, args)).rejects.toMatchObject({
+                code: 'storage_capacity_unavailable',
+              });
+              assertUnchanged();
+            } finally {
+              competingUpload.release();
+            }
+            assertReleased();
+
+            configuredReserve = capacity;
+            try {
+              await expect(publish.apply(this, args)).rejects.toMatchObject({
+                code: 'storage_capacity_unavailable',
+              });
+              assertUnchanged();
+            } finally {
+              configuredReserve = 2_000_000n;
+            }
+
+            await expect(
+              publish.apply(new SimulatedTurnExecutor({ coreDb }), args)
+            ).rejects.toMatchObject({ code: 'storage_capacity_unavailable' });
+            assertUnchanged();
+
+            // A proved capture cleanup releases the original shared reservation after the failure.
+            const stage = filePayload.stageArtifactPayload;
+            const rejectedStage = vi
+              .spyOn(filePayload, 'stageArtifactPayload')
+              .mockImplementationOnce(async (input) => {
+                const staged = await stage(input);
+                await staged.remove();
+                throw new Error('Fixture capture acknowledgement failed after cleanup.');
+              });
+            try {
+              await expect(publish.apply(this, args)).rejects.toThrow(
+                'Fixture capture acknowledgement failed after cleanup.'
+              );
+              assertUnchanged();
+              assertReleased();
+            } finally {
+              rejectedStage.mockRestore();
+            }
+
+            // The real private stage stays occupied across an unproved cleanup failure.
+            let retainedStage: Awaited<ReturnType<typeof stage>> | undefined;
+            let retainedReservation: Parameters<typeof stage>[0]['reservation'] | undefined;
+            const unprovedStage = vi
+              .spyOn(filePayload, 'stageArtifactPayload')
+              .mockImplementationOnce(async (input) => {
+                retainedStage = await stage(input);
+                retainedReservation = input.reservation;
+                throw new filePayload.ArtifactPayloadCleanupError([
+                  new Error('Fixture cleanup result is unknown.'),
+                ]);
+              });
+            try {
+              await expect(publish.apply(this, args)).rejects.toBeInstanceOf(
+                filePayload.ArtifactPayloadCleanupError
+              );
+              expect(retainedStage).toBeDefined();
+              expect(existsSync(retainedStage!.path)).toBe(true);
+              expect(() => admission.reserve(fullCapacity)).toThrow('Storage capacity');
+              expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(
+                beforeArtifacts
+              );
+            } finally {
+              unprovedStage.mockRestore();
+              // Fixture cleanup proves removal before it returns the retained capacity.
+              await retainedStage?.remove();
+              retainedReservation?.release();
+            }
+            assertUnchanged();
+            assertReleased();
+
+            // Fill the remaining budget only after the real payload is captured. Canonical metadata must also compete.
+            const createArtifact = store.createArtifact.bind(store);
+            const publicationPressure = vi
+              .spyOn(store, 'createArtifact')
+              .mockImplementationOnce((artifact, payload) => {
+                const forecast = reserve.mock.calls.at(-1)![0];
+                const pending =
+                  forecast.stagingBytes +
+                  forecast.extractionBytes +
+                  forecast.derivativeBytes +
+                  forecast.publicationBytes -
+                  BigInt(payload!.byteLength);
+                const contender = admission.reserve({
+                  ...fullCapacity,
+                  stagingBytes: capacity - configuredReserve - pending,
+                });
+                try {
+                  return createArtifact(artifact, payload);
+                } finally {
+                  contender.release();
+                }
+              });
+            try {
+              await expect(publish.apply(this, args)).rejects.toMatchObject({
+                code: 'storage_capacity_unavailable',
+              });
+              assertUnchanged();
+              assertReleased();
+            } finally {
+              publicationPressure.mockRestore();
+            }
+
+            // A Review failure must compensate through this same canonical-write admission owner.
+            const rollbackArtifact = store.rollbackArtifactCreation.bind(store);
+            const compensation = vi
+              .spyOn(store, 'rollbackArtifactCreation')
+              .mockImplementation((id) => {
+                const previousReservations = reserve.mock.calls.length;
+                rollbackArtifact(id);
+                expect(reserve.mock.calls.length).toBeGreaterThan(previousReservations);
+              });
+            const reviewFailure = vi
+              .spyOn(artifactReviews, 'createArtifactReview')
+              .mockImplementationOnce(() => {
+                throw new Error('Fixture Review publication failed.');
+              });
+            try {
+              await expect(publish.apply(this, args)).rejects.toThrow(
+                'Fixture Review publication failed.'
+              );
+              expect(compensation).toHaveBeenCalledOnce();
+              assertUnchanged();
+              assertReleased();
+            } finally {
+              reviewFailure.mockRestore();
+              compensation.mockRestore();
+            }
+
+            await publish.apply(this, args);
+            assertReleased();
+            expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+              beforeArtifacts.length + 2
+            );
+          } finally {
+            reserve.mockRestore();
+          }
+        })();
+        return admissionProof;
+      });
     const app = createApp({
+      fileAdmission: admission,
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -824,6 +1043,8 @@ describe('SimulatedTurnExecutor', () => {
       const turnBody = await turnResponse.json();
       expect(turnResponse.status, JSON.stringify(turnBody)).toBe(202);
       const task = StartTaskModeResponseSchema.parse(turnBody);
+      await vi.waitFor(() => expect(admissionProof).toBeDefined());
+      await admissionProof;
       await vi.waitFor(() => expect(store.getTurnById(task.turn.id).status).toBe('completed'));
       const workerTurn = store.getTurnById(task.turn.id);
       expect(workerTurn).toMatchObject({
@@ -986,17 +1207,12 @@ describe('SimulatedTurnExecutor', () => {
         const reviews = retained.map((artifact) =>
           getArtifactReview(replayDb, artifact.id, artifact.version)
         );
-        const executor = new SimulatedTurnExecutor({ coreDb }) as unknown as {
-          publishMaterialProposals(
-            store: FsStore,
-            pkg: AgentEnvironmentPackage,
-            trace: WorkerContextPackageTrace,
-            db: WorkspaceDb,
-            recordedAt: string
-          ): void;
-        };
+        const executor = new SimulatedTurnExecutor({
+          coreDb,
+          fileAdmission: admission,
+        }) as unknown as MaterialProposalPublisher;
         // Repeat the actual deterministic producer, then contradict its retained immutable tuple.
-        expect(() =>
+        await expect(
           executor.publishMaterialProposals(
             store,
             snapshot,
@@ -1004,8 +1220,8 @@ describe('SimulatedTurnExecutor', () => {
             replayDb,
             retained[0]!.createdAt
           )
-        ).not.toThrow();
-        expect(() =>
+        ).resolves.toBeUndefined();
+        await expect(
           executor.publishMaterialProposals(
             store,
             snapshot,
@@ -1013,7 +1229,7 @@ describe('SimulatedTurnExecutor', () => {
             replayDb,
             '2099-01-01T00:00:00.000Z'
           )
-        ).toThrow();
+        ).rejects.toThrow();
         expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(proposals);
         expect(
           store.listThreadItems(
@@ -1161,7 +1377,17 @@ describe('SimulatedTurnExecutor', () => {
         deliveredDb.sqlite.close();
       }
     } finally {
+      publication.mockRestore();
+      await Promise.allSettled(
+        executions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+      // Let the scheduler's already-attached completion observer settle before closing its database.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      executions.mockRestore();
       coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
   });
 

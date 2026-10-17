@@ -148,6 +148,7 @@ describe('scoped storage databases', () => {
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
+        'workspace_0003_exact_review_feedback',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -298,6 +299,7 @@ describe('scoped storage databases', () => {
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
+        'workspace_0003_exact_review_feedback',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -610,6 +612,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
+        'workspace_0003_exact_review_feedback',
       ]);
     } finally {
       userDb.sqlite.close();

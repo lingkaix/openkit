@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 247;
+const EXPECTED_CATALOG_SIZE = 251;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 187;
+const EXPECTED_INCLUDED_SIZE = 191;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -69,6 +69,9 @@ const WEB_OPERATION_GROUPS = {
   },
   Artifacts: {
     'artifact.import': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.download': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },
     'artifact.introduce': { disposition: 'live', surface: 'Artifacts' },
   },
   recovery: {
@@ -191,6 +194,7 @@ const WEB_OPERATION_GROUPS = {
     'artifact.review-list': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.reverse': { disposition: 'roadmap', roadmap: 'R072' },
     'artifact.review.decide': { disposition: 'live', surface: 'Artifact review' },
+    'artifact.review.select': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.decide': { disposition: 'live', surface: 'Knowledge' },
   },
   Portability: {
