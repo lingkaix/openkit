@@ -504,9 +504,9 @@ describe('caller operation projections', () => {
     });
     f.coreDb.sqlite
       .prepare(`INSERT INTO workspace_members (
-      workspace_id, user_id, status, access_level, invitation_id, joined_at,
+      workspace_id, user_id, status, invitation_id, joined_at,
       removed_at, revision, created_at, updated_at
-    ) VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+    ) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
       .run(f.foreign.id, f.userId, timestamp, timestamp, timestamp);
     for (const membershipStatus of ['active', 'removed', null]) {
       if (membershipStatus === 'removed')
@@ -539,7 +539,7 @@ describe('caller operation projections', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         membershipStatus,
         accessCause: 'administrator',
-        effectiveRole: membershipStatus === 'active' ? 'editor' : null,
+        isOwner: false,
         membershipRevision:
           membershipStatus === 'active' ? 1 : membershipStatus === 'removed' ? 7 : null,
       });

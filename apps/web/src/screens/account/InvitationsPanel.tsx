@@ -103,9 +103,7 @@ export function InvitationsPanel() {
                           >
                             {invitation.effectiveStatus}
                           </StatusChip>
-                          <span className="text-xs text-fg-muted">
-                            {invitation.proposedAccessLevel}
-                          </span>
+                          <span className="text-xs text-fg-muted">Full member access</span>
                         </div>
                       </td>
                       <td className="py-3">

@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs, {
   chmod,
@@ -10,6 +11,7 @@ import fs, {
   readFile,
   realpath,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -17,6 +19,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { WorkerErrorEnvelopeSchema, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -2774,6 +2777,137 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(inference.bodies).toHaveLength(before);
   }, 180_000);
+
+  // The fixed helper's descriptor containment requires Linux /proc/self/fd.
+  it.skipIf(process.platform !== 'linux')(
+    'consumes exact selected Skill versions through physical reference.import',
+    async () => {
+      const outputs: Buffer[] = [];
+      const quotePath = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
+      for (const version of ['cedar-r1', 'birch-r2']) {
+        const roots = await tempRoots();
+        closers.push(() => rm(roots.base, { recursive: true, force: true }));
+        const supplyRoot = join(roots.base, 'supply');
+        await mkdir(supplyRoot);
+        const relativeRoot = 'as_physical/supply/inputs/skill_marker';
+        const skillRoot = join(supplyRoot, relativeRoot);
+        const target = join(roots.work, 'selected-skill-output.txt');
+        const description = `PHYSICAL_SKILL_${version} consumes its retained supporting file.`;
+        const support = Buffer.from(`selected-version=${version}\r\nretained UTF-8: café\n`);
+        const entries = [
+          { path: 'empty', kind: 'directory' as const },
+          { path: 'scripts', kind: 'directory' as const },
+          {
+            path: 'SKILL.md',
+            kind: 'file' as const,
+            executable: false,
+            bytes: Buffer.from(
+              `---\nname: physical-marker\ndescription: ${description}\n---\nRead supporting.txt and run scripts/render.sh to produce the selected-version artifact.\n`
+            ),
+          },
+          {
+            path: 'supporting.txt',
+            kind: 'file' as const,
+            executable: false,
+            bytes: support,
+          },
+          {
+            path: 'scripts/render.sh',
+            kind: 'file' as const,
+            executable: true,
+            bytes: Buffer.from(
+              '#!/bin/sh\nset -eu\nskill_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\ntest -d "$skill_root/empty"\ntest -z "$(ls -A "$skill_root/empty")"\ntest ! -x "$skill_root/supporting.txt"\ncat "$skill_root/supporting.txt" > "$1"\nprintf "physical-script-completed\\n"\n'
+            ),
+          },
+        ];
+        // Keep actual helper parsing, byte verification, placement and mode handling in the crossing.
+        for (const entry of entries) {
+          const argv = [
+            'reference.import',
+            '--slot',
+            'worker-supply',
+            '--path',
+            `${relativeRoot}/${entry.path}`,
+          ];
+          let receipt = '';
+          if (entry.kind === 'file') {
+            const digest = `sha256:${createHash('sha256').update(entry.bytes).digest('hex')}`;
+            argv.push(
+              '--length',
+              String(entry.bytes.length),
+              '--sha256',
+              digest,
+              '--entry-kind',
+              'file',
+              '--executable',
+              String(entry.executable)
+            );
+            receipt = `${digest} ${entry.bytes.length}\n`;
+          } else argv.push('--entry-kind', 'directory');
+          const imported = spawnSync(
+            process.execPath,
+            [
+              fileURLToPath(new URL('./codex-physical-skill-import.fixture.mjs', import.meta.url)),
+              supplyRoot,
+              ...argv,
+            ],
+            {
+              input: entry.kind === 'file' ? entry.bytes : Buffer.alloc(0),
+              encoding: 'utf8',
+              timeout: 10_000,
+            }
+          );
+          expect(imported.error).toBeUndefined();
+          expect(imported.status, `reference.import ${entry.path}: ${imported.stderr}`).toBe(0);
+          expect(imported.stderr).toBe('');
+          expect(imported.stdout).toBe(receipt);
+        }
+        expect(await readdir(join(skillRoot, 'empty'))).toEqual([]);
+        expect(await readFile(join(skillRoot, 'supporting.txt'))).toEqual(support);
+        expect((await stat(join(skillRoot, 'supporting.txt'))).mode & 0o111).toBe(0);
+        expect((await stat(join(skillRoot, 'scripts/render.sh'))).mode & 0o111).not.toBe(0);
+        const inference = await responsesServer((body, response) => {
+          if (body.includes('function_call_output')) return false;
+          writeFunctionCall(
+            response,
+            { namespace: 'functions', name: 'exec_command' },
+            JSON.stringify({
+              cmd: `cat ${quotePath(join(skillRoot, 'SKILL.md'))} && ${quotePath(join(skillRoot, 'scripts/render.sh'))} ${quotePath(target)}`,
+              yield_time_ms: 1000,
+            })
+          );
+          return true;
+        });
+        const session = await testAdapter.openSession(
+          openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` })
+        );
+        sessions.push(session);
+        const turn = await session.startTurn({
+          ...turnInput(
+            roots,
+            [],
+            'Use the supplied Skill to produce its selected-version artifact.'
+          ),
+          skillTargetPaths: [{ id: 'physical-marker', targetPath: skillRoot }],
+        });
+        expect((await turn.settled).status).toBe('completed');
+        expect(inference.bodies[0]).toContain(description);
+        expect(inference.bodies.at(-1)).toContain('physical-script-completed');
+        expect(inference.bodies.at(-1)).toContain('function_call_output');
+        const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+        const discovered = await rpc.request('skills/list', {
+          cwds: [roots.work],
+          forceReload: true,
+        });
+        expect(JSON.stringify(discovered)).toContain(description);
+        const output = await readFile(target);
+        expect(output).toEqual(support);
+        outputs.push(output);
+      }
+      expect(outputs[0]).not.toEqual(outputs[1]);
+    },
+    60_000
+  );
 
   it('preserves native local Skills while replacing managed roots, including empty supply', async () => {
     const roots = await tempRoots();

@@ -200,6 +200,10 @@ The failure phase is allowlisted to `pre-transport`, `transport`, `provider-resp
 
 Correlation includes known request, Workspace, Thread, Turn and CapabilityCall ids, plus the existing logical-dispatch correlation and attempt index when a member was reached. Missing values are omitted; no id is minted or storage queried for this log. Raw exception text, stack traces, provider-private codes, schemas, Tool arguments, prompts, outputs and credentials are prohibited. Failed or absent logging leaves closeout and the existing public `provider_call_failed` / `internal_inference_failed` projection unchanged. These diagnostics have no recovery or restart lifecycle beyond the existing optional log sink.
 
+### Worker Provider Rejection Detail
+
+The existing `worker_inference_failed` diagnostic may include an optional request-local `providerError` with only the upstream error `type`, `code`, `param` and message. Each string is bounded to 200 characters; the message is sanitized before truncation, including removal of the selected request credential. Read only a bounded clone of an actual rejected stock HTTP response; malformed, unreadable or oversized detail leaves the observed status available. Do not retain headers, full bodies, prompts or outputs. Attempt-start clears this detail, so closeout describes only the final attempt. These fields are diagnostic evidence only and do not change routing, retries, failure classification, public error envelopes or durable records.
+
 ## Test And CI Contract
 
 - The system under test emits the same production telemetry with `deployment.environment.name=test`; tests do not maintain a second instrumentation implementation.

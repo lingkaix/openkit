@@ -38,16 +38,16 @@ import {
   resolveScopedNotebookOwner,
 } from './knowledge/scoped-notebook-owner.js';
 import {
+  admitsServerKnowledge,
+  readServerKnowledgeSource,
+} from './knowledge/server-knowledge-owner.js';
+import {
   resolveWorkspaceKnowledgeReferenceProofs,
   verifyKnowledgeProposalWorkHistory,
 } from './knowledge-source-authority.js';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
-import {
-  getRetrievalService,
-  type RetrievalDocument,
-  type RetrievalScope,
-} from './retrieval-service.js';
+import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
 import { type CoreDb, openWorkspaceDb, type UserDb } from './storage/db.js';
 import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
 import { assertCanonicalDirectory } from './storage/workspace-file-records.js';
@@ -59,12 +59,202 @@ export interface KnowledgeRetrievalAccess {
   coreDb?: CoreDb | undefined;
   actor: ActorRef;
   requestActor?: Actor | undefined;
+  /** Actual current administrator credential retained by trusted native Worker admission. */
+  serverKnowledgeActor?: Actor | undefined;
   outputThreadId?: string | undefined;
   /** Existing querying Turn, supplied only by trusted execution assembly. */
   outputTurnId?: string | undefined;
   /** Existing authenticated-self database, supplied by native Memory assembly when available. */
   userDb?: UserDb | undefined;
 }
+/** Checks the existing Server owner without opening a notebook, Source or derived index. */
+export function canReadServerKnowledge(input: {
+  readonly access: KnowledgeRetrievalAccess;
+}): boolean {
+  const actor = input.access.serverKnowledgeActor ?? input.access.requestActor;
+  return Boolean(
+    input.access.coreDb &&
+      actor &&
+      actor.userId === responsibleUserIdForActor(input.access.actor) &&
+      admitsServerKnowledge({ coreDb: input.access.coreDb, actor })
+  );
+}
+
+/** Rechecks Server admission alongside the actual querying Workspace and output audience. */
+export function admitServerKnowledgeRetrieval(input: Target): void {
+  admitKnowledgeRetrieval(input);
+  if (
+    !canReadServerKnowledge(input) ||
+    resolve(input.access.coreDb!.dataRoot) !== resolve(input.dataRoot) ||
+    !input.access.store.getDataRoot() ||
+    resolve(input.access.store.getDataRoot()!) !== resolve(input.dataRoot)
+  )
+    throw new OperationError('workspace_access_denied', 'Server Knowledge access denied.', 403);
+}
+
+/** Reads exact Server Git pages and their same-scope literal/page Source closure under current authority. */
+export function readAuthorizedServerNotebookPages(input: Target) {
+  admitServerKnowledgeRetrieval(input);
+  const context = {
+    coreDb: input.access.coreDb!,
+    actor: input.access.serverKnowledgeActor ?? input.access.requestActor,
+  };
+  const owner = resolveScopedNotebookOwner({ ...context, target: { kind: 'server' } });
+  const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
+  const current = pin.read().files;
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(owner.notebookRoot, 'notebook.git'),
+  });
+  const notebookRevision = input.notebookRevision ?? pin.notebookRevision;
+  if (input.notebookRevision) notebook.history({ revision: notebookRevision, limit: 1 });
+  const files =
+    notebookRevision === pin.notebookRevision
+      ? current
+      : notebook.readRevision(notebookRevision).files;
+  const scopeSchemaText = readFileSync(
+    join(owner.notebookRoot, 'schema', 'scope-schema.yaml'),
+    'utf8'
+  );
+  const schema = parseScopeKnowledgeSchema(scopeSchemaText);
+  if (!schema.ok) throw new NotebookError('recovery_required');
+  const registeredSources = new Map<string, string | null>();
+  const proofs = new Map<string, KnowledgePageReferenceProof>();
+  const eligible = (
+    id: string,
+    content: string,
+    selected: Readonly<Record<string, string>>,
+    visiting: ReadonlySet<string>
+  ): boolean => {
+    if (visiting.has(id)) return false;
+    const parsed = parseOkfDocument({ path: `${id}.md`, content });
+    if (!parsed.ok) return false;
+    if (!parsed.document.reserved) {
+      const report = validateScopeKnowledgeSchema(parsed.document, schema.schema, {
+        kind: 'server',
+      });
+      if (report.conformance !== 'scope-schema-valid' || report.errors.length) return false;
+    }
+    const sensitivity = stringFrontmatterField(parsed.document, 'sensitivity');
+    if (
+      sensitivity === 'restricted' ||
+      sensitivity === 'confidential' ||
+      (parsed.document.frontmatter.sensitivity !== undefined &&
+        !schema.schema.allowedSensitivities.includes(sensitivity ?? ''))
+    )
+      return false;
+    const declaredRefs = stringListFrontmatterField(parsed.document, 'source_refs');
+    if (
+      declaredRefs === null &&
+      (!parsed.document.reserved || parsed.document.frontmatter.source_refs !== undefined)
+    )
+      return false;
+    const refs = declaredRefs ?? [];
+    const next = new Set([...visiting, id]);
+    for (const reference of refs) {
+      if (reference.startsWith('source:')) {
+        const { targetId } = resolveRegisteredKnowledgeSourceReference(
+          reference,
+          registeredSources
+        );
+        if (!targetId) return false;
+        const source = readServerKnowledgeSource(context, targetId);
+        if (!source) return false;
+        registeredSources.set(targetId, source.source.contentDigest);
+        if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
+          return false;
+      } else if (reference.startsWith('knowledge:')) {
+        const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
+        const source = match ? selected[`${match[1]}.md`] : undefined;
+        if (
+          !match ||
+          source === undefined ||
+          (match[2] && digest(source) !== match[2]) ||
+          !eligible(match[1]!, source, selected, next)
+        )
+          return false;
+        // A retained reference cannot bypass a later restriction on its current source page.
+        const currentSource = current[`${match[1]}.md`];
+        if (
+          selected !== current &&
+          currentSource !== undefined &&
+          !eligible(match[1]!, currentSource, current, new Set())
+        )
+          return false;
+      } else return false;
+    }
+    proofs.set(id, {
+      knowledgePageId: id,
+      contentDigest: digest(content),
+      sourceReferences: [...new Set(refs)].sort(),
+      resolvedReferences: new Set(refs),
+    });
+    return true;
+  };
+  const ids =
+    input.pageIds ??
+    Object.keys(files)
+      .filter((path) => !['index.md', 'log.md'].includes(basename(path)))
+      .map((path) => path.slice(0, -3))
+      .sort();
+  const pages: AuthorizedWorkspaceNotebookPage[] = [];
+  for (const id of ids) {
+    const content = files[`${id}.md`];
+    if (
+      content === undefined ||
+      (current[`${id}.md`] !== undefined &&
+        !eligible(id, current[`${id}.md`]!, current, new Set())) ||
+      !eligible(id, content, files, new Set())
+    ) {
+      if (input.pageIds)
+        throw new OperationError('workspace_access_denied', 'Knowledge page is unavailable.', 403);
+      continue;
+    }
+    pages.push({ id, path: `${id}.md`, content, contentDigest: digest(content) });
+  }
+  admitServerKnowledgeRetrieval(input);
+  const selectedIds = new Set(pages.map(({ id }) => id));
+  return {
+    notebookRevision,
+    pages,
+    scopeSchemaText,
+    registeredSources,
+    referenceProofs: new Map([...proofs].filter(([id]) => selectedIds.has(id))),
+  };
+}
+
+/** Verifies the commit that actually introduced these exact delegated page bytes, not a model-authored label. */
+export function knowledgePageDelegated(
+  input: Target,
+  pageId: string,
+  content: string,
+  sourceScope: 'workspace' | 'server' = 'workspace'
+): boolean {
+  if (sourceScope === 'server') admitServerKnowledgeRetrieval(input);
+  else admitKnowledgeRetrieval(input);
+  const notebook = new KnowledgeNotebook({
+    repositoryPath:
+      sourceScope === 'server'
+        ? join(input.dataRoot, 'server', 'knowledge', 'notebook.git')
+        : join(input.dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
+  });
+  const revision = input.notebookRevision ?? notebook.publishedRevision();
+  notebook.history({ revision, limit: 1 });
+  let record = notebook.inspectRevision(revision);
+  const path = `${pageId}.md`;
+  const blob = record.entries[path];
+  if (!blob || notebook.readRevision(revision, [path]).files[path] !== content) return false;
+  while (record.parentRevision) {
+    const parent = notebook.inspectRevision(record.parentRevision);
+    if (parent.entries[path] !== blob) break;
+    record = parent;
+  }
+  return (
+    record.metadata.producer.kind === 'agent' &&
+    record.metadata.producer.responsibleUserId !== null &&
+    (record.metadata.authority.kind === 'delegated' || record.metadata.authority.kind === 'direct')
+  );
+}
+
 /** Memory search requires current self authority and an actual private Assistant output Timeline. */
 export type UserMemoryRetrievalAccess = KnowledgeRetrievalAccess & {
   coreDb: CoreDb;
@@ -650,36 +840,6 @@ function textRanges(content: string, body: string): { start: number; end: number
     });
   return ranges.sort((a, b) => a.start - b.start);
 }
-/** Uses the indexed document's selected language while keeping answer coverage on title and body only. */
-export async function analyzeKnowledgePage(input: {
-  dataRoot: string;
-  workspaceId: string;
-  query: string;
-  content: string;
-  title: string;
-  body: string;
-}) {
-  const service = getRetrievalService(
-    input.dataRoot,
-    join(input.dataRoot, 'workspaces', input.workspaceId)
-  );
-  const doc = parseOkfDocument({
-    path: 'knowledge/pages/analysis.md',
-    content: input.content,
-  }).document;
-  const hint = doc ? stringFrontmatterField(doc, 'language') : null;
-  let language: 'zh' | 'ja' | 'unicode';
-  if (hint === 'zh' || hint === 'ja' || hint === 'unicode') language = hint;
-  else {
-    const bytes = Buffer.from(input.content);
-    const searchable = textRanges(input.content, doc?.body ?? input.content)
-      .map((range) => bytes.subarray(range.start, range.end).toString('utf8'))
-      .join('\n');
-    language = (await service.analyze('language', input.title, searchable)).language;
-  }
-  return service.analyze(input.query, input.title, input.body, language);
-}
-
 /** Enumerates one published Git revision after current scope and recursive source admission. */
 export function collectKnowledgeInventory(input: Target): {
   view: RetrievalScope;
@@ -722,6 +882,41 @@ export function collectKnowledgeInventory(input: Target): {
     },
     notebookRevision,
     referenceProofs,
+  };
+}
+/** Enumerates one admitted Server Knowledge base in its own existing Kernel eligibility partition. */
+export function collectServerKnowledgeInventory(input: Target) {
+  const admitted = readAuthorizedServerNotebookPages(input);
+  const documents: RetrievalDocument[] = admitted.pages.map(({ id, content }) => {
+    const doc = parseOkfDocument({ path: `${id}.md`, content }).document!;
+    const language = stringFrontmatterField(doc, 'language');
+    return {
+      key: { namespace: 'knowledge', id },
+      revision: admitted.notebookRevision,
+      digest: digest(content).slice(7),
+      size: Buffer.byteLength(content),
+      name: `${id}.md`,
+      title: stringFrontmatterField(doc, 'title') ?? id,
+      media_type: 'text/markdown',
+      text_ranges: textRanges(content, doc.body),
+      ...(language === 'zh' || language === 'ja' || language === 'unicode' ? { language } : {}),
+      metadata: { sourceScope: 'server', knowledgePageId: id },
+      locator: `server/knowledge/pages/${id}.md`,
+      content: { kind: 'inline-text', text: content },
+    };
+  });
+  return {
+    ...admitted,
+    view: {
+      scope: JSON.stringify([
+        'knowledge',
+        'server',
+        input.workspaceId,
+        responsibleUserIdForActor(input.access.actor),
+        input.access.outputThreadId ?? null,
+      ]),
+      documents,
+    },
   };
 }
 /** Enumerates only admitted self pages in the existing Kernel, separately from Workspace Knowledge and raw Sources. */

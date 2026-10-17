@@ -118,8 +118,8 @@ describe('Personal Assistant Timeline admission', () => {
     const timestamp = new Date().toISOString();
     current.coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, joined_at, revision, created_at, updated_at)
-         VALUES (?, 'usr_00000000-0000-7d50-8000-326c8e4a263a', 'active', 'editor', ?, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, joined_at, revision, created_at, updated_at)
+         VALUES (?, 'usr_00000000-0000-7d50-8000-326c8e4a263a', 'active', ?, 1, ?, ?)`
       )
       .run(workspace.id, timestamp, timestamp, timestamp);
     let actor = 'usr_00000000-0000-7000-8000-000000000001';
@@ -371,7 +371,6 @@ describe('Personal Assistant Timeline admission', () => {
     const input = {
       workspaceId: home.id,
       inviteeEmail,
-      proposedAccessLevel: 'editor',
       requestId: randomUUID(),
     };
     const refused = await request(current.app, 'workspace.invitation-create', input);

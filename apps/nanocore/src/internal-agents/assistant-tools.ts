@@ -150,7 +150,8 @@ export function createAssistantTools(input: {
     tools: [
       native('workspace.dashboard'),
       input.history,
-      native('knowledge.retrieval'),
+      native('knowledge.ask'),
+      native('knowledge.tell'),
       native('workspace.create'),
       native('task.start', 'task'),
       native('goal.create', 'goal'),

@@ -15,7 +15,7 @@ import {
   ensureUserQuickChatWorkspace,
   listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
-  resolveWorkspaceRole,
+  resolveWorkspaceMembershipRelation,
   WorkspaceOwnerMembershipRemovedError,
 } from './workspace-membership.js';
 
@@ -72,14 +72,14 @@ describe('workspace membership foundation', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_members (
-            workspace_id, user_id, status, access_level, invitation_id,
+            workspace_id, user_id, status, invitation_id,
             joined_at, removed_at, revision, created_at, updated_at
           )
           VALUES
-            ('ws_00000000-0000-7b56-b84d-e36c3b9e04dc', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
-            ('ws_00000000-0000-7f6f-8712-e3b3efe0bcb4', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
-            ('ws_00000000-0000-772f-bc57-457ac1c70d5b', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'removed', 'editor', NULL, ?, ?, 2, ?, ?),
-            ('ws_00000000-0000-701f-a9e3-0acd1b3c7409', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ('ws_00000000-0000-7b56-b84d-e36c3b9e04dc', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', NULL, ?, NULL, 1, ?, ?),
+            ('ws_00000000-0000-7f6f-8712-e3b3efe0bcb4', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', NULL, ?, NULL, 1, ?, ?),
+            ('ws_00000000-0000-772f-bc57-457ac1c70d5b', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'removed', NULL, ?, ?, 2, ?, ?),
+            ('ws_00000000-0000-701f-a9e3-0acd1b3c7409', 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad', 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(
           timestamp,
@@ -114,72 +114,72 @@ describe('workspace membership foundation', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_members (
-            workspace_id, user_id, status, access_level, invitation_id,
+            workspace_id, user_id, status, invitation_id,
             joined_at, removed_at, revision, created_at, updated_at
-          ) VALUES ('ws_00000000-0000-755d-9653-0bbaa7f8fdb4', 'usr_00000000-0000-7e63-b85a-c188de8ee1c3', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          ) VALUES ('ws_00000000-0000-755d-9653-0bbaa7f8fdb4', 'usr_00000000-0000-7e63-b85a-c188de8ee1c3', 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(timestamp, timestamp, timestamp);
       coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
       coreDb.sqlite
         .prepare(
           `UPDATE workspace_members
-           SET access_level = 'viewer'
+           SET status = 'removed', removed_at = updated_at
            WHERE workspace_id = 'ws_00000000-0000-72d2-bf6a-59509134d28f' AND user_id = 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'`
         )
         .run();
       const filesystemOnlyWorkspace = new FsStore({ dataRoot }).createWorkspace('Filesystem only');
 
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-764a-ac14-15573e6f8983',
           'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
         )
       ).toBe('owner');
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-7b56-b84d-e36c3b9e04dc',
           'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
         )
-      ).toBe('editor');
+      ).toBe('member');
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-7f6f-8712-e3b3efe0bcb4',
           'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
         )
-      ).toBe('viewer');
+      ).toBe('member');
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-772f-bc57-457ac1c70d5b',
           'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
         )
       ).toBeNull();
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-701f-a9e3-0acd1b3c7409',
           'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
         )
       ).toBeNull();
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-755d-9653-0bbaa7f8fdb4',
           'usr_00000000-0000-7e63-b85a-c188de8ee1c3'
         )
       ).toBeNull();
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-72d2-bf6a-59509134d28f',
           'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
         )
       ).toBeNull();
       expect(
-        resolveWorkspaceRole(
+        resolveWorkspaceMembershipRelation(
           coreDb,
           'ws_00000000-0000-7490-845b-dcfa3ee49925',
           'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'
@@ -214,7 +214,11 @@ describe('workspace membership foundation', () => {
       ensureUserQuickChatWorkspace(input);
       const workspace = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
       expect(
-        resolveWorkspaceRole(coreDb, workspace.id, 'usr_00000000-0000-7000-8000-000000000001')
+        resolveWorkspaceMembershipRelation(
+          coreDb,
+          workspace.id,
+          'usr_00000000-0000-7000-8000-000000000001'
+        )
       ).toBe('owner');
       // Seed a retained contradiction directly; normal owner-removal commands prohibit this state.
       coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
@@ -296,7 +300,7 @@ describe('workspace membership foundation', () => {
         .get(workspace.id);
       const member = coreDb.sqlite
         .prepare(
-          `SELECT workspace_id, user_id, status, access_level, invitation_id,
+          `SELECT workspace_id, user_id, status, invitation_id,
                   joined_at, removed_at, revision
            FROM workspace_members WHERE workspace_id = ?`
         )
@@ -310,7 +314,6 @@ describe('workspace membership foundation', () => {
         workspace_id: workspace.id,
       });
       expect(member).toEqual({
-        access_level: 'editor',
         invitation_id: null,
         joined_at: expect.any(String),
         removed_at: null,
@@ -447,7 +450,7 @@ describe('workspace membership foundation', () => {
         coreDb.sqlite
           .prepare(
             `UPDATE workspace_members
-             SET access_level = 'viewer'
+             SET user_id = 'usr_00000000-0000-750e-951f-bebbf278d045'
              WHERE workspace_id = ? AND user_id = ?`
           )
           .run(
@@ -538,10 +541,10 @@ describe('workspace membership foundation', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_members (
-            workspace_id, user_id, status, access_level, invitation_id,
+            workspace_id, user_id, status, invitation_id,
             joined_at, removed_at, revision, created_at, updated_at
           )
-          VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(removed.id, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', joinedAt, joinedAt, joinedAt);
       coreDb.sqlite

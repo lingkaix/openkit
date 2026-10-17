@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
 import {
@@ -10,9 +11,11 @@ import {
   Server,
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
+import { operationToolName } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import {
+  type ActorRef,
   allocateEntityId,
   CapabilityCallStatusSchema,
   deriveEntityId,
@@ -30,12 +33,16 @@ import {
   stampCapabilityCallSchemaSnapshot,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
+import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   DISPLAY_PROJECTION_REFRESH_FIELDS,
   type FsStore,
 } from './lib/store.js';
+import type { OperationInvocationDependencies } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -89,6 +96,7 @@ import {
 } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { isTargetIssuedEffectAuthority } from './storage/workspace-import-authority.js';
+import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
 import { vaultSecretMaterialToString } from './vault/vault-backend.js';
 import { getVaultGrant, type VaultGrantRecord } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
@@ -133,6 +141,7 @@ interface WorkerMcpToolCallInput {
 
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
+  readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
   /** Existing configured-runtime capture; no secondary backend or registry. */
   readonly captureArtifact?: WorkerArtifactCapture;
   /** Shared Data Root capacity owner for live Artifact capture. */
@@ -195,11 +204,16 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
       requireCurrentMcpWorkspaceAuthority(input.coreDb, environmentPackage);
       if (environmentPackage.capabilities.mode !== 'enabled') throw unavailableServer();
-      const catalog = input
+      const localCatalog = input
         .runtimeConfig()
         .workspaceMcpServerCatalogs.find(
           (entry) => entry.workspaceId === environmentPackage.scope.workspaceId
         )?.catalog;
+      const catalog = composeWorkspaceMcpCatalog({
+        dataRoot: input.coreDb.dataRoot,
+        workspaceId: environmentPackage.scope.workspaceId,
+        workspaceCatalog: localCatalog ?? { schemaVersion: 1, servers: [] },
+      });
       workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, environmentPackage.scope.workspaceId);
       applyScopedMigrations(workspaceDb);
       call = startCapabilityCall({
@@ -439,6 +453,46 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       environmentPackage,
                       store: input.store,
                       workspaceDb: activeWorkspaceDb,
+                      knowledgeAgent: input.knowledgeAgent,
+                      knowledgeCallId: call.id,
+                      knowledgePublicationAdmission: (publication) =>
+                        readWorkspaceNotebookAdmission({
+                          store: input.store,
+                          coreDb: input.coreDb!,
+                          workspaceDb: activeWorkspaceDb!,
+                          request: publication,
+                          actor: {
+                            kind: 'user',
+                            id: responsibleUserIdForActor(environmentPackage.scope.triggerActor)!,
+                          },
+                          currentAuthority: () => {
+                            requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+                            requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+                            if (
+                              !currentWorkerLineageWorkspaceAuthority(
+                                input.coreDb!,
+                                {
+                                  ...environmentPackage.scope,
+                                  packageSnapshotId: environmentPackage.snapshotId,
+                                },
+                                'knowledge.write',
+                                true
+                              )
+                            )
+                              throw mcpDeniedError();
+                          },
+                          notebook: new KnowledgeNotebook({
+                            repositoryPath: join(
+                              input.coreDb!.dataRoot,
+                              'workspaces',
+                              environmentPackage.scope.workspaceId,
+                              'knowledge',
+                              'notebook.git'
+                            ),
+                          }),
+                          runtimeConfigManager: { current: input.runtimeConfig },
+                          workspaceMutationAdmission: input.workspaceMutationAdmission,
+                        }),
                       ...(input.fileAdmission ? { fileAdmission: input.fileAdmission } : {}),
                       ...(input.captureArtifact ? { captureArtifact: input.captureArtifact } : {}),
                       signal: toolCancellation.signal,
@@ -446,6 +500,24 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                         requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
                         requireRawOutputCapabilityAdmission(activeWorkspaceDb!, environmentPackage);
                         requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+                        if (
+                          [
+                            operationToolName('knowledge.ask'),
+                            operationToolName('knowledge.tell'),
+                          ].includes(request.params.name) &&
+                          !currentWorkerLineageWorkspaceAuthority(
+                            input.coreDb!,
+                            {
+                              ...environmentPackage.scope,
+                              packageSnapshotId: environmentPackage.snapshotId,
+                            },
+                            request.params.name === operationToolName('knowledge.ask')
+                              ? 'knowledge.read'
+                              : 'knowledge.write',
+                            true
+                          )
+                        )
+                          throw mcpDeniedError();
                         if (request.params.name === 'work_artifact_submit')
                           requireCurrentArtifactWorkspaceAuthority(
                             input.coreDb!,
@@ -456,16 +528,21 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     request.params.name,
                     (request.params.arguments ?? {}) as Record<string, unknown>
                   );
+                  const delivered = mcp.projectCallToolResult(result, undefined);
                   finishCapabilityCall({
                     callId: call.id,
                     status: 'succeeded',
                     workspaceDb: activeWorkspaceDb,
+                    ...(request.params.name === operationToolName('knowledge.ask')
+                      ? { deliveredKnowledgeAnswer: JSON.stringify(delivered) }
+                      : {}),
                   });
-                  return mcp.projectCallToolResult(result, undefined);
+                  return delivered;
                 }
                 const result = await dispatchOpenkitGenerativeTool(
                   {
                     coreDb: input.coreDb!,
+                    ...(input.vaultUnlockState ? { vaultUnlockState: input.vaultUnlockState } : {}),
                     workspaceMutationAdmission: input.workspaceMutationAdmission,
                     packageSnapshotId: environmentPackage.snapshotId,
                     store: input.store,
@@ -502,11 +579,16 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           return server;
         });
       }
-      const catalog = input
+      const localCatalog = input
         .runtimeConfig()
         .workspaceMcpServerCatalogs.find(
           (entry) => entry.workspaceId === environmentPackage.scope.workspaceId
         )?.catalog;
+      const catalog = composeWorkspaceMcpCatalog({
+        dataRoot: input.coreDb.dataRoot,
+        workspaceId: environmentPackage.scope.workspaceId,
+        workspaceCatalog: localCatalog ?? { schemaVersion: 1, servers: [] },
+      });
       if (!catalog) {
         throw unavailableServer();
       }
@@ -1355,9 +1437,9 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       publishTerminalItem = false;
       throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
     }
-    if (observed.credentials) {
+    if (observed.credentials || input.resolved.scope === 'server') {
       try {
-        assertCurrentMcpVaultBindings(input);
+        assertCurrentMcpVaultBindings(input, observed.injections);
       } catch {
         publishTerminalItem = false;
         try {
@@ -1636,6 +1718,7 @@ async function observeWorkerMcpTools(input: {
   readonly workspaceDb: WorkspaceDb;
 }): Promise<{
   credentials?: WorkerMcpGatewayCredentials;
+  injections: readonly PendingMcpVaultInjection[];
   snapshotId: string;
   snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
   visibleTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
@@ -1736,6 +1819,7 @@ async function observeWorkerMcpTools(input: {
   }
   return {
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
+    injections: resolvedCredentials.injections,
     snapshotId,
     snapshotTools,
     visibleTools: snapshotTools.filter(
@@ -1751,7 +1835,11 @@ export async function resolveWorkerMcpCredentials(input: {
   readonly call: Pick<StartedCapabilityCall, 'id'>;
   readonly environmentPackage: {
     readonly snapshotId: string;
-    readonly scope: { readonly workspaceId: string; readonly agentSessionId: string };
+    readonly scope: {
+      readonly workspaceId: string;
+      readonly agentSessionId: string;
+      readonly triggerActor?: ActorRef;
+    };
     readonly agent: { readonly agentId: string };
   };
   readonly input: Pick<
@@ -1765,7 +1853,15 @@ export async function resolveWorkerMcpCredentials(input: {
   credentials?: WorkerMcpGatewayCredentials;
   injections: PendingMcpVaultInjection[];
 }> {
+  assertCurrentSharedMcpBinding(input);
   if (input.resolved.credentialBindings.length === 0) return { injections: [] };
+  if (
+    input.resolved.scope === 'server' &&
+    (!input.environmentPackage.scope.triggerActor ||
+      !responsibleUserIdForActor(input.environmentPackage.scope.triggerActor))
+  ) {
+    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+  }
   const coreDb = input.input.coreDb!;
   const environment: Record<string, string> = {};
   const headers: Record<string, string> = {};
@@ -1796,17 +1892,28 @@ export async function resolveWorkerMcpCredentials(input: {
         now: () => now,
       });
       const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
-      if (reference!.backendKind !== backend.kind) throw new Error('Vault backend mismatch.');
+      if (
+        reference!.backendKind !== backend.kind ||
+        (input.resolved.scope === 'server' && !isCurrentServerMcpMaterial(backend, reference!))
+      )
+        throw new Error('Vault backend mismatch.');
       const material = createVaultUseAuditedBackend({
         agentSessionId: input.environmentPackage.scope.agentSessionId,
         backend,
         capabilityCallId: input.call.id,
-        db: input.workspaceDb,
+        db: input.resolved.scope === 'server' ? coreDb : input.workspaceDb,
         grantId: grant!.grantId,
-        ownerScope: 'workspace',
+        ownerScope: input.resolved.scope === 'server' ? 'server' : 'workspace',
         planId,
         resolvingPath: 'grant',
-        workspaceId: input.environmentPackage.scope.workspaceId,
+        ...(input.resolved.scope === 'server'
+          ? {
+              consumerWorkspaceId: input.environmentPackage.scope.workspaceId,
+              ...(input.environmentPackage.scope.triggerActor
+                ? { actor: input.environmentPackage.scope.triggerActor }
+                : {}),
+            }
+          : { workspaceId: input.environmentPackage.scope.workspaceId }),
       }).resolve({
         referenceId: reference!.referenceId,
         version: reference!.currentVersion,
@@ -1827,6 +1934,7 @@ export async function resolveWorkerMcpCredentials(input: {
         injectedAt: now,
         planId,
         receiptId,
+        referenceVersion: reference!.currentVersion,
       });
     }
   } catch {
@@ -1856,20 +1964,48 @@ export async function resolveWorkerMcpCredentials(input: {
   };
 }
 
+/** Re-derives Server origin and exact selection from canonical catalogs at credential and effect boundaries. */
+function assertCurrentSharedMcpBinding(input: {
+  readonly input: { readonly coreDb?: CoreDb };
+  readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
+  readonly environmentPackage: { readonly scope: { readonly workspaceId: string } };
+}): void {
+  if (input.resolved.scope !== 'server') return;
+  if (!input.input.coreDb) throw new Error('Server catalog authority is unavailable.');
+  const catalog = composeWorkspaceMcpCatalog({
+    dataRoot: input.input.coreDb.dataRoot,
+    workspaceId: input.environmentPackage.scope.workspaceId,
+  });
+  const current = resolveWorkspaceMcpServer({ catalog, serverId: input.resolved.id });
+  if (
+    current.scope !== 'server' ||
+    !current.enabled ||
+    current.catalogDigest !== input.resolved.catalogDigest
+  ) {
+    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+  }
+}
+
 /** Verifies current grant, reference, scope, target, path, and lifetime authority. */
 export function assertCurrentMcpVaultAuthority(
   input: {
     readonly environmentPackage: {
       readonly snapshotId: string;
-      readonly scope: { readonly workspaceId: string; readonly agentSessionId: string };
+      readonly scope: {
+        readonly workspaceId: string;
+        readonly agentSessionId: string;
+        readonly triggerActor?: ActorRef;
+      };
       readonly agent: { readonly agentId: string };
     };
     readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
+    readonly resolved?: { readonly scope?: 'server' | undefined };
   },
   grant: VaultGrantRecord | null,
   reference: ReturnType<typeof getVaultReference>
 ): asserts grant is VaultGrantRecord {
   const workspaceId = input.environmentPackage.scope.workspaceId;
+  const shared = input.resolved?.scope === 'server';
   const expiresAt = grant?.expiresAt ?? null;
   const expiry = expiresAt ? Date.parse(expiresAt) : null;
   const expired =
@@ -1884,9 +2020,16 @@ export function assertCurrentMcpVaultAuthority(
     (grant.approvalId !== null &&
       (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
     grant.status !== 'active' ||
+    !isTargetIssuedEffectAuthority(grant.grantId) ||
+    (grant.approvalId !== null &&
+      (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
     expired ||
-    grant.ownerScope !== 'workspace' ||
-    grant.workspaceId !== workspaceId ||
+    grant.ownerScope !== (shared ? 'server' : 'workspace') ||
+    grant.workspaceId !== (shared ? null : workspaceId) ||
+    (shared &&
+      (grant.userId !== null ||
+        grant.lifetime !== 'server' ||
+        grant.allowedInjectionPaths.length !== 1)) ||
     !grant.allowedInjectionPaths.includes('gateway-only') ||
     (grant.targetAgentId !== null &&
       grant.targetAgentId !== input.environmentPackage.agent.agentId) ||
@@ -1894,22 +2037,45 @@ export function assertCurrentMcpVaultAuthority(
       grant.targetAgentSessionId !== input.environmentPackage.scope.agentSessionId) ||
     (grant.targetCapabilityId !== null && grant.targetCapabilityId !== input.operation) ||
     reference.status !== 'active' ||
-    reference.ownerScope !== 'workspace' ||
-    reference.workspaceId !== workspaceId
+    reference.ownerScope !== (shared ? 'server' : 'workspace') ||
+    reference.workspaceId !== (shared ? null : workspaceId) ||
+    (shared && (reference.userId !== null || reference.secretKind !== 'mcp-credential'))
   ) {
     throw new Error('MCP Vault authority is not current.');
   }
 }
 
 /** Rechecks every credential binding immediately before the tool effect boundary. */
-function assertCurrentMcpVaultBindings(input: WorkerMcpToolCallInput): void {
+function assertCurrentMcpVaultBindings(
+  input: WorkerMcpToolCallInput,
+  injections: readonly PendingMcpVaultInjection[]
+): void {
+  assertCurrentSharedMcpBinding(input);
   for (const binding of input.resolved.credentialBindings) {
     const grant = getVaultGrant(input.input.coreDb!, binding.vaultGrantId);
+    const reference = grant ? getVaultReference(input.input.coreDb!, grant.vaultReferenceId) : null;
     assertCurrentMcpVaultAuthority(
-      { environmentPackage: input.environmentPackage, operation: 'mcp.call-tool' },
+      {
+        environmentPackage: input.environmentPackage,
+        operation: 'mcp.call-tool',
+        resolved: input.resolved,
+      },
       grant,
-      grant ? getVaultReference(input.input.coreDb!, grant.vaultReferenceId) : null
+      reference
     );
+    if (input.resolved.scope === 'server') {
+      const observed = injections.find((item) => item.grant.grantId === grant.grantId);
+      const backend = input.input.vaultUnlockState?.backend();
+      if (
+        !reference ||
+        !backend ||
+        !observed ||
+        observed.grant.vaultReferenceId !== reference.referenceId ||
+        observed.referenceVersion !== reference.currentVersion ||
+        !isCurrentServerMcpMaterial(backend, reference)
+      )
+        throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+    }
   }
 }
 
@@ -1945,6 +2111,8 @@ export interface PendingMcpVaultInjection {
   readonly injectedAt: string;
   readonly planId: string;
   readonly receiptId: string;
+  /** Exact material version observed before asynchronous discovery; this grants no grace for stale use. */
+  readonly referenceVersion: number;
 }
 
 /** Builds a target-issued deterministic Vault record id for one binding and call. */

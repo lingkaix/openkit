@@ -385,7 +385,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
-            effectiveRole: 'owner',
+            isOwner: true,
             membershipRevision: 1,
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
@@ -399,7 +399,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
-                effectiveRole: 'owner',
+                isOwner: true,
                 membershipRevision: 1,
                 ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
@@ -2312,7 +2312,7 @@ describe('Recovery and search', () => {
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
-            effectiveRole: 'owner',
+            isOwner: true,
             membershipRevision: 1,
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
@@ -3946,7 +3946,7 @@ describe('Recovery and search', () => {
       discovery.resolve({
         items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
           workspace,
-          effectiveRole: 'owner' as const,
+          isOwner: true,
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           membershipRevision: 1,
@@ -4061,7 +4061,7 @@ describe('Recovery and search', () => {
         discovery.resolve({
           items: scenario.admitted.map((workspace) => ({
             workspace,
-            effectiveRole: 'owner' as const,
+            isOwner: true,
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             membershipRevision: 1,

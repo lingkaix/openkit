@@ -171,6 +171,8 @@ export interface RecordUsageInput {
 
 /** Input for finishing one capability call. */
 export interface FinishCapabilityCallInput {
+  /** Existing call retains the exact delivered Knowledge answer; no parallel delivery record. */
+  deliveredKnowledgeAnswer?: string;
   /** Workspace-scoped database handle. */
   workspaceDb: WorkspaceDb;
   /** Durable call id. */
@@ -500,19 +502,29 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
         (input.auditLineage === undefined
           ? null
           : RequestIdSchema.parse(input.auditLineage.commandRequestId));
+      const extensions =
+        input.deliveredKnowledgeAnswer === undefined
+          ? call.extensions_json
+          : JSON.stringify(
+              CanonicalCapabilityCallExtensionsSchema.parse({
+                ...(call.extensions_json ? JSON.parse(call.extensions_json) : {}),
+                'openkit.knowledge/delivery': { answer: input.deliveredKnowledgeAnswer },
+              })
+            );
       capabilityCallFromRow({
         ...call,
         completed_at: completedAt,
         error_code: input.errorCode ?? null,
         status: input.status,
+        extensions_json: extensions,
       });
       const result = input.workspaceDb.sqlite
         .prepare(
           `UPDATE capability_calls
-           SET status = ?, error_code = ?, completed_at = ?
+           SET status = ?, error_code = ?, completed_at = ?, extensions_json = ?
            WHERE call_id = ? AND completed_at IS NULL`
         )
-        .run(input.status, input.errorCode ?? null, completedAt, input.callId);
+        .run(input.status, input.errorCode ?? null, completedAt, extensions, input.callId);
       if (result.changes !== 1) {
         throw new Error(`Capability call changed concurrently: ${input.callId}`);
       }

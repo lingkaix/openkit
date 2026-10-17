@@ -319,11 +319,11 @@ describe('data-root backup manifest', () => {
     sourceDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
         ) VALUES
-          (?, 'usr_00000000-0000-76cb-b20d-44f52b4392e7', 'active', 'editor', NULL, ?, NULL, 2, ?, ?),
-          (?, 'usr_00000000-0000-7165-91a2-29989585336e', 'removed', 'viewer', NULL, ?, ?, 3, ?, ?)`
+          (?, 'usr_00000000-0000-76cb-b20d-44f52b4392e7', 'active', NULL, ?, NULL, 2, ?, ?),
+          (?, 'usr_00000000-0000-7165-91a2-29989585336e', 'removed', NULL, ?, ?, 3, ?, ?)`
       )
       .run(
         workspaceId,
@@ -339,10 +339,10 @@ describe('data-root backup manifest', () => {
     sourceDb.sqlite
       .prepare(
         `INSERT INTO workspace_invitations (
-          invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+          invitation_id, workspace_id, invitee_user_id, inviter_user_id,
           status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
         ) VALUES (
-          'inv_00000000-0000-7848-9a05-d8546fadfe1d', ?, 'usr_00000000-0000-76b4-848a-9317f97cc918', 'viewer', 'usr_00000000-0000-780b-b93c-e2479beb99f1',
+          'inv_00000000-0000-7848-9a05-d8546fadfe1d', ?, 'usr_00000000-0000-76b4-848a-9317f97cc918', 'usr_00000000-0000-780b-b93c-e2479beb99f1',
           'pending', '2026-07-13T00:00:00.000Z', NULL, NULL, NULL, 4, ?, ?
         )`
       )

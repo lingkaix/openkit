@@ -85,7 +85,7 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
               },
               membershipStatus: 'active',
               accessCause: 'membership',
-              effectiveRole: 'owner',
+              isOwner: true,
               membershipRevision: 1,
               ownerUserId: OWNER_USER_ID,
               registryRevision: 1,

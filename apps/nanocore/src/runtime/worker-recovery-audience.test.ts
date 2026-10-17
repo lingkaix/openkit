@@ -173,7 +173,7 @@ describe('interrupted worker list Thread audience', () => {
     const stamp = '2026-09-16T00:00:00.000Z';
     coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, stamp, stamp, stamp);
 

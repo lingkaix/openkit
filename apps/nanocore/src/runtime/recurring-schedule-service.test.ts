@@ -62,7 +62,8 @@ function fixture() {
   const start = (
     prepare: (
       occurrence: Parameters<Parameters<typeof startRecurringScheduleService>[0]['prepare']>[0]
-    ) => Promise<RecurringPreparation> = async () => structuredClone(ready)
+    ) => Promise<RecurringPreparation> = async () => structuredClone(ready),
+    prepareKnowledgeMaintenance?: (instant: string) => void | Promise<void>
   ) => {
     const setTimer = vi.fn(() => 'timer');
     const clearTimer = vi.fn();
@@ -75,6 +76,7 @@ function fixture() {
       setInterval: setTimer,
       clearInterval: clearTimer,
       onError,
+      ...(prepareKnowledgeMaintenance ? { prepareKnowledgeMaintenance } : {}),
     });
     services.push(service);
     return { service, setTimer, clearTimer, onError };
@@ -176,8 +178,8 @@ describe('serialized recurring scanner', () => {
         .run(testEntityId('usr', 'user_replacement'), Date.parse(timestamp), Date.parse(timestamp));
       db.sqlite
         .prepare(`INSERT INTO workspace_members
-        (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-        VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+        (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+        VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
         .run(
           workspace.id,
           testEntityId('usr', 'user_replacement'),
@@ -427,4 +429,28 @@ it('reconciles an already accepted queue without attempting initial file publica
   expect(schedules.getOccurrence(occurrence.id)).toMatchObject({ state: 'admission-accepted' });
   expect(create).not.toHaveBeenCalled();
   expect(store.listThreadTurns(schedule.workspaceId, schedule.threadId)).toEqual([]);
+});
+
+it('prepares Knowledge maintenance after Worker candidates and contains callback failures on empty scans', async () => {
+  const { store, start } = fixture();
+  const events: string[] = [];
+  const createTurn = store.createTurn.bind(store);
+  vi.spyOn(store, 'createTurn').mockImplementation((...input) => {
+    events.push('worker');
+    return createTurn(...input);
+  });
+  const failure = new Error('Knowledge maintenance preparation is unavailable.');
+  const prepareKnowledgeMaintenance = vi.fn(async (instant: string) => {
+    expect(instant).toBe('2026-10-16T00:00:00.000Z');
+    events.push('knowledge');
+    if (events.length === 2) throw failure;
+  });
+  const { service, onError, setTimer } = start(undefined, prepareKnowledgeMaintenance);
+  await service.runOnce();
+  expect(events).toEqual(['worker', 'knowledge']);
+  expect(onError).toHaveBeenCalledWith(failure);
+  await service.runOnce();
+  expect(events).toEqual(['worker', 'knowledge', 'knowledge']);
+  expect(prepareKnowledgeMaintenance).toHaveBeenCalledTimes(2);
+  expect(setTimer).toHaveBeenCalledTimes(1);
 });

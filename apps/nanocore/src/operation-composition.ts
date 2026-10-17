@@ -2,6 +2,7 @@ import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { createAdministrationOperationImplementations } from './administration/administration-operations.js';
+import { createServerMcpOperationImplementations } from './administration/server-mcp-operations.js';
 import { createAdministratorCleanupOperationImplementations } from './administrator-cleanup-operations.js';
 import { createAgentOperationImplementations } from './agents/agent-operations.js';
 import { createWorkerOperationImplementations } from './agents/workspace-workers.js';
@@ -35,6 +36,7 @@ import {
 } from './internal-agents/assistant-skill-resources.js';
 import type { ToolExecutionContext } from './internal-agents/internal-agent-loop.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
+import { createKnowledgeProposalPreviewOperationImplementations } from './knowledge/notebook-proposal-preview.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
@@ -62,6 +64,7 @@ import { createWorkspaceTransferOperationImplementations } from './storage/works
 import { createThreadOperationImplementations } from './thread-operation-implementations.js';
 import { createTurnOperationImplementations } from './turn-operation-implementations.js';
 import type { TurnStartDependencies } from './turn-routes.js';
+import { checkVaultGrantCommandIntent } from './vault/vault-grant-requests.js';
 import { createVaultOperationImplementations } from './vault/vault-operation-implementations.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environments/worker-environment-operation-implementations.js';
@@ -71,6 +74,17 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
+  /** Bounded Knowledge Manager role supplied by application assembly. */
+  readonly knowledgeAgent?:
+    | {
+        readonly ask: (
+          input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        readonly maintain: (
+          input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
+      }
+    | undefined;
   readonly coreDb: CoreDb | undefined;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
@@ -97,6 +111,8 @@ export interface OperationInvocationDependencies {
   /** Durable recurrence owner sharing Core storage and the application's mutation fence. */
   readonly automationStore?: AutomationStore;
   /** Closes existing Worker MCP sessions when deletion fences a Workspace. */
+  /** Closes only Server-origin MCP connections across consuming Workspaces. */
+  readonly closeServerMcpSessions?: (workspaceId?: string, mcpId?: string) => Promise<void>;
   readonly closeWorkspaceMcpSessions?: (workspaceId: string) => Promise<void>;
   /** Reconciles existing deletion fences after canonical user disable commits. */
   readonly afterUserDisabled?: (userId: string) => Promise<void> | void;
@@ -180,6 +196,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
         }
       },
     }),
+    createServerMcpOperationImplementations(dependencies),
     createVaultOperationImplementations(dependencies),
     createAppSearchOperationImplementations(dependencies),
     createEnvironmentOperationImplementations(dependencies),
@@ -217,6 +234,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),
@@ -224,6 +242,10 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createPendingRequestOperationImplementations({
       ...dependencies.pendingRequestServices!,
       store: dependencies.store!,
+      checkCommandIntent: (sqlite, record, actor) => {
+        checkVaultGrantCommandIntent(dependencies, record, actor);
+        dependencies.pendingRequestServices?.checkCommandIntent?.(sqlite, record, actor);
+      },
     }),
     createNanoHostOperationImplementations({
       coreDb: dependencies.coreDb,

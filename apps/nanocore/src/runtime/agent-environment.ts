@@ -36,6 +36,7 @@ import {
   CatalogContentUnavailableError,
   CatalogIntegrityError,
   CatalogNotFoundError,
+  composeWorkspaceMcpCatalog,
   loadWorkspaceResourceCatalog,
   readWorkspaceSkillSnapshot,
 } from '../catalog/resource-catalog.js';
@@ -370,6 +371,13 @@ function resolveOpenShellAgentEnvironmentPackage(
     filesystem: [],
     network: [],
   };
+  const mcpCatalog = input.coreDb
+    ? composeWorkspaceMcpCatalog({
+        dataRoot: input.coreDb.dataRoot,
+        workspaceId: input.turn.workspaceId,
+        workspaceCatalog: input.workspaceMcpServerCatalog ?? { schemaVersion: 1, servers: [] },
+      })
+    : input.workspaceMcpServerCatalog;
   const publicGrants = sandboxAccess.network.filter(
     (grant) => 'publicAccess' in grant && grant.publicAccess !== undefined
   );
@@ -406,7 +414,8 @@ function resolveOpenShellAgentEnvironmentPackage(
         sandbox: sandboxAccess,
         mcp: manifest.mcp,
       },
-      input.readRuntimeConfig()
+      input.readRuntimeConfig(),
+      mcpCatalog
     );
   }
   const backendRequirements = sandboxAccess.backend;
@@ -467,7 +476,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const workerMcpServers = [
     ...resolveWorkerMcpServerSupply(
       (manifest.mcp ?? []).map((server) => server.id),
-      input.workspaceMcpServerCatalog
+      input.workspaceMcpServerCatalog || mcpCatalog?.servers.length ? mcpCatalog : undefined
     ),
     createOpenkitGenerativeMcpSupply(),
     createOpenkitWorkMcpSupply(),

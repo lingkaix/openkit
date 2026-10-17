@@ -1,6 +1,7 @@
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { digestOpenKitTree, OPENKIT_TREE_DIGEST_FORMAT } from '@openkit/config-schema';
 import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import {
   CaptureCoverageBindingSchema,
@@ -778,7 +779,7 @@ interface RuntimeSupplyMaterialization {
   targetPath: string;
 }
 
-/** Static Skill supply record materialized as inert metadata. */
+/** Selected immutable Skill tree installed before native startup. */
 interface RuntimeSkillSupply {
   /** Stable catalog id. */
   id: string;
@@ -786,7 +787,9 @@ interface RuntimeSkillSupply {
   version?: string;
   /** Optional catalog source reference. */
   sourceRef?: string;
-  /** Optional integrity declaration. */
+  /** Named complete-tree digest encoding from the admitted catalog version. */
+  digestFormat?: unknown;
+  /** Complete source-tree integrity declaration. */
   integrity?: unknown;
   /** Runtime-neutral materialization hint. */
   materialization: RuntimeSupplyMaterialization;
@@ -1179,7 +1182,7 @@ async function materializeRuntimeSupply(packageManifest: WorkerShimPackageManife
 }
 
 /**
- * Materializes one Skill supply entry as worker-local metadata.
+ * Verifies one complete installed Skill against its admitted immutable tree.
  *
  * @param skill Catalog-resolved Skill supply entry.
  */
@@ -1189,6 +1192,13 @@ async function materializeSkillSupply(skill: RuntimeSkillSupply): Promise<void> 
     await access(skillMarkdown);
   } catch {
     throw new Error(`Skill tree is missing SKILL.md at ${skill.materialization.targetPath}`);
+  }
+  if (
+    skill.digestFormat !== OPENKIT_TREE_DIGEST_FORMAT ||
+    !isRecord(skill.integrity) ||
+    digestOpenKitTree(skill.materialization.targetPath).digest !== skill.integrity.sha256
+  ) {
+    throw new Error('Installed Skill tree does not match its admitted digest.');
   }
 }
 

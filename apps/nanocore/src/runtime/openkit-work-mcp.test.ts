@@ -24,14 +24,18 @@ import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
 import { readWorkerRawOutput } from './worker-raw-output.js';
 
-it('advertises the four canonical Work Tool projections in their fixed order', () => {
+it('advertises the canonical Knowledge and Work Tool projections in their fixed order', () => {
   expect(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
+    'knowledge.ask',
+    'knowledge.tell',
     'work.input.request',
     'work.peer.list',
     'work.peer.read',
     'work.artifact.submit',
   ]);
   expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toEqual([
+    'knowledge_ask',
+    'knowledge_tell',
     'work_input_request',
     'work_peer_list',
     'work_peer_read',
