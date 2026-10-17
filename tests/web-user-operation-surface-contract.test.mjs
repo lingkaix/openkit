@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 306;
+const EXPECTED_CATALOG_SIZE = 310;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 228;
+const EXPECTED_INCLUDED_SIZE = 232;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -190,6 +190,10 @@ const WEB_OPERATION_GROUPS = {
     'knowledge.notebook.restore': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.notebook.update': { disposition: 'workflow', surface: 'Knowledge' },
     'knowledge.answer': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.ask': { disposition: 'workflow', surface: 'Chat' },
+    'knowledge.tell': { disposition: 'workflow', surface: 'Chat' },
+    'knowledge.maintain': { disposition: 'workflow', surface: 'Chat' },
+    'knowledge.proposal.read': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.health.check': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.proposal.draft': { disposition: 'roadmap', roadmap: 'R070' },
     'knowledge.claim.list': { disposition: 'live', surface: 'Knowledge' },
