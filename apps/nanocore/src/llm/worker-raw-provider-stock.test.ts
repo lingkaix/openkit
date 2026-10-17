@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai';
 import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -28,7 +29,11 @@ afterEach(() => {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'raw-stock-'));
   roots.push(root);
-  const scope = { workspaceId: randomUUID(), threadId: randomUUID(), turnId: randomUUID() };
+  const scope = {
+    workspaceId: allocateEntityId('ws'),
+    threadId: allocateEntityId('th'),
+    turnId: allocateEntityId('tu'),
+  };
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
   applyScopedMigrations(db);
