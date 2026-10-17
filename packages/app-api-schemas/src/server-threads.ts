@@ -13,6 +13,10 @@ import {
   KnowledgeManagerDraftedProposalSchema,
   validKnowledgeProposalShape,
 } from './knowledge-manager.js';
+import {
+  ReadKnowledgeProposalRequestSchema,
+  ReadKnowledgeProposalResponseSchema,
+} from './knowledge-proposal-preview.js';
 
 /** Server ownership comes from current administration admission, never a Workspace selector. */
 export const ServerKnowledgeMaintainRequestSchema = KnowledgeMaintainRequestSchema.omit({
@@ -51,29 +55,23 @@ export const ServerKnowledgeReviewSchema = z
     (value) => (value.knowledgePageId !== undefined) !== (value.changedPageIds !== undefined),
     'A Review requires one complete candidate.'
   );
+const { workspaceId: _previewWorkspace, ...previewShape } =
+  ReadKnowledgeProposalRequestSchema.shape;
 export const ReadServerKnowledgeProposalRequestSchema = z
-  .object({ proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/) })
-  .strict();
-export const ReadServerKnowledgeProposalResponseSchema = z
+  .object({ ...previewShape, proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/) })
+  .strict()
+  .refine(({ path, offset }) => path !== undefined || offset === 0, 'An offset requires a path.');
+export const ReadServerKnowledgeProposalResponseSchema = ReadKnowledgeProposalResponseSchema;
+export const DecideServerKnowledgeProposalRequestSchema = z
   .object({
-    proposal: ServerKnowledgeProposalSchema,
-    proposalDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    diff: z.array(
-      z
-        .object({ path: z.string(), before: z.string().nullable(), after: z.string().nullable() })
-        .strict()
-    ),
-    reviews: z.array(ServerKnowledgeReviewSchema),
-  })
-  .strict();
-export const DecideServerKnowledgeProposalRequestSchema =
-  ReadServerKnowledgeProposalRequestSchema.extend({
+    proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/),
     requestId: RequestIdSchema,
     proposalDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     baseRevision: z.string().min(1),
     candidateRevision: z.string().min(1),
     decision: z.enum(['accepted', 'rejected', 'deferred']),
-  }).strict();
+  })
+  .strict();
 export const DecideServerKnowledgeProposalResponseSchema = z
   .object({
     review: ServerKnowledgeReviewSchema,

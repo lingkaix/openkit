@@ -11,7 +11,7 @@ import {
 } from './knowledge/server-knowledge-maintenance.js';
 import {
   decideServerNotebookProposal,
-  readServerNotebookProposal,
+  readServerNotebookProposalPreview,
 } from './knowledge/server-notebook-proposals.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
@@ -142,9 +142,9 @@ export function createServerThreadOperations(
         const native = available();
         const actor = publicOperationActor(context);
         requireCurrentDeploymentAdmin(native.coreDb, actor);
-        return readServerNotebookProposal(
+        return readServerNotebookProposalPreview(
           { ...native, actor, revalidate: () => serverNotebookAdmission(native, actor) },
-          input.proposalId
+          input
         );
       }),
     'knowledge.server.proposal.decide': (input, context) =>

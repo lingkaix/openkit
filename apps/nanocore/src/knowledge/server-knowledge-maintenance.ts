@@ -186,6 +186,7 @@ export function prepareServerKnowledgeMaintenance(
       summary,
       ...extra,
     });
+  let outcome: ReturnType<typeof result> | undefined;
   let settled: ReturnType<typeof result> | undefined;
   const retain = (value: ReturnType<typeof result>) => {
     if (settled) return settled;
@@ -212,10 +213,11 @@ export function prepareServerKnowledgeMaintenance(
   };
   const fail = () => {
     const value = retain(
-      result(
-        'failed',
-        'Server Knowledge maintenance failed. Inspect the retained Turn before a new request.'
-      )
+      outcome ??
+        result(
+          'failed',
+          'Server Knowledge maintenance failed. Inspect the retained Turn before a new request.'
+        )
     );
     const current = store.getServerTurnById(turn.id);
     if (current.status === 'running' || current.status === 'pending')
@@ -314,7 +316,6 @@ export function prepareServerKnowledgeMaintenance(
     }
     if (cursor && cursor !== since) throw new NotebookError('invalid_request');
     const humanEdits = boundedNotebookDiff(humanChanges, false);
-    let outcome: ReturnType<typeof result> | undefined;
     const editor = createNotebookAgentEditing({
       notebook: git,
       baseRevision,
@@ -443,6 +444,7 @@ export function prepareServerKnowledgeMaintenance(
       tool('knowledge.notebook.update', 'summary', async (summary) => {
         const native = await editor.notebookUpdate({ summary });
         if (native.outcome === 'no_change') outcome = result('no-change', summary);
+        if (outcome) retain(outcome);
         return native;
       }),
     ];

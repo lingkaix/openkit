@@ -7,7 +7,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { type ActorRef, deriveEntityId } from '@openkit/protocol';
 import { parse as parseYaml } from 'yaml';
-import type { z } from 'zod';
+import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -15,11 +15,13 @@ import type { FsStore } from '../lib/store.js';
 import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  ActorRefReaderSchema,
+  preserveDescriptiveRecord,
   serializeKnowledgeProposalRecord,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
-import { boundedNotebookDiff } from './notebook-history.js';
+import { projectKnowledgeProposalPreview } from './notebook-proposal-preview.js';
 import {
   attributedNotebookPageBytes,
   type NotebookEdit,
@@ -30,6 +32,22 @@ import { validateNotebookCandidate } from './notebook-validation.js';
 
 type Proposal = z.infer<typeof ServerKnowledgeProposalSchema>;
 type Review = z.infer<typeof ServerKnowledgeReviewSchema>;
+const ProposalReader = ServerKnowledgeProposalSchema.safeExtend({
+  ownerScope: z.object({ kind: z.literal('server') }).strip(),
+  producer: ActorRefReaderSchema,
+}).strip();
+const ReviewReader = ServerKnowledgeReviewSchema.safeExtend({
+  ownerScope: z.object({ kind: z.literal('server') }).strip(),
+  actor: ActorRefReaderSchema,
+}).strip();
+const ReviewFileReader = z
+  .object({
+    ownerScope: z.object({ kind: z.literal('server') }).strip(),
+    proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/),
+    decisions: z.array(ReviewReader),
+  })
+  .strip();
+
 /** Existing Server authority and publisher dependencies; models cannot supply this context. */
 export interface ServerNotebookProposalContext {
   readonly coreDb: CoreDb;
@@ -128,6 +146,8 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   const header = /^---\n([\s\S]*?)\n---\n/.exec(bytes);
   if (!header) throw new NotebookError('recovery_required');
   const meta = parseYaml(header[1]!) as Record<string, unknown>;
+  if (meta.type !== 'proposal' || meta.review_required !== true)
+    throw new NotebookError('recovery_required');
   const git = notebook(context.coreDb);
   if (typeof meta.candidate_revision !== 'string' || typeof meta.base_revision !== 'string')
     throw new NotebookError('recovery_required');
@@ -137,7 +157,7 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
     .filter((path) => base.files[path] !== candidate.files[path])
     .sort();
   const changes = paths.map((path) => ({ path, content: candidate.files[path] ?? null }));
-  const proposal = ServerKnowledgeProposalSchema.parse({
+  const proposal = ProposalReader.parse({
     id,
     operation: meta.operation,
     ownerScope: meta.owner_scope,
@@ -161,8 +181,10 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   const reviewPath = join(context.coreDb.dataRoot, 'server', 'knowledge', 'reviews', `${id}.json`);
   const raw = existsSync(reviewPath)
     ? (JSON.parse(readFileSync(reviewPath, 'utf8')) as { decisions?: unknown })
-    : { decisions: [] };
-  const reviews = ServerKnowledgeReviewSchema.array().parse(raw.decisions);
+    : { ownerScope: { kind: 'server' }, proposalId: id, decisions: [] };
+  const reviewFile = ReviewFileReader.parse(raw);
+  if (reviewFile.proposalId !== id) throw new NotebookError('recovery_required');
+  const reviews = reviewFile.decisions;
   if (
     reviews.some(
       (review) =>
@@ -182,17 +204,42 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   return {
     proposal,
     proposalDigest: digest(bytes),
-    diff: boundedNotebookDiff(
-      paths.map((path) => ({
-        path,
-        before: base.files[path] ?? null,
-        after: candidate.files[path] ?? null,
-      })),
-      true
-    ).changes,
+    diff: paths.map((path) => ({
+      path,
+      before: base.files[path] ?? null,
+      after: candidate.files[path] ?? null,
+    })),
     reviews,
   };
 }
+/** Uses the existing bounded Unicode candidate preview rather than exposing the private complete record. */
+export function readServerNotebookProposalPreview(
+  context: ServerNotebookProposalContext,
+  input: { readonly proposalId: string; readonly path?: string; readonly offset: number }
+) {
+  const selected = readServerNotebookProposal(context, input.proposalId);
+  const before = Object.fromEntries(
+    selected.diff.flatMap((change) =>
+      change.before === null ? [] : [[change.path, change.before]]
+    )
+  );
+  const after = Object.fromEntries(
+    selected.diff.flatMap((change) => (change.after === null ? [] : [[change.path, change.after]]))
+  );
+  return projectKnowledgeProposalPreview(
+    {
+      proposalId: selected.proposal.id,
+      proposalDigest: selected.proposalDigest,
+      baseRevision: selected.proposal.baseRevision,
+      candidateRevision: selected.proposal.candidateRevision,
+      paths: selected.diff.map((change) => change.path),
+    },
+    before,
+    after,
+    input
+  );
+}
+
 /** Human Review keeps the original Agent producer and uses the existing fixed-base publisher. */
 export async function decideServerNotebookProposal(
   context: ServerNotebookProposalContext,
@@ -244,9 +291,23 @@ export async function decideServerNotebookProposal(
   const recordDecision = () => {
     requireCurrentDeploymentAdmin(context.coreDb, context.actor);
     if (prior) return;
+    const path = join(
+      context.coreDb.dataRoot,
+      'server',
+      'knowledge',
+      'reviews',
+      `${proposal.id}.json`
+    );
+    const raw = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : undefined;
+    const previous = raw === undefined ? undefined : ReviewFileReader.parse(raw);
+    const next = {
+      ownerScope: { kind: 'server' },
+      proposalId: proposal.id,
+      decisions: [...selected.reviews, review],
+    };
     writeFileAtomic(
-      join(context.coreDb.dataRoot, 'server', 'knowledge', 'reviews', `${proposal.id}.json`),
-      `${JSON.stringify({ ownerScope: { kind: 'server' }, proposalId: proposal.id, decisions: [...selected.reviews, review] }, null, 2)}\n`
+      path,
+      `${JSON.stringify(preserveDescriptiveRecord(raw, previous, next), null, 2)}\n`
     );
   };
   if (request.decision !== 'accepted') {
