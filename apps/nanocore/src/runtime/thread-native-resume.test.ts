@@ -4,14 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
@@ -34,9 +36,36 @@ vi.mock('./agent-environment.js', async (importOriginal) => {
 });
 
 it.each([
-  false,
-  true,
-])('does not demand a native reference after failed OpenCode preparation (earlier Codex reference: %s)', async (hasCodexReference) => {
+  { name: 'no earlier proof', oldAgentId: null, oldAdapter: 'codex', resumes: false },
+  {
+    name: 'a previous Codex Agent',
+    oldAgentId: 'agent_codex_host',
+    oldAdapter: 'codex',
+    resumes: false,
+  },
+  {
+    name: 'the same Agent switched from Codex',
+    oldAgentId: 'agent_opencode_server',
+    oldAdapter: 'codex',
+    resumes: false,
+  },
+  {
+    name: 'a different Agent on OpenCode',
+    oldAgentId: 'agent_other_opencode',
+    oldAdapter: 'opencode',
+    resumes: false,
+  },
+  {
+    name: 'the same Agent on OpenCode',
+    oldAgentId: 'agent_opencode_server',
+    oldAdapter: 'opencode',
+    resumes: true,
+  },
+])('selects native continuity after failed preparation with $name', async ({
+  oldAgentId,
+  oldAdapter,
+  resumes,
+}) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-switch-resume-'));
   const coreDb = openCoreDb(dataRoot);
   try {
@@ -56,20 +85,45 @@ it.each([
       storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
       workSlotRef: workerStorageDefaultWorkSlotRef(DEMO_WORKSPACE_ID, DEMO_THREAD_ID),
     };
-    if (hasCodexReference)
-      store.createAgentSession({
-        id: oldSessionId,
-        agentId: 'agent_codex_host',
-        workspaceId: DEMO_WORKSPACE_ID,
-        threadId: DEMO_THREAD_ID,
-        status: 'closed',
-        message: null,
-        nativeHandleDigest: 'a'.repeat(64),
-        retainedStorage: storage,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-    // Use the real failure publisher for an allocated Session that failed before native open.
+    if (oldAgentId) {
+      const oldTurn = store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Earlier work', actor);
+      const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+      try {
+        applyScopedMigrations(workspaceDb);
+        const environmentPackage = resolveAgentEnvironmentPackage({
+          coreDb,
+          agentSetup: createTestAgentSetup({ agentId: oldAgentId, adapter: oldAdapter }),
+          agentSessionId: oldSessionId,
+          triggerActor: actor,
+          backend: { kind: 'openshell' },
+          turn: oldTurn,
+          turnInput: 'Earlier work',
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        });
+        store.updateTurn(oldTurn.id, { status: 'completed' });
+        store.createAgentSession({
+          id: oldSessionId,
+          agentId: oldAgentId,
+          environmentPackageSnapshotId: environmentPackage.snapshotId,
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: DEMO_THREAD_ID,
+          status: 'closed',
+          message: null,
+          nativeHandleDigest: 'a'.repeat(64),
+          retainedStorage: storage,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+          environmentPackage,
+          createdAt: timestamp,
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    }
+    // Use the real failure publisher for an allocated AgentSession that failed before native open.
     store.createAgentSession({
       id: failedSessionId,
       agentId: 'agent_opencode_server',
@@ -155,6 +209,7 @@ it.each([
         version: '0.0.63',
       }),
       validatePackage: async () => [],
+      prepareAgentSessionContinuity: async () => 'absent',
       planSession: (pkg) => ({
         agentSessionId: pkg.scope.agentSessionId,
         backendKind: 'openshell',
@@ -191,6 +246,22 @@ it.each([
       },
     };
     const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const agentSetup = createTestAgentSetup({
+      agentId: 'agent_opencode_server',
+      adapter: 'opencode',
+    });
+    if (!resumes) {
+      const prepared = await executor.prepareAgentSessionForTurn(store, {
+        turn: store.getTurnById(turn.id),
+        turnInput: 'Try OpenCode again',
+        freshAgentSessionId: agentSessionId,
+        triggerActor: actor,
+        agentSetup,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+      expect(prepared.workerStorageChoice).toBeUndefined();
+    }
     await expect(
       executor.startTurn(store, turn.id, 'Try OpenCode again', {
         agentSessionId,
@@ -199,10 +270,10 @@ it.each([
         requestId: entry.requestId,
         triggerActor: actor,
         workspaceRoots: [],
-        agentSetup: createTestAgentSetup({ agentId: 'agent_opencode_server', adapter: 'opencode' }),
+        agentSetup,
       })
     ).rejects.toThrow('resume probe boundary');
-    expect(offered).toEqual(null);
+    expect(offered).toEqual(resumes ? { locator: oldSessionId, digest: 'a'.repeat(64) } : null);
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
