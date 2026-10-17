@@ -16,6 +16,7 @@ import {
   publishWorkspaceResourceCatalog,
   setWorkspaceSkillPin,
 } from '../catalog/resource-catalog.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from '../llm/model-capture.js';
@@ -352,6 +353,28 @@ describe('ordinary Assistant command assembly', () => {
 });
 
 describe('ordinary Assistant command capture and Gateway composition', () => {
+  it('delivers the scope overview to the actual Provider without changing canonical messages or Tools', async () => {
+    const f = await fixture(false);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.dataRoot, 'workspaces', f.workspaceId, 'knowledge', 'notebook.git'),
+    });
+    const revision = notebook.publishedRevision();
+    f.createResponses.mockImplementation(async (_provider, request) => {
+      const delivered = JSON.stringify(request.input);
+      expect(delivered).toContain('knowledge_overviews');
+      expect(delivered).toContain(revision);
+      expect(delivered).toContain('knowledge_ask');
+      expect(delivered).toContain('Current canonical input.');
+      return response();
+    });
+    const original = structuredClone(f.assembly.messages);
+    const result = await runAssistantCommand(f.input);
+    expect(f.createResponses).toHaveBeenCalledTimes(1);
+    expect(f.assembly.messages).toEqual(original);
+    expect(result.content).toBe('Bounded answer.');
+    expect(() => result.assertContextCurrent?.()).not.toThrow();
+  });
+
   it.each([
     true,
     false,
@@ -409,6 +432,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       content: 'Bounded answer.',
       providerId: 'provider',
       usage,
+      assertContextCurrent: expect.any(Function),
     });
     expect(result.usage).toBe(usage);
     const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);

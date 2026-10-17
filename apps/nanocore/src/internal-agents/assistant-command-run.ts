@@ -1,6 +1,10 @@
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
 import { normalizeCapabilityRequestId } from '../capability/usage-ledger.js';
+import {
+  type KnowledgeOverviewInput,
+  prepareKnowledgeOverview,
+} from '../context/knowledge-overview.js';
 import type { FsStore } from '../lib/store.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
@@ -175,6 +179,15 @@ export async function runAssistantCommand(
       runAssistantModel({
         systemPrompt: assembly.systemPrompt,
         messages: assembly.messages,
+        knowledge: {
+          store: input.store,
+          coreDb: input.coreDb,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          actor: turn.triggerActor,
+          requestActor: actor,
+        },
         tools: assembly.tools,
         limits: input.limits,
         signal: input.signal,
@@ -231,11 +244,18 @@ export async function runAssistantModel(input: {
   readonly signal: AbortSignal;
   readonly assertCurrent: () => void;
   readonly gateway: Omit<InternalAgentGatewayProviderOptions, 'onDispatch'>;
+  /** Current authenticated scope for the bounded navigation prefix, separate from retained history. */
+  readonly knowledge?: KnowledgeOverviewInput;
   readonly context?: Pick<
     InternalAgentContextInput,
     'store' | 'turn' | 'readEvidence' | 'environmentFacts' | 'prefixMessages'
   >;
 }): Promise<AssistantCommandResult> {
+  const overview = input.knowledge ? prepareKnowledgeOverview(input.knowledge) : undefined;
+  const overviewMessages: AgentMessage[] = overview?.text
+    ? [{ role: 'user', content: [{ type: 'text', text: overview.text }] }]
+    : [];
+  const messages = [...overviewMessages, ...input.messages];
   const state: {
     result?: Omit<AssistantCommandResult, 'content'>;
     failure?: { error: unknown };
@@ -249,6 +269,7 @@ export async function runAssistantModel(input: {
   const model = input.gateway.logicalModel;
   const guardedProvider: typeof provider = (request) => {
     input.assertCurrent();
+    overview?.assertCurrent();
     prepared?.assertCurrent();
     return provider(request);
   };
@@ -256,6 +277,7 @@ export async function runAssistantModel(input: {
   if (input.context)
     prepared = await prepareInternalAgentContext({
       ...input.context,
+      prefixMessages: [...overviewMessages, ...(input.context.prefixMessages ?? [])],
       systemPrompt: input.systemPrompt,
       requiredMessages: input.messages.slice(input.context.prefixMessages?.length ?? 0),
       tools: input.tools,
@@ -273,7 +295,7 @@ export async function runAssistantModel(input: {
   const exit = await runInternalAgentLoop(
     {
       systemPrompt: input.systemPrompt,
-      messages: prepared?.messages ?? input.messages,
+      messages: prepared?.messages ?? messages,
       tools: input.tools,
       model: {
         logicalModelId: model.id,
@@ -329,7 +351,10 @@ export async function runAssistantModel(input: {
   return {
     ...state.result,
     content,
-    ...(prepared ? { assertContextCurrent: prepared.assertCurrent } : {}),
+    assertContextCurrent: () => {
+      overview?.assertCurrent();
+      prepared?.assertCurrent();
+    },
   };
 }
 
