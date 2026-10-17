@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import { createPendingRequestOperationImplementations } from '../pending-request-operations.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
 import { installPendingRequestAdmission } from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
-import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
@@ -21,10 +22,29 @@ import {
   applyMemoryForget,
   checkMemoryForgetIntent,
   prepareMemoryForget,
+  prepareMemoryForgetCommand,
 } from './memory-forget.js';
 import { editMemoryPage, readMemoryPage, saveMemoryPage } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
+
+/** Issues an actual test administrator credential without changing Memory ownership or its private audience. */
+function administrativeReviewer(coreDb: CoreDb): Actor {
+  const userId = 'usr_00000000-0000-7000-8000-000000000002';
+  const at = new Date().toISOString();
+  coreDb.sqlite
+    .prepare(`INSERT INTO users
+    (id, kind, display_name, email, email_verified, created_at, updated_at, status)
+    VALUES (?, 'human', 'Administrative reviewer', ?, 0, ?, ?, 'active')`)
+    .run(userId, ['fixture-reviewer', 'example.invalid'].join('@'), at, at);
+  const token = createOpenKitAccessTokenRecord(coreDb, {
+    ownerUserId: userId,
+    scope: 'server-admin',
+    workspaceIds: [],
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  return { kind: 'token', userId, tokenId: token.tokenId, tokenScope: 'server-admin' };
+}
 
 /** Composes actual self admission, canonical pending rows and Items, public decisions and Git publication. */
 async function fixture() {
@@ -143,6 +163,46 @@ async function fixture() {
 }
 
 describe('Item-confirmed self Memory forget', () => {
+  it('prepares an idle user command on one truthful local Turn and reuses its canonical lineage on replay', async () => {
+    const f = await fixture();
+    f.writer.store.updateTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const { threadId: _threadId, turnId: _turnId, ...input } = f.request;
+    const before = f.writer.store.listThreadTurns(input.workspaceId, f.thread.id).length;
+    const result = prepareMemoryForgetCommand(f.writer, input);
+    const turn = f.writer.store.getTurnById(result.turnId);
+    expect(turn).toMatchObject({
+      workspaceId: input.workspaceId,
+      threadId: f.thread.id,
+      status: 'completed',
+      triggerActor: { kind: 'user', id: f.writer.actor.userId },
+    });
+    expect(turn.agentId).toBeUndefined();
+    expect(turn.agentSessionId).toBeUndefined();
+    expect(f.writer.store.getTurnExecutor(turn.id)).toBe('person');
+    expect(prepareMemoryForgetCommand(f.writer, input)).toEqual(result);
+    expect(() =>
+      prepareMemoryForgetCommand(f.writer, { ...input, digest: `sha256:${'0'.repeat(64)}` })
+    ).toThrow();
+    expect(f.writer.store.listThreadTurns(input.workspaceId, f.thread.id)).toHaveLength(before + 1);
+    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
+  });
+
+  it('withholds captured Memory prose from a usable administrator after the owning User is disabled', async () => {
+    const f = await fixture();
+    const prepared = prepareMemoryForget(f.writer, f.request);
+    const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
+    const actor = administrativeReviewer(f.writer.coreDb);
+    const preview = () =>
+      projectApprovalEffect({ record, store: f.writer.store, coreDb: f.writer.coreDb, actor });
+    expect(preview().status).toBe('available');
+    f.writer.coreDb.sqlite.transaction(() =>
+      disableCanonicalUser(f.writer.coreDb, f.writer.actor.userId)
+    )();
+    expect(preview()).toMatchObject({ status: 'unavailable' });
+  });
   it('refuses an absent grant and mismatched private context without changing content', async () => {
     const f = await fixture();
     const prepared = prepareMemoryForget(f.writer, f.request);
@@ -199,32 +259,14 @@ describe('Item-confirmed self Memory forget', () => {
     expect(preview.detail).toContain(f.request.digest);
     expect(preview.detail).toContain('backup');
     expect(record.description).not.toContain('Private exact forgotten text.');
-    const administratorId = 'usr_00000000-0000-7000-8000-000000000002';
-    const at = new Date().toISOString();
-    f.writer.coreDb.sqlite
-      .prepare(`INSERT INTO users
-      (id, kind, display_name, email, email_verified, created_at, updated_at, status)
-      VALUES (?, 'human', 'Administrative reviewer', ?, 0, ?, ?, 'active')`)
-      .run(administratorId, ['fixture-reviewer', 'example.invalid'].join('@'), at, at);
-    const token = createOpenKitAccessTokenRecord(f.writer.coreDb, {
-      ownerUserId: administratorId,
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2999-01-01T00:00:00.000Z',
-    });
-    const administrator: Actor = {
-      kind: 'token',
-      userId: administratorId,
-      tokenId: token.tokenId,
-      tokenScope: 'server-admin',
-    };
+    const administrator = administrativeReviewer(f.writer.coreDb);
     await f.decide(prepared.pendingRequestId, 'granted', administrator);
     expect(
       readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)
     ).toMatchObject({
       state: 'resolved',
       resolution: 'granted',
-      decidingActor: { kind: 'user', id: administratorId },
+      decidingActor: { kind: 'user', id: administrator.userId },
       claim: 'unclaimed',
     });
     expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);

@@ -5,6 +5,7 @@ import {
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { readMemorySuppressions } from '../knowledge/memory-maintenance.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
@@ -59,6 +60,7 @@ export function projectApprovalEffect(input: {
       const pageId = record.governedIntent.pageId;
       if (
         !coreDb ||
+        !isCanonicalUserActive(coreDb, record.responsibleUserId) ||
         owner?.kind !== 'user' ||
         owner.userId !== record.responsibleUserId ||
         typeof pageId !== 'string' ||

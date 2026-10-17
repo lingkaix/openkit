@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import { isSealedTurnTerminal, responsibleUserIdForActor } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -8,7 +8,10 @@ import {
   isCanonicalUserOperationAuthorized,
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
-import { findAssistantTimeline } from '../internal-agents/assistant-timeline.js';
+import {
+  findAssistantTimeline,
+  openAssistantTimeline,
+} from '../internal-agents/assistant-timeline.js';
 import type { FsStore } from '../lib/store.js';
 import {
   admitIfIdle,
@@ -18,9 +21,12 @@ import {
 import {
   claimCommandIntentGrant,
   finishPendingExecution,
+  listThreadPendingRequests,
+  PENDING_REQUEST_BOUND,
   PendingRequestCommandError,
   type PendingRequestRecord,
   pendingRequestItemId,
+  proveFrozenDelivery,
   readPendingRequest,
   refuseCommandIntentGrant,
 } from '../runtime/pending-requests.js';
@@ -97,8 +103,9 @@ function admitContext(
   coreDb: CoreDb,
   store: FsStore,
   actor: Actor | undefined,
-  input: { workspaceId: string; threadId: string; turnId?: string },
-  ownerUserId?: string
+  input: { workspaceId: string; threadId?: string; turnId?: string },
+  ownerUserId?: string,
+  policyOperation: 'workspace.write' | 'approval.respond' = 'workspace.write'
 ) {
   if (!actor || !isCanonicalUserOperationAuthorized(coreDb, actor))
     refuse('workspace_access_denied', 'Current self Memory authority is unavailable.', 403);
@@ -107,7 +114,7 @@ function admitContext(
     refuse('workspace_access_denied', 'Current Memory confirmation authority is unavailable.', 403);
   if (
     !authorizeWorkspace(coreDb, actor, input.workspaceId, {
-      policyOperation: 'approval.respond',
+      policyOperation,
       mutating: true,
     })
   )
@@ -116,6 +123,7 @@ function admitContext(
       'Current confirmation Workspace authority is unavailable.',
       403
     );
+  if (input.threadId === undefined) return undefined;
   const timeline = findAssistantTimeline(store, input.workspaceId, privateOwner);
   if (!timeline || timeline.id !== input.threadId || timeline.status === 'archived')
     refuse(
@@ -184,7 +192,7 @@ function checkTarget(coreDb: CoreDb, actor: Actor, intent: ForgetIntent) {
 /** Binds native database handles to the authenticated owner before any retained request is inspected. */
 function admitWriter(
   writer: MemoryForgetWriter,
-  input: { workspaceId: string; threadId: string; turnId?: string }
+  input: { workspaceId: string; threadId?: string; turnId?: string }
 ) {
   if (
     writer.workspaceDb.workspaceId !== input.workspaceId ||
@@ -201,11 +209,114 @@ function prepared(record: PendingRequestRecord, intent: ForgetIntent) {
   return {
     pendingRequestId: record.requestId,
     itemId: record.requestItemId,
+    workspaceId: record.workspaceId,
+    threadId: record.threadId,
+    turnId: record.raisingTurnId,
     ownerScope: intent.ownerScope,
     pageId: intent.pageId,
     notebookRevision: intent.notebookRevision,
     digest: intent.digest,
   };
+}
+
+/** Captures only an admitted exact source-free self target under the current protected-page rule. */
+function captureIntent(
+  writer: MemoryForgetWriter,
+  input: Omit<PrepareMemoryForgetInput, 'threadId' | 'turnId'>
+): ForgetIntent {
+  checkProtectedPage(writer, input.pageId);
+  const page = readMemoryPage(writer, input.pageId);
+  if (!page || page.notebookRevision !== input.notebookRevision || page.digest !== input.digest)
+    refuse('conflict', 'The exact Memory target is unavailable or changed.');
+  return IntentSchema.parse({
+    operation: 'memory.forget',
+    requestId: input.requestId,
+    ownerScope: { kind: 'user', userId: writer.actor!.userId },
+    pageId: input.pageId,
+    notebookRevision: input.notebookRevision,
+    digest: input.digest,
+    content: page.content,
+    disclosure: RETENTION,
+  });
+}
+
+/** Prepares the actual person's idle command without a provider, Worker or caller-selected historical Turn. */
+export function prepareMemoryForgetCommand(
+  writer: MemoryForgetWriter,
+  input: Omit<PrepareMemoryForgetInput, 'threadId' | 'turnId'>
+) {
+  admitWriter(writer, { workspaceId: input.workspaceId });
+  const previous = readPendingRequest(writer.workspaceDb.sqlite, input.requestId);
+  if (previous)
+    return prepareMemoryForget(writer, {
+      ...input,
+      threadId: previous.threadId,
+      turnId: previous.raisingTurnId,
+    });
+  // Target and current policy failures precede creation of either communication record.
+  captureIntent(writer, input);
+  const existing = findAssistantTimeline(writer.store, input.workspaceId, writer.actor!.userId);
+  if (existing?.status === 'archived')
+    refuse('invalid_request', 'The private Assistant Timeline is archived.', 400);
+  if (
+    existing &&
+    writer.store
+      .listThreadTurns(input.workspaceId, existing.id)
+      .some((turn) => !isSealedTurnTerminal(turn.status))
+  )
+    refuse('thread_busy', 'The private Assistant Timeline has a Turn in flight.');
+  if (
+    existing &&
+    listThreadPendingRequests(writer.workspaceDb.sqlite, input.workspaceId, existing.id).filter(
+      (record) => record.state === 'pending'
+    ).length >= PENDING_REQUEST_BOUND
+  )
+    refuse('request_limit_reached', 'The Thread already has 16 pending requests.');
+  const timeline =
+    existing ??
+    openAssistantTimeline(
+      writer.store,
+      input.workspaceId,
+      writer.actor!.userId,
+      'Personal Assistant'
+    );
+  const turn = writer.store.createTurn(
+    input.workspaceId,
+    timeline.id,
+    'Prepare personal Memory forget confirmation',
+    { kind: 'user', id: writer.actor!.userId },
+    null,
+    {
+      executorKind: 'person',
+      status: 'running',
+      triggerSource: {
+        kind: 'user-input',
+        summary: 'Prepare an exact personal Memory forget confirmation.',
+      },
+    }
+  );
+  try {
+    const result = prepareMemoryForget(writer, {
+      ...input,
+      threadId: timeline.id,
+      turnId: turn.id,
+    });
+    const at = new Date().toISOString();
+    writer.store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+    proveFrozenDelivery(writer.workspaceDb.sqlite, turn.id, at);
+    return result;
+  } catch (error) {
+    if (!isSealedTurnTerminal(writer.store.getTurnById(turn.id).status))
+      writer.store.updateTurn(turn.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: {
+          code: 'memory_forget_prepare_failed',
+          message: 'Memory forget confirmation could not be prepared.',
+        },
+      });
+    throw error;
+  }
 }
 
 /** Protected content keeps its existing exact Proposal/Review requirement before any suppression effect. */
@@ -248,20 +359,7 @@ export function prepareMemoryForget(writer: MemoryForgetWriter, input: PrepareMe
   }
   if (turn.status !== 'running')
     refuse('invalid_request', 'Memory confirmation requires a running self command Turn.', 400);
-  checkProtectedPage(writer, input.pageId);
-  const page = readMemoryPage(writer, input.pageId);
-  if (!page || page.notebookRevision !== input.notebookRevision || page.digest !== input.digest)
-    refuse('conflict', 'The exact Memory target is unavailable or changed.');
-  const intent = IntentSchema.parse({
-    operation: 'memory.forget',
-    requestId: input.requestId,
-    ownerScope: { kind: 'user', userId: writer.actor!.userId },
-    pageId: input.pageId,
-    notebookRevision: input.notebookRevision,
-    digest: input.digest,
-    content: page.content,
-    disclosure: RETENTION,
-  });
+  const intent = captureIntent(writer, input);
   const now = new Date().toISOString();
   const title = 'Forget personal Memory';
   const description =
@@ -312,7 +410,7 @@ export function checkMemoryForgetIntent(
     record.threadId
   );
   const intent = intentFor(canonical);
-  admitContext(coreDb, store, actor, canonical, intent.ownerScope.userId);
+  admitContext(coreDb, store, actor, canonical, intent.ownerScope.userId, 'approval.respond');
   checkTarget(coreDb, actor, intent);
 }
 
@@ -420,13 +518,7 @@ export async function applyMemoryForget(
     refuse('grant_conflict', 'The Memory grant is no longer available for execution.');
   try {
     checkProtectedPage(writer, intent.pageId);
-    checkMemoryForgetIntent(
-      writer.workspaceDb.sqlite,
-      record,
-      writer.actor!,
-      writer.coreDb,
-      writer.store
-    );
+    checkTarget(writer.coreDb, writer.actor!, intent);
     if (
       !record.decidingActorContext ||
       record.decidingActor?.kind !== 'user' ||
