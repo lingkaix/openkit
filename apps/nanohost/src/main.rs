@@ -378,6 +378,9 @@ fn execute_effect_command(
     command.trace_context = observation.context();
     // This owner is synchronous. Never retain an attached context across an await.
     let _active = command.trace_context.clone().attach();
+    if let Some(reason) = command.admission_failure {
+        return Err(reason);
+    }
     let string = |name: &str| {
         command
             .input
@@ -1169,7 +1172,8 @@ async fn run_sessions(
                                     ));
                                 }
                                 Err(_error)
-                                    if matches!(
+                                    if (command.kind == RuntimeEffectKind::ImportReference
+                                        && command.admission_failure.is_some()) || matches!(
                                         command.kind,
                                         RuntimeEffectKind::AcquireImage
                                             | RuntimeEffectKind::BuildImage
@@ -2345,6 +2349,15 @@ mod tests {
         let typed_failure = run
             .find("\"failureCode\": \"effect_failed\"")
             .expect("exact ordinary typed-failure result");
+        let failure_branch = run
+            .split_once("Err(_error)")
+            .unwrap()
+            .1
+            .split_once("let failure_result")
+            .unwrap()
+            .0;
+        assert!(failure_branch.contains("command.kind == RuntimeEffectKind::ImportReference"));
+        assert!(failure_branch.contains("command.admission_failure.is_some()"));
         let failure_path = &run[typed_failure.saturating_sub(600)..];
         assert!(failure_path.contains("command.request_id"));
         assert!(failure_path.contains("submit_effect_result("));
