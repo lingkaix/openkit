@@ -5,7 +5,8 @@ import {
   SubmitConversationResponseSchema,
   ThreadDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
-import { createRequestId } from '@openkit/core-client';
+import { createCoreClient, createRequestId } from '@openkit/core-client';
+import { ThreadSchema } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -22,7 +23,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Verifies the fixed local Workspace, Thread, and secret-safe Debug inspection path.
+ * Verifies private Assistant reuse, member navigation, refused undisclosed handoff, and safe Debug inspection.
  *
  * Contract: docs/specs/20260529-test_strategy.md
  */
@@ -40,14 +41,47 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Create workspace$/ }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
-  await page.getByRole('button', { name: /^New conversation$/ }).click();
+  const firstOpening = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
+  );
+  await page.getByRole('button', { name: /^Assistant$/ }).click();
+  const assistant = ThreadSchema.parse(await (await firstOpening).json());
+  expect(assistant.visibility).toBe('private');
+  const selector = { workspaceId: assistant.workspaceId, threadId: assistant.id };
+  const client = createCoreClient({ baseUrl: stack.coreUrl });
+  expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
+
+  await page.getByRole('button', { name: /^Members$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+  await page.getByRole('button', { name: /^Back to app$/ }).click();
+  const secondOpening = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
+  );
+  // The opener precedes the retained Timeline row with the same visible title.
+  await page
+    .getByRole('button', { name: /^Assistant$/ })
+    .first()
+    .click();
+  expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
+  expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
   await page.getByRole('button', { name: /^Send message$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Story thread' })).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(
+    page.getByText(
+      'Explicit disclosure admission is required before private Assistant input becomes shared Task work.',
+      { exact: true }
+    )
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: assistant.name })).toBeVisible();
+  expect(
+    (await client.operations['thread.list']({ workspaceId: assistant.workspaceId })).items.map(
+      (thread) => ({ id: thread.id, visibility: thread.visibility })
+    )
+  ).toEqual([{ id: assistant.id, visibility: 'private' }]);
 
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^General$/ }).click();

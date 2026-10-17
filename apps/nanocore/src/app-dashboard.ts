@@ -31,8 +31,11 @@ import { listGoalsForThread } from './runtime/goal-owner.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
 import { readCommandRequestRecordsFromSqlite } from './storage/command-request-records.js';
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { type CoreDb, openUserDb, type UserDb, type WorkspaceDb } from './storage/db.js';
+import { applyScopedMigrations } from './storage/migrate.js';
+import { readThreadReadReceipt } from './storage/thread-read-receipts.js';
 import { readThreadRuntimeActivity } from './storage/work-observations.js';
+import { receiptMessageItemIds } from './thread-read-state.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
@@ -715,10 +718,15 @@ export function readConversationNavigation({
   administratorEligible?: boolean;
 }): ConversationNavigationResponse {
   let workspaceDb: WorkspaceDb | undefined;
+  let userDb: UserDb | undefined;
   try {
     store.getWorkspace(workspaceId);
     const agents = runtimeConfigManager.current().agentManifests;
     workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
+    if (coreDb) {
+      userDb = openUserDb(coreDb.dataRoot, actor.userId);
+      applyScopedMigrations(userDb);
+    }
     const authorized = (policyOperation: 'approval.respond' | 'turn.run' | 'review.apply') =>
       coreDb === undefined ||
       isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
@@ -735,6 +743,12 @@ export function readConversationNavigation({
       .map((thread) => {
         const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
         const items = store.listThreadItems(workspaceId, thread.id);
+        const readIds = new Set(
+          userDb ? readThreadReadReceipt(userDb, workspaceId, thread.id) : []
+        );
+        const unreadCount = receiptMessageItemIds(items, actor.userId).filter(
+          (id) => !readIds.has(id)
+        ).length;
         const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
         const latestTurn = activeTurn ?? turns.at(-1);
         const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];
@@ -770,6 +784,7 @@ export function readConversationNavigation({
           activity,
           state: needsYou ? 'needs-you' : working ? 'working' : 'idle',
           lastActivityAt: times.sort().at(-1) ?? thread.createdAt,
+          unreadCount,
         };
       });
     rows.sort(
@@ -783,5 +798,6 @@ export function readConversationNavigation({
     throw new ConversationNavigationReadError(publishedErrorMessage(error));
   } finally {
     workspaceDb?.sqlite.close();
+    userDb?.sqlite.close();
   }
 }
