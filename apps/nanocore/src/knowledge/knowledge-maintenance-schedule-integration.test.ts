@@ -26,7 +26,9 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   mkdirSync(directory, { recursive: true });
   const configure = (enabled: boolean) => writeFileSync(join(directory, 'workspace.jsonc'), JSON.stringify({
     schemaVersion: 1,
-    workspace: { name: workspace.name, knowledgeMaintenance: {
+    workspace: { name: workspace.name,
+      internalRoles: [{ roleId: 'knowledge-manager', profileId: 'missing-knowledge-profile' }],
+      knowledgeMaintenance: {
       enabled: false, reviewRequiredPageIds: [], ...(enabled ? { schedule: { enabled: true } } : {}),
     } },
   }));
@@ -48,11 +50,11 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   expect(retained[0]).toMatchObject({
     agentId: 'knowledge-manager', status: 'failed',
     triggerSource: { kind: 'automation', summary: 'Knowledge Manager scheduled maintenance.' },
-    error: { code: 'knowledge_maintenance_unavailable' },
+    error: { code: 'knowledge_maintenance_failed' },
   });
   const turn = retained[0]!;
   expect(store.listThreadItems(workspace.id, turn.threadId).filter((item) => item.turnId === turn.id)).toContainEqual(expect.objectContaining({
-    type: 'status', status: 'failed', title: 'Knowledge maintenance skipped',
+    type: 'status', status: 'failed', title: 'Knowledge maintenance',
   }));
   // Boot and a later scan retain the same outcome; neither restarts model work.
   boot();

@@ -611,8 +611,11 @@ export function createKnowledgeOperationImplementations(
       if (!dependencies.knowledgeAgent)
         throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
       return dependencies.knowledgeAgent.maintain({
-        ...input,
-        sources: [],
+        workspaceId: input.workspaceId,
+        requestId: input.requestId,
+        instructions: input.instruction,
+        ...(input.pageIds ? { pageIds: input.pageIds } : {}),
+        sources: input.sourceIds?.map((id) => `source:${id}`) ?? [],
         trigger: 'request',
         actor: context.actorRef,
         requestActor: publicOperationActor(context),

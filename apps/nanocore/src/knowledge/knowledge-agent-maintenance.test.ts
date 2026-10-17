@@ -216,6 +216,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     });
     const result = await maintainKnowledgeAgent(f.dependencies, {
       ...f.input,
+      pageIds: ['index'],
       tellContent: '€'.repeat(22000),
       askingThreadId: f.ordinaryTurn.threadId,
       askingTurnId: f.ordinaryTurn.id,
@@ -235,6 +236,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     const payload = JSON.parse(
       run.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
     );
+    expect(payload.selectedPageIds).toEqual(['index']);
     expect(
       payload.humanEdits.changes.some((change: { after: string }) =>
         change.after?.includes('# Human correction')

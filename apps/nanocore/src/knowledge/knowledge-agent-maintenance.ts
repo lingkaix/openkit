@@ -53,6 +53,7 @@ export interface KnowledgeMaintenanceInput {
   readonly trigger: 'request' | 'schedule';
   readonly instructions: string;
   readonly sources: readonly string[];
+  readonly pageIds?: readonly string[];
   readonly tellContent?: string;
   readonly askingThreadId?: string;
   readonly askingTurnId?: string;
@@ -317,6 +318,10 @@ export function prepareKnowledgeMaintenance(
       files[path] = content;
       for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
         admittedReferences.add(ref);
+    }
+    // Selections guide the fresh run; the canonical reader above still owns each page's admission.
+    for (const id of input.pageIds ?? []) {
+      if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
     }
     const sources = new Map<string, KnowledgeSourceRecord>();
     const readSource = (source: KnowledgeSourceRecord) => {
@@ -681,6 +686,7 @@ export function prepareKnowledgeMaintenance(
                 instructions: input.instructions,
                 notebookRevision: baseRevision,
                 files: Object.keys(files),
+                selectedPageIds: input.pageIds ?? [],
                 humanEdits,
                 overview: excerpt(files['index.md'] ?? '', 16 * 1024),
                 sources: selectedSources,
