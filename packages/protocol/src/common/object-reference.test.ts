@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  allocateEntityId,
   PageReferenceSchema,
   parseReferenceScope,
   ReferenceScopeIdSchema,
@@ -130,4 +131,54 @@ describe('scope-qualified reference contract', () => {
         false
       );
   });
+});
+
+it('resolves exact file scopes without treating versions or input ordinals as new entity ids', () => {
+  const workspaceId = allocateEntityId('ws');
+  const threadId = allocateEntityId('th');
+  const turnId = allocateEntityId('tu');
+  const artifactId = allocateEntityId('ar');
+  const materialId = allocateEntityId('mat');
+  const inputScope = `input/turn/${workspaceId}/${threadId}/${turnId}`;
+  for (const [scopeId, expected, objectId] of [
+    [
+      `artifact/workspace/${workspaceId}`,
+      { family: 'artifact', kind: 'workspace', workspaceId },
+      artifactId,
+    ],
+    [
+      `material/workspace/${workspaceId}`,
+      { family: 'material', kind: 'workspace', workspaceId },
+      materialId,
+    ],
+    [inputScope, { family: 'input', kind: 'turn', workspaceId, threadId, turnId }, '0'],
+  ] as const) {
+    expect(parseReferenceScope(scopeId)).toEqual(expected);
+    expect(ScopeQualifiedReferenceSchema.safeParse({ scopeId, objectId }).success).toBe(true);
+  }
+  for (const scopeId of [
+    'artifact/server',
+    `artifact/workspace/${threadId}`,
+    `material/workspace/${workspaceId}/extra`,
+    `input/thread/${workspaceId}/${threadId}`,
+    `input/turn/${workspaceId}/${threadId}/${threadId}`,
+  ]) {
+    expect(parseReferenceScope(scopeId)).toBeNull();
+  }
+  for (const objectId of ['', '-1', '+1', '01', '1.0', '1e2', '0/1', '9007199254740992']) {
+    expect(ScopeQualifiedReferenceSchema.safeParse({ scopeId: inputScope, objectId }).success).toBe(
+      false
+    );
+  }
+  for (const [family, objectId] of [
+    ['artifact', artifactId],
+    ['material', materialId],
+  ] as const) {
+    expect(
+      ScopeQualifiedReferenceSchema.safeParse({
+        scopeId: `${family}/workspace/${workspaceId}`,
+        objectId: `${objectId}/extra`,
+      }).success
+    ).toBe(false);
+  }
 });

@@ -98,7 +98,14 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
                     arguments: '{}',
                   },
                 ]
-              : [{ type: 'message', content: [{ type: 'output_text', text: 'Cited answer.' }] }],
+              : [
+                  {
+                    type: 'function_call',
+                    call_id: 'result-1',
+                    name: 'knowledge_result',
+                    arguments: JSON.stringify({ answer: 'Cited answer.' }),
+                  },
+                ],
         };
       }
     );
@@ -149,10 +156,18 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
         ],
         assertCurrent: () => {},
         readEvidence: () => internalContextDigest([]),
-        validateResult: (text) => expect(text).toBe('Cited answer.'),
+        resultSchema: {
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer'],
+          additionalProperties: false,
+        },
+        validateResult: (text) => {
+          expect(JSON.parse(text)).toEqual({ answer: 'Cited answer.' });
+        },
       }
     );
-    expect(result.text).toBe('Cited answer.');
+    expect(JSON.parse(result.text)).toEqual({ answer: 'Cited answer.' });
     expect(execute).toHaveBeenCalledTimes(1);
     const stored = f.store.getTurnById(f.turn.id);
     expect(stored).toMatchObject({
@@ -167,7 +182,7 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
     expect(stored.items.map((item) => item.type)).toEqual([
       'user-message',
       'tool-call',
-      'assistant-message',
+      'tool-call',
     ]);
     expect(stored.items[1]).toMatchObject({
       tool: 'knowledge.page.read',

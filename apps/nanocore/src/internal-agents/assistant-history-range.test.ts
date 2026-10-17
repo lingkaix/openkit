@@ -212,10 +212,11 @@ function expectUnavailable(envelope: AgentToolResult) {
 describe('Assistant exact source-bound history ranges', () => {
   it('reads the exact committed range of a real current-run compaction summary and keeps its trace readable after terminal status changes', async () => {
     const f = fixture([], 'knowledge-manager');
+    // Preserve real compaction pressure under the local bytes/3 estimate.
     const source = message(
       f.store,
       f.turn,
-      `${privateText} The decision remains pending. `.repeat(220)
+      `${privateText} The decision remains pending. `.repeat(660)
     );
     const provider = createCompactingInternalAgentProvider({
       store: f.store,

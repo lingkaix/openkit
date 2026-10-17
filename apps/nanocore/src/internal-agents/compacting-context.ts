@@ -89,7 +89,6 @@ export function createCompactingInternalAgentProvider(
     const evidenceDigest = input.readEvidence(sources);
     const assertSources = () => {
       request.signal.throwIfAborted();
-      input.assertCurrent();
       const currentTurn = input.store.getTurnById(input.turn.id);
       if (currentTurn.agentSessionId || currentTurn.agentId !== 'knowledge-manager')
         throw capacity();
@@ -130,9 +129,10 @@ export function createCompactingInternalAgentProvider(
         )
           throw capacity();
       }
+      // Recheck the complete source set last, after trace assembly, at the effect boundary.
+      input.assertCurrent();
       request.signal.throwIfAborted();
     };
-    assertSources();
     const messages = () => [
       ...(summary ? [internalContextSummaryMessage(summary)] : []),
       ...request.messages.slice(coveredMessageCount),
@@ -171,6 +171,9 @@ export function createCompactingInternalAgentProvider(
         sourceDigest: digest,
         evidenceDigest,
       };
+      // Validate immediately before each effect, including summary production; pure window
+      // fitting above does not need another complete canonical source reread.
+      assertSources();
       const response = await call({
         systemPrompt: COMPACTION_INSTRUCTION,
         model: request.model,

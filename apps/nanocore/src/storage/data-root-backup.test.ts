@@ -277,6 +277,85 @@ describe('data-root backup manifest', () => {
     );
   });
 
+  it('captures canonical files and SQLite in one pause before a pending Core writer resumes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-backup-core-pause-'));
+    let closeDatabase: (() => void) | undefined;
+    let settleWriter: Promise<void> | undefined;
+    onTestFinished(async () => {
+      try {
+        await settleWriter;
+      } finally {
+        closeDatabase?.();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+    const dataRoot = join(root, 'source');
+    const backupRoot = join(root, 'backup');
+    const store = createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    store.updateWorkspace(workspaceId, { name: 'Before callback' });
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(workspaceDb);
+    closeDatabase = () => workspaceDb.sqlite.close();
+    workspaceDb.sqlite.pragma('journal_mode = WAL');
+    workspaceDb.sqlite.pragma('wal_autocheckpoint = 0');
+    const configPath = join('workspaces', workspaceId, 'config', 'workspace.jsonc');
+    const databasePath = join('workspaces', workspaceId, 'db', 'workspace.sqlite');
+    let writerResumed = false;
+    // One ordinary Core callback publishes both changes synchronously when capture releases it.
+    const pendingWriter = new Promise<void>((resolve, reject) => {
+      setImmediate(() => {
+        try {
+          store.updateWorkspace(workspaceId, { name: 'After callback' });
+          createWorkspaceMaterial(workspaceDb, {
+            acceptedAt: timestamp,
+            actor: { kind: 'user', id: LOCAL_USER_ID },
+            kind: 'markdown',
+            requestId: 'backup-pending-material',
+            sensitivity: 'internal',
+            title: 'After callback',
+          });
+          writerResumed = true;
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    settleWriter = pendingWriter;
+
+    await writeHotDataRootBackup({
+      dataRoot,
+      backupRoot,
+      backupId: testEntityId('drb', 'backup_core_pause'),
+      sourceDeploymentId: testEntityId('dep', 'backup_core_pause'),
+      startedAt: timestamp,
+      completedAt: timestamp,
+    });
+
+    expect(JSON.parse(readFileSync(join(backupRoot, configPath), 'utf8')).workspace.name).toBe(
+      'Before callback'
+    );
+    expect(verifyDataRootBackupManifest({ backupRoot }).manifest.consistency).toBe(
+      'crash-consistent'
+    );
+    const capturedDb = new Database(join(backupRoot, databasePath), { readonly: true });
+    try {
+      expect(capturedDb.prepare('SELECT COUNT(*) FROM workspace_materials').pluck().get()).toBe(0);
+    } finally {
+      capturedDb.close();
+    }
+    expect(writerResumed).toBe(false);
+    await pendingWriter;
+    expect(writerResumed).toBe(true);
+    expect(JSON.parse(readFileSync(join(dataRoot, configPath), 'utf8')).workspace.name).toBe(
+      'After callback'
+    );
+    expect(
+      workspaceDb.sqlite.prepare('SELECT title FROM workspace_materials').pluck().all()
+    ).toEqual(['After callback']);
+  });
+
   it('restores same-deployment authority from a hot full-data-root backup', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-hot-source-'));
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-hot-backup-'));

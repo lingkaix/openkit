@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -14,6 +15,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   DATA_ROOT_BACKUP_FORMAT_VERSION,
@@ -223,7 +225,8 @@ export function writeColdDataRootBackupManifest(
 }
 
 /**
- * Copies a live data root, snapshots SQLite files via SQLite backup, and writes a hot backup manifest.
+ * Captures the live tree, SQLite snapshots and verified manifest during one continuous Core pause.
+ * The Promise contract is retained, but capture does not yield to pending Core writers.
  *
  * @param input Live data root and backup destination.
  * @returns Parsed manifest plus checked inventory paths.
@@ -240,23 +243,7 @@ export async function writeHotDataRootBackup(
   mkdirSync(dirname(input.backupRoot), { recursive: true });
   copyDataRootTree(input.dataRoot, input.backupRoot);
 
-  // Recovery copies are immutable, digest-bound files; SQLite backup would change their headers.
-  for (const path of listRegularBackupFiles(input.dataRoot).filter(
-    (path) =>
-      path.endsWith('.sqlite') &&
-      !/^workspaces\/[^/]+\/light-apps\/[^/]+\/snapshots\/[^/]+\.sqlite$/.test(path)
-  )) {
-    const sourceDb = new Database(join(input.dataRoot, path), {
-      fileMustExist: true,
-      readonly: true,
-    });
-
-    try {
-      await sourceDb.backup(join(input.backupRoot, path));
-    } finally {
-      sourceDb.close();
-    }
-  }
+  snapshotSqliteDatabases(input.dataRoot, input.backupRoot);
   const appsAfter = listLightAppDirectoryPaths(input.dataRoot);
   if (appsBefore.join('\n') !== appsAfter.join('\n')) {
     throw new Error('Light App inventory changed during hot backup capture.');
@@ -273,6 +260,57 @@ export async function writeHotDataRootBackup(
     backupMode: 'hot',
     consistency: 'crash-consistent',
   });
+}
+
+/**
+ * Uses the public asynchronous SQLite backup API in one child while Core remains paused.
+ * Recovery snapshots are immutable digest-bound bytes and must keep their original headers.
+ *
+ * @param dataRoot Live source tree.
+ * @param backupRoot Already copied destination tree.
+ * @throws Error when the child cannot capture every database.
+ */
+function snapshotSqliteDatabases(dataRoot: string, backupRoot: string): void {
+  const databases = listRegularBackupFiles(dataRoot)
+    .filter(
+      (path) =>
+        path.endsWith('.sqlite') &&
+        !/^workspaces\/[^/]+\/light-apps\/[^/]+\/snapshots\/[^/]+\.sqlite$/.test(path)
+    )
+    .map((path) => ({ source: join(dataRoot, path), destination: join(backupRoot, path) }));
+  if (!databases.length) return;
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=commonjs',
+      '-e',
+      `const { readFileSync } = require('node:fs');
+const { nativeModule, databases } = JSON.parse(readFileSync(0, 'utf8'));
+const Database = require(nativeModule);
+(async () => {
+  for (const { source, destination } of databases) {
+    const database = new Database(source, { fileMustExist: true, readonly: true });
+    try {
+      await database.backup(destination);
+    } finally {
+      database.close();
+    }
+  }
+})().catch(() => { process.exitCode = 1; });`,
+    ],
+    {
+      input: JSON.stringify({
+        nativeModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+        databases,
+      }),
+      env: { LANG: 'C', LC_ALL: 'C', TZ: 'UTC' },
+      stdio: ['pipe', 'ignore', 'ignore'],
+    }
+  );
+  if (result.error || result.signal || result.status !== 0) {
+    throw new Error('SQLite backup capture failed.');
+  }
 }
 
 /** Internal input for writing a data-root backup manifest. */

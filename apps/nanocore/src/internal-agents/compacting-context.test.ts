@@ -151,7 +151,8 @@ function tools() {
         content: [
           {
             type: 'text' as const,
-            text: ++count === 1 ? 'Observed source. '.repeat(450) : 'Later observation.',
+            // Keep the observation above the compaction threshold under the local bytes/3 estimate.
+            text: ++count === 1 ? 'Observed source. '.repeat(1_350) : 'Later observation.',
           },
         ],
       }),
@@ -309,6 +310,31 @@ describe('bounded current-run compaction', () => {
     );
     expect(result).toMatchObject({ kind: 'failed', code: 'internal_agent_context_exceeded' });
     expect(provider).toHaveBeenCalledTimes(2);
+    expect(summaries(f)).toEqual([]);
+  });
+
+  it('rechecks authority before summary dispatch when source assembly revokes it', async () => {
+    const f = fixture();
+    let allowed = true;
+    const provider = vi.fn(async () => inspect('call-1'));
+    const result = await runInternalAgentLoop(
+      loopInput(),
+      createCompactingInternalAgentProvider({
+        ...f,
+        compactThreshold: threshold,
+        limits,
+        assertCurrent: () => {
+          if (!allowed) throw new Error('Audience revoked.');
+        },
+        readEvidence: (items) => {
+          if (items.some((item) => item.type === 'tool-call')) allowed = false;
+          return internalContextDigest([]);
+        },
+        callProvider: provider,
+      })
+    );
+    expect(result).toMatchObject({ kind: 'failed' });
+    expect(provider).toHaveBeenCalledTimes(1);
     expect(summaries(f)).toEqual([]);
   });
 

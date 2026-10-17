@@ -14,6 +14,7 @@ import {
   runKnowledgeManagerAgent,
 } from '../internal-agents/knowledge-manager-agent.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
+import { OperationError } from '../operation-error.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import {
   admitKnowledgeRetrieval,
@@ -209,17 +210,19 @@ export async function askKnowledgeAgent(
         serverUnavailable = true;
       }
     }
-    const currentPage = (candidate: KnowledgeRetrievalCandidate) => {
+    // Each trusted selection belongs to one pinned notebook; read its pages together.
+    const currentPages = (selection: readonly KnowledgeRetrievalCandidate[]) => {
+      const candidate = selection[0]!;
       const selected = {
         ...bound,
         notebookRevision: candidate.revision,
-        pageIds: [candidate.reference.objectId],
+        pageIds: selection.map((page) => page.reference.objectId),
       };
       return (
         candidate.reference.scopeId === 'page/server'
           ? readAuthorizedServerNotebookPages(selected)
           : readAuthorizedWorkspaceNotebookPages(selected)
-      ).pages[0];
+      ).pages;
     };
     const currentSource = (candidate: KnowledgeRetrievalCandidate, sourceId: string) => {
       if (candidate.reference.scopeId === 'page/server')
@@ -229,32 +232,41 @@ export async function askKnowledgeAgent(
       const content = store.readKnowledgeSourceMaterial(input.workspaceId, sourceId);
       return content === null ? null : { source, content };
     };
-    const assertCurrent = () => {
+    const assertCallerCurrent = () => {
       input.assertCurrent?.();
       input.signal.throwIfAborted();
       admitKnowledgeRetrieval(bound);
-      // Initial overviews are delivered evidence even when no page Tool reads them again.
-      for (const overview of overviews) {
-        const candidate = candidates.get(overview.pageId)!;
-        const page = currentPage(candidate);
-        if (!page || page.contentDigest !== candidate.contentDigest)
-          throw new Error('Knowledge overview is no longer available.');
-      }
-      for (const evidence of read.values()) {
-        const page = currentPage(evidence.candidate);
-        if (!page || page.contentDigest !== evidence.candidate.contentDigest)
-          throw new Error('Knowledge citation is no longer available.');
+    };
+    const assertCurrent = () => {
+      assertCallerCurrent();
+      // Overviews and cited pages share their pinned revision. Batch each source at the same
+      // live boundary, rather than reloading its Git tree and proof closure once per page.
+      const selected = new Map<string, KnowledgeRetrievalCandidate>();
+      for (const overview of overviews)
+        selected.set(overview.pageId, candidates.get(overview.pageId)!);
+      for (const { candidate } of read.values()) selected.set(citationId(candidate), candidate);
+      for (const server of [false, true]) {
+        const source = [...selected.values()].filter(
+          (candidate) => (candidate.reference.scopeId === 'page/server') === server
+        );
+        if (!source.length) continue;
+        const pages = new Map(currentPages(source).map((page) => [page.id, page]));
+        for (const candidate of source)
+          if (pages.get(candidate.reference.objectId)?.contentDigest !== candidate.contentDigest)
+            throw new Error('Knowledge evidence is no longer available.');
       }
       for (const { pageId, sourceId, digest } of readSources.values()) {
         const source = currentSource(read.get(pageId)!.candidate, sourceId);
         if (!source || source.source.contentDigest !== digest)
           throw new Error('Knowledge Source is no longer available.');
       }
+      assertCallerCurrent();
     };
     const schema = (value: z.ZodType) => {
       const { $schema: _schema, ...result } = z.toJSONSchema(value, { io: 'input' });
       return result;
     };
+    let retrievalCalls = 0;
     const tools: AgentTool[] = [
       {
         name: 'knowledge.retrieval',
@@ -264,6 +276,7 @@ export async function askKnowledgeAgent(
         execute: async (value: unknown) => {
           assertCurrent();
           const args = searchSchema.parse(value);
+          retrievalCalls += 1;
           const workspace = await retrieveWorkspaceKnowledge({
             ...bound,
             caller: retrievalCaller,
@@ -328,7 +341,7 @@ export async function askKnowledgeAgent(
           const { pageId, offset } = pageSchema.parse(value);
           const candidate = candidates.get(pageId);
           if (!candidate) throw new Error('Search this page before reading it.');
-          const page = currentPage(candidate);
+          const page = currentPages([candidate])[0];
           if (!page || page.contentDigest !== candidate.contentDigest)
             throw new Error('Selected page changed.');
           read.set(pageId, { candidate, content: page.content });
@@ -475,7 +488,9 @@ export async function askKnowledgeAgent(
             coreDb: input.access.coreDb!,
             workspaceId: input.workspaceId,
             threadId: thread.id,
-            nativeAuthority,
+            // Trace readers recheck their own sources. The context provider checks the full
+            // overview/citation set around dispatch; repeating it inside every trace check is quadratic.
+            nativeAuthority: { ...nativeAuthority, assertCurrent: assertCallerCurrent },
             items,
             strategy: 'compaction',
             knowledgeProjection: 'selection',
@@ -489,9 +504,12 @@ export async function askKnowledgeAgent(
                 }
               : {}),
           }),
+        resultSchema: schema(answerSchema),
         validateResult: (text) => {
           assertCurrent();
           const answer = answerSchema.parse(JSON.parse(text));
+          if (!answer.citationIds.length && retrievalCalls === 0)
+            return 'The overview is not a complete notebook inventory. Call knowledge.retrieval with the question, read relevant selected pages, then submit knowledge.result. Report missing evidence only after search.';
           if (
             answer.citationIds.some((id) => !read.has(id)) ||
             ((!answer.citationIds.length || serverUnavailable) && !answer.uncertainty)
@@ -550,6 +568,12 @@ export async function askKnowledgeAgent(
           message: 'Knowledge query failed. Start a new request after inspection.',
         },
       });
-    throw error;
+    if (error instanceof OperationError) throw error;
+    throw new OperationError(
+      'knowledge_query_failed',
+      'Knowledge query failed. Inspect the retained Turn before a new request.',
+      422,
+      { cause: error, details: { threadId: thread.id, turnId: turn.id } }
+    );
   }
 }

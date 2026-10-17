@@ -54,6 +54,16 @@ export type ProviderHttpErrorDiagnostic = {
  * Provider transport state shared across one gateway dispatch.
  */
 export interface LLMGatewayTransportContext {
+  /** Trusted local admission after stock serialization and native overlays, before HTTP. */
+  readonly finalRequestAdmission?: (
+    request: {
+      readonly payload: unknown;
+      readonly contextWindowTokens: number;
+      readonly outputReserveTokens: number;
+      readonly codexTurnState?: string | undefined;
+    },
+    signal?: AbortSignal
+  ) => void | Promise<void>;
   /** Strong Worker observation boundary. Its failure aborts this inference before output conversion. */
   readonly rawOutput?: {
     /** Opens actual stock source lifetime, independent of public response cancellation. */
