@@ -1682,7 +1682,14 @@ mod tests {
                     });
                     let mut response = respond
                         .send_response(
-                            http::Response::builder().status(200).body(()).unwrap(),
+                            http::Response::builder()
+                                .status(200)
+                                .header(
+                                    crate::nanocore_session::NANOHOST_TRANSPORT_REVISION_HEADER,
+                                    crate::nanocore_session::NANOHOST_TRANSPORT_REVISION.trim(),
+                                )
+                                .body(())
+                                .unwrap(),
                             false,
                         )
                         .unwrap();

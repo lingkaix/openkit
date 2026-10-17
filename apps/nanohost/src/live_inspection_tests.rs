@@ -89,7 +89,7 @@ fn native_session(
                     "/api/nanohost/transport/session/admit" => {
                         assert_eq!(bytes, b"{}");
                         let admission = json!({"connectionGeneration":generation,"identityId":"host-fixture","deploymentId":"deployment-fixture","role":"authoritative","mayCarryWork":true});
-                        let mut response = respond.send_response(http::Response::builder().status(200).body(()).unwrap(), false).unwrap();
+                        let mut response = respond.send_response(http::Response::builder().status(200).header(crate::nanocore_session::NANOHOST_TRANSPORT_REVISION_HEADER, crate::nanocore_session::NANOHOST_TRANSPORT_REVISION.trim()).body(()).unwrap(), false).unwrap();
                         response.send_data(bytes::Bytes::from(admission.to_string()), true).unwrap();
                     }
                     "/api/nanohost/transport/session/readiness" => {

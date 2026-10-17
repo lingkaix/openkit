@@ -48,6 +48,11 @@ const CAPABILITY_BODY_MAX_BYTES: usize = 512 * 1024;
 const FILE_DATA_BODY_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const FILE_DATA_APPLICATION_CHUNK_BYTES: usize = 64 * 1024;
 const FILE_CONTENT_TYPE: &str = "application/octet-stream";
+/// One source for the first-party native admission framing contract.
+pub(crate) const NANOHOST_TRANSPORT_REVISION: &str =
+    include_str!("../../nanocore/src/auth/nanohost-transport-revision.json");
+/// Exact revision carriage on the single native admission exchange.
+pub(crate) const NANOHOST_TRANSPORT_REVISION_HEADER: &str = "x-openkit-nanohost-transport-revision";
 const REQUEST_ID_HEADER: &str = "x-openkit-request-id";
 const SLOT_HEADER: &str = "x-openkit-slot";
 const RELATIVE_PATH_HEADER: &str = "x-openkit-relative-path";
@@ -1577,6 +1582,10 @@ where
         let admission = Request::builder()
             .method(Method::POST)
             .uri(admission_uri)
+            .header(
+                NANOHOST_TRANSPORT_REVISION_HEADER,
+                NANOHOST_TRANSPORT_REVISION.trim(),
+            )
             .header("authorization", format!("Bearer {authorization_secret}"))
             .header("content-type", "application/json")
             .body(())
@@ -1618,12 +1627,56 @@ where
                 reconnect_after,
             )
         })?;
-        if response.status() != StatusCode::OK {
+        let status = response.status();
+        if status != StatusCode::OK {
+            let mut reason = "outer-session admission rejected";
+            if status == StatusCode::CONFLICT {
+                // Read only the bounded existing error envelope. Other conflicts retain
+                // their ordinary admission failure, including incomplete or invalid bodies.
+                let mut body = response.into_body();
+                let mut bytes = BytesMut::new();
+                let mut complete = true;
+                while let Some(chunk) = body.data().await {
+                    let Ok(chunk) = chunk else {
+                        complete = false;
+                        break;
+                    };
+                    if bytes.len() + chunk.len()
+                        > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES
+                        || body.flow_control().release_capacity(chunk.len()).is_err()
+                    {
+                        complete = false;
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                if complete
+                    && serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .is_some_and(|error| {
+                            error.get("code").and_then(serde_json::Value::as_str)
+                                == Some("nanohost_protocol_mismatch")
+                        })
+                {
+                    reason = "nanohost_protocol_mismatch";
+                }
+            }
             return Err(OuterSessionFailure::terminal(
                 OuterSessionStage::Admission,
                 OuterSessionOperation::None,
-                Some(response.status().as_u16()),
-                "outer-session admission rejected",
+                Some(status.as_u16()),
+                reason,
+            )
+            .with_reconnect_after(reconnect_after));
+        }
+        if required_header(response.headers(), NANOHOST_TRANSPORT_REVISION_HEADER).ok()
+            != Some(NANOHOST_TRANSPORT_REVISION.trim())
+        {
+            return Err(OuterSessionFailure::terminal(
+                OuterSessionStage::Admission,
+                OuterSessionOperation::None,
+                Some(status.as_u16()),
+                "nanohost_protocol_mismatch",
             )
             .with_reconnect_after(reconnect_after));
         }
@@ -5095,6 +5148,10 @@ mod tests {
                             .send_response(
                                 Response::builder()
                                     .status(StatusCode::OK)
+                                    .header(
+                                        NANOHOST_TRANSPORT_REVISION_HEADER,
+                                        NANOHOST_TRANSPORT_REVISION.trim(),
+                                    )
                                     .body(())
                                     .expect("admission response"),
                                 false,
@@ -5252,6 +5309,125 @@ mod tests {
             secret: "okt_test_only".to_string(),
         };
         (context, presentation)
+    }
+
+    /// Admission revision refusal must end before readiness or an effect callback.
+    #[tokio::test]
+    async fn transport_revision_mismatch_is_typed_before_readiness_or_effects() {
+        let revision = NANOHOST_TRANSPORT_REVISION.trim();
+        for case in [
+            "typed-conflict",
+            "old-core",
+            "wrong-echo",
+            "ordinary-conflict",
+            "match",
+        ] {
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io).await.unwrap();
+                let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                assert_eq!(
+                    request.uri().path(),
+                    "/api/nanohost/transport/session/admit"
+                );
+                if case == "match" {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("x-openkit-nanohost-transport-revision")
+                            .and_then(|value| value.to_str().ok()),
+                        Some(revision)
+                    );
+                }
+                let mut body = request.into_body();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    let chunk = chunk.unwrap();
+                    body.flow_control().release_capacity(chunk.len()).unwrap();
+                    bytes.extend_from_slice(&chunk);
+                }
+                assert_eq!(bytes, b"{}");
+                let conflict = matches!(case, "typed-conflict" | "ordinary-conflict");
+                let mut response = Response::builder().status(if conflict { 409 } else { 200 });
+                if case == "match" || case == "wrong-echo" {
+                    response = response.header(
+                        "x-openkit-nanohost-transport-revision",
+                        if case == "match" {
+                            revision
+                        } else {
+                            "unsupported"
+                        },
+                    );
+                }
+                let mut response_body = respond
+                    .send_response(response.body(()).unwrap(), false)
+                    .unwrap();
+                let payload = if conflict {
+                    serde_json::json!({"code": if case == "typed-conflict" {"nanohost_protocol_mismatch"} else {"nanohost_transport_admission_rejected"}})
+                } else {
+                    serde_json::json!({"connectionGeneration":1,"deploymentId":"deployment-a","identityId":"nanohost-a","mayCarryWork":true,"role":"authoritative"})
+                };
+                response_body
+                    .send_data(Bytes::from(payload.to_string()), true)
+                    .unwrap();
+                if case == "match" {
+                    let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                    assert_eq!(
+                        request.uri().path(),
+                        "/api/nanohost/transport/session/readiness"
+                    );
+                    let mut body = request.into_body();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.unwrap();
+                        body.flow_control().release_capacity(chunk.len()).unwrap();
+                    }
+                    respond
+                        .send_response(Response::builder().status(204).body(()).unwrap(), true)
+                        .unwrap();
+                }
+                // A rejected admission cannot send readiness or any effect request.
+                assert!(connection.accept().await.is_none());
+            });
+            let (context, presentation) = test_outer_credentials();
+            let gate_ran = std::cell::Cell::new(false);
+            let dispatch_ran = std::cell::Cell::new(false);
+            let result = run_outer_session(
+                client_io,
+                "http://core:80",
+                &context,
+                &presentation,
+                None,
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    gate_ran.set(true);
+                    Ok(None)
+                }),
+                |_, _| async {
+                    dispatch_ran.set(true);
+                    Ok(())
+                },
+            )
+            .await;
+            if case == "match" {
+                assert_eq!(result.unwrap(), 1);
+                assert!(gate_ran.get());
+                assert!(dispatch_ran.get());
+            } else {
+                let failure = result.expect_err("incompatible admission must fail closed");
+                assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+                assert_eq!(
+                    failure.reason(),
+                    if case == "ordinary-conflict" {
+                        "outer-session admission rejected"
+                    } else {
+                        "nanohost_protocol_mismatch"
+                    },
+                    "{case}"
+                );
+                assert!(!gate_ran.get());
+                assert!(!dispatch_ran.get());
+            }
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
