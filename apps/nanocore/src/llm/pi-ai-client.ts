@@ -573,7 +573,7 @@ export class PiAiGatewayClient {
     this.assertExplicitCredential(provider);
     assertChatRequestAdmission(request, false);
 
-    const { knownCost, model } = this.resolveModel(provider, request.model, models, 'chat');
+    const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const context = this.toContext(request, model);
     const declaredTools = new Set(context.tools?.map((tool) => tool.name));
     let observedFailure: Error | undefined;
@@ -620,7 +620,7 @@ export class PiAiGatewayClient {
     this.assertExplicitCredential(provider);
     assertChatRequestAdmission(request, true);
 
-    const { knownCost, model } = this.resolveModel(provider, request.model, models, 'chat');
+    const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const localAbortController = new AbortController();
     const signal = transport.signal
       ? AbortSignal.any([transport.signal, localAbortController.signal])
@@ -671,7 +671,7 @@ export class PiAiGatewayClient {
     models: Models = this.models
   ): Promise<OpenAICompatibleResponsesResponse> {
     assertResponsesRequestAdmission(request, false);
-    const { knownCost, model } = this.resolveModel(provider, request.model, models, 'responses');
+    const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const native = isResponsesApi(model.api) && provider.gatewayCapabilities.responses === 'native';
     const { additionalTools, bridgedFunctionTools, bridgeNames, nativeInput } =
       admitPiResponsesNativeRequest(request, false, !native);
@@ -770,7 +770,7 @@ export class PiAiGatewayClient {
     models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
     assertResponsesRequestAdmission(request, true);
-    const { knownCost, model } = this.resolveModel(provider, request.model, models, 'responses');
+    const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const native = isResponsesApi(model.api) && provider.gatewayCapabilities.responses === 'native';
     const { additionalTools, bridgedFunctionTools, bridgeNames, nativeInput } =
       admitPiResponsesNativeRequest(request, true, !native);
@@ -860,14 +860,12 @@ export class PiAiGatewayClient {
    * @param provider Resolved OpenKit provider config.
    * @param modelId Requested model id.
    * @param models Per-call model collection.
-   * @param format Public format whose selected upstream API must be admitted.
    * @returns Request-local model and whether four adapter rates are known financial facts.
    */
   private resolveModel(
     provider: ResolvedLLMProviderConfig,
     modelId: string,
-    models: Models,
-    format: 'chat' | 'responses'
+    models: Models
   ): ResolvedAdapterModel {
     if (models !== this.models) {
       const providerId = provider.subscriptionProviderId;
@@ -878,14 +876,6 @@ export class PiAiGatewayClient {
           ? models.getModel(providerId!, modelId.slice(prefix.length))
           : undefined;
       const pairModel = exact ?? stripped;
-
-      if (
-        providerId === 'xai' &&
-        format === 'responses' &&
-        (!pairModel || !isResponsesApi(pairModel.api))
-      ) {
-        throw new GatewayUnsupportedFeatureError('xAI Responses model API');
-      }
 
       if (
         !pairModel &&
@@ -925,13 +915,6 @@ export class PiAiGatewayClient {
     }
 
     const template = this.lookupAdapterModel(provider, modelId);
-    if (
-      provider.adapterId === 'xai' &&
-      format === 'responses' &&
-      (!template || !isResponsesApi(template.model.api))
-    ) {
-      throw new GatewayUnsupportedFeatureError('xAI Responses model API');
-    }
     const registered = this.registerConfiguredProviderModel(provider, modelId, template);
 
     if (!registered) {
@@ -971,7 +954,7 @@ export class PiAiGatewayClient {
         return null;
       }
 
-      // xAI catalog misses retain Chat synthesis; native Responses cannot reach this branch.
+      // Unknown xAI APIs use the existing Chat transport; either public format maps through stock IR.
       const apiName =
         provider.gatewayCapabilities.responses === 'native' && provider.adapterId !== 'xai'
           ? 'openai-responses'

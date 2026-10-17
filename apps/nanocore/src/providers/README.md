@@ -8,7 +8,7 @@ This directory owns configured provider instances, provider profiles, credential
 - `../llm/` owns request dispatch, adapter behavior, provider-native payloads, usage observation, and public Gateway behavior.
 - `vault-credential-resolver.ts` resolves explicit credential references through the Vault boundary; provider code must not inspect unrelated ambient credential keys.
 - Configured instance identity, endpoint, model catalog, and credential scope must survive projection into dispatch without falling back to a colliding adapter id.
-- Reviewed xAI models declare native Responses and bridged Chat Completions. The LLM adapter verifies the selected model's actual API before Responses inference.
+- Reviewed xAI models declare native Responses and bridged Chat Completions. The LLM adapter uses the selected model's actual API; both public formats remain available through the existing stock-IR mapping, including Chat synthesis for configured uncatalogued models.
 - Provider secrets must remain referenced by `secretRef` or backend-private material and must never be serialized into workspace resources, diagnostics, events, or generated config.
 
 ## File Map
