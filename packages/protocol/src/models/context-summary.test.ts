@@ -27,7 +27,9 @@ const summary = {
 describe('source-bound continuation summary Item', () => {
   it('accepts the required closed summary core and ignores descriptive additions', () => {
     expect(ItemSchema.parse(summary)).toEqual(summary);
-    expect(ItemSchema.parse({ ...summary, strategy: 'compaction' }).strategy).toBe('compaction');
+    expect(ItemSchema.parse({ ...summary, strategy: 'compaction' })).toMatchObject({
+      strategy: 'compaction',
+    });
     expect(
       ItemSchema.parse({
         ...summary,
