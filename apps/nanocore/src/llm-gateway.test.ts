@@ -2871,7 +2871,8 @@ describe('OpenAI-compatible agent gateway', () => {
       {
         message: 'Your input exceeds the context window of this model token=tok_secret',
         code: 'gateway_context_overflow',
-        publicMessage: 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.',
+        publicMessage:
+          'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.',
       },
       {
         message: 'invalid_request_error: invalid request payload token=tok_secret',
