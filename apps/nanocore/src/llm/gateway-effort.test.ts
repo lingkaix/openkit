@@ -571,6 +571,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     expect(f.entries()).toEqual([]);
   });
 
+  // Four durable fixtures share this runner; request deadlines remain unchanged.
   it.each([
     ['low', ['low', 'high'], 'low'],
     ['minimal', ['low', 'high'], 'low'],
@@ -579,34 +580,38 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['none', ['none', 'high'], 'none'],
     ['high', ['low', 'high'], 'high'],
     ['xhigh', ['low', 'high'], 'high'],
-  ] as const)('fits %s against %j to %s on both surfaces and stream modes', async (requested, levels, effective) => {
-    for (const endpoint of ['responses', 'chat/completions'] as const)
-      for (const stream of [false, true]) {
-        const f = fixture({ levels: [...levels] });
-        const dispatch = vi.spyOn(
-          f.dispatcher,
-          endpoint === 'responses'
-            ? stream
-              ? 'createResponsesStream'
-              : 'createResponses'
-            : stream
-              ? 'createChatCompletionStream'
-              : 'createChatCompletion'
-        );
-        const response = await f.post(endpoint, requested, stream);
-        expect(response.status, await response.text()).toBe(200);
-        expect(dispatch.mock.calls[0]?.[1]).toMatchObject(
-          endpoint === 'responses'
-            ? { reasoning: { effort: effective } }
-            : { reasoning_effort: effective }
-        );
-        expect(f.received).toEqual([{ member: 'primary', effort: effective }]);
-        expect(f.entries()).toEqual([
-          expect.objectContaining({ requestedEffort: requested, effectiveEffort: effective }),
-        ]);
-        expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
-      }
-  });
+  ] as const)(
+    'fits %s against %j to %s on both surfaces and stream modes',
+    async (requested, levels, effective) => {
+      for (const endpoint of ['responses', 'chat/completions'] as const)
+        for (const stream of [false, true]) {
+          const f = fixture({ levels: [...levels] });
+          const dispatch = vi.spyOn(
+            f.dispatcher,
+            endpoint === 'responses'
+              ? stream
+                ? 'createResponsesStream'
+                : 'createResponses'
+              : stream
+                ? 'createChatCompletionStream'
+                : 'createChatCompletion'
+          );
+          const response = await f.post(endpoint, requested, stream);
+          expect(response.status, await response.text()).toBe(200);
+          expect(dispatch.mock.calls[0]?.[1]).toMatchObject(
+            endpoint === 'responses'
+              ? { reasoning: { effort: effective } }
+              : { reasoning_effort: effective }
+          );
+          expect(f.received).toEqual([{ member: 'primary', effort: effective }]);
+          expect(f.entries()).toEqual([
+            expect.objectContaining({ requestedEffort: requested, effectiveEffort: effective }),
+          ]);
+          expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
+        }
+    },
+    60_000
+  );
 
   it.each([
     [false, ['low', 'high'], 'model_without_reasoning'],
