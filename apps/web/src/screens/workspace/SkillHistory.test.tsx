@@ -38,9 +38,15 @@ function fixture(
     'catalog.skill-content-read': vi
       .fn()
       .mockResolvedValue({ digest, path: 'SKILL.md', contentBase64: btoa('hello') }),
-    'catalog.skill-diff': vi
-      .fn()
-      .mockResolvedValue({ changes: [{ path: 'SKILL.md', before: { kind: 'file', size: 3, sha256: olderDigest }, after: { kind: 'file', size: 5, sha256: digest } }] }),
+    'catalog.skill-diff': vi.fn().mockResolvedValue({
+      changes: [
+        {
+          path: 'SKILL.md',
+          before: { kind: 'file', size: 3, sha256: olderDigest },
+          after: { kind: 'file', size: 5, sha256: digest },
+        },
+      ],
+    }),
     'catalog.skill-update-check': vi.fn().mockResolvedValue({ status: 'unchanged' }),
     'catalog.skill-remove': vi.fn().mockResolvedValue({ revision: 8 }),
     'catalog.skill-purge': vi.fn().mockResolvedValue({ revision: 8 }),
@@ -122,64 +128,70 @@ describe('Skill retained history', () => {
     expect(operations['catalog.skill-version-read']).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['remove', 'purge'] as const)(
-    'names a lost %s response as unknown and offers read-only inspection',
-    async (action) => {
-      const user = userEvent.setup();
-      const operations = fixture();
-      await user.click(await screen.findByRole('button', { name: /Inspect sha256:aaaa/ }));
-      await screen.findByText('owner/repo');
-      const mutation = action === 'remove' ? operations['catalog.skill-remove'] : operations['catalog.skill-purge'];
-      mutation.mockRejectedValue(new TypeError('response lost'));
-      const name = action === 'remove' ? 'Remove Skill from future selection' : 'Confirm permanent deletion';
-      if (action === 'purge')
-        await user.click(screen.getByRole('button', { name: 'Delete retained version bytes' }));
-      await user.click(screen.getByRole('button', { name }));
-      expect(await screen.findByRole('alert')).toHaveTextContent(/result is unknown/i);
-      expect(screen.getByRole('button', { name })).toBeDisabled();
-      await user.click(screen.getByRole('button', { name: 'Inspect current Skill state' }));
-      await waitFor(() => expect(operations['catalog.skill-version-list']).toHaveBeenCalledTimes(2));
-      expect(mutation).toHaveBeenCalledTimes(1);
-    }
-  );
+  it.each([
+    'remove',
+    'purge',
+  ] as const)('names a lost %s response as unknown and offers read-only inspection', async (action) => {
+    const user = userEvent.setup();
+    const operations = fixture();
+    await user.click(await screen.findByRole('button', { name: /Inspect sha256:aaaa/ }));
+    await screen.findByText('owner/repo');
+    const mutation =
+      action === 'remove' ? operations['catalog.skill-remove'] : operations['catalog.skill-purge'];
+    mutation.mockRejectedValue(new TypeError('response lost'));
+    const name =
+      action === 'remove' ? 'Remove Skill from future selection' : 'Confirm permanent deletion';
+    if (action === 'purge')
+      await user.click(screen.getByRole('button', { name: 'Delete retained version bytes' }));
+    await user.click(screen.getByRole('button', { name }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/result is unknown/i);
+    expect(screen.getByRole('button', { name })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Inspect current Skill state' }));
+    await waitFor(() => expect(operations['catalog.skill-version-list']).toHaveBeenCalledTimes(2));
+    expect(mutation).toHaveBeenCalledTimes(1);
+  });
 
-  it.each(['history', 'version', 'content', 'diff'] as const)(
-    'hides retained %s data after the current read is refused',
-    async (read) => {
-      const user = userEvent.setup();
-      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      const operations = fixture(false, false, queryClient);
-      await user.click(await screen.findByRole('button', { name: /Inspect sha256:aaaa/ }));
-      await user.click(await screen.findByRole('button', { name: 'Read SKILL.md' }));
-      expect(await screen.findByText('hello')).toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: /Compare with sha256:bbbb/ }));
-      expect(await screen.findByText('Changed: SKILL.md')).toBeInTheDocument();
-      const operation = {
-        history: 'catalog.skill-version-list',
-        version: 'catalog.skill-version-read',
-        content: 'catalog.skill-content-read',
-        diff: 'catalog.skill-diff',
-      } as const;
-      const keys = {
-        history: ['skill-history', workspaceId, 'research'],
-        version: ['skill-version', workspaceId, 'research', digest],
-        content: ['skill-content', workspaceId, 'research', digest, 'SKILL.md'],
-        diff: ['skill-diff', workspaceId, 'research', digest, olderDigest],
-      };
-      operations[operation[read]].mockRejectedValue(new Error('current read refused'));
-      await act(async () => {
-        await queryClient.refetchQueries({ queryKey: keys[read], exact: true });
-      });
-      expect(await screen.findByRole('alert')).toBeInTheDocument();
-      if (read !== 'diff') {
-        expect(screen.queryByText('hello')).not.toBeInTheDocument();
-        expect(screen.queryByRole('link', { name: 'Download exact file bytes' })).not.toBeInTheDocument();
-      }
-      if (read !== 'content') expect(screen.queryByText('Changed: SKILL.md')).not.toBeInTheDocument();
-      if (read === 'history' || read === 'version')
-        expect(screen.queryByText('owner/repo')).not.toBeInTheDocument();
+  it.each([
+    'history',
+    'version',
+    'content',
+    'diff',
+  ] as const)('hides retained %s data after the current read is refused', async (read) => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const operations = fixture(false, false, queryClient);
+    await user.click(await screen.findByRole('button', { name: /Inspect sha256:aaaa/ }));
+    await user.click(await screen.findByRole('button', { name: 'Read SKILL.md' }));
+    expect(await screen.findByText('hello')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Compare with sha256:bbbb/ }));
+    expect(await screen.findByText('Changed: SKILL.md')).toBeInTheDocument();
+    const operation = {
+      history: 'catalog.skill-version-list',
+      version: 'catalog.skill-version-read',
+      content: 'catalog.skill-content-read',
+      diff: 'catalog.skill-diff',
+    } as const;
+    const keys = {
+      history: ['skill-history', workspaceId, 'research'],
+      version: ['skill-version', workspaceId, 'research', digest],
+      content: ['skill-content', workspaceId, 'research', digest, 'SKILL.md'],
+      diff: ['skill-diff', workspaceId, 'research', digest, olderDigest],
+    };
+    operations[operation[read]].mockRejectedValue(new Error('current read refused'));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: keys[read], exact: true });
+    });
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    if (read !== 'diff') {
+      expect(screen.queryByText('hello')).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('link', { name: 'Download exact file bytes' })
+      ).not.toBeInTheDocument();
     }
-  );
+    if (read !== 'content') expect(screen.queryByText('Changed: SKILL.md')).not.toBeInTheDocument();
+    if (read === 'history' || read === 'version')
+      expect(screen.queryByText('owner/repo')).not.toBeInTheDocument();
+  });
 
   it('disables retained operations while disconnected', async () => {
     const operations = fixture(true);

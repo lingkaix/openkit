@@ -1,4 +1,4 @@
-import { createRequestId } from '@openkit/core-client';
+import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
@@ -37,6 +37,7 @@ export function SkillHistory({
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: workspaceKeys.catalog(workspaceId), exact: true }),
   });
+  const versions = history.isSuccess ? history.data.items : [];
   return (
     <div className="flex flex-col gap-2">
       {history.isPending ? (
@@ -48,8 +49,8 @@ export function SkillHistory({
           onRetry={blocked ? undefined : () => void history.refetch()}
         />
       ) : null}
-      {history.data?.items.length === 0 ? <p>No retained versions.</p> : null}
-      {history.data?.items.map((version) => (
+      {history.isSuccess && versions.length === 0 ? <p>No retained versions.</p> : null}
+      {versions.map((version) => (
         <Button
           key={version.digest}
           size="sm"
@@ -59,7 +60,7 @@ export function SkillHistory({
           Inspect {version.digest.slice(0, 19)}
         </Button>
       ))}
-      {digest ? (
+      {digest && history.isSuccess ? (
         <SkillVersionDetails
           key={`${workspaceId}:${skillId}:${digest}`}
           workspaceId={workspaceId}
@@ -67,7 +68,7 @@ export function SkillHistory({
           digest={digest}
           revision={revision}
           blocked={blocked}
-          otherDigests={(history.data?.items ?? [])
+          otherDigests={versions
             .map((version) => version.digest)
             .filter((other) => other !== digest)}
         />
@@ -75,14 +76,31 @@ export function SkillHistory({
       <p className="text-xs text-fg-muted">Removal blocks future selection and retains history.</p>
       <Button
         size="sm"
-        isDisabled={blocked || remove.isPending || remove.isSuccess}
+        isDisabled={
+          blocked || history.isError || remove.isPending || remove.isSuccess || remove.isError
+        }
         onPress={() => remove.mutate()}
       >
         Remove Skill from future selection
       </Button>
       {remove.isSuccess ? <p role="status">Skill removed from future selection.</p> : null}
       {remove.isError ? (
-        <ErrorBanner message="Couldn't remove that Skill. Refresh the catalog before retrying." />
+        <>
+          <ErrorBanner message={mutationFailure(remove.error, 'removal')} />
+          <Button
+            size="sm"
+            isDisabled={blocked || history.isFetching}
+            onPress={() => {
+              void history.refetch();
+              void queryClient.invalidateQueries({
+                queryKey: workspaceKeys.catalog(workspaceId),
+                exact: true,
+              });
+            }}
+          >
+            Inspect current Skill state
+          </Button>
+        </>
       ) : null}
     </div>
   );
@@ -177,8 +195,8 @@ function SkillVersionDetails({
       ]);
     },
   });
-  const retained = version.data?.version;
-  const unavailable = retained?.contentState !== 'retained' || purge.isSuccess;
+  const retained = version.isSuccess ? version.data.version : undefined;
+  const unavailable = retained?.contentState !== 'retained' || purge.isSuccess || purge.isError;
   return (
     <div className="flex flex-col gap-2 rounded-ok border border-border p-3">
       <p className="text-xs break-all">Retained version {digest}</p>
@@ -223,7 +241,7 @@ function SkillVersionDetails({
               onRetry={blocked ? undefined : () => void content.refetch()}
             />
           ) : null}
-          {content.data && !unavailable ? (
+          {content.isSuccess && !unavailable ? (
             <div>
               <p className="text-xs">UTF-8 preview: {content.data.path}</p>
               <pre className="whitespace-pre-wrap break-all text-xs">
@@ -266,13 +284,37 @@ function SkillVersionDetails({
               onRetry={blocked ? undefined : () => void diff.refetch()}
             />
           ) : null}
-          {diff.data?.changes.length === 0 ? <p>No file differences.</p> : null}
-          {diff.data?.changes.map((change) => (
-            <p key={change.path} className="text-xs">
-              {change.before === null ? 'Added' : change.after === null ? 'Removed' : 'Changed'}:{' '}
-              {change.path}
-            </p>
-          ))}
+          {diff.isSuccess && diff.data.changes.length === 0 ? <p>No file differences.</p> : null}
+          {diff.isSuccess
+            ? diff.data.changes.map((change) => (
+                <div key={change.path} className="text-xs break-all">
+                  <p>
+                    {change.before === null
+                      ? 'Added'
+                      : change.after === null
+                        ? 'Removed'
+                        : 'Changed'}
+                    : {change.path}
+                  </p>
+                  {change.before ? (
+                    <p>
+                      Before:{' '}
+                      {change.before.kind === 'directory'
+                        ? 'Directory'
+                        : `${change.before.size} bytes · ${change.before.sha256}`}
+                    </p>
+                  ) : null}
+                  {change.after ? (
+                    <p>
+                      After:{' '}
+                      {change.after.kind === 'directory'
+                        ? 'Directory'
+                        : `${change.after.size} bytes · ${change.after.sha256}`}
+                    </p>
+                  ) : null}
+                </div>
+              ))
+            : null}
           <p className="text-xs text-fg-muted">
             Permanent deletion removes this version's bytes. Core refuses deletion while retained
             work or catalog references still need them.
@@ -303,7 +345,26 @@ function SkillVersionDetails({
           ) : null}
           {purge.isSuccess ? <p role="status">Version bytes permanently deleted.</p> : null}
           {purge.isError ? (
-            <ErrorBanner message="Couldn't delete those bytes. Refresh the catalog and inspect retained references before retrying." />
+            <>
+              <ErrorBanner message={mutationFailure(purge.error, 'deletion')} />
+              <Button
+                size="sm"
+                isDisabled={blocked || version.isFetching}
+                onPress={() => {
+                  void version.refetch();
+                  void queryClient.invalidateQueries({
+                    queryKey: ['skill-history', workspaceId, skillId],
+                    exact: true,
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: workspaceKeys.catalog(workspaceId),
+                    exact: true,
+                  });
+                }}
+              >
+                Inspect current Skill state
+              </Button>
+            </>
           ) : null}
         </>
       ) : null}
@@ -320,4 +381,11 @@ function preview(contentBase64: string): string {
   } catch {
     return 'Preview unavailable. Use the exact file download.';
   }
+}
+
+/** A refused command is definite; a lost or invalid response requires inspection before another effect. */
+function mutationFailure(error: unknown, action: 'removal' | 'deletion'): string {
+  return error instanceof ApiCallError && error.status < 500
+    ? `Core refused Skill ${action}. Inspect current state before another change.`
+    : `The Skill ${action} result is unknown. Inspect current state before requesting another change.`;
 }

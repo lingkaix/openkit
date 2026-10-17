@@ -196,7 +196,7 @@ export function CatalogScreen() {
                       </Button>
                     </div>
                   </ListRow>
-                  {historySkillId === skill.id && workspaceId ? (
+                  {historySkillId === skill.id && workspaceId && !catalog.isError ? (
                     <SkillHistory
                       key={`${workspaceId}:${skill.id}`}
                       workspaceId={workspaceId}
