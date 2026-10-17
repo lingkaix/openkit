@@ -21,6 +21,7 @@ import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -150,6 +151,7 @@ describe('work observation portable closure', () => {
         },
       ]);
       const exported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -226,6 +228,7 @@ describe('work observation portable closure', () => {
     const store = new FsStore({ dataRoot });
     const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: [] }),
       workspace: demo.workspace,
       threads: [demo.thread],
       turns: [],
@@ -307,6 +310,7 @@ describe('work observation portable closure', () => {
         bodies: [],
       });
       const exported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -392,6 +396,7 @@ describe('work observation portable closure', () => {
         importedDb.sqlite.close();
       }
       const reexported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -462,6 +467,7 @@ describe('work observation portable closure', () => {
     const store = new FsStore({ dataRoot });
     const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: [] }),
       workspace: demo.workspace,
       threads: [demo.thread],
       turns: [],
@@ -549,6 +555,7 @@ describe('work observation portable closure', () => {
         bytes: Buffer.from('x'),
       });
       const exported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -692,6 +699,7 @@ describe('work observation portable closure', () => {
         )
         .run(sourceBundle.id);
       const heldExport = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -740,6 +748,7 @@ describe('work observation portable closure', () => {
         }).expiredCount
       ).toBe(2);
       const expiredExport = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,

@@ -121,6 +121,7 @@ const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<
   workspace_deletion: null,
   user: UserIdSchema,
   knowledge: null,
+  knowledge_notebook_revision: null,
   knowledge_source: KnowledgeSourceIdSchema,
   knowledge_observation: KnowledgeObservationIdSchema,
   knowledge_claim: KnowledgeClaimIdSchema,

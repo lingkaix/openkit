@@ -15,6 +15,13 @@
       "when": 1792173777545,
       "tag": "0001_thread_read_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792199260401,
+      "tag": "0002_notebook_admission",
+      "breakpoints": true
     }
   ]
 }

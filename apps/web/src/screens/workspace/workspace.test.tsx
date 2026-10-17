@@ -252,6 +252,7 @@ function workspaceWorker(overrides: Record<string, unknown> = {}) {
 }
 
 const KNOWLEDGE_ENTRY = {
+  contentDigest: `sha256:${'e'.repeat(64)}`,
   id: 'mem1',
   kind: 'preference',
   title: 'Write in English; keep answers concise',
@@ -442,7 +443,7 @@ function knowledgeIndexesFor(
       conceptId: string;
       path: string;
       title?: string;
-      conformance: 'Workspace-schema-valid';
+      conformance: 'scope-schema-valid';
       active: boolean;
       indexed: boolean;
       errors: unknown[];
@@ -490,7 +491,7 @@ const KNOWLEDGE_INDEXES = knowledgeIndexesFor(WORKSPACE_A.id, {
       conceptId: KNOWLEDGE_ENTRY.id,
       path: 'knowledge/pages/mem1.md',
       title: KNOWLEDGE_ENTRY.title,
-      conformance: 'Workspace-schema-valid',
+      conformance: 'scope-schema-valid',
       active: true,
       indexed: true,
       errors: [],
@@ -638,6 +639,9 @@ const KNOWLEDGE_PROPOSAL_ROW = {
   source: {
     type: 'knowledge',
     knowledgeProposalId: 'kp_exact',
+    proposalDigest: `sha256:${'a'.repeat(64)}`,
+    baseRevision: 'saved-base-commit',
+    candidateRevision: 'saved-candidate-commit',
     workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
     status: 'pending',
   },
@@ -752,7 +756,9 @@ function makeClient(
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'artifact.review.decide': vi.fn().mockResolvedValue({}),
-      'knowledge.list': vi.fn().mockResolvedValue({ items: [] }),
+      'knowledge.list': vi
+        .fn()
+        .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [] }),
       'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
       'knowledge.update': vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
       'knowledge.delete': vi.fn().mockResolvedValue(undefined),
@@ -3431,7 +3437,12 @@ describe('Knowledge (board 14)', () => {
 
   it('lists knowledge entries', async () => {
     const client = makeClient({
-      core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
+      core: {
+        'knowledge.list': vi.fn().mockResolvedValue({
+          notebookRevision: 'notebook-fixture-revision',
+          items: [KNOWLEDGE_ENTRY],
+        }),
+      },
     });
     renderApp('/knowledge', client);
     expect(await screen.findByText('Write in English; keep answers concise')).toBeInTheDocument();
@@ -3479,12 +3490,53 @@ describe('Knowledge (board 14)', () => {
     );
   });
 
-  it('edits exact server bytes, submits only changed non-empty fields, and waits for the authoritative refetch', async () => {
+  it('keeps the editor base revision when the notebook refreshes before submission', async () => {
     const user = userEvent.setup();
-    const authoritativeRead = createDeferred<{ items: (typeof KNOWLEDGE_ENTRY)[] }>();
     const listKnowledge = vi
       .fn()
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
+      .mockResolvedValue({ notebookRevision: 'opaque-base-one', items: [KNOWLEDGE_ENTRY] });
+    const updateKnowledge = vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY);
+    const queryClient = renderApp(
+      '/knowledge',
+      makeClient({ core: { 'knowledge.list': listKnowledge, 'knowledge.update': updateKnowledge } })
+    );
+    await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
+    const title = screen.getByRole('textbox', { name: 'Title' });
+    await user.clear(title);
+    await user.type(title, 'My pending exact edit');
+    listKnowledge.mockResolvedValue({
+      notebookRevision: 'opaque-base-two',
+      items: [{ ...KNOWLEDGE_ENTRY, content: 'Another writer changed this page.' }],
+    });
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['knowledge', WORKSPACE_A.id] });
+    });
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('My pending exact edit');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(updateKnowledge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WORKSPACE_A.id,
+          knowledgeEntryId: KNOWLEDGE_ENTRY.id,
+          baseRevision: 'opaque-base-one',
+          title: 'My pending exact edit',
+        })
+      )
+    );
+  });
+
+  it('edits exact server bytes, submits only changed non-empty fields, and waits for the authoritative refetch', async () => {
+    const user = userEvent.setup();
+    const authoritativeRead = createDeferred<{
+      notebookRevision: string;
+      items: (typeof KNOWLEDGE_ENTRY)[];
+    }>();
+    const listKnowledge = vi
+      .fn()
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [KNOWLEDGE_ENTRY],
+      })
       .mockReturnValueOnce(authoritativeRead.promise);
     const updateKnowledge = vi.fn().mockResolvedValue({
       ...KNOWLEDGE_ENTRY,
@@ -3518,6 +3570,7 @@ describe('Knowledge (board 14)', () => {
         knowledgeEntryId: KNOWLEDGE_ENTRY.id,
         ...{
           requestId: expect.any(String),
+          baseRevision: 'notebook-fixture-revision',
           title: 'Prefer concise release notes',
         },
       })
@@ -3526,7 +3579,10 @@ describe('Knowledge (board 14)', () => {
     expect(screen.getByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
     expect(screen.queryByText('Mutation response must not become visible')).not.toBeInTheDocument();
 
-    authoritativeRead.resolve({ items: [UPDATED_KNOWLEDGE_ENTRY] });
+    authoritativeRead.resolve({
+      notebookRevision: 'notebook-fixture-revision',
+      items: [UPDATED_KNOWLEDGE_ENTRY],
+    });
     expect(await screen.findByText(UPDATED_KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
     expect(screen.getByText(UPDATED_KNOWLEDGE_ENTRY.content)).toBeInTheDocument();
   });
@@ -3543,7 +3599,9 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({ items: [entry] }),
+          'knowledge.list': vi
+            .fn()
+            .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [entry] }),
           'knowledge.update': updateKnowledge,
         },
       })
@@ -3568,6 +3626,7 @@ describe('Knowledge (board 14)', () => {
         ...{
           content: 'Changed server content',
           requestId: expect.any(String),
+          baseRevision: 'notebook-fixture-revision',
         },
       })
     );
@@ -3582,9 +3641,15 @@ describe('Knowledge (board 14)', () => {
     };
     const listKnowledge = vi
       .fn()
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [KNOWLEDGE_ENTRY],
+      })
       .mockRejectedValueOnce(new Error('authoritative read failed'))
-      .mockResolvedValueOnce({ items: [UPDATED_KNOWLEDGE_ENTRY] });
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [UPDATED_KNOWLEDGE_ENTRY],
+      });
     const updateKnowledge = vi.fn().mockResolvedValue(mutationResponse);
     renderApp(
       '/knowledge',
@@ -3618,10 +3683,16 @@ describe('Knowledge (board 14)', () => {
 
   it('confirms removal and keeps the row until the authoritative refetch removes it', async () => {
     const user = userEvent.setup();
-    const authoritativeRead = createDeferred<{ items: (typeof KNOWLEDGE_ENTRY)[] }>();
+    const authoritativeRead = createDeferred<{
+      notebookRevision: string;
+      items: (typeof KNOWLEDGE_ENTRY)[];
+    }>();
     const listKnowledge = vi
       .fn()
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [KNOWLEDGE_ENTRY],
+      })
       .mockReturnValueOnce(authoritativeRead.promise);
     const deleteKnowledge = vi.fn().mockResolvedValue(undefined);
     renderApp(
@@ -3642,12 +3713,15 @@ describe('Knowledge (board 14)', () => {
         knowledgeEntryId: KNOWLEDGE_ENTRY.id,
         ...{
           requestId: expect.any(String),
+          baseRevision: 'notebook-fixture-revision',
+          expectedContentDigest: KNOWLEDGE_ENTRY.contentDigest,
+          confirmRemoval: true,
         },
       })
     );
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledTimes(2));
     expect(screen.getByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
-    authoritativeRead.resolve({ items: [] });
+    authoritativeRead.resolve({ notebookRevision: 'notebook-fixture-revision', items: [] });
     await waitFor(() => expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument());
   });
 
@@ -3655,9 +3729,12 @@ describe('Knowledge (board 14)', () => {
     const user = userEvent.setup();
     const listKnowledge = vi
       .fn()
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [KNOWLEDGE_ENTRY],
+      })
       .mockRejectedValueOnce(new Error('authoritative read failed'))
-      .mockResolvedValueOnce({ items: [] });
+      .mockResolvedValueOnce({ notebookRevision: 'notebook-fixture-revision', items: [] });
     const deleteKnowledge = vi.fn().mockResolvedValue(undefined);
     renderApp(
       '/knowledge',
@@ -3696,7 +3773,10 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
           [operation === 'update' ? 'knowledge.update' : 'knowledge.delete']: mutation,
         },
       })
@@ -3765,6 +3845,7 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValue(operation === 'delete' ? undefined : laterEntry);
     const listKnowledge = vi.fn().mockImplementation(() =>
       Promise.resolve({
+        notebookRevision: 'notebook-fixture-revision',
         items:
           operation === 'delete'
             ? mutation.mock.calls.length >= 2
@@ -3881,7 +3962,10 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           'knowledge.delete': deleteKnowledge,
-          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
           'knowledge.update': updateKnowledge,
         },
       })
@@ -3926,7 +4010,10 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           meta,
-          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
         },
       })
     );
@@ -3950,7 +4037,10 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
           [`knowledge.${operation}`]: vi.fn().mockReturnValue(pending.promise),
         },
       })
@@ -4044,7 +4134,12 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         operations: { 'attention.list': vi.fn().mockReturnValue(attentionRead.promise) },
 
-        core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
+        core: {
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
+        },
       })
     );
 
@@ -4134,6 +4229,9 @@ describe('Knowledge (board 14)', () => {
       expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         proposalId: 'kp_exact',
+        proposalDigest: KNOWLEDGE_PROPOSAL_ROW.source.proposalDigest,
+        baseRevision: KNOWLEDGE_PROPOSAL_ROW.source.baseRevision,
+        candidateRevision: KNOWLEDGE_PROPOSAL_ROW.source.candidateRevision,
         ...{
           decision,
           requestId: expect.any(String),
@@ -4614,7 +4712,12 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [cjkEntry] }) },
+        core: {
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [cjkEntry],
+          }),
+        },
         app: {
           'knowledge.context.prepare': prepareKnowledgeContext,
           'knowledge.indexes': readKnowledgeIndexes,
@@ -4695,7 +4798,10 @@ describe('Knowledge (board 14)', () => {
         },
       ],
     };
-    const listKnowledge = vi.fn().mockResolvedValue({ items: [excluded, second, first] });
+    const listKnowledge = vi.fn().mockResolvedValue({
+      notebookRevision: 'notebook-fixture-revision',
+      items: [excluded, second, first],
+    });
     const retrieveKnowledge = vi.fn().mockResolvedValue(result);
     renderApp(
       '/knowledge',
@@ -4767,7 +4873,12 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
+        core: {
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
+        },
         app: { 'knowledge.retrieval': vi.fn().mockResolvedValue(otherWorkspaceResult) },
       })
     );
@@ -4787,9 +4898,15 @@ describe('Knowledge (board 14)', () => {
     const user = userEvent.setup();
     const listKnowledge = vi
       .fn()
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
-      .mockResolvedValueOnce({ items: [UPDATED_KNOWLEDGE_ENTRY] })
-      .mockResolvedValue({ items: [] });
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [KNOWLEDGE_ENTRY],
+      })
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [UPDATED_KNOWLEDGE_ENTRY],
+      })
+      .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [] });
     const retrieveKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL);
     const queryClient = renderApp(
       '/knowledge',
@@ -4829,7 +4946,10 @@ describe('Knowledge (board 14)', () => {
     const user = userEvent.setup();
     const listKnowledge = vi
       .fn()
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
+      .mockResolvedValueOnce({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [KNOWLEDGE_ENTRY],
+      })
       .mockRejectedValue(error);
     const queryClient = renderApp(
       '/knowledge',
@@ -4848,9 +4968,10 @@ describe('Knowledge (board 14)', () => {
     });
 
     // TanStack retains the previous data on a failed refetch; it is not current read authority.
-    expect(queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_A.id))).toEqual([
-      KNOWLEDGE_ENTRY,
-    ]);
+    expect(queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_A.id))).toEqual({
+      notebookRevision: 'notebook-fixture-revision',
+      items: [KNOWLEDGE_ENTRY],
+    });
     expect(await within(retrieval).findByText('Current content unavailable.')).toBeInTheDocument();
     expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
@@ -4871,6 +4992,7 @@ describe('Knowledge (board 14)', () => {
           'knowledge.list': vi
             .fn()
             .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+              notebookRevision: 'notebook-fixture-revision',
               items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_ENTRY] : [collidingB],
             })),
         },
@@ -5713,13 +5835,17 @@ describe('Knowledge (board 14)', () => {
   ])('rereads only the Workspace A knowledge query when an in-flight A $operation completes in B', async (testCase) => {
     const user = userEvent.setup();
     const pending = createDeferred<unknown>();
-    const authoritativeA = createDeferred<{ items: (typeof KNOWLEDGE_ENTRY)[] }>();
+    const authoritativeA = createDeferred<{
+      notebookRevision: string;
+      items: (typeof KNOWLEDGE_ENTRY)[];
+    }>();
     let aReads = 0;
     let bReads = 0;
     const listKnowledge = vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) => {
       if (workspaceId === WORKSPACE_B.id) {
         bReads += 1;
         return Promise.resolve({
+          notebookRevision: 'notebook-fixture-revision',
           items:
             bReads > 1
               ? [{ ...KNOWLEDGE_ENTRY_B, title: 'B must not reread after A settlement' }]
@@ -5728,7 +5854,10 @@ describe('Knowledge (board 14)', () => {
       }
       aReads += 1;
       if (aReads > 1) return authoritativeA.promise;
-      return Promise.resolve({ items: [KNOWLEDGE_ENTRY] });
+      return Promise.resolve({
+        notebookRevision: 'notebook-fixture-revision',
+        items: [KNOWLEDGE_ENTRY],
+      });
     });
     const mutation = vi.fn().mockReturnValue(pending.promise);
     renderApp(
@@ -5799,7 +5928,10 @@ describe('Knowledge (board 14)', () => {
     }
     expectWorkspaceBSourceDraftRetained();
 
-    authoritativeA.resolve({ items: testCase.settled });
+    authoritativeA.resolve({
+      notebookRevision: 'notebook-fixture-revision',
+      items: testCase.settled,
+    });
     expect(screen.getByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
     expectWorkspaceBSourceDraftRetained();
     expect(callsOn(listKnowledge, WORKSPACE_B.id)).toHaveLength(bReadsBefore);

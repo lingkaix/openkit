@@ -1,0 +1,449 @@
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { lstatSync, mkdirSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { KnowledgeNotebookCommitMetadataSchema } from '@openkit/protocol';
+import type { z } from 'zod';
+
+const PUBLISHED_REF = 'refs/heads/published';
+const FILE_BYTES = 2 * 1024 * 1024;
+const EDITING_BYTES = 32 * 1024 * 1024;
+/** Exact initial reserved navigation bytes used by fresh notebooks. */
+export const DEFAULT_NOTEBOOK_INDEX = '---\nokf_version: "0.2"\n---\n# Notebook\n';
+/** The shared typed commit facts also supply the existing Audit owner's pre-publication projection. */
+export const NotebookCommitMetadataSchema = KnowledgeNotebookCommitMetadataSchema;
+
+/** Exact metadata serialized as the complete service-owned Git commit message. */
+export type NotebookCommitMetadata = z.infer<typeof NotebookCommitMetadataSchema>;
+
+/** Immutable notebook bytes and historical admission facts read from one Git commit. */
+export interface NotebookRevision {
+  readonly revision: string;
+  readonly parentRevision: string | null;
+  readonly files: Readonly<Record<string, string>>;
+  readonly metadata: NotebookCommitMetadata;
+}
+
+/** Closed content-owner failure; no host paths or Git diagnostics enter product errors. */
+export class NotebookError extends Error {
+  constructor(
+    readonly code: 'invalid_request' | 'conflict' | 'recovery_required' | 'review_required',
+    readonly currentRevision?: string
+  ) {
+    super(`Notebook ${code.replaceAll('_', ' ')}.`);
+  }
+}
+
+/** Checks bundle-relative Markdown paths before any Git input or filesystem projection. */
+function validPath(path: string): boolean {
+  return (
+    Buffer.byteLength(path) <= 243 &&
+    !isAbsolute(path) &&
+    !/[\\@]/.test(path) &&
+    ![...path].some(
+      (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+    ) &&
+    path.endsWith('.md') &&
+    path
+      .slice(0, -3)
+      .split('/')
+      .every((part) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(part) && part !== '.' && part !== '..') &&
+    !path.slice(0, -3).endsWith('.md') &&
+    !path.split('/').some((part) => part.toLowerCase() === '.git')
+  );
+}
+
+/** Validates transport-independent limits; OKF/schema/source admission belongs to the common publisher caller. */
+export function validateNotebookFiles(
+  files: Readonly<Record<string, string>>,
+  editing = false
+): void {
+  let total = 0;
+  const folded = new Set<string>();
+  for (const [path, text] of Object.entries(files)) {
+    if (
+      !validPath(path) ||
+      typeof text !== 'string' ||
+      Buffer.from(text).toString('utf8') !== text ||
+      (editing && Buffer.byteLength(text) > FILE_BYTES)
+    )
+      throw new NotebookError('invalid_request');
+    const normalized = path.toLowerCase();
+    if (folded.has(normalized)) throw new NotebookError('invalid_request');
+    folded.add(normalized);
+    total += Buffer.byteLength(text);
+  }
+  if ((editing && total > EDITING_BYTES) || (!editing && !Object.hasOwn(files, 'index.md')))
+    throw new NotebookError('invalid_request');
+}
+
+/** One bare Git content authority; it owns no live authorization, command receipts or editing lifecycle. */
+export class KnowledgeNotebook {
+  private readonly repositoryPath: string;
+
+  constructor(input: { readonly repositoryPath: string }) {
+    this.repositoryPath = resolve(input.repositoryPath);
+  }
+
+  /** Runs fixed plumbing with ambient Git configuration, hooks, network and callbacks disabled. */
+  private gitBytes(args: readonly string[], input?: string, author = 'OpenKit'): Buffer {
+    try {
+      // The repository itself is canonical storage; Git may not follow a substituted root.
+      const root = lstatSync(this.repositoryPath, { throwIfNoEntry: false });
+      if (root && (!root.isDirectory() || root.isSymbolicLink()))
+        throw new NotebookError('recovery_required');
+      const output = execFileSync(
+        'git',
+        [
+          '-c',
+          'core.hooksPath=/dev/null',
+          '-c',
+          'core.fsmonitor=false',
+          '-c',
+          'core.fsync=all',
+          '-c',
+          'core.fsyncMethod=fsync',
+          '-c',
+          'core.logAllRefUpdates=false',
+          '-c',
+          'gc.auto=0',
+          '-c',
+          'maintenance.auto=false',
+          '-c',
+          'protocol.allow=never',
+          '-c',
+          'commit.gpgSign=false',
+          '-c',
+          'core.attributesFile=/dev/null',
+          `--git-dir=${this.repositoryPath}`,
+          ...args,
+        ],
+        {
+          encoding: 'buffer',
+          input: input === undefined ? undefined : Buffer.from(input),
+          maxBuffer: EDITING_BYTES + 1024 * 1024,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            PATH: process.env.PATH,
+            LANG: 'C',
+            GIT_CONFIG_NOSYSTEM: '1',
+            GIT_CONFIG_GLOBAL: '/dev/null',
+            GIT_TERMINAL_PROMPT: '0',
+            GIT_NO_REPLACE_OBJECTS: '1',
+            GIT_AUTHOR_NAME: author,
+            GIT_AUTHOR_EMAIL: 'openkit',
+            GIT_COMMITTER_NAME: 'OpenKit',
+            GIT_COMMITTER_EMAIL: 'openkit',
+          },
+        }
+      );
+      return output;
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Decodes textual plumbing output strictly; raw Git tree bytes stay inside the content owner. */
+  private git(args: readonly string[], input?: string, author = 'OpenKit'): string {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(this.gitBytes(args, input, author));
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Verifies selected blob identity and preserves exact UTF-8 bytes without loading unrelated pages. */
+  private readBlob(object: string): string {
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
+      throw new NotebookError('recovery_required');
+    const bytes = this.gitBytes(['cat-file', 'blob', object]);
+    const observed = createHash(object.length === 40 ? 'sha1' : 'sha256')
+      .update(`blob ${bytes.length}\0`)
+      .update(bytes)
+      .digest('hex');
+    if (observed !== object) throw new NotebookError('recovery_required');
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Establishes a fresh notebook once; a partial or initialized repository is never replaced. */
+  initialize(input: {
+    readonly files?: Readonly<Record<string, string>>;
+    readonly metadata: NotebookCommitMetadata;
+    readonly beforePublish?: (candidateRevision: string) => void;
+  }): string {
+    const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
+    const files = { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...input.files };
+    if (!metadata.success) throw new NotebookError('invalid_request');
+    validateNotebookFiles(files);
+    if (lstatSync(this.repositoryPath, { throwIfNoEntry: false }))
+      throw new NotebookError('recovery_required');
+    mkdirSync(dirname(this.repositoryPath), { recursive: true });
+    this.git(['init', '--bare', '--initial-branch=published', this.repositoryPath]);
+    const entries = Object.fromEntries(
+      Object.entries(files).map(([path, content]) => [
+        path,
+        this.git(['hash-object', '-w', '--stdin'], content).trim(),
+      ])
+    );
+    const revision = this.createCommit(entries, metadata.data, null);
+    // Native fresh-scope admission retains its Audit evidence after the exact commit exists and before its ref does.
+    input.beforePublish?.(revision);
+    this.git(['update-ref', PUBLISHED_REF, revision, '0'.repeat(revision.length)]);
+    return revision;
+  }
+
+  /** Pins the complete current revision; missing or invalid initialized content fails closed. */
+  publishedRevision(): string {
+    const revision = this.git(['rev-parse', '--verify', `${PUBLISHED_REF}^{commit}`]).trim();
+    this.inspectRevision(revision);
+    return revision;
+  }
+
+  /** Pins strict metadata and immutable tree identities without loading omitted page bodies. */
+  inspectRevision(
+    revision: string
+  ): Omit<NotebookRevision, 'files'> & { readonly entries: Readonly<Record<string, string>> } {
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
+      throw new NotebookError('recovery_required');
+    const commit = this.git(['cat-file', 'commit', revision]);
+    const boundary = commit.indexOf('\n\n');
+    const headers = commit.slice(0, boundary).split('\n');
+    const parents = headers.filter((header) => header.startsWith('parent '));
+    const message = commit.slice(boundary + 2);
+    let metadata: NotebookCommitMetadata;
+    try {
+      const parsed: unknown = JSON.parse(message);
+      metadata = NotebookCommitMetadataSchema.parse(parsed);
+      // Service serialization also rejects duplicate keys and trailing JSON fragments.
+      if (message !== `${JSON.stringify(metadata)}\n`) throw new Error('Invalid metadata.');
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+    if (
+      boundary < 0 ||
+      parents.length > 1 ||
+      !headers.some((header) => header.startsWith('author '))
+    )
+      throw new NotebookError('recovery_required');
+    const entries: Record<string, string> = Object.create(null);
+    for (const row of this.git(['ls-tree', '-r', '-z', '--full-tree', revision]).split('\0')) {
+      if (!row) continue;
+      const match = /^100644 blob ([a-f0-9]+)\tpages\/(.+)$/.exec(row);
+      if (!match || !validPath(match[2]!)) throw new NotebookError('recovery_required');
+      entries[match[2]!] = match[1]!;
+    }
+    if (!Object.hasOwn(entries, 'index.md')) throw new NotebookError('recovery_required');
+    return {
+      revision,
+      parentRevision: parents[0]?.slice('parent '.length) ?? null,
+      entries,
+      metadata,
+    };
+  }
+
+  /** Reads selected exact immutable page bytes; no omitted page enters the editing workspace. */
+  readRevision(revision: string, paths?: readonly string[]): NotebookRevision {
+    const { entries, ...record } = this.inspectRevision(revision);
+    const files: Record<string, string> = Object.create(null);
+    for (const path of paths ?? Object.keys(entries)) {
+      const object = entries[path];
+      if (!object) throw new NotebookError('invalid_request');
+      files[path] = this.readBlob(object);
+    }
+    return { ...record, files };
+  }
+
+  /** Creates an unpublished fixed-base candidate; validation/authority checks precede caller publication. */
+  prepare(input: {
+    readonly baseRevision: string;
+    readonly changes: Readonly<Record<string, string | null>>;
+    readonly metadata: NotebookCommitMetadata;
+  }): string {
+    if (Object.keys(input.changes).length > 256) throw new NotebookError('invalid_request');
+    const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
+    if (!metadata.success) throw new NotebookError('invalid_request');
+    const entries = { ...this.inspectRevision(input.baseRevision).entries };
+    validateNotebookFiles(
+      Object.fromEntries(
+        Object.entries(input.changes).filter(
+          (entry): entry is [string, string] => entry[1] !== null
+        )
+      ),
+      true
+    );
+    for (const [path, value] of Object.entries(input.changes)) {
+      if (!validPath(path) || (value !== null && typeof value !== 'string'))
+        throw new NotebookError('invalid_request');
+      if (value === null) delete entries[path];
+      else entries[path] = this.git(['hash-object', '-w', '--stdin'], value).trim();
+    }
+    if (!Object.hasOwn(entries, 'index.md')) throw new NotebookError('invalid_request');
+    return this.createCommit(entries, metadata.data, input.baseRevision);
+  }
+
+  /** Compares and sets the sole publication ref after the caller's final admission and Audit boundary. */
+  publish(input: { readonly baseRevision: string; readonly candidateRevision: string }): {
+    revision: string;
+  } {
+    const candidate = this.inspectRevision(input.candidateRevision);
+    if (candidate.parentRevision !== input.baseRevision) throw new NotebookError('invalid_request');
+    // Verify omitted retained blobs as well as edited files without admitting their bodies to the model workspace.
+    this.git(['fsck', '--strict', '--no-reflogs', '--no-dangling', input.candidateRevision]);
+    const current = this.publishedRevision();
+    if (current !== input.baseRevision) throw new NotebookError('conflict', current);
+    try {
+      this.git(['update-ref', PUBLISHED_REF, input.candidateRevision, input.baseRevision]);
+    } catch {
+      const observed = this.publishedRevision();
+      if (observed !== input.baseRevision && observed !== input.candidateRevision)
+        throw new NotebookError('conflict', observed);
+      // A missing or uncertain ref result cannot supply completed command evidence.
+      throw new NotebookError('recovery_required');
+    }
+    return { revision: input.candidateRevision };
+  }
+
+  /** Retains exact required-review evidence without changing the published notebook. */
+  retainCandidate(input: {
+    readonly proposalId: string;
+    readonly candidateRevision: string;
+  }): void {
+    if (!/^[A-Za-z0-9_-]+$/.test(input.proposalId)) throw new NotebookError('invalid_request');
+    const candidate = this.inspectRevision(input.candidateRevision);
+    if (!candidate.parentRevision) throw new NotebookError('invalid_request');
+    const ref = `refs/proposals/${input.proposalId}`;
+    this.git([
+      'update-ref',
+      ref,
+      input.candidateRevision,
+      '0'.repeat(input.candidateRevision.length),
+    ]);
+  }
+
+  /** Reads the service-owned retained Proposal ref without changing publication or reconstructing content. */
+  retainedCandidate(proposalId: string): Omit<NotebookRevision, 'files'> {
+    if (!/^[A-Za-z0-9_-]+$/.test(proposalId)) throw new NotebookError('invalid_request');
+    return this.inspectRevision(
+      this.git(['rev-parse', '--verify', `refs/proposals/${proposalId}`]).trim()
+    );
+  }
+
+  /** Returns a bounded metadata page from published ancestry without loading page bodies. */
+  history(input: { readonly revision?: string; readonly limit?: number } = {}): {
+    readonly revisions: readonly Omit<NotebookRevision, 'files'>[];
+    readonly nextRevision: string | null;
+  } {
+    const limit = input.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+      throw new NotebookError('invalid_request');
+    const published = this.publishedRevision();
+    let revision: string | null = input.revision ?? published;
+    // Normal history cannot disclose retained unpublished Proposal candidates through a cursor.
+    this.inspectRevision(revision);
+    if (this.git(['merge-base', revision, published]).trim() !== revision)
+      throw new NotebookError('invalid_request');
+    const revisions: Omit<NotebookRevision, 'files'>[] = [];
+    while (revision && revisions.length < limit) {
+      const { entries: _entries, ...record } = this.inspectRevision(revision);
+      revisions.push(record);
+      revision = record.parentRevision;
+    }
+    return { revisions, nextRevision: revision };
+  }
+
+  /**
+   * Validates every retained Git object, commit and service-owned ref without granting authority.
+   * Backup callers own quiescence and the matching Proposal/Review records outside this Git owner.
+   * Returns identities only; invalid or unsupported graph state requires explicit recovery.
+   */
+  validateRetainedGraph(): {
+    readonly publishedRevision: string;
+    readonly revisions: readonly string[];
+  } {
+    const publishedRevision = this.publishedRevision();
+    if (this.git(['symbolic-ref', 'HEAD']).trim() !== PUBLISHED_REF)
+      throw new NotebookError('recovery_required');
+    // fsck checks every retained object, including unreachable candidate objects, by its real hash.
+    this.git(['fsck', '--strict', '--full', '--no-reflogs', '--no-dangling']);
+    for (const row of this.git([
+      'for-each-ref',
+      '--format=%(refname) %(objectname) %(objecttype) %(symref)',
+    ])
+      .trim()
+      .split('\n')) {
+      const [ref, revision, type, symbolicTarget] = row.split(' ');
+      if (!ref || !revision || type !== 'commit' || symbolicTarget)
+        throw new NotebookError('recovery_required');
+      if (ref === PUBLISHED_REF) {
+        if (revision !== publishedRevision) throw new NotebookError('recovery_required');
+        continue;
+      }
+      const proposal = /^refs\/proposals\/([A-Za-z0-9_-]+)$/.exec(ref);
+      if (!proposal) throw new NotebookError('recovery_required');
+      const candidate = this.inspectRevision(revision);
+      if (
+        !candidate.parentRevision ||
+        candidate.metadata.authority.kind !== 'proposal' ||
+        candidate.metadata.authority.proposalId !== proposal[1]
+      )
+        throw new NotebookError('recovery_required');
+    }
+    const revisions: string[] = [];
+    for (const row of this.git([
+      'cat-file',
+      '--batch-all-objects',
+      '--batch-check=%(objectname) %(objecttype)',
+    ])
+      .trim()
+      .split('\n')) {
+      const [revision, type] = row.split(' ');
+      if (type !== 'commit' || !revision) continue;
+      // Existing tree, metadata and fatal UTF-8 boundaries also cover unreferenced commits.
+      // Release each page collection immediately; the result carries object identities only.
+      this.readRevision(revision);
+      revisions.push(revision);
+    }
+    return { publishedRevision, revisions: revisions.sort() };
+  }
+
+  /** Writes data-only blob/tree/commit objects; no working tree, filters or executable content is used. */
+  private createCommit(
+    objects: Readonly<Record<string, string>>,
+    metadata: NotebookCommitMetadata,
+    parent: string | null
+  ): string {
+    const tree = new Map<string, string | Map<string, unknown>>();
+    for (const [path, object] of Object.entries(objects)) {
+      let entries = tree;
+      const parts = ['pages', ...path.split('/')];
+      for (const segment of parts.slice(0, -1)) {
+        const found = entries.get(segment);
+        if (typeof found === 'string') throw new NotebookError('invalid_request');
+        if (!found) entries.set(segment, new Map());
+        entries = entries.get(segment) as typeof tree;
+      }
+      const basename = parts.at(-1)!;
+      if (entries.has(basename)) throw new NotebookError('invalid_request');
+      entries.set(basename, object);
+    }
+    const writeTree = (entries: typeof tree): string => {
+      const rows = [...entries].map(([name, value]) =>
+        typeof value === 'string'
+          ? `100644 blob ${value}\t${name}\0`
+          : `040000 tree ${writeTree(value as typeof tree)}\t${name}\0`
+      );
+      return this.git(['mktree', '-z'], rows.join('')).trim();
+    };
+    const root = writeTree(tree);
+    const revision = this.git(
+      ['commit-tree', root, ...(parent ? ['-p', parent] : []), '-F', '-'],
+      `${JSON.stringify(metadata)}\n`,
+      metadata.producer.id
+    ).trim();
+    return revision;
+  }
+}

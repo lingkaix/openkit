@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import {
   appendWorkspaceTurnEvent,
@@ -31,10 +32,34 @@ describe('descriptive canonical history extensions', () => {
       (record) => record.workspace.id === workspace.id
     )!;
     const body = 'Knowledge candidate.\n';
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(root, 'knowledge', 'notebook.git'),
+    });
+    const baseRevision = notebook.publishedRevision();
+    const proposalId = `kp_${'a'.repeat(64)}`;
+    const producer = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+    const candidateRevision = notebook.prepare({
+      baseRevision,
+      changes: { 'candidate.md': body },
+      metadata: {
+        summary: 'Retained annotation fixture',
+        changeRequest: {
+          requestId: 'annotation-candidate',
+          inputDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+        },
+        producer,
+        authority: { kind: 'proposal', proposalId },
+        sourceReferences: [`knowledge:source@sha256:${'b'.repeat(64)}`],
+      },
+    });
+    notebook.retainCandidate({ proposalId, candidateRevision });
     const proposal = {
-      id: `kp_${'a'.repeat(64)}`,
+      id: proposalId,
+      baseRevision,
+      candidateRevision,
       workspaceId: workspace.id,
-      operation: 'create' as const,
+      operation: 'notebook-change' as const,
+      ownerScope: { kind: 'workspace' as const, workspaceId: workspace.id },
       knowledgePageId: 'candidate',
       canonicalPageBytes: body,
       contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
@@ -78,6 +103,9 @@ describe('descriptive canonical history extensions', () => {
     const review = {
       proposalId: proposal.id,
       workspaceId: workspace.id,
+      ownerScope: proposal.ownerScope,
+      baseRevision,
+      candidateRevision,
       reviewId: deriveEntityId('kr', {
         ownerScope: { kind: 'workspace', workspaceId: workspace.id },
         proposalId: proposal.id,

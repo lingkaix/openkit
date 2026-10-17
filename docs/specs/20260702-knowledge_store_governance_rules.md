@@ -266,7 +266,7 @@ The transport-neutral operation catalog, bundled CLI, and public App API project
 
 Worker-facing Knowledge capability routes remain disabled and are not current product behavior.
 
-The accepted-proposal path freezes exact create-only page bytes and digest, preserves proposal-to-review-to-page lineage, applies the one deterministic missing-page effect only for its matching accepted decision, and otherwise returns `recovery_required` for incomplete or contradictory authority. Bounded reversal removes only the unchanged proposal-created page and retains its durable evidence.
+The unactivated Notebook cutover component saves fixed-base Proposal candidates in the single Git content owner. Exact human Review names the Proposal digest and base/candidate commits; accepted publication uses that retained candidate without rewriting original producer attribution. Stale base returns conflict. Bounded reverse copies the selected original path into the current fixed base and publishes a new revision; reversing a created path and explicit page removal require exact human confirmation and retain Git history. Current source/audience admission, Audit and ordinary command receipts remain mandatory; incomplete publication evidence returns `recovery_required`, with no missing-page repair.
 
 Context preparation references the single governed retrieval trace and exposes no standalone worker-context trace or materialization. Only S39 materializes and proves worker delivery.
 
