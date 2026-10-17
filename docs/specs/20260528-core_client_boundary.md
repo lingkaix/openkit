@@ -187,6 +187,12 @@ After `ProtocolValidationError`, the failed subscription exposes no private curs
 
 Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives retained feedback validation from `TurnFeedbackResponseSchema`, validates its known fields and owning Turn strictly, admits and preserves safe descriptive additions on disk updates, and emits only the known response fields without defining a second public schema.
 
+### Turn Feedback Attribution And History
+
+Turn feedback remains Workspace-owned under its existing Turn and Thread audience. Each accepted submission appends `{actor,submittedAt,rating,note}` to `history` in the existing `feedback.json`. Native invocation supplies the canonical Actor reference from current authenticated context; request bodies cannot choose it. The timestamp records submission time. The response includes this ordered history and the current `rating` and `note` from the latest submission. A cleared rating is still a submission and does not remove earlier judgments.
+
+A completed Turn's initial unrated record has an empty history and claims no human decision. Updates preserve prior entries and safe descriptive additions, then use the existing atomic durable file writer. Failure does not acknowledge a partial history; reopen reads the retained file. This creates no separate feedback store, revision counter or retry ledger. Current authorization and audience checks apply to current feedback and its history alike. The [accepted pre-stable reset boundary](../decisions/20261014-pre_stable_data_continuity.md) applies to predecessor records without history; no inferred actor or compatibility reader is added.
+
 ## Current Implementation Projection
 
 The former `client.repositories` namespace and Workspace repository list, diagnostics, and default-setup routes are absent. `packages/core-client/src/client.ts` exposes no repository sub-client, and the current operation definitions add no replacement first-party repository API. The retained `workspace-archive-history` schema and Workspace import parsing remain historical portability readers, not repository administration surfaces.

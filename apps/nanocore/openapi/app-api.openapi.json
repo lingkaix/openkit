@@ -46115,6 +46115,131 @@
           "createdAt": {
             "type": "string",
             "minLength": 1
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "actor": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "agent",
+                            "integration",
+                            "system"
+                          ]
+                        },
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "automation"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "submittedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "rating": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "good",
+                        "bad"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "actor",
+                "submittedAt",
+                "rating",
+                "note"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -46122,7 +46247,8 @@
           "agentId",
           "rating",
           "note",
-          "createdAt"
+          "createdAt",
+          "history"
         ],
         "additionalProperties": false
       },
@@ -102660,5 +102786,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:52d23ff3a5e248bd71ec1e1b24b10e7e234f82a3bf68ae0d61fcbba057d3ef61"
+  "x-openkit-source-digest": "sha256:152aafbdba9a3c6b9b45eab39f1b3a6f8a8014bb30e8c36ac08f2ab04c42d9cd"
 }
