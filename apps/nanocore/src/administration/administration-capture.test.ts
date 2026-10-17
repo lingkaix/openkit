@@ -182,11 +182,11 @@ it('binds the actual Administration prompt and ordered tools before model access
       'administration_schema_read',
       'administration_configuration_propose',
       'administration_configuration_apply',
-      'worker_environment_list',
-      'worker_environment_status',
-      'worker_environment_prepare',
-      'worker_environment_recover',
-      'nanohost_runtime_target',
+      'worker-environment_list',
+      'worker-environment_status',
+      'worker-environment_prepare',
+      'worker-environment_recover',
+      'nanohost_runtime-target',
     ];
     expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual(providerToolNames);
     expect(rowsAtModelAccess).toHaveLength(1);

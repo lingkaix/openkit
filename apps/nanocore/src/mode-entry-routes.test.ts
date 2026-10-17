@@ -4445,9 +4445,9 @@ describe('#144 real Assistant command wiring', () => {
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());
       expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
-        'workspace_state_read',
+        'workspace_dashboard',
         'thread_history_read',
-        'knowledge_search',
+        'knowledge_retrieval',
         'workspace_create',
         'task_start',
         'goal_create',
