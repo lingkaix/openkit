@@ -184,30 +184,32 @@ async function executeKnowledgeManagerAgent(
     let repairUsed = false;
     let notebookSubmissionAttempted = false;
     const tools: AgentTool[] = [
-      ...input.tools.map((tool) => ({
-        ...tool,
-        execute: async (value: unknown, context: Parameters<AgentTool['execute']>[1]) => {
-          if (resultText !== undefined) throw new Error('Knowledge result is already submitted.');
-          usedToolCalls += 1;
-          // Repair can read evidence or supply a missing submission, but cannot repeat an edit effect.
-          if (
-            repairUsed &&
-            (tool.name === 'knowledge.notebook-workspace.update' ||
-              (tool.name === 'knowledge.notebook.update' && notebookSubmissionAttempted))
-          )
-            return {
-              isError: true,
-              content: [
-                {
-                  type: 'text',
-                  text: 'Repair cannot repeat notebook effects. Start a new request.',
-                },
-              ],
-            };
-          if (tool.name === 'knowledge.notebook.update') notebookSubmissionAttempted = true;
-          return tool.execute(value, context);
-        },
-      })),
+      ...input.tools.map(
+        (tool): AgentTool => ({
+          ...tool,
+          execute: async (value: unknown, context: Parameters<AgentTool['execute']>[1]) => {
+            if (resultText !== undefined) throw new Error('Knowledge result is already submitted.');
+            usedToolCalls += 1;
+            // Repair can read evidence or supply a missing submission, but cannot repeat an edit effect.
+            if (
+              repairUsed &&
+              (tool.name === 'knowledge.notebook-workspace.update' ||
+                (tool.name === 'knowledge.notebook.update' && notebookSubmissionAttempted))
+            )
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Repair cannot repeat notebook effects. Start a new request.',
+                  },
+                ],
+              };
+            if (tool.name === 'knowledge.notebook.update') notebookSubmissionAttempted = true;
+            return tool.execute(value, context);
+          },
+        })
+      ),
       {
         name: 'knowledge.result',
         description:
