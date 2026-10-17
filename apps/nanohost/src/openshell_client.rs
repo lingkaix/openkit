@@ -1146,7 +1146,13 @@ where
     let mut marker_length = 0;
     let mut exit_status = None;
     while let Some(event) = events.next().await {
-        let event = event.map_err(|_| EpochFault::MemberExited(None))?;
+        let event = event.map_err(|status| {
+            eprintln!(
+                "nanohost worker bootstrap response: outcome=failed cause=grpc code={:?}",
+                status.code()
+            );
+            EpochFault::MemberExited(None)
+        })?;
         match event.payload {
             Some(exec_sandbox_event::Payload::Stdout(event)) if event.data.is_empty() => {}
             Some(exec_sandbox_event::Payload::Stderr(event)) if event.data.is_empty() => {}
@@ -1157,15 +1163,25 @@ where
                 if event.data.len() > remaining.len()
                     || event.data.as_slice() != &remaining[..event.data.len()]
                 {
+                    eprintln!(
+                        "nanohost worker bootstrap response: outcome=failed cause=stdout-marker-invalid bytes={} marker_bytes={marker_length}",
+                        event.data.len()
+                    );
                     return Err(EpochFault::MemberExited(None));
                 }
                 marker_length += event.data.len();
                 if marker_length == WORKER_ENTRY_MARKER.len() {
                     marker_ready
                         .take()
-                        .ok_or(EpochFault::MemberExited(None))?
+                        .ok_or_else(|| {
+                            eprintln!("nanohost worker bootstrap response: outcome=failed cause=marker-readiness-absent");
+                            EpochFault::MemberExited(None)
+                        })?
                         .send(())
-                        .map_err(|_| EpochFault::MemberExited(None))?;
+                        .map_err(|_| {
+                            eprintln!("nanohost worker bootstrap response: outcome=failed cause=readiness-receiver-gone");
+                            EpochFault::MemberExited(None)
+                        })?;
                 }
             }
             Some(exec_sandbox_event::Payload::Exit(event))
@@ -1173,10 +1189,43 @@ where
             {
                 exit_status = Some(event.exit_code);
             }
-            _ => return Err(EpochFault::MemberExited(None)),
+            Some(exec_sandbox_event::Payload::Stdout(event)) => {
+                eprintln!(
+                    "nanohost worker bootstrap response: outcome=failed cause=stdout-unexpected bytes={}",
+                    event.data.len()
+                );
+                return Err(EpochFault::MemberExited(None));
+            }
+            Some(exec_sandbox_event::Payload::Stderr(event)) => {
+                eprintln!(
+                    "nanohost worker bootstrap response: outcome=failed cause=stderr bytes={} marker_complete={}",
+                    event.data.len(),
+                    marker_length == WORKER_ENTRY_MARKER.len()
+                );
+                return Err(EpochFault::MemberExited(None));
+            }
+            Some(exec_sandbox_event::Payload::Exit(event)) => {
+                eprintln!(
+                    "nanohost worker bootstrap response: outcome=failed cause=exit-invalid exit_code={} marker_complete={} exit_seen={}",
+                    event.exit_code,
+                    marker_length == WORKER_ENTRY_MARKER.len(),
+                    exit_status.is_some()
+                );
+                return Err(EpochFault::MemberExited(None));
+            }
+            None => {
+                eprintln!(
+                    "nanohost worker bootstrap response: outcome=failed cause=missing-payload"
+                );
+                return Err(EpochFault::MemberExited(None));
+            }
         }
     }
-    let exit_status = exit_status.ok_or(EpochFault::MemberExited(None))?;
+    let exit_status = exit_status.ok_or_else(|| {
+        eprintln!("nanohost worker bootstrap response: outcome=failed cause=missing-exit marker_complete={}", marker_length == WORKER_ENTRY_MARKER.len());
+        EpochFault::MemberExited(None)
+    })?;
+    eprintln!("nanohost worker bootstrap response: outcome=complete exit_code={exit_status}");
     Ok(WorkerBootstrapCompletion {
         monitor_exit: true,
         clean_response: true,
