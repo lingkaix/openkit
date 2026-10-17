@@ -12,6 +12,7 @@ import {
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -152,6 +153,19 @@ function createQuickChatProviderOptions() {
 /** Builds one explicit Assistant-targeted conversation submission. */
 function conversationRequest(input: string, requestId: string) {
   return { input, requestId, targetRef: 'internal-role:assistant', artifactRefs: [] };
+}
+
+/** Opens the fixture's published Git Notebook for fixed-base edits and exact citation bytes. */
+function fixtureNotebook(dataRoot: string): KnowledgeNotebook {
+  return new KnowledgeNotebook({
+    repositoryPath: join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'knowledge',
+      'notebook.git'
+    ),
+  });
 }
 
 /** Composes public Timeline admission with the real durable conversation and Core owners. */
@@ -1543,8 +1557,21 @@ describe('quick chat app API', () => {
 
   it('answers an explicit Knowledge Manager query through S61 without calling QuickChatAgent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-knowledge-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
+      coreDb,
       dataRoot,
       store: createDemoStore({ dataRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
@@ -1563,6 +1590,9 @@ describe('quick chat app API', () => {
           method: 'POST',
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-00000000c001',
+            knowledgePageId: 'launch-cadence',
+            baseRevision: fixtureNotebook(dataRoot).publishedRevision(),
+            sourceReferences: [],
             kind: 'project-context',
             title: 'Launch cadence',
             content: 'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
@@ -1571,7 +1601,7 @@ describe('quick chat app API', () => {
         }
       )
     );
-    expect(createRes.status).toBe(200);
+    expect(createRes.status, await createRes.clone().text()).toBe(200);
     const knowledge = (await createRes.json()) as { id: string };
 
     const res = await app.request(
@@ -1628,16 +1658,11 @@ describe('quick chat app API', () => {
 
     expect(replayRes.status).toBe(200);
     expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(parsed);
-    const pageBytes = readFileSync(
-      join(
-        dataRoot,
-        'workspaces',
-        'ws_00000000-0000-7000-8000-000000000001',
-        'knowledge',
-        'pages',
-        `${knowledge.id}.md`
-      )
-    );
+    const notebook = fixtureNotebook(dataRoot);
+    const pagePath = `${knowledge.id}.md`;
+    const pageBytes = notebook.readRevision(notebook.publishedRevision(), [pagePath]).files[
+      pagePath
+    ]!;
     const contentDigest = `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`;
     const traceRoot = join(
       dataRoot,
@@ -1722,13 +1747,16 @@ describe('quick chat app API', () => {
             requestId: '00000000-0000-4000-8000-00000000c002',
             kind: 'project-context',
             title: 'Workspace maintenance notes',
+            knowledgePageId: 'maintenance-notes',
+            baseRevision: fixtureNotebook(dataRoot).publishedRevision(),
+            sourceReferences: [],
             content: 'This page is not about the selected Assistant model.',
           }),
           headers: { 'content-type': 'application/json' },
         }
       )
     );
-    expect(createRes.status).toBe(200);
+    expect(createRes.status, await createRes.clone().text()).toBe(200);
 
     const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
     onTestFinished(() => listKnowledgeProposals.mockRestore());
@@ -1831,12 +1859,15 @@ describe('quick chat app API', () => {
               requestId: '00000000-0000-4000-8000-00000000c002',
               kind: 'project-context',
               title: 'Maintenance report acceptance',
+              knowledgePageId: 'maintenance-report',
+              baseRevision: fixtureNotebook(dataRoot).publishedRevision(),
+              sourceReferences: [],
               content: 'Maintenance report acceptance: unrelated-knowledge-marker.',
             }),
           }
         )
       );
-      expect(knowledge.status).toBe(200);
+      expect(knowledge.status, await knowledge.clone().text()).toBe(200);
       const content = '# Maintenance report acceptance\n\nartifact-roundtrip-c7f46a19; 62 passed.';
       const imported = await app.request(
         ...operationRequest(
