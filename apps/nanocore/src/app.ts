@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import {
   type BootReadinessSnapshot,
   OPERATION_DEFINITIONS,
@@ -1509,13 +1510,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           const thread = previous ?? sharedStore.createThread(workspaceId, 'Knowledge maintenance', undefined, 'knowledge-manager', { visibility: 'workspace' });
           const completedAt = new Date().toISOString();
           const turn = sharedStore.createTurn(workspaceId, thread.id, 'Scheduled Knowledge maintenance was skipped.', actor, null, {
-            agentId: 'knowledge-manager', executorKind: 'assistant', status: 'failed', startedAt,
+            agentId: 'knowledge-manager', executorKind: 'assistant', startedAt,
             triggerSource: { kind: 'automation', summary: 'Knowledge Manager scheduled maintenance.' },
           });
           sharedStore.createItem({ id: allocateEntityId('it'), workspaceId, threadId: thread.id, turnId: turn.id,
             type: 'status', status: 'failed', level: 'error', title: 'Knowledge maintenance skipped',
             summary: 'Scope, notebook or model admission was unavailable. Start a new explicit run after inspection.', createdAt: completedAt, completedAt });
-          sharedStore.updateTurn(turn.id, { completedAt, error: { code: 'knowledge_maintenance_unavailable', message: 'Scheduled maintenance could not be admitted.' } });
+          sharedStore.updateTurn(turn.id, { status: 'failed', completedAt, error: { code: 'knowledge_maintenance_unavailable', message: 'Scheduled maintenance could not be admitted.' } });
           return null;
         }
       },

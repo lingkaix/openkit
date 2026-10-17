@@ -222,6 +222,8 @@ const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * Stable command names tracked by the app-local idempotency ledger.
  */
 export type CommandRequestName =
+  | 'knowledge.tell'
+  | 'knowledge.maintain'
   | 'catalog.skill-import'
   | 'catalog.skill-select'
   | 'catalog.skill-pin'

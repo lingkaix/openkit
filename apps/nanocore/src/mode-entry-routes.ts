@@ -3067,9 +3067,7 @@ export function createConversationService({
       /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
       const answerFromWorkspaceKnowledge = async (): Promise<ConversationCommandResult | null> => {
         if (!store.getDataRoot()) return null;
-        const inputTurn = filePayloadPaths
-          ? createChatTurn(new Date().toISOString(), providerTurnId)
-          : undefined;
+        const inputTurn = createChatTurn(new Date().toISOString(), providerTurnId);
         const knowledgeAnswer = await createOperationInvocation({
           coreDb,
           store,
@@ -3083,7 +3081,7 @@ export function createConversationService({
           {
             kind: 'public',
             actor: actor,
-            queryContext: { threadId },
+            queryContext: { threadId, turnId: inputTurn.id },
           }
         );
         const completedAt = new Date().toISOString();

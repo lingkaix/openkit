@@ -1,4 +1,4 @@
-import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import { KnowledgeMaintenanceOutcomeSchema, RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** A question carries no scope or authority beyond its native Workspace admission. */
@@ -40,12 +40,4 @@ export const KnowledgeMaintainRequestSchema = z.object({
 }).strict();
 
 /** The Turn and notebook candidate remain the sole work and review records. */
-export const KnowledgeMaintenanceResponseSchema = z.object({
-  threadId: ThreadIdSchema,
-  turnId: TurnIdSchema,
-  outcome: z.enum(['published', 'review-required', 'no-change', 'skipped', 'failed']),
-  notebookRevision: z.string().min(1),
-  candidateRevision: z.string().min(1).optional(),
-  proposalId: z.string().min(1).optional(),
-  summary: z.string().min(1),
-}).strict();
+export const KnowledgeMaintenanceResponseSchema = KnowledgeMaintenanceOutcomeSchema;

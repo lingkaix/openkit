@@ -5,6 +5,8 @@ import { responsibleUserIdForActor } from '@openkit/protocol';
 import { z } from 'zod';
 import { runKnowledgeManagerAgent, type KnowledgeManagerAgentDependencies } from '../internal-agents/knowledge-manager-agent.js';
 import { internalContextDigest } from '../internal-agents/rolling-context.js';
+import { createAssistantHistory } from '../internal-agents/assistant-history.js';
+import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import { admitKnowledgeRetrieval, knowledgeSourceAudienceReadable, readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
@@ -45,7 +47,7 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   const { store } = dependencies;
   const dataRoot = store.getDataRoot();
   const userId = responsibleUserIdForActor(input.access.actor);
-  if (!dataRoot || !userId) throw new Error('Knowledge query owner is unavailable.');
+  if (!dataRoot || !userId || !input.access.coreDb) throw new Error('Knowledge query owner is unavailable.');
   const target = { dataRoot, workspaceId: input.workspaceId, access: input.access };
   admitKnowledgeRetrieval(target);
   const parent = input.access.outputThreadId
@@ -59,7 +61,7 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   // Threadless human requests use their new work Thread; running callers keep their exact query context.
   const access: KnowledgeRetrievalAccess = {
     ...input.access, outputThreadId: input.access.outputThreadId ?? thread.id,
-    outputTurnId: input.access.outputTurnId ?? turn.id,
+    outputTurnId: input.access.outputThreadId ? input.access.outputTurnId : turn.id,
   };
   const bound = { ...target, access };
   const notebook = new KnowledgeNotebook({ repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git') });
@@ -143,6 +145,10 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         text: JSON.stringify(notebook.history({ revision: baseRevision, limit: 20 })) }] }; },
     },
   ];
+  const nativeAuthority = { actorRef: input.access.actor, assertCurrent };
+  const history = createAssistantHistory({ store, coreDb: input.access.coreDb,
+    workspaceId: input.workspaceId, threadId: thread.id, turnId: turn.id, nativeAuthority });
+  tools.push(history.tool);
   const workspaceDb = dependencies.openWorkspace(input.workspaceId);
   try {
     const result = await runKnowledgeManagerAgent(dependencies, {
@@ -155,7 +161,13 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         ...(input.capabilityCallId ? { askingCapabilityCallId: input.capabilityCallId } : {}),
       },
       messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({ question: input.question, overview, notebookRevision: baseRevision }) }] }],
-      readEvidence: (items) => internalContextDigest(items.flatMap((item) => item.type === 'tool-call' ? [item.result] : [])),
+      readEvidence: (items) => readInternalContextEvidence({
+        store, coreDb: input.access.coreDb!, workspaceId: input.workspaceId, threadId: thread.id,
+        nativeAuthority, items, strategy: 'compaction',
+        ...(access.outputThreadId && access.outputTurnId ? { retrievalContext: {
+          threadId: access.outputThreadId, turnId: access.outputTurnId,
+        } } : {}),
+      }),
       validateResult: (text) => {
         assertCurrent();
         const answer = answerSchema.parse(JSON.parse(text));

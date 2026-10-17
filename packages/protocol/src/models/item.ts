@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KnowledgeMaintenanceOutcomeSchema } from './knowledge-notebook.js';
 import {
   AgentIdSchema,
   ArtifactIdSchema,
@@ -297,6 +298,8 @@ export const AgentHandoffItemSchema = BaseItemSchema.extend({
  * Product-visible status item for bounded progress and state transitions.
  */
 export const StatusItemSchema = BaseItemSchema.extend({
+  /** Actual native result, never model-authored authority; the existing command receipt points to this Turn. */
+  knowledgeMaintenanceResult: KnowledgeMaintenanceOutcomeSchema.optional(),
   type: z.literal('status'),
   level: z.enum(['info', 'warning', 'error']),
   title: z.string().min(1),
