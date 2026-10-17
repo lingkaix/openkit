@@ -75,6 +75,12 @@ Knowledge Manager is the existing Internal Core Role listed in [Core Architectur
 
 ## Contract / Expected Behavior
 
+### Server maintenance Thread
+
+Server Knowledge maintenance uses the general `server` Thread owner from [Core Concepts](../core/core-concepts.md#thread), with no Workspace anchor. Its Turns, Items, model usage and review records retain that same owner. Current Server administration authority admits every read and effect; Workspace membership and asking-call lineage grant no Server access. This version implements only Knowledge Manager maintenance on that owner.
+
+One nonresident maintenance Thread serializes the Server's bounded request and daily runs. Each run starts fresh from the Server overview, explicit requests and their admitted Sources, human Server notebook changes and needed authorized records. No Workspace Thread enters Server learning. Existing run-input retention, fixed-base conflict checks, delegation, candidate review, visible failure/skip outcomes, Stop and no-model-replay rules apply. The independent Server daily switch defaults off. Revoked authority refuses further disclosure or publication. No Server maintenance request is recorded under a Workspace.
+
 ### Operation families
 
 Read operations inherit S61's trusted query context, narrowing-only source selection and qualified page references. Knowledge Manager cannot supply a different Actor, User or querying Thread, merge Memory with Knowledge, or compare rankings across separate sources. Synthesis may combine admitted evidence while retaining source distinctions. Citations retain the Core Protocol scope-qualified reference. Every result that identifies an existing selection trace uses `retrievalTraceRef` as `{scopeId,objectId}`, never a bare `retrievalTraceId`. Direct User App calls with no Thread or Turn return their existing selection/outcome projection without a trace id or reference; they publish no trace and retain S61's same source and current-access checks. A caller cannot omit existing Thread/Turn context to skip publication. This is the consumer projection of [Query Context, Sources, References And Acts](../decisions/20261015-context_sources_references_query_acts.md), not another retrieval owner.

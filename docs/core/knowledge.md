@@ -66,6 +66,8 @@ Artifacts may become Knowledge Sources, but artifacts are not required between o
 
 The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Its operations are trusted at this stage; review by another model and confidence marks are out of scope. Current authority and required human decisions still apply.
 
+The Server Knowledge maintenance Thread is Server-owned and visible under current Server administration authority. Workspace membership does not admit its history.
+
 The Knowledge Manager uses existing Thread, Turn and Item owners for conversation continuity. It owns no separate runtime, scheduler, retry queue or publication authority.
 
 ## Authority And Projection
