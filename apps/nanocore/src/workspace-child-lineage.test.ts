@@ -205,9 +205,10 @@ async function sendLineageRequest(
 
 let fixture: Awaited<ReturnType<typeof createLineageFixture>>;
 
+// Fresh Git/SQLite publication is fixture setup; it has no product latency contract.
 beforeEach(async () => {
   fixture = await createLineageFixture();
-});
+}, 30_000);
 
 afterEach(() => {
   if (fixture?.coreDb.sqlite.open) fixture.coreDb.sqlite.close();

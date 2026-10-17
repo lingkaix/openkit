@@ -388,7 +388,7 @@ describe('published Workspace notebook reads', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ workspaceId: f.workspaceId }),
       });
-      expect(response.status).toBe(200);
+      expect(response.status, `${operation}: ${await response.clone().text()}`).toBe(200);
       const body = (await response.json()) as { counts: { knowledgeEntryCount: number } };
       expect(body.counts.knowledgeEntryCount).toBe(1);
     }

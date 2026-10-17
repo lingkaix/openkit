@@ -416,7 +416,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(existsSync(f.repositoryPath)).toBe(true);
     const revision = git(f, ['rev-parse', 'refs/heads/published']).trim();
     expect(git(f, ['rev-list', '--parents', '-1', revision]).trim()).toBe(revision);
-    expect(git(f, ['show', `${revision}:pages/index.md`])).toContain('# Notebook');
+    expect(git(f, ['show', `${revision}:pages/index.md`])).toContain('# Knowledge');
     const metadata = JSON.parse(git(f, ['show', '-s', '--format=%B', revision]));
     expect(metadata).toMatchObject({
       producer: { kind: 'user', id: LOCAL_USER_ID },

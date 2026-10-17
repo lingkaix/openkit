@@ -1497,7 +1497,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow('Workspace retrieval traces require current export authority.');
+    ).toThrow('Notebook export requires current source authority.');
     expect(
       existsSync(
         join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unauthorizedExportId)
