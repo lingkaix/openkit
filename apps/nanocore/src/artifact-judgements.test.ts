@@ -297,8 +297,8 @@ describe('Exact Artifact judgement in the existing Review', () => {
       SELECT ?,'human',display_name,?,email_verified,created_at,updated_at,last_seen_at FROM users WHERE id = ?`)
       .run(bob, `${bob}@fixture.invalid`, state.userId);
     state.coreDb.sqlite
-      .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,revision,created_at,updated_at)
-      VALUES (?,?,'active','editor',?,1,?,?)`)
+      .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,joined_at,revision,created_at,updated_at)
+      VALUES (?,?,'active',?,1,?,?)`)
       .run(state.workspace.id, bob, now, now, now);
     const input = {
       artifactId: privateArtifact.id,
@@ -323,11 +323,18 @@ describe('Exact Artifact judgement in the existing Review', () => {
     expect(() => readArtifactJudgement(denied, input)).toThrow(
       expect.objectContaining({ code: 'not_found' })
     );
+    expect(
+      readArtifactJudgement(denied, {
+        ...input,
+        artifactId: artifact.id,
+        contentDigest: artifact.contentDigest,
+      })
+    ).toBeNull();
     state.coreDb.sqlite
       .prepare(
-        "UPDATE workspace_members SET access_level = 'viewer' WHERE workspace_id = ? AND user_id = ?"
+        "UPDATE workspace_members SET status = 'removed', removed_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
       )
-      .run(state.workspace.id, bob);
+      .run(now, now, state.workspace.id, bob);
     expect(() =>
       readArtifactJudgement(denied, {
         ...input,

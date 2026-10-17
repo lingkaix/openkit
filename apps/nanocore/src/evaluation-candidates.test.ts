@@ -45,8 +45,8 @@ function fixture(privateSecond = false) {
     .run(bob, `${bob}@fixture.invalid`, userId);
   const now = new Date().toISOString();
   coreDb.sqlite
-    .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,revision,created_at,updated_at)
-    VALUES (?,?,'active','editor',?,1,?,?)`)
+    .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,joined_at,revision,created_at,updated_at)
+    VALUES (?,?,'active',?,1,?,?)`)
     .run(workspace.id, bob, now, now, now);
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   databases.push(workspaceDb);
