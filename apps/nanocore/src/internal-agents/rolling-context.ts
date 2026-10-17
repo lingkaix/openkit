@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Item } from '@openkit/protocol';
 import { deriveEntityId } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
+import type { PiAiFailure } from '../llm/pi-ai-failure.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
 import {
   type AgentMessage,
@@ -454,9 +455,14 @@ function invalidSummary(): InternalAgentProviderError {
 
 /** Projects only closed context failures into existing durable Turn diagnostics. */
 export function internalContextFailure(error: unknown): { code: string; message: string } | null {
+  const exceededMessage =
+    'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.';
+  const failure = (error as { failure?: PiAiFailure } | null)?.failure;
+  if (failure?.kind === 'context_overflow')
+    return { code: 'internal_agent_context_exceeded', message: exceededMessage };
   if (!(error instanceof InternalAgentProviderError)) return null;
   const messages: Record<string, string> = {
-    internal_agent_context_exceeded: 'Required history cannot fit with verified source continuity.',
+    internal_agent_context_exceeded: exceededMessage,
     internal_agent_context_unavailable: 'The selected model has no usable context bounds.',
     internal_agent_summary_invalid:
       'Continuation summary production failed. Its source boundary did not advance.',

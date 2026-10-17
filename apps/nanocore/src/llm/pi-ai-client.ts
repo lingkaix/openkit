@@ -8,6 +8,7 @@ import {
   calculateCost,
   createModels,
   createProvider,
+  type ImageContent,
   type JsonObject,
   lazyStream,
   type Model,
@@ -20,6 +21,7 @@ import {
   type ProviderHeaders,
   type ProviderStreams,
   type StreamOptions,
+  type TextContent,
   type ToolCall,
   type Usage,
 } from '@earendil-works/pi-ai';
@@ -1186,6 +1188,7 @@ export class PiAiGatewayClient {
       options.samplingParams = { parallel_tool_calls: request.parallel_tool_calls };
     this.applyRequestPayloadOverlay(options, model, maxTokens, request.parallel_tool_calls);
     applyCodexTransport(options, model, transport);
+    this.bindFinalRequestAdmission(options, model, transport);
     this.bindRawOutput(options, model, transport);
     return options;
   }
@@ -1265,6 +1268,10 @@ export class PiAiGatewayClient {
     if (toolChoice !== undefined) options.toolChoice = toolChoice;
     // Native features have one carrier; it never changes stock auth, cache, model or transport fields.
     envelope.fields = {
+      // Preserving native input replaces stock instruction messages, so carry the authored instructions too.
+      ...(native && envelope.input && request.instructions !== undefined
+        ? { instructions: request.instructions }
+        : {}),
       ...(native && text ? { text } : {}),
       ...(native && reasoning?.context === 'all_turns'
         ? { reasoning: { context: 'all_turns' } }
@@ -1350,8 +1357,59 @@ export class PiAiGatewayClient {
         envelope.output = envelope.output.toSorted((left, right) => left.index - right.index);
       };
     applyCodexTransport(options, selectedModel, transport);
+    this.bindFinalRequestAdmission(options, selectedModel, transport);
     this.bindRawOutput(options, selectedModel, transport);
     return options;
+  }
+
+  /** Checks the final serializer result without changing its payload, continuity, or raw observer. */
+  private bindFinalRequestAdmission(
+    options: StreamOptions & Record<string, unknown>,
+    model: Model<string>,
+    transport: LLMGatewayTransportContext
+  ): void {
+    const admit = transport.finalRequestAdmission;
+    if (!admit) return;
+    const overlay = options.onPayload;
+    options.onPayload = async (payload, selected) => {
+      const overlaid = await overlay?.(payload, selected);
+      const finalPayload = overlaid === undefined ? payload : overlaid;
+      const record = readRecord(finalPayload);
+      const generation = readRecord(
+        record?.config ?? record?.generationConfig ?? record?.generation_config
+      );
+      const inference = readRecord(record?.inferenceConfig);
+      const outputCaps = [
+        record?.max_output_tokens,
+        record?.max_completion_tokens,
+        record?.max_tokens,
+        record?.maxTokens,
+        generation?.maxOutputTokens,
+        inference?.maxTokens,
+      ].filter(
+        (value): value is number =>
+          typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+      );
+      await raceProviderWithSignal(
+        () =>
+          Promise.resolve(
+            admit(
+              {
+                payload: finalPayload,
+                contextWindowTokens: model.contextWindow,
+                outputReserveTokens:
+                  outputCaps.length > 0
+                    ? Math.max(...outputCaps)
+                    : (options.maxTokens ?? model.maxTokens),
+                codexTurnState: options.headers?.['x-codex-turn-state'],
+              },
+              options.signal
+            )
+          ),
+        options.signal
+      );
+      return finalPayload;
+    };
   }
 
   /** Composes the strong raw observer before existing native validation and stock normalization. This observes the selected native transport without changing stream selection. */
@@ -2330,11 +2388,15 @@ function toPiResponsesContext(
       if (!call || call.kind !== kind) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type} lineage`);
       }
+      const output =
+        record.type === 'function_call_output' && hasResponsesImage(record.output)
+          ? responsesInputContent(record.output, model, native)
+          : readResponsesTextContent(record.output);
       messages.push({
         role: 'toolResult',
         toolCallId: call.carrierId,
         toolName: call.name,
-        content: [{ type: 'text', text: readResponsesTextContent(record.output) }],
+        content: typeof output === 'string' ? [{ type: 'text', text: output }] : output,
         isError: false,
         timestamp,
       });
@@ -2377,7 +2439,7 @@ function toPiResponsesContext(
     if (record.role === 'user') {
       messages.push({
         role: 'user',
-        content: responsesUserContent(record.content),
+        content: responsesInputContent(record.content, model, native),
         timestamp,
       });
       continue;
@@ -2547,7 +2609,11 @@ function admitPiResponsesNativeRequest(
       ) ||
       input.some((value) => {
         const item = readRecord(value);
-        return item?.phase !== undefined && item.id === undefined;
+        return (
+          (item?.phase !== undefined && item.id === undefined) ||
+          (item?.role === 'user' && hasResponsesImage(item.content)) ||
+          (item?.type === 'function_call_output' && hasResponsesImage(item.output))
+        );
       })
         ? { nativeInput: lowered }
         : {}),
@@ -2945,7 +3011,9 @@ function lowerResponsesNativeInput(
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
       }
-      readExactResponsesTextContent(item.output, !native);
+      if (item.type === 'function_call_output')
+        assertResponsesInputContent(item.output, !native);
+      else readExactResponsesTextContent(item.output, !native);
       lowered.push(item);
       continue;
     }
@@ -2998,7 +3066,8 @@ function assertExactPreservedResponsesItem(item: Record<string, unknown>, native
     ) {
       throw new GatewayUnsupportedFeatureError('pi-ai Responses message item');
     }
-    readExactResponsesTextContent(item.content, !native);
+    if (item.role === 'user') assertResponsesInputContent(item.content, !native);
+    else readExactResponsesTextContent(item.content, !native);
     return;
   }
   throw new GatewayUnsupportedFeatureError('pi-ai Responses input role');
@@ -3072,12 +3141,18 @@ function assertExactResponsesKeys(
 }
 
 /**
- * Converts Responses user content into pi-ai text blocks without flattening an authored array.
+ * Maps admitted user or image-bearing function-result content into stock text/image blocks.
  *
- * @param value Responses message content.
- * @returns A string or text-block array accepted by pi-ai.
+ * @param value Responses content from its validated native carrier.
+ * @param model Selected model with effective input modalities.
+ * @param native Whether this member admits native Responses.
+ * @returns Text or stock content blocks without image decoding or transcoding.
  */
-function responsesUserContent(value: unknown): string | Array<{ type: 'text'; text: string }> {
+function responsesInputContent(
+  value: unknown,
+  model: AssistantModel,
+  native: boolean
+): string | Array<TextContent | ImageContent> {
   if (typeof value === 'string') {
     return value;
   }
@@ -3087,6 +3162,12 @@ function responsesUserContent(value: unknown): string | Array<{ type: 'text'; te
 
   return value.map((part) => {
     const record = readRecord(part);
+    if (record?.type === 'input_image') {
+      const image = readResponsesImage(record);
+      if (!native || !model.input?.includes('image'))
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses model image input');
+      return image;
+    }
     if (
       !record ||
       (record.type !== 'input_text' && record.type !== 'output_text') ||
@@ -3096,6 +3177,40 @@ function responsesUserContent(value: unknown): string | Array<{ type: 'text'; te
     }
     return { type: 'text', text: record.text };
   });
+}
+
+/** Detects only the explicitly admitted native image block. */
+function hasResponsesImage(value: unknown): boolean {
+  return Array.isArray(value) && value.some((part) => readRecord(part)?.type === 'input_image');
+}
+
+/** Validates native carriage before selected-model admission; other shapes retain text-only validation. */
+function assertResponsesInputContent(value: unknown, allowPlainText = false): void {
+  if (!Array.isArray(value)) {
+    readExactResponsesTextContent(value, allowPlainText);
+    return;
+  }
+  for (const part of value) {
+    const record = readRecord(part);
+    if (record?.type === 'input_image') readResponsesImage(record);
+    else readExactResponsesTextContent([part], allowPlainText);
+  }
+}
+
+/** Admits inline PNG/JPEG syntax while the native envelope retains the original bytes and detail. */
+function readResponsesImage(part: Record<string, unknown>): ImageContent {
+  const image =
+    typeof part.image_url === 'string'
+      ? /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/.exec(part.image_url)
+      : null;
+  if (
+    Object.keys(part).some((key) => !['type', 'image_url', 'detail'].includes(key)) ||
+    !image ||
+    image[2]!.length % 4 !== 0 ||
+    (part.detail !== undefined && !['auto', 'low', 'high'].includes(part.detail as string))
+  )
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses inline PNG/JPEG image');
+  return { type: 'image', mimeType: image[1]!, data: image[2]! };
 }
 
 /**
@@ -4066,6 +4181,8 @@ interface AssistantModel {
   id: string;
   /** pi-ai provider id. */
   provider: string;
+  /** Effective selected-model input declaration; absent metadata grants no image input. */
+  input?: readonly string[];
 }
 
 /**
