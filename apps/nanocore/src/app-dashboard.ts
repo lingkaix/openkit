@@ -27,6 +27,7 @@ import type { FsStore } from './lib/store.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import { OperationError } from './operation-error.js';
+import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
 import { listGoalsForThread } from './runtime/goal-owner.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
@@ -453,7 +454,18 @@ export function readWorkspaceDashboard(input: {
     );
     const counts = {
       ...workspace.counts,
-      knowledgeEntryCount: resources.knowledge.length,
+      knowledgeEntryCount: store.getDataRoot()
+        ? readAuthorizedWorkspaceNotebookPages({
+            dataRoot: store.getDataRoot()!,
+            workspaceId,
+            access: {
+              store,
+              coreDb,
+              actor: { kind: 'user', id: actor.userId },
+              requestActor: actor,
+            },
+          }).pages.length
+        : resources.knowledge.length,
       threadCount: threads.length,
       artifactCount: workspaceArtifacts.length,
     };
