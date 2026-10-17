@@ -10,7 +10,11 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { KNOWLEDGE_OVERVIEW_BYTES, prepareKnowledgeOverview } from './knowledge-overview.js';
+import {
+  assertPortableKnowledgeOverview,
+  KNOWLEDGE_OVERVIEW_BYTES,
+  prepareKnowledgeOverview,
+} from './knowledge-overview.js';
 
 /** Real notebooks and live authority; no retrieval index or Provider is required for navigation. */
 function fixture() {
@@ -119,4 +123,32 @@ it('includes Server navigation only with the admitted current credential and mar
   const unavailable = prepareKnowledgeOverview({ ...f, threadId: 'not-admitted' });
   expect(unavailable.text).toContain('"unavailable":true');
   expect(unavailable.text).not.toContain(f.coreDb.dataRoot);
+});
+
+it('admits only known portable overview scopes and value-free Server-unavailable notices', () => {
+  const envelope = (overviews: unknown) =>
+    `<knowledge_overviews>${JSON.stringify({ overviews })}</knowledge_overviews>`;
+  const workspace = {
+    scope: 'workspace:ws_00000000-0000-7000-8000-000000000001',
+    content: 'Literal "scope":"server" is ordinary Workspace text.',
+  };
+  expect(() => assertPortableKnowledgeOverview(envelope([workspace]))).not.toThrow();
+  expect(() =>
+    assertPortableKnowledgeOverview(envelope([workspace, { scope: 'server', unavailable: true }]))
+  ).not.toThrow();
+  for (const value of [
+    'not an overview envelope',
+    '<knowledge_overviews>{invalid}</knowledge_overviews>',
+    envelope(null),
+    envelope([null]),
+    envelope([{ scope: 'unknown', content: 'Unknown scope.' }]),
+    envelope([{ scope: 'workspace:invalid', content: 'Invalid Workspace identity.' }]),
+    envelope([{ scope: 'server', content: 'Server content.' }]),
+    envelope([{ scope: 'server', unavailable: true, content: '' }]),
+    envelope([{ scope: 'server', unavailable: true, preview: 'Server preview.' }]),
+    envelope([{ scope: 'server', unavailable: false }]),
+  ])
+    expect(() => assertPortableKnowledgeOverview(value)).toThrow(
+      'Knowledge overview is not portable'
+    );
 });

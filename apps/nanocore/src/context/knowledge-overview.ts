@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ActorRef } from '@openkit/protocol';
+import { type ActorRef, WorkspaceIdSchema } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
@@ -119,4 +119,41 @@ export function prepareKnowledgeOverview(input: KnowledgeOverviewInput): Prepare
       for (const check of checks) check();
     },
   };
+}
+
+/**
+ * Enforces S51's Workspace-bundle exclusion without changing retained Worker delivery bytes.
+ * Workspace navigation and the exact value-free Server-unavailable notice are portable; Server content and unknown scope shapes fail closed. Live package inspection does not call this check.
+ */
+export function assertPortableKnowledgeOverview(text: string): void {
+  try {
+    const envelope = /^<knowledge_overviews>([\s\S]*)<\/knowledge_overviews>$/.exec(text);
+    const projection: unknown = envelope ? JSON.parse(envelope[1]!) : null;
+    if (
+      !projection ||
+      typeof projection !== 'object' ||
+      !('overviews' in projection) ||
+      !Array.isArray(projection.overviews)
+    )
+      throw new Error();
+    for (const entry of projection.overviews) {
+      if (!entry || typeof entry !== 'object' || !('scope' in entry)) throw new Error();
+      if (
+        typeof entry.scope === 'string' &&
+        entry.scope.startsWith('workspace:') &&
+        WorkspaceIdSchema.safeParse(entry.scope.slice('workspace:'.length)).success
+      )
+        continue;
+      if (
+        entry.scope === 'server' &&
+        'unavailable' in entry &&
+        entry.unavailable === true &&
+        Object.keys(entry).length === 2
+      )
+        continue;
+      throw new Error();
+    }
+  } catch {
+    throw new Error('Knowledge overview is not portable in a Workspace bundle.');
+  }
 }

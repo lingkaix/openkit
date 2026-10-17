@@ -20,6 +20,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import type { z } from 'zod';
+import { assertPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { validateRecurringPortableHistory } from './recurring-portable-history.js';
@@ -763,6 +764,7 @@ function assertWorkerContextPackageFiles(files: ReadonlyMap<string, string>): vo
     if (!match || typeof content !== 'string') {
       throw new Error(`Portable worker Context Package path is invalid: ${path}.`);
     }
+    if (match[4] === 'knowledge-overview.md') assertPortableKnowledgeOverview(content);
     if (match[3] === 'context-package.json') {
       const trace = JSON.parse(content) as {
         readonly threadId?: unknown;
