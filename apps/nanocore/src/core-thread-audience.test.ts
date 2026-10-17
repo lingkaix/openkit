@@ -91,21 +91,6 @@ function createCoreAudienceFixture() {
   );
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
-  const initialNotebookAuditEvents = listWorkspaceAuditEvents(workspaceDb, workspace.id);
-  expect(initialNotebookAuditEvents).toMatchObject(
-    ['knowledge.notebook.admit', 'knowledge.notebook.initialize'].map((action) => ({
-      action,
-      workspaceId: workspace.id,
-      threadId: null,
-      turnId: null,
-      actor: { kind: 'system', id: 'notebook-initializer', responsibleUserId: null },
-      notebookAdmission: {
-        baseRevision: null,
-        ownerScope: { kind: 'workspace', workspaceId: workspace.id },
-        authority: { kind: 'direct', instructionReference: 'workspace.create:empty-notebook-seed' },
-      },
-    }))
-  );
   for (const [turn, requestId, requestItemId] of [
     [approvalTurn, 'ap_local_private', 'it_00000000-0000-7e55-98df-414094b7707e'],
     [deniedApprovalTurn, 'ap_other_private', 'it_00000000-0000-7b56-bcdb-1d8dc2f6af03'],
@@ -209,7 +194,6 @@ function createCoreAudienceFixture() {
     deniedGate,
     deniedTurn,
     gate,
-    initialNotebookAuditEvents,
     own,
     ownTurn,
     shared,
@@ -395,6 +379,23 @@ describe('core Thread audience', () => {
         { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
         workspace.id
       );
+      const read = () =>
+        app.request(
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: workspace.id },
+            { headers: stopper }
+          )
+        );
+      const beforeStop = await read();
+      expect(beforeStop.status).toBe(200);
+      const initialHistory = await beforeStop.json();
+      for (const event of initialHistory.auditEvents) {
+        expect(['knowledge.notebook.admit', 'knowledge.notebook.initialize']).toContain(
+          event.action
+        );
+        expect(event.threadId).toBeNull();
+      }
       const response = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
           headers: stopper,
@@ -407,19 +408,11 @@ describe('core Thread audience', () => {
         status: 'cancelled',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       });
-      const read = () =>
-        app.request(
-          ...operationRequest(
-            'audit.workspace-list',
-            { workspaceId: workspace.id },
-            { headers: stopper }
-          )
-        );
       const first = await read();
       expect(first.status).toBe(200);
       const history = await first.json();
       expect(history.auditEvents).toEqual([
-        ...fixture.initialNotebookAuditEvents,
+        ...initialHistory.auditEvents,
         expect.objectContaining({
           action: 'turn.interrupt',
           category: 'command',
@@ -461,6 +454,13 @@ describe('core Thread audience', () => {
     const fixture = createCoreAudienceFixture();
     try {
       const db = openWorkspaceDb(fixture.dataRoot, fixture.workspace.id);
+      const initialHistory = listWorkspaceAuditEvents(db, fixture.workspace.id);
+      for (const initialEvent of initialHistory) {
+        expect(['knowledge.notebook.admit', 'knowledge.notebook.initialize']).toContain(
+          initialEvent.action
+        );
+        expect(initialEvent.threadId).toBeNull();
+      }
       const event = recordWorkspaceAuditEvent({
         workspaceDb: db,
         workspaceId: fixture.workspace.id,
@@ -489,7 +489,7 @@ describe('core Thread audience', () => {
         );
         expect(response.status).toBe(200);
         expect((await response.json()).auditEvents).toEqual([
-          ...fixture.initialNotebookAuditEvents,
+          ...initialHistory,
           ...(visible ? [event] : []),
         ]);
       }

@@ -2151,6 +2151,14 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
     };
     expect(Object.keys(definitions)).toHaveLength(27);
+    expect(Object.keys(definitions)).toEqual(
+      expect.arrayContaining([
+        'knowledge.notebook.history',
+        'knowledge.notebook.diff',
+        'knowledge.notebook.restore',
+        'knowledge.notebook.update',
+      ])
+    );
     for (const [id, definition] of Object.entries(definitions)) {
       const route = document.paths[operationHttpPath(id)] as unknown as {
         post: Record<string, unknown>;
@@ -2170,12 +2178,11 @@ describe('Knowledge OpenAPI derivation', () => {
         },
       });
       const components = document.components.schemas as Record<string, unknown>;
-      // Project before removing the header field so refined Zod objects are not rebuilt.
       const expectedInput = z.toJSONSchema(definition.inputSchema);
-      if (definition.mutating && 'requestId' in definition.inputSchema.shape) {
+      if ('requestId' in definition.inputSchema.shape) {
         delete expectedInput.properties?.requestId;
         if (expectedInput.required) {
-          expectedInput.required = expectedInput.required.filter((key) => key !== 'requestId');
+          expectedInput.required = expectedInput.required.filter((name) => name !== 'requestId');
         }
       }
       expect(components[`${id}.input`]).toEqual(expectedInput);

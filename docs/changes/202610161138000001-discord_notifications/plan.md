@@ -102,3 +102,5 @@ The c9 Native gate found the existing Knowledge OpenAPI count still pinned to23 
 
 
 The complete corrected OpenAPI file then exposed an existing expected-schema helper that calls Zod omit on the new refined Notebook request object. That check failed29 passing and1 failing case; its output remains notebook-count-repair-check.log. The test now projects the original input schema before removing the mutation-only HTTP request-id header property and required entry. It still compares every remaining JSON Schema field exactly, preserves all output and route assertions, and does not call the production projection helper as its oracle. Production validation and refinements remain unchanged.
+
+Main Notebook fixture reconciliation retains the owner repair at a8179685. Core Thread audience, Quick Chat and Search tests match Main exactly. The OpenAPI test retains Main's complete Knowledge assertions and the P23 signed-ingress exclusion and exact live-route checks. The standalone duplicate fixture repair was not published. This merge changes no P23 production, migration or generated interface bytes.
