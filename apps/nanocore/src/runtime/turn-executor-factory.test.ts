@@ -3147,7 +3147,8 @@ describe('createConfiguredTurnExecutor', () => {
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
-  });
+    // Three resident Workspaces and the dispatch database exceed the default budget under contention.
+  }, 60_000);
 
   it.each([
     'missing-lease',
