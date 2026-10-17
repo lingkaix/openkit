@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,9 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { validateNotebookCandidate } from './knowledge/notebook-validation.js';
+import { parseOkfDocument, stringListFrontmatterField } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
@@ -26,7 +30,9 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
+import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 
 const ACTOR = {
   kind: 'user',
@@ -460,21 +466,23 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'retrieval-traces',
       `${id}.json`
     );
-    const restrictedPageBytes = readFileSync(pagePath(fixture, page.id), 'utf8').replace(
+    const restrictedPageBytes = readPage(fixture, page.id).replace(
       /^sensitivity: .+$/m,
       'sensitivity: restricted'
     );
     expect(restrictedPageBytes).toContain('sensitivity: restricted');
-    writeFileSync(pagePath(fixture, page.id), restrictedPageBytes);
+    publishFixturePage(fixture, page.id, restrictedPageBytes);
+    const restrictedRevision = fixtureNotebook(fixture).publishedRevision();
     const restrictedDigest = sha256(restrictedPageBytes);
     const originalTrace = KnowledgeRetrievalTraceSchema.parse(
       JSON.parse(readFileSync(path, 'utf8'))
     );
     const restrictedTrace = KnowledgeRetrievalTraceSchema.parse({
       ...originalTrace,
+      notebookRevision: restrictedRevision,
       selected: originalTrace.selected.map((candidate) =>
         candidate.reference.objectId === page.id
-          ? { ...candidate, revision: restrictedDigest, contentDigest: restrictedDigest }
+          ? { ...candidate, revision: restrictedRevision, contentDigest: restrictedDigest }
           : candidate
       ),
     });
@@ -675,10 +683,10 @@ describe('retrieval query context, references, and query-owned traces', () => {
     ).toEqual([sourceReference]);
 
     const immutableTraceBytes = readFileSync(path, 'utf8');
-    const currentPageBytes = readFileSync(pagePath(fixture, page.id), 'utf8');
+    const currentPageBytes = readPage(fixture, page.id);
     expect(currentPageBytes).toContain(`source_refs: ${JSON.stringify([sourceReference])}`);
     const withoutFormerSource = currentPageBytes.replace(/^source_refs: .+$/m, 'source_refs: []');
-    writeFileSync(pagePath(fixture, page.id), withoutFormerSource);
+    publishFixturePage(fixture, page.id, withoutFormerSource);
     Object.assign(sourceThread, { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' });
 
     let caught: unknown;
@@ -739,7 +747,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
       `${id}.json`
     );
     const immutableTraceBytes = readFileSync(path, 'utf8');
-    const provenanceBytes = readFileSync(pagePath(fixture, provenance.id), 'utf8');
+    const provenanceBytes = readPage(fixture, provenance.id);
     const variants = [
       {
         name: 'restricted',
@@ -755,7 +763,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     expect(variants[1]!.bytes).not.toContain('sensitivity:');
 
     for (const variant of variants) {
-      writeFileSync(pagePath(fixture, provenance.id), variant.bytes);
+      publishFixturePage(fixture, provenance.id, variant.bytes);
       let caught: unknown;
       try {
         assertKnowledgeRetrievalTraceReadable({
@@ -915,6 +923,10 @@ function createFixture(
   const store = new FsStore({ dataRoot });
   const workspace = importedFrom
     ? store.importWorkspaceSnapshot({
+        ...notebookImportFixture({
+          workspaceId: testEntityId('ws', `imported-${label}`),
+          knowledge: [],
+        }),
         workspace: WorkspaceRecordSchema.parse({
           id: testEntityId('ws', `imported-${label}`),
           name: label,
@@ -933,7 +945,11 @@ function createFixture(
         agentSessions: [],
         turnEvents: [],
       })
-    : store.createWorkspace(label);
+    : store.createWorkspace(label, {
+        requestId: randomUUID(),
+        producer: ACTOR,
+        instructionReference: 'test-fixture:retrieval-query-context',
+      });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const access: KnowledgeRetrievalAccess = {
     store,
@@ -957,26 +973,86 @@ function createFixture(
   };
 }
 
+/** Admits authored profile-v4 fixture content into the same Git tree that the retrieval reader observes. */
 function createEntry(
   fixture: Fixture,
   title: string,
   content: string,
   sourceReferences?: string[]
 ) {
-  return fixture.store.createKnowledgeEntry(fixture.workspaceId, {
-    kind: 'project-context',
+  const notebook = fixtureNotebook(fixture);
+  const base = notebook.readRevision(notebook.publishedRevision());
+  const entry = {
+    id: `note-${String(Object.keys(base.files).length).padStart(4, '0')}`,
+    kind: 'project-context' as const,
     title,
     content,
-    ...(sourceReferences ? { sourceReferences } : {}),
+    sourceReferences: sourceReferences ?? [],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const bytes = serializeUserAuthoredKnowledgePage(entry, {
+    kind: 'workspace',
+    workspaceId: fixture.workspaceId,
   });
+  const checked = validateNotebookCandidate({
+    ownerScope: { kind: 'workspace', workspaceId: fixture.workspaceId },
+    base,
+    candidate: { files: { ...base.files, [`${entry.id}.md`]: bytes } },
+    scopeSchemaText: readFileSync(
+      join(fixture.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
+      'utf8'
+    ),
+    registeredSources: new Map(
+      fixture.store
+        .listKnowledgeSources(fixture.workspaceId)
+        .map((source) => [source.id, source.contentDigest])
+    ),
+    resolvedReferences: new Map(),
+  });
+  expect(checked.errors).toEqual([]);
+  publishFixturePage(fixture, entry.id, bytes);
+  return entry;
 }
 
 function pageScope(fixture: Fixture): string {
   return `page/workspace/${fixture.workspaceId}`;
 }
 
-function pagePath(fixture: Fixture, pageId: string): string {
-  return join(fixture.workspaceRoot, 'knowledge', 'pages', `${pageId}.md`);
+/** The same immutable Git owner used by retrieval; no materialized pages tree is authoritative. */
+function fixtureNotebook(fixture: Fixture): KnowledgeNotebook {
+  return new KnowledgeNotebook({
+    repositoryPath: join(fixture.workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+}
+
+/** Reads the exact current page from its published commit. */
+function readPage(fixture: Fixture, pageId: string): string {
+  const notebook = fixtureNotebook(fixture);
+  return notebook.readRevision(notebook.publishedRevision(), [`${pageId}.md`]).files[
+    `${pageId}.md`
+  ]!;
+}
+
+/** Seeds exact retained Git bytes, including deliberate corruption, without weakening the reader's oracle or invoking a retired Store writer. */
+function publishFixturePage(fixture: Fixture, pageId: string, content: string): void {
+  const notebook = fixtureNotebook(fixture);
+  const baseRevision = notebook.publishedRevision();
+  const parsed = parseOkfDocument({ path: `${pageId}.md`, content });
+  const candidateRevision = notebook.prepare({
+    baseRevision,
+    changes: { [`${pageId}.md`]: content },
+    metadata: {
+      summary: 'Retrieval boundary fixture',
+      producer: ACTOR,
+      authority: { kind: 'direct', instructionReference: 'test-fixture:retrieval-query-context' },
+      changeRequest: { requestId: randomUUID(), inputDigest: sha256(content) },
+      sourceReferences: parsed.ok
+        ? (stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
+        : [],
+    },
+  });
+  notebook.publish({ baseRevision, candidateRevision });
 }
 
 function findTraceFiles(root: string): string[] {

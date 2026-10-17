@@ -50,6 +50,69 @@ function sourceFixture() {
 
 /** Keeps explicit registered-source selection distinct from coincidentally equal entry bytes. */
 describe('direct Knowledge saved-source lineage', () => {
+  it('withholds published page identities and content after a registered Source becomes private', async () => {
+    const f = sourceFixture();
+    try {
+      const origin = f.store.createThread(DEMO_WORKSPACE_ID, 'Initially shared source audience');
+      const { source } = await f.client.operations['knowledge.source.register']({
+        workspaceId: DEMO_WORKSPACE_ID,
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Source audience can become narrower',
+        content: 'The protected meeting starts at eight.',
+        originatingThreadId: origin.id,
+      });
+      const created = await f.client.operations['knowledge.create']({
+        workspaceId: DEMO_WORKSPACE_ID,
+        requestId: crypto.randomUUID(),
+        baseRevision: (
+          await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).notebookRevision,
+        knowledgePageId: 'protected-meeting-marker',
+        kind: 'project-context',
+        title: 'PROTECTED-TITLE-MARKER',
+        content: 'PROTECTED-BODY-MARKER',
+        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+      });
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: LOCAL_USER_ID,
+        scope: 'workspace-readonly',
+        workspaceIds: [DEMO_WORKSPACE_ID],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: `Bearer ${issued.secret}` },
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      const before = await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID });
+      expect(before.items.map((entry) => entry.id)).toContain(created.id);
+      // Change the real current audience; immutable notebook bytes and their revision stay intact.
+      Object.assign(origin, {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
+      });
+      const after = await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID });
+      expect(after.notebookRevision).toBe(before.notebookRevision);
+      for (const denied of [
+        created.id,
+        created.title,
+        created.content,
+        source.id,
+        source.contentDigest,
+      ])
+        expect(JSON.stringify(after.items)).not.toContain(denied);
+    } finally {
+      f.close();
+    }
+  });
+
   it('filters private Source identities and refuses private metadata for a current ordinary readonly member', async () => {
     const f = sourceFixture();
     try {
@@ -259,6 +322,8 @@ describe('direct Knowledge saved-source lineage', () => {
           ...fields,
           workspaceId: DEMO_WORKSPACE_ID,
           requestId: crypto.randomUUID(),
+          baseRevision: before.notebookRevision,
+          knowledgePageId: 'private-interpretation',
         })
       ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
       expect(
@@ -283,6 +348,9 @@ describe('direct Knowledge saved-source lineage', () => {
         ...fields,
         workspaceId: personal.id,
         requestId: crypto.randomUUID(),
+        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: personal.id }))
+          .notebookRevision,
+        knowledgePageId: 'private-interpretation',
         sourceReferences: [`source:${personalSource.id}@${personalSource.contentDigest}`],
       };
       const entry = await f.client.operations['knowledge.create'](personalCommand);
@@ -291,6 +359,8 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceId: personal.id,
         knowledgeEntryId: entry.id,
         requestId: crypto.randomUUID(),
+        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: personal.id }))
+          .notebookRevision,
         title: 'Updated private interpretation',
       };
       const updated = await f.client.operations['knowledge.update'](update);
@@ -317,6 +387,10 @@ describe('direct Knowledge saved-source lineage', () => {
       const command = {
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
+        baseRevision: (
+          await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).notebookRevision,
+        knowledgePageId: 'reading-room-hours',
         kind: 'project-context' as const,
         title: 'Reading room hours',
         content: 'The reading room opens at eight.',
@@ -403,16 +477,28 @@ describe('direct Knowledge saved-source lineage', () => {
       const before = await f.client.operations['knowledge.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
-      await expect(
-        f.client.operations['knowledge.create']({
-          workspaceId: DEMO_WORKSPACE_ID,
-          requestId: crypto.randomUUID(),
-          kind: 'project-context',
-          title: 'Must not publish',
-          content: 'The reading room opens at eight.',
-          sourceReferences: [reference],
-        })
-      ).rejects.toMatchObject({ status: 400, code: 'invalid_request' });
+      const requestId = crypto.randomUUID();
+      const scope = { workspaceId: DEMO_WORKSPACE_ID, actorId: LOCAL_USER_ID };
+      expect(f.store.getCommandRequest('knowledge.create', requestId, scope)).toBeNull();
+      const refusal = await f.client.operations['knowledge.create']({
+        workspaceId: DEMO_WORKSPACE_ID,
+        requestId,
+        baseRevision: before.notebookRevision,
+        knowledgePageId: 'must-not-publish',
+        kind: 'project-context',
+        title: 'Must not publish',
+        content: 'The reading room opens at eight.',
+        sourceReferences: [reference],
+      }).catch((error: unknown) => error);
+      // Missing/corrupt immutable captured bytes require recovery; invalid selection remains a request error.
+      expect(refusal).toMatchObject(
+        condition === 'changed-bytes' || condition === 'missing-bytes'
+          ? { status: 409, code: 'recovery_required' }
+          : { status: 400, code: 'invalid_request' }
+      );
+      expect(JSON.stringify(refusal)).not.toContain('The reading room opens at eight.');
+      expect(JSON.stringify(refusal)).not.toContain('Changed captured bytes.');
+      expect(f.store.getCommandRequest('knowledge.create', requestId, scope)).toBeNull();
       expect(
         await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
       ).toEqual(before);
@@ -457,6 +543,10 @@ describe('direct Knowledge saved-source lineage', () => {
       const command = {
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
+        baseRevision: (
+          await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).notebookRevision,
+        knowledgePageId: 'authorized-source-link',
         kind: 'project-context' as const,
         title: 'Authorized source link',
         content: 'The room opens at eight.',

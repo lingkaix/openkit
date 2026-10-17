@@ -2,7 +2,6 @@ import {
   ApiCallError,
   type CoreClient,
   createRequestId,
-  type KnowledgeEntry,
   type WorkspaceRecord,
 } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -49,7 +48,9 @@ export type WorkspaceWorkerRow = Awaited<
   ReturnType<CoreClient['operations']['worker.list']>
 >['items'][number];
 /** Knowledge entry from `operations['knowledge.list']`. */
-export type KnowledgeItem = KnowledgeEntry;
+export type KnowledgeItem = Awaited<
+  ReturnType<CoreClient['operations']['knowledge.list']>
+>['items'][number];
 /** Bounded Knowledge Store projection returned by the three live list reads. */
 export type KnowledgeStoreProjection = {
   sources: Awaited<ReturnType<CoreClient['operations']['knowledge.source.list']>>['items'];
@@ -251,8 +252,7 @@ export function useKnowledge(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledge(workspaceId ?? ''),
-    queryFn: async () =>
-      (await client.operations['knowledge.list']({ workspaceId: workspaceId as string })).items,
+    queryFn: () => client.operations['knowledge.list']({ workspaceId: workspaceId as string }),
     enabled: Boolean(workspaceId),
   });
 }
@@ -490,6 +490,9 @@ export function useSubmitKnowledgeProposalDecision() {
       client.operations['knowledge.proposal.decide']({
         workspaceId: input.source.workspaceId,
         proposalId: input.source.knowledgeProposalId,
+        proposalDigest: input.source.proposalDigest,
+        baseRevision: input.source.baseRevision,
+        candidateRevision: input.source.candidateRevision,
         decision: input.decision,
         requestId: createRequestId(),
       }),

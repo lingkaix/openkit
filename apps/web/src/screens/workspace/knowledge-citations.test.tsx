@@ -18,6 +18,7 @@ const OWNER_USER_ID = allocateEntityId('usr');
 const QUESTION = 'When does the reading room open?';
 const PAGE = {
   id: 'reading-room',
+  contentDigest: `sha256:${'a'.repeat(64)}`,
   kind: 'preference' as const,
   title: 'Reading room opening hours',
   content: 'The reading room opens at 09:00 on weekdays. Bring the blue access card.',
@@ -27,6 +28,7 @@ const PAGE = {
 const UNRELATED_PAGE = {
   ...PAGE,
   id: 'unrelated-page',
+  contentDigest: `sha256:${'b'.repeat(64)}`,
   title: 'Unrelated current page title',
   content: 'Unrelated current page content must not become a citation.',
 };
@@ -85,7 +87,7 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
           break;
         case operationHttpPath('knowledge.list'):
           if (pageRead) return pageRead();
-          body = { items: [UNRELATED_PAGE, PAGE] };
+          body = { notebookRevision: 'notebook-fixture-revision', items: [UNRELATED_PAGE, PAGE] };
           break;
         case operationHttpPath('knowledge.indexes'):
           body = {
@@ -252,9 +254,11 @@ describe('Knowledge Manager answer citations', () => {
       });
     });
 
-    expect(fixture.queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_ID))).toContainEqual(
-      PAGE
-    );
+    expect(
+      fixture.queryClient.getQueryData<{ items: (typeof PAGE)[] }>(
+        workspaceKeys.knowledge(WORKSPACE_ID)
+      )?.items
+    ).toContainEqual(PAGE);
     await waitFor(() => expect(within(manager).queryByRole('link')).not.toBeInTheDocument());
     expect(within(manager).getByText('Current content unavailable.')).toBeVisible();
   });

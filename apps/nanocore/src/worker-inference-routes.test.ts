@@ -58,6 +58,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -363,6 +364,10 @@ function createWorkerInferenceRouteFixture(
   if (options.persistedTurn && appCoreDb) {
     const persisted = new FsStore({ dataRoot: appCoreDb.dataRoot });
     persisted.importWorkspaceSnapshot({
+      ...notebookImportFixture({
+        workspaceId: store.getWorkspace(turn.workspaceId).id,
+        knowledge: [],
+      }),
       workspace: store.getWorkspace(turn.workspaceId),
       threads: [store.getThread(turn.workspaceId, turn.threadId)],
       turns: [turn],
