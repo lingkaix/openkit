@@ -1,7 +1,10 @@
 import {
   ArtifactIdSchema,
+  ArtifactInlineContentSchema,
   ArtifactMediaTypeSchema,
   ArtifactReviewIdSchema,
+  ArtifactVersionRecordSchema,
+  ArtifactVersionSchema,
   ItemIdSchema,
   MAX_ARTIFACT_FILE_BYTES,
   MaterialIdSchema,
@@ -24,6 +27,50 @@ const contentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const requestIdSchema = opaqueIdSchema.refine((value) => !value.startsWith('import-lineage:'), {
   message: 'requestId uses a reserved import-lineage prefix',
 });
+
+/** Retained immutable Artifact history in increasing version order. */
+export const ListArtifactVersionsResponseSchema = z.object({
+  items: z.array(ArtifactVersionSchema),
+});
+
+/** Exact historical Artifact state and the immutable lineage of that version. */
+export const ReadArtifactVersionResponseSchema = ArtifactVersionRecordSchema;
+
+/** One manual inline revision, communicated by a new Core-local Turn in the selected idle Thread. */
+export const CommitArtifactVersionRequestSchema = z
+  .object({
+    requestId: requestIdSchema,
+    expectedArtifactVersion: z.number().int().positive(),
+    title: z.string().min(1),
+    summary: z.string().nullable(),
+    content: ArtifactInlineContentSchema.strict(),
+  })
+  .strict();
+
+/** Metadata for one streamed arbitrary-byte revision of the same Artifact. */
+export const CommitArtifactFileVersionRequestSchema = CommitArtifactVersionRequestSchema.omit({
+  content: true,
+}).extend({
+  mediaType: ArtifactMediaTypeSchema,
+  byteLength: z.number().int().min(0).max(MAX_ARTIFACT_FILE_BYTES),
+  contentDigest: contentDigestSchema,
+});
+
+/** Exact version result shared by inline and streamed publication. */
+export const CommitArtifactVersionResponseSchema = ArtifactVersionRecordSchema;
+
+/** Public retained-version inventory. */
+export type ListArtifactVersionsResponse = z.infer<typeof ListArtifactVersionsResponseSchema>;
+/** Public exact-version read result. */
+export type ReadArtifactVersionResponse = z.infer<typeof ReadArtifactVersionResponseSchema>;
+/** Public inline version command. */
+export type CommitArtifactVersionRequest = z.infer<typeof CommitArtifactVersionRequestSchema>;
+/** Public streamed version metadata. */
+export type CommitArtifactFileVersionRequest = z.infer<
+  typeof CommitArtifactFileVersionRequestSchema
+>;
+/** Public exact committed version result. */
+export type CommitArtifactVersionResponse = z.infer<typeof CommitArtifactVersionResponseSchema>;
 
 /** Material kinds supported by the app-local Workspace authority. */
 const materialKindSchema = z.enum(['markdown', 'text']);
