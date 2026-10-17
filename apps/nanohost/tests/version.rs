@@ -6,6 +6,7 @@ fn version_exits_before_runtime_environment_is_read() {
         .arg("--version")
         .env_clear()
         .env("TOKIO_WORKER_THREADS", "0")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", "invalid-export-endpoint")
         .output()
         .expect("run nanohost --version");
 

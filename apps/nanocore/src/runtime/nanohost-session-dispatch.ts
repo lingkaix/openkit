@@ -7,6 +7,7 @@ import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
 } from '@openkit/config-schema';
+import type { Context as TelemetryContext } from '@opentelemetry/api';
 import type { Context, Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
 import { asApiError } from '../api-errors.js';
@@ -20,6 +21,11 @@ import { OperationError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
 import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
+import {
+  captureTelemetryContext,
+  injectTelemetryContext,
+  recordNanoHostEffectAcceptance,
+} from '../telemetry.js';
 import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
@@ -265,13 +271,15 @@ export interface NanoHostSessionDispatch {
   /** Polls one fixed operation path on the authoritative physical connection. */
   poll(
     physicalConnection: object,
-    operation: NanoHostEffectOperation
+    operation: NanoHostEffectOperation,
+    telemetryHeaders?: Record<string, string>
   ): Promise<Record<string, unknown> | null>;
   /** Accepts one correlated success or exact typed failure on its fixed operation path. */
   result(
     physicalConnection: object,
     operation: NanoHostEffectOperation,
-    result: Readonly<Record<string, unknown>>
+    result: Readonly<Record<string, unknown>>,
+    telemetryHeaders?: Headers
   ): Promise<void>;
   /** Accepts one raw correlated file export on its fixed result path. */
   fileExportResult(physicalConnection: object, request: Request): Promise<void>;
@@ -312,6 +320,8 @@ export interface NanoHostSessionDispatch {
 
 /** One process-local pending effect owned by the dispatcher. */
 interface PendingNanoHostEffect {
+  /** Initiating context captured at enqueue, outside exact command and result identity. */
+  readonly telemetryContext?: TelemetryContext | undefined;
   /** Caller has left; accepted file results remain owned solely for verified disposal. */
   fileExportAbandoned?: boolean;
   fileExportWaitCleanup?: () => void;
@@ -559,6 +569,7 @@ export function createNanoHostSessionDispatch(
           const collectionAbort =
             operation === 'workspace.collect' ? new AbortController() : undefined;
           pendingEffects.set(operation, {
+            telemetryContext: captureTelemetryContext(),
             ...(collectionAbort ? { collectionAbort } : {}),
             accepted: false,
             ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
@@ -668,7 +679,7 @@ export function createNanoHostSessionDispatch(
       return resultPromise;
     },
 
-    async poll(physicalConnection, operation) {
+    async poll(physicalConnection, operation, telemetryHeaders) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
       const pollingReadiness = readyPhysicalConnections.get(physicalConnection);
       if (!pollingReadiness) {
@@ -749,6 +760,7 @@ export function createNanoHostSessionDispatch(
       pending.accepted = true;
       pending.acceptedConnection = physicalConnection;
       const command = { ...pending.command };
+      if (telemetryHeaders) injectTelemetryContext(pending.telemetryContext, telemetryHeaders);
       completedEffectPollConnections.add(physicalConnection);
       if (operation === 'image.build') {
         const { dockerfile: _dockerfile, ...metadata } = command;
@@ -829,7 +841,7 @@ export function createNanoHostSessionDispatch(
       currentReadiness = acceptedReadiness;
     },
 
-    async result(physicalConnection, operation, result) {
+    async result(physicalConnection, operation, result, telemetryHeaders) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
       if (operation === 'workspace.collect') {
         const pending = pendingEffects.get(operation);
@@ -977,6 +989,7 @@ export function createNanoHostSessionDispatch(
           requestId,
           resultJson,
         });
+        recordNanoHostEffectAcceptance(telemetryHeaders);
         pending.reject(effectTransportError(500, 'NanoHost effect failed: effect_failed.'));
         return;
       }
@@ -1017,6 +1030,7 @@ export function createNanoHostSessionDispatch(
           ? { redeliveredConnection: physicalConnection }
           : {}),
       });
+      recordNanoHostEffectAcceptance(telemetryHeaders);
       pending.resolve(
         pending.resultOnlyGroup ? { kind: operation, result: resultBody } : resultBody
       );
@@ -1109,6 +1123,7 @@ export function createNanoHostSessionDispatch(
       clearTimeout(pending.collectionTimeout);
       pending.command = null;
       pendingEffects.delete('workspace.collect');
+      recordNanoHostEffectAcceptance(request.headers);
       pending.resolve({
         outcome: 'candidate',
         head,
@@ -1162,6 +1177,7 @@ export function createNanoHostSessionDispatch(
         requestId: metadata.requestId,
         resultJson: JSON.stringify(metadata),
       });
+      recordNanoHostEffectAcceptance(request.headers);
       if (pending.fileExportAbandoned) return;
       pending.resolve({
         byteLength: metadata.byteLength,
@@ -1685,12 +1701,15 @@ export function registerNanoHostSessionEffectRoutes(
         }
         await readBoundedJsonObject(context.req.raw);
         const physicalConnection = requirePhysicalConnection(context.env);
-        const command = await input.dispatch.poll(physicalConnection, operation);
+        const telemetryHeaders: Record<string, string> = {};
+        const command = await input.dispatch.poll(physicalConnection, operation, telemetryHeaders);
+        for (const [name, value] of Object.entries(telemetryHeaders)) context.header(name, value);
         if (operation === 'reference.import' && command) {
           const file = requireReferenceImportCommand(command, readRequestId(command));
           return createChunkedFileDataResponse(
             file.body,
             {
+              ...telemetryHeaders,
               'content-length': String(file.byteLength),
               'content-type': FILE_DATA_CONTENT_TYPE,
               [FILE_DATA_HEADERS.byteLength]: String(file.byteLength),
@@ -1752,7 +1771,12 @@ export function registerNanoHostSessionEffectRoutes(
             );
           }
           const result = await readBoundedJsonObject(context.req.raw);
-          await input.dispatch.result(physicalConnection, operation, result);
+          await input.dispatch.result(
+            physicalConnection,
+            operation,
+            result,
+            context.req.raw.headers
+          );
           return context.body(null, 204);
         }
         if (operation === 'file.export') {
@@ -1771,7 +1795,7 @@ export function registerNanoHostSessionEffectRoutes(
           operation === 'workspace.collect'
             ? await readWorkspaceCollectionJson(context.req.raw, collectionDelivery?.signal)
             : await readBoundedJsonObject(context.req.raw);
-        await input.dispatch.result(physicalConnection, operation, result);
+        await input.dispatch.result(physicalConnection, operation, result, context.req.raw.headers);
         return context.body(null, 204);
       } catch (error) {
         if (operation === 'workspace.collect') {
