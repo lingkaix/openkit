@@ -7037,6 +7037,48 @@ describe('exact Review candidate draft handoff', () => {
     title: 'Reviewed candidate',
   };
 
+  it('pins a retained earlier candidate after a newer head exists and waits for explicit Send', async () => {
+    const user = userEvent.setup();
+    const earlier = { ...candidate, artifactVersion: 1 };
+    const readExact = vi.fn().mockResolvedValue({
+      artifact: { ...artifact, version: 1 },
+      version: {
+        workspaceId: candidate.workspaceId,
+        artifactId: candidate.artifactId,
+        artifactVersion: 1,
+        contentDigest: candidate.contentDigest,
+      },
+    });
+    const submit = vi.fn().mockRejectedValue(new Error('Response unavailable'));
+    renderApp(
+      path,
+      makeClient({
+        'artifact.read': vi.fn().mockResolvedValue(artifact),
+        'artifact.version-read': readExact,
+        'artifact.list': vi.fn().mockResolvedValue({ items: [artifact] }),
+        'conversation.submit': submit,
+      }),
+      undefined,
+      { candidateInput: earlier }
+    );
+    await screen.findByRole('button', { name: `Remove ${candidate.artifactId}` });
+    expect(readExact).toHaveBeenCalledWith({
+      workspaceId: earlier.workspaceId,
+      artifactId: earlier.artifactId,
+      artifactVersion: 1,
+    });
+    expect(submit).not.toHaveBeenCalled();
+    await user.type(
+      screen.getByRole('textbox', { name: 'Message' }),
+      'Continue the earlier result.'
+    );
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit.mock.calls[0][0]).toMatchObject({
+      artifactRefs: [{ artifactId: earlier.artifactId, artifactVersion: 1 }],
+    });
+  });
+
   it('adds only the chosen exact candidate to an explicit next Send and retains uncertain retry', async () => {
     const user = userEvent.setup();
     const read = vi.fn().mockResolvedValue(artifact);
