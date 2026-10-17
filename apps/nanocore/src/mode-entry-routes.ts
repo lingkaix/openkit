@@ -5037,8 +5037,26 @@ export function createTaskStartOperation({
               try {
                 await closeout;
               } catch {
-                // Execution refusal also rejects this observer. Durable replay below still
-                // requires the complete terminal tuple, including proven backend cleanup.
+                if (!coreDb || turn.status !== 'failed')
+                  throw directTaskModeRecoveryError('The original Task worker closeout failed.');
+                const workspaceDb = repositoryWorkspaceDb(workspaceId);
+                try {
+                  const checkpoint = getWorkerCheckpoint(
+                    workspaceDb,
+                    workspaceId,
+                    threadId,
+                    turnId
+                  );
+                  // Only proved execution refusal may reach durable replay after this observer rejects; a started closeout retains its own failure.
+                  if (
+                    checkpoint?.stage !== 'running_worker' ||
+                    checkpoint.stopReason !== null ||
+                    !hasWorkerCheckpointNeverSubmittedProof(coreDb, store, workspaceDb, checkpoint)
+                  )
+                    throw directTaskModeRecoveryError('The original Task worker closeout failed.');
+                } finally {
+                  workspaceDb.sqlite.close();
+                }
               }
             }
           }
