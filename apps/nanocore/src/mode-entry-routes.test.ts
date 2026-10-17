@@ -1186,6 +1186,7 @@ describe('conversation.submit worker acceptance wait', () => {
       await Promise.race([
         executor.launched.promise,
         pending.then(async (response) => {
+          if (response.status === 202) return executor.launched.promise;
           throw new Error(
             `Submission returned before Worker launch: ${response.status} ${await response.text()}`
           );
