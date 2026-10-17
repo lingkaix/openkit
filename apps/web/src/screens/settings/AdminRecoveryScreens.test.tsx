@@ -175,9 +175,9 @@ describe('Web admin recovery and user disable', () => {
         screen.getByLabelText('Confirm workspace ID'),
         RECOVERY.recovery.workspaceId
       );
-      const editor = screen.getByRole('button', { name: 'Add myself as editor' });
+      const member = screen.getByRole('button', { name: 'Add myself as member' });
       const transfer = screen.getByRole('button', { name: 'Transfer ownership to myself' });
-      expect(editor).toBeEnabled();
+      expect(member).toBeEnabled();
       expect(transfer).toBeEnabled();
       const mutationCount = queryClient.getMutationCache().getAll().length;
 
@@ -188,9 +188,9 @@ describe('Web admin recovery and user disable', () => {
       await waitFor(() =>
         expect(queryClient.getQueryState(authorityKey)?.fetchStatus).toBe('paused')
       );
-      await waitFor(() => expect(editor).toBeDisabled());
+      await waitFor(() => expect(member).toBeDisabled());
       expect(transfer).toBeDisabled();
-      await userEvent.click(editor);
+      await userEvent.click(member);
       await userEvent.click(transfer);
       expect(queryClient.getMutationCache().getAll()).toHaveLength(mutationCount);
       expect(client.operations['workspace.access-recover']).not.toHaveBeenCalled();

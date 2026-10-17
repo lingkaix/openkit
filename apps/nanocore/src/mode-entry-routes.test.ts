@@ -4074,7 +4074,8 @@ function observeExecutionAttempts(
 function assistantWiringFixture(
   selected = false,
   skillBytes: Buffer = Buffer.from('# Original retained entry guidance.\n'),
-  memberCredential = false
+  memberCredential = false,
+  supportBytes?: Buffer
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-entry-wiring-'));
   const coreDb = openCoreDb(dataRoot);
@@ -4123,8 +4124,21 @@ function assistantWiringFixture(
           {
             kind: 'file',
             path: 'SKILL.md',
-            contentBase64: skillBytes.toString('base64'),
+            contentBase64: Buffer.concat([
+              Buffer.from('---\nname: alpha\ndescription: Fixture selected Skill.\n---\n'),
+              skillBytes,
+            ]).toString('base64'),
           },
+          // Keep the entrypoint valid while testing arbitrary retained supporting files.
+          ...(supportBytes
+            ? [
+                {
+                  kind: 'file' as const,
+                  path: 'read-target.bin',
+                  contentBase64: supportBytes.toString('base64'),
+                },
+              ]
+            : []),
         ],
       })
     : undefined;
@@ -4713,7 +4727,9 @@ describe('#144 real Assistant command wiring', () => {
               {
                 kind: 'file',
                 path: 'SKILL.md',
-                contentBase64: Buffer.from('# Replacement guidance.\n').toString('base64'),
+                contentBase64: Buffer.from(
+                  '---\nname: alpha\ndescription: Fixture replacement Skill.\n---\n# Replacement guidance.\n'
+                ).toString('base64'),
               },
             ],
           });
@@ -5237,7 +5253,7 @@ describe('#144 real Assistant command wiring', () => {
         : condition === 'oversized text'
           ? Buffer.from('x'.repeat(64 * 1024))
           : undefined;
-    const f = assistantWiringFixture(true, bytes);
+    const f = assistantWiringFixture(true, undefined, false, bytes);
     const native = observePrivateSkillInvocation();
     f.createResponses.mockImplementationOnce(async () => {
       const file = join(
@@ -5250,7 +5266,7 @@ describe('#144 real Assistant command wiring', () => {
         'SKILL.md'
       );
       if (condition === 'changed bytes') fs.writeFileSync(file, 'private-source-canary');
-      return selectedSkillCall(f);
+      return selectedSkillCall(f, condition === 'changed bytes' ? {} : { path: 'read-target.bin' });
     });
     try {
       const response = await f.submit();
