@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { deriveEntityId } from '@openkit/protocol';
+import { ApiErrorSchema, deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -113,10 +113,10 @@ async function call(f: Owners, operation: string, input: Record<string, unknown>
     body: JSON.stringify({ workspaceId: f.workspaceId, ...body }),
   });
   const result = await response.json();
-  if (response.status !== 200)
-    throw Object.assign(new Error(JSON.stringify(result)), result.error, {
-      status: response.status,
-    });
+  if (response.status !== 200) {
+    const failure = ApiErrorSchema.parse(result);
+    throw Object.assign(new Error(failure.message), failure, { status: response.status });
+  }
   return result;
 }
 
