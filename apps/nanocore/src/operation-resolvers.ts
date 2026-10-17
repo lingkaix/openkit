@@ -234,6 +234,7 @@ export function admitOperation(
           evaluateServerAccess({
             userId: entry.actor.userId,
             operation: definition.policyOperation,
+            family: definition.target.kind === 'server' ? definition.target.family : undefined,
           }).effect !== 'allow'
         )
           throw denied();

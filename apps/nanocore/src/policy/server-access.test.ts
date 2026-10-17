@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import * as policyKernel from '@openkit/policy-kernel';
+import { describe, expect, it, vi } from 'vitest';
 import {
   evaluateAdministratorWorkspaceAccess,
   evaluateServerAccess,
@@ -12,9 +13,9 @@ describe('primary identity-scope Policy admission', () => {
     expect(server.effect).toBe('allow');
     expect(server.trace).toMatchObject({
       user: `user:${userId}`,
-      targetClosure: expect.arrayContaining(['object:["server","server"]']),
+      targetClosure: expect.arrayContaining(['object:server:administration']),
       requiredAccessRights: ['ar:audit-read'],
-      matchedAssociations: ['assoc:server-eligible-actor'],
+      matchedAssociations: ['assoc:server-administrator:administration'],
     });
     const user = evaluateUserAccess({ userId, operation: 'invitation.respond' });
     expect(user.effect).toBe('allow');
@@ -34,6 +35,51 @@ describe('primary identity-scope Policy admission', () => {
       requiredAccessRights: ['ar:workspace-read'],
       matchedAssociations: ['assoc:workspace-eligible-actor'],
     });
+  });
+
+  it.each([
+    { family: 'administration', operation: 'api.call', right: 'ar:core-api-call' },
+    { family: 'mcp', operation: 'api.call', right: 'ar:core-api-call' },
+    { family: 'knowledge', operation: 'knowledge.read', right: 'ar:knowledge-read' },
+    { family: 'knowledge', operation: 'knowledge.write', right: 'ar:knowledge-write' },
+  ] as const)('evaluates current administrator allow and deny for $family/$operation', (input) => {
+    const request = { ...input, userId: 'current-user' };
+    const allowed = evaluateServerAccess(request);
+    expect(allowed.effect).toBe('allow');
+    expect(allowed.trace).toMatchObject({
+      user: 'user:current-user',
+      userClosure: expect.arrayContaining(['ua:server-administrator', 'pc:server']),
+      targetClosure: expect.arrayContaining([
+        `object:server:${input.family}`,
+        `oa:server-${input.family}`,
+        'pc:server',
+      ]),
+      requiredAccessRights: [input.right],
+      matchedAssociations: [`assoc:server-administrator:${input.family}`],
+    });
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const evaluate = vi
+      .spyOn(policyKernel, 'evaluateAccess')
+      .mockImplementation((policy, access) =>
+        actualEvaluate({ ...policy, associations: [] }, access)
+      );
+    try {
+      const denied = evaluateServerAccess(request);
+      expect(denied.effect).toBe('deny');
+      expect(denied.trace.targetClosure).toContain(`object:server:${input.family}`);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+    } finally {
+      evaluate.mockRestore();
+    }
+  });
+
+  it('rejects an unknown family and does not borrow another family association', () => {
+    const input = { userId: 'current-user', operation: 'api.call', family: 'unknown' };
+    expect(evaluateServerAccess(input).effect).toBe('deny');
+    const mcp = { userId: 'current-user', operation: 'knowledge.write', family: 'mcp' };
+    expect(evaluateServerAccess(mcp).effect).toBe('deny');
+    const knowledge = { userId: 'current-user', operation: 'api.call', family: 'knowledge' };
+    expect(evaluateServerAccess(knowledge).effect).toBe('deny');
   });
 
   it('does not grant unknown operations or the separately assigned maintenance effect', () => {
