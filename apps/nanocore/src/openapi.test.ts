@@ -2150,7 +2150,7 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
       ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(23);
+    expect(Object.keys(definitions)).toHaveLength(27);
     for (const [id, definition] of Object.entries(definitions)) {
       const route = document.paths[operationHttpPath(id)] as unknown as {
         post: Record<string, unknown>;
