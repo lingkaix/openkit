@@ -54,6 +54,7 @@ import {
   createSchedulerAdmissionEntry,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
@@ -131,7 +132,8 @@ function fixture(targetWorkspaceId?: string) {
     ...(targetWorkspaceId ? { targetWorkspaceId } : {}),
   };
   const requests: OpenAICompatibleResponsesRequest[] = [];
-  const executor = new SimulatedTurnExecutor({ coreDb });
+  const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
+  const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
   recordTestNativeRuntimeTarget(coreDb);
   // Capacity is the external held boundary. Readiness and queued admission use their real owners.
   const preparation = vi
@@ -165,6 +167,7 @@ function fixture(targetWorkspaceId?: string) {
     createApp({
       coreDb,
       dataRoot,
+      fileAdmission,
       store: ownerStore,
       turnExecutor: executor,
       agentManifests: [preferred.manifest, selected.manifest],
@@ -219,6 +222,7 @@ function fixture(targetWorkspaceId?: string) {
   return {
     dataRoot,
     coreDb,
+    fileAdmission,
     store,
     workspace,
     thread,
@@ -715,7 +719,7 @@ describe('Assistant semantic Task handoff', () => {
         checkpoint: getWorkerCheckpoint(f.workspaceDb, f.workspace.id, receiving.id, worker.id)!,
       })
     ).resolves.toBe('live');
-    const prepared = prepareWorkerTurnContextPackage(
+    const prepared = await prepareWorkerTurnContextPackage(
       f.coreDb,
       f.workspaceDb,
       reopened,
@@ -727,7 +731,8 @@ describe('Assistant semantic Task handoff', () => {
         workspaceId: f.workspace.id,
         threadId: receiving.id,
         turnId: worker.id,
-      }
+      },
+      f.fileAdmission
     );
     expect(prepared.knowledgeSelectionInput).toBeNull();
     expect(prepared.packageFiles.knowledgeSelections).toEqual([]);
@@ -763,15 +768,16 @@ describe('Assistant semantic Task handoff', () => {
         .prepare('UPDATE pending_requests SET answer_map_json = ? WHERE request_id = ?')
         .run(JSON.stringify({ handoff: ['Do not start'] }), request.userInputRequestId);
       expect(authority.readAssistantTaskHandoffSource?.(sourceBinding)).toBeNull();
-      expect(() =>
+      await expect(
         prepareWorkerTurnContextPackage(
           f.coreDb,
           f.workspaceDb,
           reopened,
           getWorkerCheckpoint(f.workspaceDb, f.workspace.id, receiving.id, worker.id)!,
-          { ...sourceBinding, agentSessionId: allocateEntityId('as') }
+          { ...sourceBinding, agentSessionId: allocateEntityId('as') },
+          f.fileAdmission
         )
-      ).toThrow('Task Knowledge selection authority is contradictory');
+      ).rejects.toThrow('Task Knowledge selection authority is contradictory');
       expect(writes).not.toHaveBeenCalled();
     } finally {
       f.workspaceDb.sqlite

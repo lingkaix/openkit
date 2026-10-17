@@ -457,6 +457,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
   it('accounts summary production and the answer through one captured Gateway environment and budget', async () => {
     const f = await fixture(false);
     f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
+    // Keep history large enough to require a summary with the local bytes/3 estimate.
     for (let index = 0; index < 8; index += 1) {
       const earlier = f.store.createTurn(
         f.workspaceId,
@@ -474,7 +475,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           turnId: earlier.id,
           type,
           status: 'completed',
-          text: `${type} ${index}: ${'x'.repeat(800)}`,
+          text: `${type} ${index}: ${'x'.repeat(2400)}`,
           ...(type === 'user-message'
             ? { actor: { kind: 'user', id: f.actor.userId } as const }
             : {}),

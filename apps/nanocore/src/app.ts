@@ -1800,6 +1800,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerWorkspaceTransferRoutes({
     app,
+    fileAdmission,
     coreDb: options.coreDb,
     dataRoot,
     requestStore,

@@ -21,6 +21,7 @@ import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -157,6 +158,7 @@ function createFixture() {
 
   registerOperationJsonRoutes({
     app,
+    fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n),
     coreDb,
     store,
     automationStore,

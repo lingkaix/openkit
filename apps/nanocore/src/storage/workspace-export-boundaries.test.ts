@@ -41,6 +41,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -639,8 +640,10 @@ describe('workspace export route boundaries', () => {
     ).toBe(true);
 
     const targetDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-unicode-target-'));
+    const fileAdmission = new FileStorageAdmission(targetDataRoot, () => 0n);
     const targetResponse = await createApp({
       dataRoot: targetDataRoot,
+      fileAdmission,
       store: createBoundaryStore(targetDataRoot),
     }).request('/api/app/workspace-archives/import-dry-run', {
       body: archive,
@@ -669,7 +672,8 @@ describe('workspace export route boundaries', () => {
         headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
         body: unicodeArchive,
       }),
-      targetDataRoot
+      targetDataRoot,
+      fileAdmission
     );
     try {
       expect(readFileSync(join(staged.exportRoot, unicodePath))).toEqual(exactBytes);
@@ -1182,7 +1186,11 @@ describe('workspace archive import boundaries', () => {
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-    const stagedPromise = stageWorkspaceArchive(request, dataRoot);
+    const stagedPromise = stageWorkspaceArchive(
+      request,
+      dataRoot,
+      new FileStorageAdmission(dataRoot, () => 0n)
+    );
     const requestsRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
     const requestEntries = readdirSync(requestsRoot);
 
@@ -1334,9 +1342,9 @@ describe('workspace archive import boundaries', () => {
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-    await expect(stageWorkspaceArchive(request, dataRoot)).rejects.toThrow(
-      'injected upstream abort'
-    );
+    await expect(
+      stageWorkspaceArchive(request, dataRoot, new FileStorageAdmission(dataRoot, () => 0n))
+    ).rejects.toThrow('injected upstream abort');
     expect(openArchiveStagingDescriptors(dataRoot)).toEqual([]);
   });
 
