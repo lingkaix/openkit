@@ -50,7 +50,7 @@ test('keeps files as local drafts and publishes exact originals only on the rece
   const before = await artifactInventory();
   await page.goto(`${stack.webUrl}/chat`);
   const navigation = page.getByRole('navigation', { name: 'Primary workspace navigation' });
-  await navigation.getByRole('button', { name: 'Quick Chat', exact: true }).click();
+  await navigation.getByRole('button', { name: 'Personal', exact: true }).click();
   await page.getByRole('menuitem', { name: workspace!.name, exact: true }).click();
   await expect(
     navigation.getByRole('button', { name: workspace!.name, exact: true })
