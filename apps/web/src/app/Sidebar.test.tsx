@@ -1,7 +1,7 @@
 import type { ConversationNavigationResponse } from '@openkit/app-api-schemas';
 import type { CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,54 @@ import { Sidebar } from './Sidebar';
 function Location() {
   const location = useLocation();
   return <output aria-label="Location">{`${location.pathname}${location.search}`}</output>;
+}
+
+/** Keeps Assistant entry tests on the production Sidebar and current selected-Workspace admission. */
+function renderAssistantNavigation(createThread: CoreClient['operations']['thread.create']) {
+  const projectId = 'ws_019a0000-0000-7000-8000-000000000101';
+  useWorkspaceStore.setState({ currentWorkspaceId: projectId });
+  const client = {
+    core: {},
+    operations: {
+      'workspace.list': async () => ({
+        items: [
+          { id: projectId, name: 'Project alpha', kind: 'general' },
+          {
+            id: 'ws_019a0000-0000-7000-8000-000000000102',
+            name: 'Personal notes',
+            kind: 'quick-chat',
+          },
+        ].map((workspace) => ({
+          workspace,
+          membershipStatus: 'active',
+          accessCause: 'membership',
+          effectiveRole: 'owner',
+          ownerUserId: 'usr_019a0000-0000-7000-8000-000000000104',
+          membershipRevision: 1,
+          registryRevision: 1,
+        })),
+      }),
+      'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+      'thread.create': createThread,
+      'thread.update': vi.fn(),
+      'conversation.submit': vi.fn(),
+      'turn.start': vi.fn(),
+    },
+  } as unknown as CoreClient;
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <CoreClientProvider client={client}>
+        <MemoryRouter>
+          <Sidebar />
+          <Location />
+        </MemoryRouter>
+      </CoreClientProvider>
+    </QueryClientProvider>
+  );
+  return { client, queryClient };
 }
 
 /** Uses the real submission hook so pending progress is scoped to the originating conversation. */
@@ -76,6 +124,107 @@ function Lifecycle() {
 beforeEach(() => useWorkspaceStore.setState({ currentWorkspaceId: null }));
 
 describe('conversation navigation sidebar', () => {
+  it('opens the returned Assistant history without a message and retries the same request before reaching Members', async () => {
+    const user = userEvent.setup();
+    const thread = {
+      id: 'th_019a0000-0000-7000-8000-000000000103',
+      workspaceId: 'ws_019a0000-0000-7000-8000-000000000101',
+      name: 'Retained Assistant name',
+      preview: 'Retained history',
+      status: 'archived',
+      visibility: 'private',
+      privateOwnerUserId: 'usr_019a0000-0000-7000-8000-000000000104',
+      entryPath: 'conversation',
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
+    } as const;
+    let rejectOpening!: (reason: Error) => void;
+    const pending = new Promise<typeof thread>((_, reject) => {
+      rejectOpening = reject;
+    });
+    const create = vi
+      .fn<CoreClient['operations']['thread.create']>()
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue(thread);
+    const { client, queryClient } = renderAssistantNavigation(create);
+    const assistant = await screen.findByRole('button', { name: 'Assistant' });
+    expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Members' })).toBeVisible();
+    await user.click(assistant);
+    expect(await screen.findByText('Opening Assistant…')).toBeVisible();
+    expect(assistant).toBeDisabled();
+    await act(async () => rejectOpening(new Error('private-opening-error')));
+    const error = await screen.findByRole('alert');
+    expect(error).toHaveTextContent("Couldn't open Assistant.");
+    expect(error).not.toHaveTextContent('private-opening-error');
+    expect(assistant).toBeDisabled();
+    await user.click(within(error).getByRole('button', { name: 'Try again' }));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Location')).toHaveTextContent(
+        `/chat/${thread.workspaceId}/${thread.id}`
+      )
+    );
+    expect(create).toHaveBeenCalledTimes(2);
+    const first = create.mock.calls[0]![0];
+    expect(first).toEqual({
+      workspaceId: thread.workspaceId,
+      name: 'Assistant',
+      requestId: expect.any(String),
+    });
+    expect(first.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(create.mock.calls[1]![0]).toEqual(first);
+    expect(thread).toMatchObject({ status: 'archived', name: 'Retained Assistant name' });
+    expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+    expect(client.operations['turn.start']).not.toHaveBeenCalled();
+    expect(client.operations['thread.update']).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Members' }));
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/account');
+    queryClient.clear();
+  });
+
+  it('drops a departed Workspace opening result and omits Members for the personal Workspace', async () => {
+    const user = userEvent.setup();
+    let finishOpening!: (
+      thread: Awaited<ReturnType<CoreClient['operations']['thread.create']>>
+    ) => void;
+    const pending = new Promise<Awaited<ReturnType<CoreClient['operations']['thread.create']>>>(
+      (resolve) => {
+        finishOpening = resolve;
+      }
+    );
+    const create = vi.fn<CoreClient['operations']['thread.create']>().mockReturnValueOnce(pending);
+    const { queryClient } = renderAssistantNavigation(create);
+    await user.click(await screen.findByRole('button', { name: 'Assistant' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Project alpha' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Personal notes' }));
+    expect(screen.queryByRole('button', { name: 'Members' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assistant' })).toBeEnabled();
+    await act(async () => {
+      finishOpening({
+        id: 'th_019a0000-0000-7000-8000-000000000103',
+        workspaceId: 'ws_019a0000-0000-7000-8000-000000000101',
+        name: 'Assistant',
+        preview: 'History',
+        status: 'active',
+        visibility: 'private',
+        privateOwnerUserId: 'usr_019a0000-0000-7000-8000-000000000104',
+        entryPath: 'conversation',
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      });
+      await pending;
+    });
+    await waitFor(() =>
+      expect(queryClient.getMutationCache().getAll()[0]?.state.status).toBe('success')
+    );
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(
+      'ws_019a0000-0000-7000-8000-000000000102'
+    );
+    expect(screen.getByLabelText('Location').textContent).toBe('/');
+    queryClient.clear();
+  });
+
   it('preserves authoritative order, describes activity and state, and reaches the matching work surface', async () => {
     const kinds = ['goal', 'task', 'chat', 'unknown'] as const;
     const threadIds = [
@@ -99,6 +248,7 @@ describe('conversation navigation sidebar', () => {
       activity,
       state: index === 0 ? 'needs-you' : index === 1 ? 'working' : 'idle',
       lastActivityAt: '2026-09-16T00:00:00.000Z',
+      unreadCount: index === 2 ? 2 : 0,
     }));
     const list = vi.fn().mockImplementation(async () => ({
       items: structuredClone(rows.filter((row) => row.thread.status === 'active')),
@@ -168,7 +318,8 @@ describe('conversation navigation sidebar', () => {
     );
     expect(buttons[0]).toHaveAccessibleDescription('Goal · Needs your attention');
     expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working');
-    expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle');
+    expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies');
+    expect(within(buttons[2]!).getByText('2')).toBeVisible();
     expect(buttons[3]).toHaveAccessibleDescription('Activity type unknown · Idle');
     const user = userEvent.setup();
     await user.click(buttons[0]!);
@@ -198,11 +349,14 @@ describe('conversation navigation sidebar', () => {
     });
     expect(await screen.findByText(/Conversation status unavailable/)).toBeInTheDocument();
     expect(buttons[1]).toHaveAccessibleDescription('Worker task · Status unavailable');
+    expect(within(buttons[2]!).queryByText('2')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry conversations' }));
     await waitFor(() => expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working'));
     await user.click(screen.getByRole('button', { name: 'Send pending request' }));
     await waitFor(() =>
-      expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Waiting for response')
+      expect(buttons[2]).toHaveAccessibleDescription(
+        'Assistant chat · Waiting for response · 2 unread replies'
+      )
     );
     expect(screen.getAllByRole('button', { name: /^Conversation \d$/ })[0]).toBe(buttons[2]);
     await act(async () => {
@@ -211,7 +365,9 @@ describe('conversation navigation sidebar', () => {
         receivingThreadId: 'th_00000000-0000-7c00-b9fc-382312fdf476',
       });
     });
-    await waitFor(() => expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle'));
+    await waitFor(() =>
+      expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies')
+    );
     await user.click(screen.getByRole('button', { name: 'Rename conversation' }));
     expect(await screen.findByRole('button', { name: 'Updated conversation' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Archive conversation' }));

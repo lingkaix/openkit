@@ -582,8 +582,15 @@ describe('database setup', () => {
       applyScopedMigrations(workspaceDb);
       applyScopedMigrations(workspaceDb);
 
-      expect(listMigrationIds(userDb, 'user')).toEqual(['user_0000_setup']);
-      expect(listTableNames(userDb)).toEqual(['__drizzle_migrations', 'idempotency_requests']);
+      expect(listMigrationIds(userDb, 'user')).toEqual([
+        'user_0000_setup',
+        'user_0001_thread_read_receipts',
+      ]);
+      expect(listTableNames(userDb)).toEqual([
+        '__drizzle_migrations',
+        'idempotency_requests',
+        'thread_read_receipts',
+      ]);
       expect(listMigrationIds(workspaceDb, 'workspace')).toEqual([
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',

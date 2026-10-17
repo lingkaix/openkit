@@ -87,7 +87,7 @@ The generic runtime config file contract includes `model-catalog` for the deploy
 
 Workspace Vault CRUD schemas admit bounded request-only material and return the existing redacted reference/grant shapes. Public grant creation accepts a reference and optional expiry for an ordinary gateway-only grant with no capability target, accepted by the selected MCP consumer under the existing authority check, or a separate user-space runtime-env `github-token` grant; callers cannot select arbitrary injection targets.
 
-Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines neither a durable Thread kind nor unread state.
+Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines no durable Thread kind; its unread count projects the current User-owned receipt and eligible message Items.
 
 `WorkspaceWorkersResponseSchema` is the selected-Workspace, viewer-filtered current Worker read model, separate from the Agent Catalog. It validates exact known work, recorded state, bounded package details and last-used model attribution, with distinct unavailable and restricted states; it exposes no AgentSession or native runtime identifier.
 
@@ -183,3 +183,5 @@ The grant-request view/list and Server delivery-list wrappers discard inert desc
 MCP discovery preview uses exact catalog scope, retained version and current catalog/binding revisions with transient bindings. Its descriptive observation and tool envelopes discard inert additions, while invocation selectors and required metadata stay closed. The native owner bounds the complete observation and grants no activation or tool-call authority; `src/mcp-discovery-preview.test.ts` covers that public boundary.
 
 Vault request terms and read envelopes use the shared Protocol validators for named entity fields. The inherited Vault reference and AgentSession restrictions remain exact for both supported scopes; Agent, MCP, Approval and command-request selectors keep their existing owner contracts.
+
+The Thread operation family defines `thread.read-state` and `thread.mark-read`. Receipt output lists current eligible read and unread Item identities. A supplied `itemIds` list marks only those displayed messages; omission is explicit Mark read for all current eligible messages, and an empty list is a no-op. Current authentication selects the User. Navigation includes a required nonnegative `unreadCount`. Neither schema owns storage, access checks or an inference from timestamp ordering.
