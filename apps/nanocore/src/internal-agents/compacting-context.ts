@@ -89,7 +89,6 @@ export function createCompactingInternalAgentProvider(
     const evidenceDigest = input.readEvidence(sources);
     const assertSources = () => {
       request.signal.throwIfAborted();
-      input.assertCurrent();
       const currentTurn = input.store.getTurnById(input.turn.id);
       if (currentTurn.agentSessionId || currentTurn.agentId !== 'knowledge-manager')
         throw capacity();
@@ -130,6 +129,8 @@ export function createCompactingInternalAgentProvider(
         )
           throw capacity();
       }
+      // Recheck the complete source set last, after trace assembly, at the effect boundary.
+      input.assertCurrent();
       request.signal.throwIfAborted();
     };
     const messages = () => [
