@@ -268,6 +268,38 @@ afterEach(() => {
 });
 
 describe('central Workspace operation authorizer', () => {
+  it('propagates canonical-user storage failures instead of reporting a Policy denial', () => {
+    const failure = new Error('injected canonical-user read failure');
+    const read = vi.spyOn(fixture.coreDb.sqlite, 'prepare').mockImplementationOnce(() => {
+      throw failure;
+    });
+    try {
+      expect(() =>
+        isCanonicalUserOperationAuthorized(fixture.coreDb, fixture.actorState.current)
+      ).toThrow(failure);
+      expect(read).toHaveBeenCalledWith(expect.stringMatching(/users/));
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('keeps a canonical-user Kernel denial as a non-enumerating HTTP 403', async () => {
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const evaluate = vi
+      .spyOn(policyKernel, 'evaluateAccess')
+      .mockImplementation((policy, request) =>
+        actualEvaluate({ ...policy, associations: [] }, request)
+      );
+    try {
+      const denied = await fixture.app.request(...operationRequest('caller.read', {}));
+      expect(denied.status).toBe(403);
+      await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      expect(evaluate).toHaveBeenCalledTimes(1);
+    } finally {
+      evaluate.mockRestore();
+    }
+  });
+
   it.each([
     'user',
     'unattributed Gateway',
