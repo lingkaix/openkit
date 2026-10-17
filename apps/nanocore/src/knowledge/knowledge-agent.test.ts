@@ -375,21 +375,7 @@ function message(
   citationIds: string[] = [],
   uncertainty: string | null = 'No launch date is documented.'
 ) {
-  return {
-    id: randomUUID(),
-    object: 'response' as const,
-    output: [
-      {
-        type: 'message' as const,
-        content: [
-          {
-            type: 'output_text' as const,
-            text: JSON.stringify({ answer, citationIds, uncertainty }),
-          },
-        ],
-      },
-    ],
-  };
+  return call('knowledge.result', { answer, citationIds, uncertainty }, randomUUID());
 }
 
 /** Reads the Provider-visible result of a real Tool, rather than inferring execution from Tool declarations. */
@@ -556,6 +542,7 @@ it('keeps real Workspace and Server selections distinct while reading exact page
     'knowledge.page.read',
     'knowledge.source.read',
     'knowledge.page.read',
+    'knowledge.result',
   ]);
   expect(f.store.getTurnById(f.turn.id).items).toEqual([]);
   const usage = listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id);
@@ -789,7 +776,7 @@ it('rejects an unread citation and retains a failed Knowledge Manager Turn inste
     message('Invented citation.', [`page/workspace/${f.workspace.id}/launch-evidence`], null)
   );
   await expect(f.ask()).rejects.toThrow(
-    'Knowledge answer lacks cited evidence or stated uncertainty.'
+    'Knowledge query failed. Inspect the retained Turn before a new request.'
   );
   const work = f.store
     .listThreads(f.workspace.id)
@@ -810,9 +797,9 @@ it('requires stated uncertainty when admitted Server Knowledge is unavailable de
     return message('Use the cobalt gate.', [pageId], null);
   });
   await expect(f.ask()).rejects.toThrow(
-    'Knowledge answer lacks cited evidence or stated uncertainty.'
+    'Knowledge query failed. Inspect the retained Turn before a new request.'
   );
-  expect(f.createResponses).toHaveBeenCalledTimes(3);
+  expect(f.createResponses).toHaveBeenCalledTimes(4);
   const messages = f.createResponses.mock.calls[0]![1].input as Array<{
     role?: string;
     content?: Array<{ text?: string }>;
@@ -826,3 +813,131 @@ it('requires stated uncertainty when admitted Server Knowledge is unavailable de
   expect(read).toMatchObject({ pageId, contentDigest: f.contentDigest });
   expect(read.content).toContain('heliotrope launch uses the cobalt gate');
 }, 120_000);
+
+it('repairs a markdown answer once through the schema-validated result Tool', async () => {
+  const f = await fixture();
+  f.createResponses
+    .mockResolvedValueOnce({
+      id: 'markdown',
+      object: 'response',
+      output: [
+        { type: 'message', content: [{ type: 'output_text', text: '**Answer:** No evidence.' }] },
+      ],
+    })
+    .mockResolvedValueOnce(
+      call(
+        'knowledge.result',
+        {
+          answer: 'No evidence.',
+          citationIds: [],
+          uncertainty: 'No page was read.',
+        },
+        'answer-result'
+      )
+    );
+  const answer = await f.ask();
+  expect(answer).toMatchObject({
+    answer: 'No evidence.',
+    citations: [],
+    uncertainty: 'No page was read.',
+  });
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  const turn = f.store.getTurnById(answer.turnId);
+  expect(turn.status).toBe('completed');
+  expect(turn.items).toContainEqual(
+    expect.objectContaining({ type: 'assistant-message', text: '**Answer:** No evidence.' })
+  );
+  expect(turn.items).toContainEqual(
+    expect.objectContaining({
+      type: 'tool-call',
+      tool: 'knowledge.result',
+      status: 'completed',
+      arguments: { answer: 'No evidence.', citationIds: [], uncertainty: 'No page was read.' },
+    })
+  );
+});
+
+it('retains a failed Turn and returns a typed refusal after one unsuccessful output repair', async () => {
+  const f = await fixture();
+  f.createResponses.mockResolvedValue({
+    id: 'markdown',
+    object: 'response',
+    output: [
+      { type: 'message', content: [{ type: 'output_text', text: '**Answer:** Still markdown.' }] },
+    ],
+  });
+  const error = await f.ask().catch((error: unknown) => error);
+  expect(error).toMatchObject({
+    code: 'knowledge_query_failed',
+    status: 422,
+    details: { threadId: expect.any(String), turnId: expect.any(String) },
+  });
+  const turn = f.store.getTurnById(error.details.turnId);
+  expect(turn).toMatchObject({
+    threadId: error.details.threadId,
+    status: 'failed',
+    error: { code: 'knowledge_manager_failed' },
+  });
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  expect(turn.items.filter((item) => item.type === 'assistant-message')).toHaveLength(2);
+});
+
+it('enforces the result Tool schema and allows only one repair for rejected arguments', async () => {
+  const f = await fixture();
+  f.createResponses
+    .mockResolvedValueOnce(
+      call('knowledge.result', { answer: 'Missing required result fields.' }, 'invalid-result')
+    )
+    .mockResolvedValueOnce(
+      call(
+        'knowledge.result',
+        { answer: 'No evidence.', citationIds: [], uncertainty: 'No page was read.' },
+        'repaired-result'
+      )
+    );
+  const answer = await f.ask();
+  expect(answer).toMatchObject({
+    answer: 'No evidence.',
+    citations: [],
+    uncertainty: 'No page was read.',
+  });
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  const turn = f.store.getTurnById(answer.turnId);
+  expect(
+    turn.items
+      .filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
+      .map((item) => item.status)
+  ).toEqual(['failed', 'completed']);
+});
+
+it('refuses a reused call id during output repair without losing the original Tool evidence', async () => {
+  const f = await fixture();
+  f.createResponses
+    .mockResolvedValueOnce(
+      call(
+        'knowledge.page.read',
+        { pageId: `page/workspace/${f.workspace.id}/index` },
+        'reused-call'
+      )
+    )
+    .mockResolvedValueOnce({
+      id: 'markdown',
+      object: 'response',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: '**Answer:** Done.' }] }],
+    })
+    .mockResolvedValueOnce(
+      call(
+        'knowledge.result',
+        { answer: 'Done.', citationIds: [], uncertainty: 'Only the overview was read.' },
+        'reused-call'
+      )
+    );
+  const error = await f.ask().catch((error: unknown) => error);
+  expect(error).toMatchObject({ code: 'knowledge_query_failed', status: 422 });
+  const turn = f.store.getTurnById(error.details.turnId);
+  expect(turn.status).toBe('failed');
+  expect(turn.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)).toEqual([
+    'knowledge.page.read',
+  ]);
+  expect(f.createResponses).toHaveBeenCalledTimes(3);
+});
