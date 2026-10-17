@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   parseWorkspaceDataSourceCatalog,
   parseWorkspaceExportManifest,
@@ -10,6 +11,7 @@ import {
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import {
+  type ArtifactVersionRecord,
   deriveEntityId,
   ItemSchema,
   KnowledgeEntrySchema,
@@ -30,7 +32,11 @@ import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
 } from '../workspace-deletion-request.js';
-import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
+import {
+  artifactVersionRecordPath,
+  readArtifactVersionRecord,
+} from './artifacts/artifact-version-records.js';
+import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
   RECURRING_PORTABLE_FEATURE,
@@ -47,6 +53,7 @@ import {
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   artifactContentFileName,
+  artifactReferenceItemId,
   assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
@@ -541,24 +548,45 @@ export function writeWorkspaceExportTree(
       }
     }
 
+    const artifactVersions: ArtifactVersionRecord[] = [];
+    for (const artifact of history.artifacts) {
+      if (!input.sourceWorkspaceRoot) throw new Error('Artifact history source is unavailable.');
+      const versionRoot = dirname(
+        dirname(artifactVersionRecordPath(input.sourceWorkspaceRoot, artifact.id, 1))
+      );
+      if (
+        readdirSync(versionRoot).some(
+          (name) =>
+            /^\d+$/.test(name) &&
+            (String(Number(name)) !== name || Number(name) < 1 || Number(name) > artifact.version)
+        )
+      ) {
+        throw new Error('Artifact export has an unacknowledged version.');
+      }
+      for (let version = 1; version <= artifact.version; version += 1) {
+        const record = readArtifactVersionRecord(input.sourceWorkspaceRoot, artifact.id, version);
+        artifactVersions.push(record);
+        const source = artifactFilePayloadPath(input.sourceWorkspaceRoot, artifact.id, version);
+        const target = artifactFilePayloadPath(input.exportRoot, artifact.id, version);
+        mkdirSync(dirname(target), { recursive: true });
+        copyPortableOriginal(source, target, measureCanonicalFile(source).byteLength);
+        writeFileAtomic(
+          artifactVersionRecordPath(input.exportRoot, artifact.id, version),
+          readCanonicalTextFile(
+            artifactVersionRecordPath(input.sourceWorkspaceRoot, artifact.id, version)
+          )
+        );
+      }
+    }
+    assertPortableArtifactHistory(
+      history.artifacts,
+      artifactVersions,
+      history.turns,
+      history.itemRevisions
+    );
     for (const artifact of history.artifacts) {
       const artifactRoot = join(input.exportRoot, 'artifacts', artifact.id);
       if (artifact.content.format === 'file') {
-        if (!input.sourceWorkspaceRoot) throw new Error('Artifact payload source is unavailable.');
-        verifyArtifactFilePayload({
-          workspaceRoot: input.sourceWorkspaceRoot,
-          artifactId: artifact.id,
-          version: artifact.version,
-          byteLength: artifact.content.byteLength,
-          contentDigest: artifact.contentDigest,
-        });
-        const target = artifactFilePayloadPath(input.exportRoot, artifact.id, artifact.version);
-        mkdirSync(dirname(target), { recursive: true });
-        copyPortableOriginal(
-          artifactFilePayloadPath(input.sourceWorkspaceRoot, artifact.id, artifact.version),
-          target,
-          artifact.content.byteLength
-        );
         writeJson(join(artifactRoot, 'artifact.json'), artifact);
         continue;
       }
@@ -883,6 +911,68 @@ export function writeWorkspaceExportTree(
   } catch (error) {
     rmSync(input.exportRoot, { recursive: true, force: true });
     throw error;
+  }
+}
+
+/** Proves complete retained history against the acknowledged head and exact publication Items. */
+export function assertPortableArtifactHistory(
+  artifacts: readonly ArtifactVersionRecord['artifact'][],
+  versions: readonly ArtifactVersionRecord[],
+  turns: readonly z.infer<typeof TurnSchema>[],
+  items: readonly z.infer<typeof ItemSchema>[]
+): void {
+  for (const artifact of artifacts) {
+    const history = versions.filter((record) => record.artifact.id === artifact.id);
+    if (history.length !== artifact.version) {
+      throw new Error('Artifact export history is incomplete.');
+    }
+    for (const [index, record] of history.entries()) {
+      const publication = record.version;
+      if (
+        record.artifact.version !== index + 1 ||
+        record.artifact.workspaceId !== artifact.workspaceId ||
+        record.artifact.threadId !== artifact.threadId ||
+        record.artifact.turnId !== artifact.turnId ||
+        record.artifact.createdAt !== artifact.createdAt ||
+        !isDeepStrictEqual(record.artifact.origin, artifact.origin)
+      ) {
+        throw new Error('Artifact export immutable lineage is contradictory.');
+      }
+      if (publication.turnId !== null) {
+        const turn = turns.find((candidate) => candidate.id === publication.turnId);
+        if (
+          !turn ||
+          turn.workspaceId !== artifact.workspaceId ||
+          turn.threadId !== publication.threadId ||
+          !isDeepStrictEqual(turn.triggerActor, publication.actor) ||
+          !items.some(
+            (item) =>
+              item.type === 'artifact-reference' &&
+              item.id === artifactReferenceItemId(artifact.id, publication.turnId!) &&
+              item.status === 'completed' &&
+              item.workspaceId === artifact.workspaceId &&
+              item.threadId === publication.threadId &&
+              item.turnId === publication.turnId &&
+              item.artifactId === artifact.id &&
+              item.artifactVersion === publication.artifactVersion &&
+              item.lastMutationRequestId === publication.requestId &&
+              item.title === publication.title &&
+              item.summary === publication.summary
+          )
+        ) {
+          throw new Error('Artifact export history lacks its exact publication Item.');
+        }
+      }
+    }
+    const retained = history.at(-1)!.artifact;
+    if (
+      !isDeepStrictEqual(
+        { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+        artifact
+      )
+    ) {
+      throw new Error('Artifact export current-head projection is contradictory.');
+    }
   }
 }
 

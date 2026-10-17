@@ -59,6 +59,7 @@ import {
   AgentSessionIdSchema,
   ArtifactIdSchema,
   ArtifactSchema,
+  type ArtifactVersionRecord,
   AuditEventIdSchema,
   AuditEventSchema,
   allocateEntityId,
@@ -133,6 +134,7 @@ import {
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
+import { parseArtifactVersionDescriptor } from './artifacts/artifact-version-records.js';
 import {
   RECURRING_PORTABLE_FEATURE,
   readRecurringPortableFiles,
@@ -142,6 +144,7 @@ import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
+  assertPortableArtifactHistory,
   dryRunWorkspaceImport,
   type ExportedKnowledgeSourceMaterial,
   parsePortableWorkObservations,
@@ -151,6 +154,7 @@ import {
 } from './workspace-export.js';
 import {
   AgentSessionRecordSchema,
+  ArtifactReaderSchema,
   artifactContentFileName,
   artifactReferenceItemId,
   assertSafeWorkspacePathSegment,
@@ -162,6 +166,7 @@ import {
   measureCanonicalFile,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
+  readCanonicalFile,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 import {
@@ -575,6 +580,8 @@ export interface WorkspaceImportSnapshot {
   }) => void;
   /** Target-relative immutable payload paths mapped to their verified private export sources. */
   artifactPayloadFiles: ReadonlyMap<string, string>;
+  /** Validated raw immutable descriptors, reminted only at known identity fields. */
+  artifactVersionRecords: ReadonlyMap<string, string>;
   /** Validated current Goal records and Task terminal facts; approval grants remain source-local. */
   goalState: ReturnType<typeof readCurrentGoalImportState>;
   /** Verified dry-run report for the export. */
@@ -1086,9 +1093,6 @@ export function readWorkspaceImportSnapshot(
     recurringHistory,
   };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
-  const sourceArtifactIds = new Map(
-    [...context.artifactIds].map(([sourceId, targetId]) => [targetId, sourceId])
-  );
   const artifactPayloadFiles = workResources.artifactPayloadFiles;
   const sourceTurnIds = new Map([...context.turnIds].map(([source, target]) => [target, source]));
   const sourceThreadIds = new Map(
@@ -1109,17 +1113,15 @@ export function readWorkspaceImportSnapshot(
       );
     }
   }
-  for (const artifact of canonical.artifacts) {
-    if (artifact.content.format !== 'file') continue;
-    const sourceId = sourceArtifactIds.get(artifact.id);
+  const artifactVersionRecords = new Map<string, string>();
+  for (const { record, raw, sourceArtifactId } of canonical.artifactVersions) {
+    const base = `artifacts/${record.artifact.id}/versions/${record.artifact.version}`;
     const sourcePath = input.verified.artifactPayloadFiles.get(
-      `artifacts/${sourceId}/versions/${artifact.version}/payload`
+      `artifacts/${sourceArtifactId}/versions/${record.artifact.version}/payload`
     );
-    if (!sourceId || !sourcePath) throw new Error('Imported Artifact payload is unavailable.');
-    artifactPayloadFiles.set(
-      `artifacts/${artifact.id}/versions/${artifact.version}/payload`,
-      sourcePath
-    );
+    if (!sourcePath) throw new Error('Imported Artifact original is unavailable.');
+    artifactPayloadFiles.set(`${base}/payload`, sourcePath);
+    artifactVersionRecords.set(`${base}/version-record.json`, `${JSON.stringify(raw)}\n`);
   }
 
   const projectEnvironmentPackages = () =>
@@ -1145,6 +1147,7 @@ export function readWorkspaceImportSnapshot(
 
   return {
     artifactPayloadFiles,
+    artifactVersionRecords,
     finalizeNotebookKnowledge: (binding) => {
       workResources.finalizeNotebookKnowledge(binding);
       agentEnvironmentPackageSnapshots.splice(
@@ -1340,7 +1343,8 @@ function readCanonicalImportState(context: ImportRemintContext) {
     'tu',
     exportedTurns.map((turn) => turn.id)
   );
-  const exportedArtifacts = readExportedArtifacts(context.files, report.manifest);
+  const exported = readExportedArtifacts(context.files, context.payloadFiles, report.manifest);
+  const exportedArtifacts = exported.artifacts;
   const exportedWorkspace = WorkspaceRecordSchema.parse({
     ...exportedWorkspaceRecord,
     name: exportedWorkspaceConfig.workspace.name,
@@ -1612,6 +1616,12 @@ function readCanonicalImportState(context: ImportRemintContext) {
       ),
     });
   });
+  assertPortableArtifactHistory(
+    exportedArtifacts,
+    exported.versions.map(({ record }) => record),
+    exportedTurns,
+    exportedItemRevisions
+  );
   const artifacts = exportedArtifacts.map((artifact) =>
     remintPortableArtifact(artifact, {
       targetWorkspaceId: context.targetWorkspaceId,
@@ -1619,6 +1629,62 @@ function readCanonicalImportState(context: ImportRemintContext) {
       threadIds,
       turnIds,
     })
+  );
+  const artifactVersions = exported.versions.map(({ record, raw }) => {
+    const artifact = remintPortableArtifact(record.artifact, {
+      targetWorkspaceId: context.targetWorkspaceId,
+      artifactIds,
+      threadIds,
+      turnIds,
+    });
+    const version = {
+      ...record.version,
+      workspaceId: context.targetWorkspaceId,
+      artifactId: artifact.id,
+      threadId: record.version.threadId
+        ? requiredMapValue(threadIds, record.version.threadId, 'thread')
+        : null,
+      turnId: record.version.turnId
+        ? requiredMapValue(turnIds, record.version.turnId, 'turn')
+        : null,
+    };
+    const rawArtifact = raw.artifact as Record<string, unknown>;
+    const descriptor = {
+      ...raw,
+      artifact: {
+        ...rawArtifact,
+        id: artifact.id,
+        workspaceId: artifact.workspaceId,
+        threadId: artifact.threadId,
+        turnId: artifact.turnId,
+        origin: {
+          ...(rawArtifact.origin as Record<string, unknown>),
+          ...(artifact.origin.kind === 'turn-output'
+            ? {
+                threadId: artifact.origin.threadId,
+                turnId: artifact.origin.turnId,
+              }
+            : {}),
+        },
+      },
+      version: {
+        ...(raw.version as Record<string, unknown>),
+        workspaceId: version.workspaceId,
+        artifactId: version.artifactId,
+        threadId: version.threadId,
+        turnId: version.turnId,
+      },
+    };
+    const payload =
+      artifact.content.format === 'file' ? null : Buffer.from(artifact.content.body, 'utf8');
+    const imported = parseArtifactVersionDescriptor(descriptor, payload);
+    return { record: imported, raw: descriptor, sourceArtifactId: record.artifact.id };
+  });
+  assertPortableArtifactHistory(
+    artifacts,
+    artifactVersions.map(({ record }) => record),
+    turns,
+    itemRevisions
   );
   const agentSessions = exportedAgentSessions.map(
     (session) =>
@@ -1681,6 +1747,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
           turns: importedTurns,
           items: importedItems,
           artifacts: importedArtifacts,
+          artifactVersions: artifactVersions.map(({ record }) => record),
           agentSessions: importedAgentSessions,
           approvalRequestIds,
         })
@@ -1769,6 +1836,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     knowledge,
     itemRevisions,
     artifacts,
+    artifactVersions,
     agentSessions,
     turnEvents,
     knowledgeSources,
@@ -3351,6 +3419,7 @@ function readWorkResourceImportState(
       review,
       imported,
       canonical.artifacts,
+      canonical.artifactVersions.map(({ record }) => record),
       turns,
       workspaceMaterialRevisions,
       workspaceMaterials,
@@ -3886,6 +3955,7 @@ function assertArtifactReviewImport(
   source: ImportedArtifactReview,
   target: ImportedArtifactReview,
   artifacts: readonly Artifact[],
+  artifactVersions: readonly ArtifactVersionRecord[],
   turns: readonly Turn[],
   revisions: readonly ImportedWorkspaceMaterialRevision[],
   materials: readonly ImportedWorkspaceMaterial[],
@@ -3893,8 +3963,19 @@ function assertArtifactReviewImport(
   tracesBySourceTurn: ReadonlyMap<string, WorkerContextPackageTrace>,
   sourceItems: ReadonlyMap<string, Item>
 ): void {
-  const artifact = artifacts.find((candidate) => candidate.id === target.artifactId);
-  if (!artifact || stagedWorkspaceReviews.some((review) => review.artifactId === artifact.id)) {
+  const current = artifacts.find((candidate) => candidate.id === target.artifactId);
+  const retained = artifactVersions.find(
+    (candidate) =>
+      candidate.artifact.id === target.artifactId &&
+      candidate.artifact.version === target.artifactVersion
+  );
+  const artifact = retained?.artifact;
+  if (
+    !current ||
+    !retained ||
+    !artifact ||
+    stagedWorkspaceReviews.some((review) => review.artifactId === artifact.id)
+  ) {
     throw new Error('Artifact Review conflicts with Artifact or Workspace Sync authority.');
   }
   const sourceTurn = target.sourceTurnId
@@ -3906,12 +3987,10 @@ function assertArtifactReviewImport(
       (!sourceTurn ||
         sourceTurn.threadId !== target.sourceThreadId ||
         (sourceTurn.agentId ?? null) !== target.sourceAgentId)) ||
-    artifact.origin.kind !== 'turn-output' ||
-    artifact.threadId !== target.sourceThreadId ||
-    artifact.turnId !== target.sourceTurnId ||
-    artifact.origin.threadId !== target.sourceThreadId ||
-    artifact.origin.turnId !== target.sourceTurnId ||
-    source.artifactVersion > artifact.version
+    retained.version.threadId !== target.sourceThreadId ||
+    retained.version.turnId !== target.sourceTurnId ||
+    artifact.contentDigest !== target.contentDigest ||
+    (target.sourceTurnId === null && target.sourceAgentId !== null)
   ) {
     throw new Error('Artifact Review source lineage is contradictory.');
   }
@@ -3943,11 +4022,10 @@ function assertArtifactReviewImport(
   if (source.decision === null) {
     if (
       source.decisionRequestId !== null ||
-      artifact.version !== source.artifactVersion ||
       artifact.status !== 'ready' ||
       artifact.contentDigest !== source.contentDigest
     ) {
-      throw new Error('Unresolved Artifact Review has no exact current Artifact version.');
+      throw new Error('Unresolved Artifact Review has no exact retained Artifact version.');
     }
     if (target.materialProposal) {
       const material = materials.find(
@@ -4727,69 +4805,86 @@ function groupPortableRecords<T>(
   return grouped;
 }
 
-/**
- * Reads artifact metadata and its single canonical body file from an export tree.
- *
- * @param files Exact verified export file contents.
- * @param manifest Verified export manifest.
- * @returns Reconstructed artifacts in stable metadata-path order.
- * @throws Error when artifact paths, metadata, or body ownership are inconsistent.
- */
+/** Reads every exact immutable original and the acknowledged current projection from verified export files. */
 function readExportedArtifacts(
   files: ReadonlyMap<string, string>,
+  payloadFiles: ReadonlyMap<string, string>,
   manifest: WorkspaceExportManifest
-): Artifact[] {
+): {
+  artifacts: Artifact[];
+  versions: Array<{ record: ArtifactVersionRecord; raw: Record<string, unknown> }>;
+} {
   const artifactPaths = manifest.contentInventory
     .map((entry) => entry.path)
     .filter((path) => path.startsWith('artifacts/'));
+  const inventory = new Map(manifest.contentInventory.map((entry) => [entry.path, entry]));
   const metadataPaths = artifactPaths
     .filter((path) => /^artifacts\/[^/]+\/artifact\.json$/.test(path))
     .sort();
   const expectedPaths = new Set<string>();
+  const versions: Array<{ record: ArtifactVersionRecord; raw: Record<string, unknown> }> = [];
   const artifacts = metadataPaths.map((metadataPath) => {
-    const artifactId = metadataPath.split('/')[1] as string;
+    const artifactId = metadataPath.split('/')[1]!;
     const metadata = readImportJson(files, metadataPath) as Record<string, unknown>;
     const format = z
       .enum(['markdown', 'text', 'json', 'file'])
       .parse((metadata.content as { format?: unknown } | undefined)?.format);
-    if (format === 'file') {
-      const artifact = ArtifactSchema.parse(metadata);
-      const payloadPath = `artifacts/${artifactId}/versions/${artifact.version}/payload`;
-      const payload = manifest.contentInventory.find((entry) => entry.path === payloadPath);
-      if (
-        artifact.id !== artifactId ||
-        artifact.content.format !== 'file' ||
-        !payload ||
-        payload.bytes !== artifact.content.byteLength ||
-        payload.digest !== artifact.contentDigest
-      ) {
-        throw new Error('Artifact export payload ownership is inconsistent.');
-      }
-      expectedPaths.add(metadataPath);
-      expectedPaths.add(payloadPath);
-      return artifact;
-    }
-    const bodyPath = `artifacts/${artifactId}/files/${artifactContentFileName(format)}`;
-
     expectedPaths.add(metadataPath);
-    expectedPaths.add(bodyPath);
-    const artifact = ArtifactSchema.parse({
+    const bodyPath =
+      format === 'file' ? null : `artifacts/${artifactId}/files/${artifactContentFileName(format)}`;
+    if (bodyPath) expectedPaths.add(bodyPath);
+    const artifact = ArtifactReaderSchema.parse({
       ...metadata,
-      content: { format, body: requiredExportFile(files, bodyPath) },
+      content: bodyPath
+        ? {
+            ...(metadata.content as Record<string, unknown>),
+            body: requiredExportFile(files, bodyPath),
+          }
+        : metadata.content,
     });
-    if (artifact.id !== artifactId) {
-      throw new Error(`Artifact ${artifact.id} has invalid directory lineage.`);
+    if (artifact.id !== artifactId || artifact.workspaceId !== manifest.workspaceId) {
+      throw new Error('Artifact export metadata has contradictory directory ownership.');
+    }
+    for (let version = 1; version <= artifact.version; version += 1) {
+      const base = `artifacts/${artifactId}/versions/${version}`;
+      const descriptorPath = `${base}/version-record.json`;
+      const payloadPath = `${base}/payload`;
+      expectedPaths.add(descriptorPath);
+      expectedPaths.add(payloadPath);
+      const raw = z.record(z.string(), z.unknown()).parse(readImportJson(files, descriptorPath));
+      const payload = payloadFiles.get(payloadPath);
+      const entry = inventory.get(payloadPath);
+      if (!payload || !entry)
+        throw new Error('Artifact export history is missing an exact original.');
+      const measured = measureCanonicalFile(payload);
+      if (entry.bytes !== measured.byteLength || entry.digest !== measured.contentDigest) {
+        throw new Error('Artifact export original changed after verification.');
+      }
+      const content = (raw.artifact as { content?: { format?: unknown } } | undefined)?.content;
+      const record = parseArtifactVersionDescriptor(
+        raw,
+        content?.format === 'file' ? null : readCanonicalFile(payload)
+      );
+      if (
+        record.artifact.id !== artifactId ||
+        record.artifact.version !== version ||
+        record.artifact.contentDigest !== measured.contentDigest ||
+        (record.artifact.content.format === 'file' &&
+          record.artifact.content.byteLength !== measured.byteLength)
+      ) {
+        throw new Error('Artifact export original contradicts its immutable version descriptor.');
+      }
+      versions.push({ record, raw });
     }
     return artifact;
   });
-
   if (
     artifactPaths.length !== expectedPaths.size ||
     artifactPaths.some((path) => !expectedPaths.has(path))
   ) {
-    throw new Error('Artifact export contains missing or duplicate metadata/body ownership.');
+    throw new Error('Artifact export contains missing or extra version or projection files.');
   }
-  return artifacts;
+  return { artifacts, versions };
 }
 
 /**
@@ -4808,6 +4903,7 @@ function rewritePortableTurnEvent(
     turns: ReadonlyMap<string, Turn>;
     items: ReadonlyMap<string, Item>;
     artifacts: ReadonlyMap<string, Artifact>;
+    artifactVersions: readonly ArtifactVersionRecord[];
     agentSessions: ReadonlyMap<string, AgentSession>;
     approvalRequestIds: ReadonlyMap<string, string>;
   }
@@ -4864,7 +4960,10 @@ function rewritePortableTurnEvent(
         if (
           item.type !== 'artifact-reference' ||
           item.artifactId !== artifact.id ||
-          item.artifactVersion !== artifact.version
+          !records.artifactVersions.some(
+            (record) =>
+              record.artifact.id === artifact.id && record.artifact.version === item.artifactVersion
+          )
         ) {
           throw new Error('Artifact update delta has contradictory artifact-reference lineage.');
         }
@@ -4894,12 +4993,31 @@ function rewritePortableTurnEvent(
       };
       break;
     case 'artifact-created':
-    case 'artifact-updated':
+    case 'artifact-updated': {
+      const current = requiredMapValue(records.artifacts, data.artifact.id, 'artifact');
+      const retained = records.artifactVersions.find(
+        (record) =>
+          record.artifact.id === current.id && record.artifact.version === data.artifact.version
+      );
+      if (
+        !retained ||
+        retained.artifact.contentDigest !== data.artifact.contentDigest ||
+        retained.artifact.title !== data.artifact.title ||
+        retained.artifact.summary !== data.artifact.summary ||
+        !isDeepStrictEqual(retained.artifact.content, data.artifact.content)
+      ) {
+        throw new Error('Artifact event snapshot contradicts its exact retained version.');
+      }
       rewrittenData = {
         ...data,
-        artifact: requiredMapValue(records.artifacts, data.artifact.id, 'artifact'),
+        artifact: {
+          ...retained.artifact,
+          status: data.artifact.status,
+          updatedAt: data.artifact.updatedAt,
+        },
       };
       break;
+    }
     case 'error':
       rewrittenData = data;
       break;
