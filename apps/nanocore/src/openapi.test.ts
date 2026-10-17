@@ -2217,12 +2217,13 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
       ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(30);
+    expect(Object.keys(definitions)).toHaveLength(31);
     expect(Object.keys(definitions)).toEqual(
       expect.arrayContaining([
         'knowledge.ask',
         'knowledge.tell',
         'knowledge.maintain',
+        'knowledge.proposal.read',
         'knowledge.notebook.history',
         'knowledge.notebook.diff',
         'knowledge.notebook.restore',
