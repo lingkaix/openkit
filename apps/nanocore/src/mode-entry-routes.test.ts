@@ -2314,7 +2314,8 @@ describe('Task durable admission response', () => {
     });
     let turnId: string | undefined;
     try {
-      await vi.waitFor(() => expect(responseObserved).toBe(true));
+      // The held executor and ordered events prove admission timing; disk commits can exceed the polling default.
+      await vi.waitFor(() => expect(responseObserved).toBe(true), { timeout: 10_000 });
       let completionObserved = false;
       void executor.finished.promise.then(() => {
         completionObserved = true;
