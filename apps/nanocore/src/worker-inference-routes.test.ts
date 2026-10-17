@@ -823,8 +823,9 @@ describe('worker inference routes', () => {
       providerRegistry,
     });
     const source = vi.spyOn(fixture.dispatcher, 'observeSource');
-    const dispatch = vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementationOnce(
-      async (_provider, _request, context) => {
+    const dispatch = vi
+      .spyOn(fixture.dispatcher, 'createResponses')
+      .mockImplementationOnce(async (_provider, _request, context) => {
         const admit = context?.transport?.finalRequestAdmission;
         expect(admit).toBeTypeOf('function');
         const final = {
@@ -836,8 +837,7 @@ describe('worker inference routes', () => {
         // The final text fits alone. Native continuity makes the same complete request exceed capacity.
         await admit!({ ...final, codexTurnState: '界'.repeat(6_000) });
         throw new Error('An oversized final request reached inference.');
-      }
-    );
+      });
 
     const response = await postWorkerResponses(fixture, {
       model: WORKER_LOGICAL_MODEL_ID,

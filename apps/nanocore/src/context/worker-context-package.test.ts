@@ -1988,28 +1988,61 @@ describe('S39 bounded delivery and publication refusal', () => {
     const content = '界'.repeat(30_000);
     const deliveredContent = '界'.repeat(682);
     const selection = {
-      knowledgePageId: 'limits/pinned', notebookRevision: 'selected-notebook-commit',
-      content, contentDigest: sha256(content), sourceRefs: [], deliveredContent,
+      knowledgePageId: 'limits/pinned',
+      notebookRevision: 'selected-notebook-commit',
+      content,
+      contentDigest: sha256(content),
+      sourceRefs: [],
+      deliveredContent,
       projection: {
-        kind: 'excerpt' as const, sourceRevision: 'selected-notebook-commit',
-        representationId: 'original-utf8', representationDigest: sha256(content),
-        representationByteLength: Buffer.byteLength(content), deliveredDigest: sha256(deliveredContent),
+        kind: 'excerpt' as const,
+        sourceRevision: 'selected-notebook-commit',
+        representationId: 'original-utf8',
+        representationDigest: sha256(content),
+        representationByteLength: Buffer.byteLength(content),
+        deliveredDigest: sha256(deliveredContent),
         ranges: [{ start: 0, end: Buffer.byteLength(deliveredContent) }],
-        byteLength: Buffer.byteLength(deliveredContent), truncated: true, availability: 'incomplete' as const,
+        byteLength: Buffer.byteLength(deliveredContent),
+        truncated: true,
+        availability: 'incomplete' as const,
       },
     };
-    const files = createWorkerContextPackageFiles({ ...boundedInputs(), knowledgeSelections: [selection] });
-    expect(files.knowledgeSelections[0]).toMatchObject({
-      notebookRevision: selection.notebookRevision, contentDigest: sha256(content), projection: selection.projection,
+    const files = createWorkerContextPackageFiles({
+      ...boundedInputs(),
+      knowledgeSelections: [selection],
     });
-    expect(Buffer.from(files.files.find((file) => file.path === 'knowledge/pages/limits/pinned.md')!.bytes).toString())
-      .toBe(deliveredContent);
-    expect(() => createWorkerContextPackageFiles({ ...boundedInputs(), knowledgeSelections: [{
-      ...selection, projection: { ...selection.projection, sourceRevision: 'another-notebook-commit' },
-    }] })).toThrow();
-    expect(() => createWorkerContextPackageFiles({ ...boundedInputs(), knowledgeSelections: [{
-      ...selection, deliveredContent: 'different bytes',
-    }] })).toThrow();
+    expect(files.knowledgeSelections[0]).toMatchObject({
+      notebookRevision: selection.notebookRevision,
+      contentDigest: sha256(content),
+      projection: selection.projection,
+    });
+    expect(
+      Buffer.from(
+        files.files.find((file) => file.path === 'knowledge/pages/limits/pinned.md')!.bytes
+      ).toString()
+    ).toBe(deliveredContent);
+    expect(() =>
+      createWorkerContextPackageFiles({
+        ...boundedInputs(),
+        knowledgeSelections: [
+          {
+            ...selection,
+            projection: { ...selection.projection, sourceRevision: 'another-notebook-commit' },
+          },
+        ],
+      })
+    ).toThrow();
+    expect(() =>
+      createWorkerContextPackageFiles({
+        ...boundedInputs(),
+        knowledgeSelections: [
+          {
+            ...selection,
+            deliveredContent: 'different bytes',
+          },
+        ],
+      })
+    ).toThrow();
   });
 
   it('counts exact escaped aggregate metadata and refuses an impossible envelope budget', () => {

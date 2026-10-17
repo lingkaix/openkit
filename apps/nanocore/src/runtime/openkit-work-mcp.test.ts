@@ -10,15 +10,15 @@ import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js'
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import * as packageOwner from '../context/worker-context-package.js';
-import { FsStore } from '../lib/store.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -821,30 +821,53 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge
   });
   const artifactId = acknowledgedArtifactId(await fixture.submit('req_source_tool', { mediaType }));
   const artifact = fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId);
-  const workspaceRoot = join(fixture.dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
+  const workspaceRoot = join(
+    fixture.dataRoot,
+    'workspaces',
+    'ws_00000000-0000-7000-8000-000000000001'
+  );
   const sourceFiles = await prepareArtifactSourceInputs({
     workspaceRoot,
     artifacts: [artifact],
     admission: fixture.fileAdmission,
     assertCurrent: (selected) => {
-      expect(selected).toEqual(fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId));
+      expect(selected).toEqual(
+        fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId)
+      );
     },
   });
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git') });
-  const knowledgeContent = serializeUserAuthoredKnowledgePage({
-    id: 'selected', kind: 'project-context', title: 'Pinned source',
-    content: 'Exact selected Notebook body.\n'.repeat(5000), sourceReferences: [],
-    createdAt: '2026-10-17T00:00:00.000Z', updatedAt: '2026-10-17T00:00:00.000Z',
-  }, { kind: 'workspace', workspaceId: fixture.turn.workspaceId });
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  const knowledgeContent = serializeUserAuthoredKnowledgePage(
+    {
+      id: 'selected',
+      kind: 'project-context',
+      title: 'Pinned source',
+      content: 'Exact selected Notebook body.\n'.repeat(5000),
+      sourceReferences: [],
+      createdAt: '2026-10-17T00:00:00.000Z',
+      updatedAt: '2026-10-17T00:00:00.000Z',
+    },
+    { kind: 'workspace', workspaceId: fixture.turn.workspaceId }
+  );
   /** Publishes test-owned bytes through the real commit owner; this fixture does not claim native command admission. */
   const publishKnowledge = (content: string) => {
     const baseRevision = notebook.publishedRevision();
-    const candidateRevision = notebook.prepare({ baseRevision, changes: { 'selected.md': content }, metadata: {
-      summary: 'Pinned read fixture', producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      authority: { kind: 'direct', instructionReference: 'test:worker-selected-notebook' },
-      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${createHash('sha256').update(content).digest('hex')}` },
-      sourceReferences: [],
-    } });
+    const candidateRevision = notebook.prepare({
+      baseRevision,
+      changes: { 'selected.md': content },
+      metadata: {
+        summary: 'Pinned read fixture',
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        authority: { kind: 'direct', instructionReference: 'test:worker-selected-notebook' },
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+        },
+        sourceReferences: [],
+      },
+    });
     notebook.publish({ baseRevision, candidateRevision });
     return candidateRevision;
   };
@@ -862,14 +885,30 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge
     contextBudgetTokens: 4096,
     materialSelections: [],
     sourceFiles,
-    knowledgeSelections: notebookRevision ? [{
-      knowledgePageId: 'selected', notebookRevision, content: knowledgeContent,
-      contentDigest: knowledgeDigest, sourceRefs: [], deliveredContent,
-      projection: { kind: 'excerpt', sourceRevision: notebookRevision, representationId: 'original-utf8',
-        representationDigest: knowledgeDigest, representationByteLength: Buffer.byteLength(knowledgeContent),
-        deliveredDigest: `sha256:${createHash('sha256').update(deliveredContent).digest('hex')}`,
-        ranges: [{ start: 0, end: 2048 }], byteLength: 2048, truncated: true, availability: 'incomplete' },
-    }] : [],
+    knowledgeSelections: notebookRevision
+      ? [
+          {
+            knowledgePageId: 'selected',
+            notebookRevision,
+            content: knowledgeContent,
+            contentDigest: knowledgeDigest,
+            sourceRefs: [],
+            deliveredContent,
+            projection: {
+              kind: 'excerpt',
+              sourceRevision: notebookRevision,
+              representationId: 'original-utf8',
+              representationDigest: knowledgeDigest,
+              representationByteLength: Buffer.byteLength(knowledgeContent),
+              deliveredDigest: `sha256:${createHash('sha256').update(deliveredContent).digest('hex')}`,
+              ranges: [{ start: 0, end: 2048 }],
+              byteLength: 2048,
+              truncated: true,
+              availability: 'incomplete',
+            },
+          },
+        ]
+      : [],
   });
   await packageOwner.writeWorkerContextPackageFiles(workspaceRoot, files, {
     admission: fixture.fileAdmission,
@@ -906,8 +945,17 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge
     knowledgeSelections: files.knowledgeSelections,
   } as packageOwner.WorkerContextPackageTrace);
   onTestFinished(() => proof.mockRestore());
-  return { ...fixture, artifactId, source, packagePath: source.packagePath, proof,
-    knowledge: files.knowledgeSelections[0], knowledgeContent, notebookRevision, publishKnowledge };
+  return {
+    ...fixture,
+    artifactId,
+    source,
+    packagePath: source.packagePath,
+    proof,
+    knowledge: files.knowledgeSelections[0],
+    knowledgeContent,
+    notebookRevision,
+    publishKnowledge,
+  };
 }
 
 it('reads retained bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
@@ -948,62 +996,78 @@ it('continues selected Knowledge at its actual commit after later publication an
   const f = await sourceToolFixture(Buffer.from('Artifact fixture'), 'text/plain', true);
   const path = f.knowledge!.packagePath;
   const preview = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path });
-  const page = preview.structuredContent as { status: string; text: string; cursor: unknown; identity: { revision: string } };
+  const page = preview.structuredContent as {
+    status: string;
+    text: string;
+    cursor: unknown;
+    identity: { revision: string };
+  };
   expect(page.status).toBe('ready');
   expect(page.identity.revision).toBe(f.notebookRevision);
   expect(f.knowledgeContent.startsWith(page.text)).toBe(true);
   expect(page.cursor).toBeTruthy();
-  f.publishKnowledge(f.knowledgeContent.replace('Exact selected Notebook body.', 'Later current Notebook body.'));
-  const continued = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path, mode: 'read', cursor: page.cursor });
-  expect(continued.structuredContent).toMatchObject({ status: 'ready', identity: { revision: f.notebookRevision } });
+  f.publishKnowledge(
+    f.knowledgeContent.replace('Exact selected Notebook body.', 'Later current Notebook body.')
+  );
+  const continued = await dispatchOpenkitWorkTool(f.input, 'work_read_source', {
+    path,
+    mode: 'read',
+    cursor: page.cursor,
+  });
+  expect(continued.structuredContent).toMatchObject({
+    status: 'ready',
+    identity: { revision: f.notebookRevision },
+  });
   expect(JSON.stringify(continued)).toContain('Exact selected Notebook body.');
   expect(JSON.stringify(continued)).not.toContain('Later current Notebook body.');
-  const unselected = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path: 'knowledge/pages/not-selected.md' });
+  const unselected = await dispatchOpenkitWorkTool(f.input, 'work_read_source', {
+    path: 'knowledge/pages/not-selected.md',
+  });
   expect(unselected.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   f.coreDb.sqlite.transaction(() => {
     disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
   })();
-  const denied = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path, mode: 'read', cursor: page.cursor });
+  const denied = await dispatchOpenkitWorkTool(f.input, 'work_read_source', {
+    path,
+    mode: 'read',
+    cursor: page.cursor,
+  });
   expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(JSON.stringify(denied)).not.toContain(f.notebookRevision);
   expect(JSON.stringify(denied)).not.toContain('Exact selected');
 });
 
-it(
-  'searches only the selected retained PDF text through the real Worker Tool and kernel',
-  async () => {
-    const f = await sourceToolFixture(
-      createPdfFixture(['first page', 'second needle']),
-      'application/pdf'
-    );
-    expect(f.source.projection.pdfTextLayer).toBeDefined();
-    const result = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
-      path: f.packagePath,
-      mode: 'exact',
-      query: 'needle',
-    });
-    expect(result.structuredContent).toMatchObject({
-      status: 'ready',
-      result: {
-        hits: [
-          {
-            digest: f.source.originalDigest.slice(7),
-            representation_digest: f.source.projection.representationDigest.slice(7),
-            locator: {
-              kind: 'text',
-              original: `${JSON.stringify(f.source.source.reference)}#page=2`,
-            },
+it('searches only the selected retained PDF text through the real Worker Tool and kernel', async () => {
+  const f = await sourceToolFixture(
+    createPdfFixture(['first page', 'second needle']),
+    'application/pdf'
+  );
+  expect(f.source.projection.pdfTextLayer).toBeDefined();
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+    path: f.packagePath,
+    mode: 'exact',
+    query: 'needle',
+  });
+  expect(result.structuredContent).toMatchObject({
+    status: 'ready',
+    result: {
+      hits: [
+        {
+          digest: f.source.originalDigest.slice(7),
+          representation_digest: f.source.projection.representationDigest.slice(7),
+          locator: {
+            kind: 'text',
+            original: `${JSON.stringify(f.source.source.reference)}#page=2`,
           },
-        ],
-      },
-    });
-    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
-    const denied = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
-      path: `${f.packagePath}/unselected`,
-      query: 'needle',
-    });
-    expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
-    expect(JSON.stringify(denied)).not.toContain(f.artifactId);
-  },
-  30_000
-);
+        },
+      ],
+    },
+  });
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
+  const denied = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+    path: `${f.packagePath}/unselected`,
+    query: 'needle',
+  });
+  expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(JSON.stringify(denied)).not.toContain(f.artifactId);
+}, 30_000);

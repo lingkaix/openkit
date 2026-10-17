@@ -40,55 +40,74 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== 'linux')('NanoCore retrieval service supervision', () => {
-  it('round trips a source-owned retained representation without opening its binary original', async () => {
-    const fixture = createFixture();
-    const service = createService(fixture, 10_000);
-    const text = 'page one\nneedle on page two\n';
-    writeFileSync(join(fixture.sourcesRoot, 'representation.txt'), text);
-    const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
-    const originalDigest = digest(Buffer.from([0, 255, 1]));
-    const representationDigest = digest(text);
-    const view: RetrievalScope = {
-      scope: 'retained-source',
-      documents: [{
-        key: { namespace: 'turn-source', id: 'selected.pdf' },
-        revision: 'source-revision-with-processor',
-        digest: originalDigest,
-        size: 3,
-        name: 'selected.pdf',
-        media_type: 'application/pdf',
-        content: {
-          kind: 'representation',
-          path: 'representation.txt',
-          digest: representationDigest,
-          size: Buffer.byteLength(text),
-          processor: 'source-owned-processor:output-profile-v1',
-          fragments: [
-            { start: 0, end: 9, locator: 'page:1' },
-            { start: 9, end: Buffer.byteLength(text), locator: 'page:2' },
-          ],
-          complete: false,
-        },
-      }],
-    };
-    const generation = await service.publish(view, null);
-    expect(await service.inspect(view.scope)).toBe(generation);
-    const result = await service.search({ mode: 'exact', query: 'needle', scopes: [view], limit: 20 });
-    expect(result).toMatchObject({
-      complete: false,
-      coverage: { representations_complete: false },
-      hits: [{
-        digest: originalDigest,
-        representation_digest: representationDigest,
-        processor: 'source-owned-processor:output-profile-v1',
-        locator: { kind: 'text', start: 9, end: 15, original: 'page:2' },
-      }],
-    });
-    const cancellation = new AbortController();
-    cancellation.abort();
-    await expect(service.search({ mode: 'exact', query: 'needle', scopes: [view], limit: 20 }, cancellation.signal)).rejects.toThrow();
-    expect(await service.inspect(view.scope)).toBe(generation);
-  }, TEST_TIMEOUT_MS);
+  it(
+    'round trips a source-owned retained representation without opening its binary original',
+    async () => {
+      const fixture = createFixture();
+      const service = createService(fixture, 10_000);
+      const text = 'page one\nneedle on page two\n';
+      writeFileSync(join(fixture.sourcesRoot, 'representation.txt'), text);
+      const digest = (value: string | Uint8Array) =>
+        createHash('sha256').update(value).digest('hex');
+      const originalDigest = digest(Buffer.from([0, 255, 1]));
+      const representationDigest = digest(text);
+      const view: RetrievalScope = {
+        scope: 'retained-source',
+        documents: [
+          {
+            key: { namespace: 'turn-source', id: 'selected.pdf' },
+            revision: 'source-revision-with-processor',
+            digest: originalDigest,
+            size: 3,
+            name: 'selected.pdf',
+            media_type: 'application/pdf',
+            content: {
+              kind: 'representation',
+              path: 'representation.txt',
+              digest: representationDigest,
+              size: Buffer.byteLength(text),
+              processor: 'source-owned-processor:output-profile-v1',
+              fragments: [
+                { start: 0, end: 9, locator: 'page:1' },
+                { start: 9, end: Buffer.byteLength(text), locator: 'page:2' },
+              ],
+              complete: false,
+            },
+          },
+        ],
+      };
+      const generation = await service.publish(view, null);
+      expect(await service.inspect(view.scope)).toBe(generation);
+      const result = await service.search({
+        mode: 'exact',
+        query: 'needle',
+        scopes: [view],
+        limit: 20,
+      });
+      expect(result).toMatchObject({
+        complete: false,
+        coverage: { representations_complete: false },
+        hits: [
+          {
+            digest: originalDigest,
+            representation_digest: representationDigest,
+            processor: 'source-owned-processor:output-profile-v1',
+            locator: { kind: 'text', start: 9, end: 15, original: 'page:2' },
+          },
+        ],
+      });
+      const cancellation = new AbortController();
+      cancellation.abort();
+      await expect(
+        service.search(
+          { mode: 'exact', query: 'needle', scopes: [view], limit: 20 },
+          cancellation.signal
+        )
+      ).rejects.toThrow();
+      expect(await service.inspect(view.scope)).toBe(generation);
+    },
+    TEST_TIMEOUT_MS
+  );
 
   it(
     'returns only generic exact digest-window positions and refuses incomplete byte or match coverage',

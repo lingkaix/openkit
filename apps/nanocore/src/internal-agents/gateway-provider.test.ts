@@ -1932,9 +1932,11 @@ describe('internal rolling context Gateway boundary', () => {
 
   it('retains a Provider context rejection through the shared loop and Assistant Turn projection', async () => {
     const { provider, createResponses } = boundaryFixture();
-    createResponses.mockRejectedValueOnce(Object.assign(new Error('private-provider-context'), {
-      failure: { kind: 'context_overflow', settled: true, status: 400 },
-    }));
+    createResponses.mockRejectedValueOnce(
+      Object.assign(new Error('private-provider-context'), {
+        failure: { kind: 'context_overflow', settled: true, status: 400 },
+      })
+    );
     let observed: unknown;
     const initial = request();
     const result = await runInternalAgentLoop(
@@ -1952,7 +1954,8 @@ describe('internal rolling context Gateway boundary', () => {
     expect(result).toMatchObject({ kind: 'failed', code: 'provider_call_failed' });
     expect(internalContextFailure(observed)).toEqual({
       code: 'internal_agent_context_exceeded',
-      message: 'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
+      message:
+        'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
     });
     expect(createResponses).toHaveBeenCalledOnce();
   });

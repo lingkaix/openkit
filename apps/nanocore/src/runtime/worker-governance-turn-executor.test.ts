@@ -8889,8 +8889,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
             knowledgePageId: oversizedKnowledge.id,
             notebookRevision: notebook.publishedRevision(),
             projection: expect.objectContaining({
-              kind: 'excerpt', representationDigest: oversizedKnowledgePageDigest,
-              sourceRevision: notebook.publishedRevision(), truncated: true, availability: 'incomplete',
+              kind: 'excerpt',
+              representationDigest: oversizedKnowledgePageDigest,
+              sourceRevision: notebook.publishedRevision(),
+              truncated: true,
+              availability: 'incomplete',
             }),
           }),
         ]),
@@ -8900,13 +8903,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
         readFileSync(join(fixture.packageRoot, 'knowledge', 'pages', `${knowledge.id}.md`), 'utf8')
       ).toBe(knowledgePageBytes);
       const excerpt = readFileSync(
-        join(fixture.packageRoot, 'knowledge', 'pages', `${oversizedKnowledge.id}.md`), 'utf8'
+        join(fixture.packageRoot, 'knowledge', 'pages', `${oversizedKnowledge.id}.md`),
+        'utf8'
       );
       expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(2048);
       expect(oversizedKnowledgePageBytes.startsWith(excerpt)).toBe(true);
       expect(excerpt).not.toBe(oversizedKnowledgePageBytes);
-      expect(notebook.readRevision(notebook.publishedRevision()).files[`${oversizedKnowledge.id}.md`])
-        .toBe(oversizedKnowledgePageBytes);
+      expect(
+        notebook.readRevision(notebook.publishedRevision()).files[`${oversizedKnowledge.id}.md`]
+      ).toBe(oversizedKnowledgePageBytes);
       return launch(...args);
     });
     const executor = new WorkerGovernanceTurnExecutor({
