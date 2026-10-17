@@ -457,7 +457,7 @@ const RetrievalSelectionMetadataSchema = z.object({
       limit: z.number().int().positive().max(20),
       pinnedReferences: z.array(KnowledgePageReferenceSchema),
       states: z.array(z.enum(['active', 'draft', 'archived', 'superseded'])).min(1),
-      sourceScope: z.enum(['workspace', 'server']),
+      sourceScope: z.enum(['workspace', 'server', 'user']),
     })
     .strict(),
   createdAt: z.string().min(1),
