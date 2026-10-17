@@ -30,6 +30,11 @@ import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import { initializeNotebook } from './knowledge/notebook-initialization.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './knowledge/okf.js';
 import {
+  listUserKnowledgeSources,
+  readUserKnowledgeSource,
+  registerUserKnowledgeSource,
+} from './knowledge/scoped-knowledge-sources.js';
+import {
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
 } from './knowledge/scoped-notebook-owner.js';
@@ -212,6 +217,28 @@ export function createMemoryOperationImplementations(
       }
     });
   return {
+    'memory.source.register': (input, context) =>
+      self(
+        context,
+        async (writer) =>
+          MEMORY_OPERATION_DEFINITIONS['memory.source.register'].outputSchema.parse({
+            source: await registerUserKnowledgeSource(writer, input),
+          }),
+        true
+      ),
+    'memory.source.list': (_input, context) =>
+      self(context, (writer) =>
+        MEMORY_OPERATION_DEFINITIONS['memory.source.list'].outputSchema.parse({
+          items: listUserKnowledgeSources(writer),
+        })
+      ),
+    'memory.source.read': (input, context) =>
+      self(context, (writer) => {
+        const entry = readUserKnowledgeSource(writer, input.sourceId);
+        return MEMORY_OPERATION_DEFINITIONS['memory.source.read'].outputSchema.parse({
+          source: entry ? { ...entry.source, content: entry.content } : null,
+        });
+      }),
     'memory.list': (_input, context) =>
       self(context, (writer) =>
         MEMORY_OPERATION_DEFINITIONS['memory.list'].outputSchema.parse(listMemoryPages(writer))

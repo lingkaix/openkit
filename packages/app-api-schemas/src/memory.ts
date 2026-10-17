@@ -1,4 +1,5 @@
 import {
+  KnowledgeSourceIdSchema,
   RequestIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -6,6 +7,10 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import {
+  KnowledgeSourceSchema,
+  RegisterKnowledgeSourceRequestSchema,
+} from './knowledge-manager.js';
 import {
   KnowledgeNotebookPathSchema,
   UpdateKnowledgeNotebookRequestSchema,
@@ -83,6 +88,20 @@ export const PrepareMemoryForgetRequestSchema = z
   })
   .strict();
 
+/** User-owned literal Source metadata uses the existing Source projection without a Workspace owner. */
+export const UserMemorySourceSchema = KnowledgeSourceSchema.omit({ workspaceId: true }).extend({
+  ownerScope: MemoryOwnerSchema,
+  kind: z.literal('document'),
+});
+
+/** Explicit literal document intake grants no conversation, URL or file provenance. */
+export const RegisterUserMemorySourceRequestSchema = RegisterKnowledgeSourceRequestSchema.pick({
+  requestId: true,
+  kind: true,
+  title: true,
+  content: true,
+}).extend({ requestId: RequestIdSchema, kind: z.literal('document') });
+
 const credentials = ['local-user', 'user-session', 'deployment-administrator'] as const;
 const self = {
   credentials,
@@ -96,6 +115,29 @@ const self = {
 
 /** Explicit source-free self management; no Worker, automatic capture or caller-selected owner is admitted. */
 export const MEMORY_OPERATION_DEFINITIONS = {
+  'memory.source.register': {
+    ...self,
+    description: 'Capture one exact literal document in the authenticated User Source scope.',
+    inputSchema: RegisterUserMemorySourceRequestSchema,
+    outputSchema: z.object({ source: UserMemorySourceSchema }),
+    mutating: true,
+  },
+  'memory.source.list': {
+    ...self,
+    description: 'List explicit User Source metadata under current self authority.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: z.object({ items: z.array(UserMemorySourceSchema) }),
+    mutating: false,
+  },
+  'memory.source.read': {
+    ...self,
+    description: 'Read the exact captured bytes of one currently authorized User Source.',
+    inputSchema: z.object({ sourceId: KnowledgeSourceIdSchema }).strict(),
+    outputSchema: z.object({
+      source: UserMemorySourceSchema.extend({ content: z.string() }).nullable(),
+    }),
+    mutating: false,
+  },
   'memory.list': {
     ...self,
     description: 'List current personally authored Memory without disclosing suppressed entries.',
