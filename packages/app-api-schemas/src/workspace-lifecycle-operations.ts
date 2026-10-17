@@ -3,7 +3,6 @@ import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 import {
   AcceptWorkspaceInvitationRequestSchema,
-  ChangeWorkspaceMemberAccessRequestSchema,
   CreateWorkspaceInvitationRequestSchema,
   DeclineWorkspaceInvitationRequestSchema,
   DeleteWorkspaceRequestSchema,
@@ -127,22 +126,6 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace-invitation', field: 'invitationId' },
-    policyOperation: 'membership.manage',
-    mutating: true,
-  },
-  'workspace.member-access-change': {
-    binding: 'json',
-    returnsOneTimeSecret: false,
-    successStatus: 200,
-    description: "Change an existing member's Workspace access level.",
-    inputSchema: ChangeWorkspaceMemberAccessRequestSchema.safeExtend({
-      workspaceId: WorkspaceIdSchema,
-      targetUserId: UserIdSchema,
-    }),
-    outputSchema: WorkspaceMemberMutationResponseSchema,
-    credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
-    scope: { kind: 'body-workspace', field: 'workspaceId' },
-    target: { kind: 'workspace-member', field: 'targetUserId' },
     policyOperation: 'membership.manage',
     mutating: true,
   },

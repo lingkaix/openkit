@@ -200,7 +200,7 @@ describe('database setup', () => {
     const journal = JSON.parse(
       readFileSync(join(productionFolder, 'meta', '_journal.json'), 'utf8')
     );
-    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 4);
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 5);
     writeFileSync(join(legacyFolder, 'meta', '_journal.json'), JSON.stringify(journal));
     for (const entry of journal.entries)
       writeFileSync(
@@ -249,7 +249,9 @@ describe('database setup', () => {
         '0001_concurrent_turn_capacity.sql',
         '0002_durable_recurring_schedules.sql',
         '0003_notebook_admission.sql',
-        '0004_channel_notifications.sql',
+        '0004_equal_workspace_members.sql',
+
+        '0005_channel_notifications.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -261,7 +263,9 @@ describe('database setup', () => {
         'core_0001_concurrent_turn_capacity',
         'core_0002_durable_recurring_schedules',
         'core_0003_notebook_admission',
-        'core_0004_channel_notifications',
+        'core_0004_equal_workspace_members',
+
+        'core_0005_channel_notifications',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(
@@ -354,7 +358,6 @@ describe('database setup', () => {
         'workspace_id',
         'user_id',
         'status',
-        'access_level',
         'invitation_id',
         'joined_at',
         'removed_at',
@@ -366,7 +369,6 @@ describe('database setup', () => {
         'invitation_id',
         'workspace_id',
         'invitee_user_id',
-        'proposed_access_level',
         'inviter_user_id',
         'status',
         'expires_at',
@@ -837,11 +839,11 @@ describe('database setup', () => {
       });
       const insertInvitation = coreDb.sqlite.prepare(
         `INSERT INTO workspace_invitations (
-          invitation_id, workspace_id, invitee_user_id, proposed_access_level,
+          invitation_id, workspace_id, invitee_user_id,
           inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
           revision, created_at, updated_at
         ) VALUES (
-          ?, 'ws_00000000-0000-7c1f-9bfb-ef82611610b6', 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'editor', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', ?,
+          ?, 'ws_00000000-0000-7c1f-9bfb-ef82611610b6', 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', ?,
           '2026-07-26T00:00:00.000Z', ?, NULL, NULL, 1, ?, ?
         )`
       );

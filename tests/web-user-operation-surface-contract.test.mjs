@@ -8,10 +8,15 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 289;
-const EXPECTED_SERVER_SIZE = 58;
+const EXPECTED_CATALOG_SIZE = 311;
+const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 229;
+const EXPECTED_INCLUDED_SIZE = 233;
+
+/** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
+const SERVER_WEB_OPERATIONS = {
+  'administration.mcp-discovery-preview': { disposition: 'live', surface: 'Shared MCP' },
+};
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -120,6 +125,8 @@ const WEB_OPERATION_GROUPS = {
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-candidate-decide': { disposition: 'live', surface: 'Catalog' },
     'catalog.read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.shared-mcp-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.shared-mcp-set-disabled': { disposition: 'live', surface: 'Catalog' },
     'catalog.plugin-import': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-import': { disposition: 'live', surface: 'Catalog' },
     'catalog.mcp-list': { disposition: 'live', surface: 'Catalog' },
@@ -255,6 +262,9 @@ const WEB_OPERATION_GROUPS = {
     'workspace.import': { disposition: 'live', surface: 'Portability' },
   },
   Vault: {
+    'vault.grant-request': { disposition: 'live', surface: 'Vault' },
+    'vault.grant-request-list': { disposition: 'live', surface: 'Vault' },
+    'vault.grant-issue': { disposition: 'live', surface: 'Vault' },
     'vault.grant-create': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-narrow': { disposition: 'live', surface: 'Vault backend' },
     'vault.secret-create': { disposition: 'live', surface: 'Vault backend' },
@@ -270,7 +280,6 @@ const WEB_OPERATION_GROUPS = {
   },
   'Workspace sharing': {
     'workspace.my-invitation-accept': { disposition: 'live', surface: 'Account' },
-    'workspace.member-access-change': { disposition: 'live', surface: 'Account' },
     'workspace.invitation-create': { disposition: 'live', surface: 'Account' },
     'workspace.my-invitation-decline': { disposition: 'live', surface: 'Account' },
     'workspace.delete': { disposition: 'roadmap', roadmap: 'R049' },
@@ -478,6 +487,14 @@ function assertDisposition(operationKey, disposition) {
 }
 
 describe('Web user operation surface contract', () => {
+  it('projects explicit administrative discovery on the published Shared MCP surface', () => {
+    const catalog = partitionCatalog(PUBLIC_OPERATION_ACCESS);
+    for (const [operationKey, disposition] of Object.entries(SERVER_WEB_OPERATIONS)) {
+      assert.ok(catalog.server.includes(operationKey));
+      assertDisposition(operationKey, disposition);
+    }
+  });
+
   it('accounts for every included catalog operation and excludes server and Gateway-actor operations', () => {
     const catalog = partitionCatalog(PUBLIC_OPERATION_ACCESS);
     const inventory = flattenInventory(WEB_OPERATION_GROUPS);

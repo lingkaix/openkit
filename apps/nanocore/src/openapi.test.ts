@@ -1434,13 +1434,6 @@ describe('app api openapi projection', () => {
       ],
       [
         'post',
-        '/api/app/operations/workspace.member-access-change',
-        'workspace.member-access-change',
-        'workspace.member-access-change.input',
-        'workspace.member-access-change.output',
-      ],
-      [
-        'post',
         '/api/app/operations/workspace.member-remove',
         'workspace.member-remove',
         'workspace.member-remove.input',

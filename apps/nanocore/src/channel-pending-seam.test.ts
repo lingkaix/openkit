@@ -57,8 +57,8 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     workspaceId: DEMO_WORKSPACE_ID,
   });
   coreDb.sqlite
-    .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,created_at,updated_at,revision)
-    SELECT workspace_id,?,status,access_level,joined_at,created_at,updated_at,revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?`)
+    .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,joined_at,created_at,updated_at,revision)
+    SELECT workspace_id,?,status,joined_at,created_at,updated_at,revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?`)
     .run(actor.userId, DEMO_WORKSPACE_ID, FIXTURE_LOCAL_USER_ID);
   const thread = store.createThread(
     DEMO_WORKSPACE_ID,

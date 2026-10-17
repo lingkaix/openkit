@@ -43,6 +43,10 @@ export async function createMcpHttpStub(
     readonly delayedResult?: Promise<void>;
     readonly hangDelete?: boolean;
     readonly listError?: boolean;
+    /** Synthetic initialization metadata for the complete preview response bound. */
+    readonly serverVersion?: string;
+    /** Holds a real tools/list response at its server boundary for revocation/deadline tests. */
+    readonly beforeList?: () => Promise<void>;
     /** `finite` returns two pages. `nonterminating` repeats one cursor forever. */
     readonly toolPages?: 'finite' | 'nonterminating';
     /** `2026-07-28` serves the stateless era. Omitted servers stay on the session era. */
@@ -59,11 +63,12 @@ export async function createMcpHttpStub(
   const servers = new Set<Server>();
   const createEchoServer = () => {
     const mcp = new Server(
-      { name: 'http-test', version: '1.0.0' },
+      { name: 'http-test', version: options.serverVersion ?? '1.0.0' },
       { capabilities: { tools: {} } }
     );
     let repeatedPage = 0;
-    mcp.setRequestHandler('tools/list', (request) => {
+    mcp.setRequestHandler('tools/list', async (request) => {
+      await options.beforeList?.();
       if (options.listError) {
         throw new ProtocolError(ProtocolErrorCode.InternalError, 'Injected list failure.');
       }

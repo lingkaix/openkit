@@ -45,6 +45,7 @@ import { readInvitationOperationLineage } from './workspace-sharing-operations.j
 /** Existing admission owners and statically wired minimum-lineage readers; no family execution services. */
 export interface OperationAdmissionDependencies {
   readonly coreDb: CoreDb | undefined;
+  readonly dataRoot?: string | null;
   readonly store?: FsStore;
   readonly automationStore?: AutomationStore;
   readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
@@ -321,13 +322,20 @@ export function admitOperation(
           : authorizeWorkspace(coreDb, entry.actor, workspaceId, definition);
       if (
         definition.scope.kind === 'actor-quick-chat-workspace' &&
-        (!authorized || typeof authorized === 'string' || authorized.effectiveRole !== 'owner')
+        (!authorized || typeof authorized === 'string' || !authorized.isOwner)
       )
         throw denied();
       if (definition.target.kind === 'workspace-deletion') {
         if (
           entry.kind !== 'public' ||
-          (!authorized && !hasWorkspaceDeletionRetryAuthority(coreDb, entry.actor, workspaceId))
+          (!authorized &&
+            !(
+              dependencies.dataRoot &&
+              hasWorkspaceDeletionRetryAuthority(coreDb, entry.actor, workspaceId, {
+                dataRoot: dependencies.dataRoot,
+                requestId: selector(input, 'requestId'),
+              })
+            ))
         )
           throw denied();
       } else if (!authorized || admission.isClosed(workspaceId)) throw denied();

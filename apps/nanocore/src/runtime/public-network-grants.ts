@@ -163,7 +163,7 @@ export type PublicNetworkConfiguration = Pick<
   | 'workspaceMcpServerCatalogs'
 >;
 
-/** Revalidates captured public grants against the currently composed setup and route metadata. */
+/** Revalidates public grants against the current setup and trusted composed MCP destination metadata. */
 export function assertCurrentPublicNetworkGrants(
   input: {
     readonly agentId: string;
@@ -173,7 +173,8 @@ export function assertCurrentPublicNetworkGrants(
     readonly sandbox: NonNullable<ResolvedAgentManifest['sandbox']>;
     readonly mcp: ResolvedAgentManifest['mcp'];
   },
-  current: PublicNetworkConfiguration
+  current: PublicNetworkConfiguration,
+  mcpCatalog: WorkspaceMcpServerCatalog | undefined
 ): void {
   const authored = current.agentManifests.find((manifest) => manifest.id === input.agentId);
   if (!authored) throw new Error('Public network current Agent authority is unavailable.');
@@ -212,9 +213,6 @@ export function assertCurrentPublicNetworkGrants(
       ? [config.nanohost.bind.host]
       : []),
   ];
-  const mcpCatalog = current.workspaceMcpServerCatalogs.find(
-    (entry) => entry.workspaceId === input.workspaceId
-  )?.catalog;
   const destinationFacts = {
     providerRegistry: current.providerRegistry,
     controlHosts,
