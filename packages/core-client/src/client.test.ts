@@ -4506,6 +4506,7 @@ describe('createCoreClient', () => {
           rating: 'good',
           note: null,
           createdAt: timestamp,
+          history: [],
         },
       },
     });

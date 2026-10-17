@@ -7,6 +7,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { z } from 'zod';
 import { authorizeWorkspace } from './auth/operation-authorizer.js';
+import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { applyMemoryForget, prepareMemoryForgetCommand } from './knowledge/memory-forget.js';
 import {
   diffMemoryHistory,
@@ -50,6 +51,7 @@ import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/ide
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
 import { openUserDb } from './storage/db.js';
 import { userDbPath } from './storage/fs-layout.js';
+import { retrieveUserMemory } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 
 /** First explicit save owns fresh scope creation; existing or lost notebooks are never initialized again. */
@@ -226,6 +228,46 @@ export function createMemoryOperationImplementations(
       }
     });
   return {
+    'memory.search': (input, context) =>
+      self(context, async (writer) => {
+        if (
+          !authorizeWorkspace(writer.coreDb, writer.actor!, input.workspaceId, {
+            policyOperation: 'knowledge.read',
+            mutating: false,
+          })
+        )
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        // Existing query lineage remains binding; a shared Thread cannot be replaced by a Timeline.
+        const threadId =
+          context.queryContext?.threadId ??
+          findAssistantTimeline(writer.store, input.workspaceId, writer.userDb.userId)?.id;
+        if (!threadId)
+          throw new OperationError(
+            'memory_access_denied',
+            'Memory needs a private Assistant Timeline.',
+            403
+          );
+        return MEMORY_OPERATION_DEFINITIONS['memory.search'].outputSchema.parse(
+          await retrieveUserMemory({
+            dataRoot: writer.coreDb.dataRoot,
+            workspaceId: input.workspaceId,
+            caller: 'app-api',
+            query: input.query,
+            limit: input.limit,
+            pinnedReferences: input.pinnedReferences,
+            states: input.states,
+            access: {
+              store: writer.store,
+              coreDb: writer.coreDb,
+              userDb: writer.userDb,
+              actor: context.actorRef,
+              requestActor: writer.actor!,
+              outputThreadId: threadId,
+              outputTurnId: context.queryContext?.turnId,
+            },
+          })
+        );
+      }),
     'memory.source.register': (input, context) =>
       self(
         context,

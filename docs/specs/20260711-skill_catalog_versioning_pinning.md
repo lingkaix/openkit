@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-09-08
+updated: 2026-10-17
 ---
 # Skill Catalog Versioning And Pinning
 
@@ -32,7 +32,7 @@ updated: 2026-09-08
 
 Skills are first-class, independently versioned worker resources. A Skill may arrive alone, through an Agent Plugin, or as an agent-submitted candidate; its version and selection must not depend on publishing a new community plugin. OpenKit retains exact immutable content so a later comparison, promotion, or rollback identifies the actual instructions, scripts, and supporting files supplied to a worker.
 
-This contract replaces the earlier future-only entry conditions with the requested target. Real Skill consumption and version changes are acceptance observations to deliver, not prerequisites preventing design work. The existing MCP Gateway is an available dependency; catalog and native Skill loading implementation remains Not Started.
+This contract replaces the earlier future-only entry conditions with the requested target. Real Skill consumption and version changes are acceptance observations to deliver, not prerequisites preventing design work. The existing MCP Gateway is an available dependency. Catalog lifecycle and native Skill loading remain partially implemented; the current projection below names the remaining integration and acceptance work.
 
 ## Goals / Non-goals
 
@@ -60,6 +60,22 @@ A `SkillVersion` records entry identity, exact digest and format, file inventory
 
 Identical bytes in the same entry reuse content identity; a separate import observation may retain additional provenance without rewriting the version. Same-label different content has different digests and is visibly distinguishable. Tags, branches, `latest`, timestamps, and remote tree hashes are not executable identities.
 
+### Ecosystem source admission
+
+The accepted source and local CLI sharing choices, their reasons and their limits are recorded in [Ecosystem Skill Import And Local Staging](../decisions/20261016-ecosystem_skill_import_and_local_staging.md).
+
+The curated sources are [Anthropic Skills](https://github.com/anthropics/skills), [OpenAI Skills](https://github.com/openai/skills), and the [OpenKit repository Skills folder](https://github.com/lingkaix/openkit/tree/main/skills), as accepted in [Curated Skill Sources](../decisions/20261017-curated_skill_sources.md). Recommendations are descriptive choices, with no installed record or authority. Users explicitly choose a source and one Skill, load it through existing admission, and select or update retained versions through the existing lifecycle. Custom sources remain supported. No App update automatically loads or refreshes Skills, and no release-bundled Skill feature, generic authoring system or new source registry is introduced. Missing, ambiguous or unavailable sources retain the ordinary admission failure and leave current selection unchanged.
+
+The engineer ruling of 2026-10-16 requires import conventions aligned with [vercel-labs/skills](https://github.com/vercel-labs/skills). An ordinary ecosystem Skill repository must import without an OpenKit manifest or payload rewrite. Supported locators include GitHub `owner/repo` shorthand, GitHub and GitLab repository URLs, plain Git URLs, repository tree URLs selecting one Skill, a local path, and a direct `SKILL.md` or archive URL. Acquisition resolves the selected repository ref to an exact commit before discovery and snapshot admission. A tree URL preserves its selected subpath; repository or named-Skill discovery cannot silently substitute another Skill when selection is missing or ambiguous. Source strings and descriptive metadata never grant host, network, credential or execution authority. A local path is acquired only in the explicitly authorized caller's local filesystem boundary; a remote caller cannot make Core read an arbitrary host path.
+
+Source parsing, discovery and YAML frontmatter handling may port the needed MIT-licensed upstream logic, with its pinned source revision and full license retained in third-party notices. Do not execute `npx skills`, invoke its telemetry or import private CLI internals at runtime. Its package has no supported library entry. Skill discovery recognizes a selected root `SKILL.md`, ordinary `skills/` containers, their `.curated`, `.experimental` and `.system` containers, and ecosystem Agent Skill directories such as `.agents/skills`, `.codex/skills` and `.claude/skills`. Use bounded discovery, skip repository administration and dependency/build directories, and preserve distinct locations when names are ambiguous. Internal Skills (`metadata.internal: true`) stay hidden from ordinary discovery; an explicit authorized selection may include them. Discovery is descriptive and cannot execute package code or follow symlinks.
+
+Accept YAML frontmatter with nonempty string `name` and `description`, including the upstream supported UTF-8 BOM and CRLF forms. Retain the original `SKILL.md` bytes. Ecosystem display names, optional metadata and unknown descriptive fields remain authored content; they need no OpenKit-specific fields and do not select catalog identity or confer permission. In particular, `allowed-tools` and nested metadata cannot grant OpenKit Tools. Do not reject an otherwise valid ecosystem Skill only because its display name differs from its directory or its optional descriptive metadata is not a string map. Invalid YAML, a non-mapping header or missing required strings refuses admission.
+
+Direct downloads are bounded to10MiB, archive expansion to25MiB and archive regular files to1000. The complete selected Skill must also satisfy this owner's16MiB,1024-entry and32-level bounds. Bound streamed downloads before buffering, extraction before writing beyond its bounds, and discovery before unbounded traversal. Archives support ZIP, TAR, TAR.GZ and TGZ; reject traversal, duplicate paths, links and special files before effects. A response without a filename extension is identified from its actual bounded bytes. Failure exposes no partial catalog version and leaves selection unchanged.
+
+Version provenance retains the source locator without embedded credentials, exact resolved commit when the source is Git, selected subpath and OpenKit content digest. Direct downloads and local trees have no fabricated Git commit. The retained version is the launch authority; a lock-style source observation supports an explicit update check without rewriting original provenance. An update check compares a newly resolved source against the retained commit/content identity and reports changed, unchanged or unavailable. It does not import, activate, promote or change a pin. Explicit import still uses ordinary current authority, exact catalog revision, Audit and receipt requirements. Remote outage never changes current selection or prevents retained-version loading. `skills.sh` search is optional future work and remains off by default.
+
 ### Payload and deterministic digest
 
 The payload is a directory with valid root `SKILL.md` under the Agent Skills format. Every regular file below it participates, including scripts, references, assets, dotfiles, and licenses. File references resolve from the Skill root. Do not scan Markdown to guess dependencies or silently supply files outside that root. External prerequisites remain authored runtime requirements; a non-self-contained Skill must be repackaged or explicitly report its missing prerequisite.
@@ -85,6 +101,8 @@ The submitting caller is an authorized user or coordinator using the ordinary pu
 Each entry has one current default; each Workspace has at most one exact pin for an available entry. No current digest means unavailable for ordinary default selection. A pin remains fixed when the entry default advances.
 
 Resolution order is an explicitly authorized exact run selection, an exact version in the composed Agent setup, the Workspace pin, then the entry current digest. A run override may differ from a pin only for that run, must name a Skill already included by the composed setup, must appear in the selection explanation, and changes no pin. Conflicting exact references within composed setup fail `conflict`, not last-writer-wins. An unpromoted candidate requires explicit exact selection and current launch authority; default selection never chooses it automatically.
+
+`turn.start` accepts optional `skillSelections: [{skillId,digest}]`. Each Skill id occurs at most once, each digest is exact, and the request can select only Skills already present in the composed setup. The existing command identity includes the supplied array; the canonical admitted Turn retains it without a separate scheduler selection record. Omission preserves ordinary resolution. AEP resolution rechecks the current composed inclusion and retained snapshot, gives the run selection precedence, and records `selectionSource: run` in its existing supply explanation. This changes neither the default nor a Workspace pin and grants no launch authority.
 
 Promotion and rollback are compare-and-set moves to an existing verified digest, naming expected current digest (including null) and target digest. Candidate promotion also requires its base to equal expected current; stale candidates fail `conflict` without rebasing. Pin set/clear compares the expected prior pin. Clearing a pin returns future resolution to the then-current default. No ranges, implicit upgrades, or automatic promotion policy exist.
 
@@ -124,9 +142,17 @@ Reuse NanoCore storage, command, permission, audit, composed setup, AEP, and run
 
 ## Current Implementation Projection
 
+The native API and CLI expose version inspection, update checks, comparison, removal, purge and candidate withdrawal. Their new Web controls remain deferred to the separately assigned R108 Web increment. Existing Catalog import, candidate decision, default selection and pin controls retain their ordinary behavior and current pointer checks.
+
 The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
 
 Workspace Skill versions, candidates, pins, and current selection live in `workspaces/<id>/catalog/catalog.json` with immutable snapshot trees under `catalog/skill-snapshots/`. App API, Core Client, CLI, and the Web Catalog screen expose ordinary-user import, candidate, pin, and selection operations. AEP supply resolves catalog pins or current digests onto the AgentSession-private `worker-supply` root; the Codex thin adapter projects those imported trees into `$CODEX_HOME/skills`. Native plugin loading and a retained real-worker combined Skill/MCP story are not yet advertised.
+
+The ordinary `turn.start` entry retains exact per-run Skill selectors on its canonical Turn. The existing Worker AEP resolver consumes that input and preserves current catalog integrity, removal and payload-availability checks; no second selection store or work runner is added. Native modeled-Worker regressions cover distinct exact selections and unchanged shared pointers, but make no physical Worker or real-use acceptance claim.
+
+Native admission retains the original package digest, member key and source subpath, or a candidate's exact base. Same-entry identical bytes return retained version facts. Candidate content and request publish in one catalog revision. Version inspection, exact file reads and inventory comparison use verified retained snapshots. Selection and pin updates reject changed bytes and compare explicit public prior digests. Removal clears the default and retains historical bytes. Native mutations use existing command receipts and Workspace Audit with current actor admission. Artifact-origin submission checks the exact retained Artifact version, its tree digest, current disclosure and producer lineage before creating a candidate. Purge joins the existing unexpired AEP and evidence retention owners and refuses unavailable authority. The existing version record separates retained or purged payload availability from immutable identity and provenance. Portability retains purged metadata without claiming missing retained bytes are purged. Authorized identical-byte admission restores payload availability and keeps original version facts. Physical Worker delivery of complete directories and executable files and the retained real-worker consumption story remain completion requirements.
+
+Ecosystem imports use the source, discovery and frontmatter conventions recorded above without running the upstream CLI. Native Git and bounded direct Skill/archive acquisition retain the actual resolved commit when one exists and the verified content digest. Local CLI import stages the same strict tree and submits one public import; Core accepts no caller-local path. An explicit update check compares retained source provenance with current upstream bytes and reports changed, unchanged or unavailable without importing, activating or moving a pin.
 
 The target uses the existing server and Workspace storage owners with a canonical catalog document per owner scope, immutable installed payload directories, and derived indexes. `docs/specs/20260703-storage_layout_record_ownership.md` owns their physical layout; implementation must project these accepted contracts into the existing schemas and storage modules.
 
@@ -163,13 +189,17 @@ Skill instructions/scripts remain subordinate to authored setup, current permiss
 
 `20260909-personal_memory_and_knowledge_learning.md` may route procedural learning to this existing SkillCandidate owner. Personal preferences and factual Knowledge remain in their notebook; a Skill is instructions plus optional supporting files/code, not another notebook scope. Source-private content cannot leak through candidate descriptions, packaged files or evaluation evidence. Automatic candidate generation/evaluation changes no current digest; authorized promotion, pins, exact work evidence and rollback retain this specification's semantics. A/B comparison remains distinct from an implemented experiment scheduler or autonomous promotion policy.
 
+The engineer rulings of 2026-10-17 supersede the earlier product-authoring increment: OpenKit does not build a generic Skill author, and the unlanded openkit-bwm-author package is excluded. A future OpenKit-fitted BWM Meta-Skill remains an ordinary Skill and waits for its separate coordinator brief. An authorized Task or Goal may still produce an attributable candidate Artifact; explicit submission creates the existing SkillCandidate, and human decisions and pins select retained versions. Add no BWM Core entity, evaluator, automatic promotion, background runner or alternate authority. B01 synthetic school-admissions intake and MCP stubs live outside the public repository. Real-use acceptance cannot be inferred from synthetic inputs, fake execution or candidate existence.
+
+The general native candidate-loop regression uses test-only Skill fixtures through real Task admission, Worker-output Artifact retention, exact Artifact-origin candidate submission, human promotion and pinning, and a later Task's exact AEP selection. It does not distribute an authoring Skill or prove physical Worker delivery or real-use acceptance. Existing catalog and Task owners retain all runtime behavior.
+
 ## Deferred / Future Work
 
 Experiment scheduling, statistical analysis, held-back evaluation suites, autonomous promotion policy, business-model representations, generic proposals, registry search, source hosting, version ranges, and cross-deployment distribution remain separate work.
 
 ## Internal Assistant Consumer
 
-`20260909-internal_agent_resource_integration.md` owns metadata-first selection and bounded `skill.read` for the internal Assistant. It resolves this catalog's exact retained versions/pins and source restrictions directly without an AEP or another version authority. Current removal/eligibility changes invalidate later reads even when bytes remain retained for evidence. Reading an immutable snapshot does not install or execute its scripts; Worker execution and materialization retain their existing owners. The consumer is Not Started and does not expand other internal roles' Tool sets automatically.
+`20260909-internal_agent_resource_integration.md` owns metadata-first selection and bounded `skill.read` for the internal Assistant. It resolves this catalog's exact retained versions/pins and source restrictions directly without an AEP or another version authority. Current removal/eligibility changes invalidate later reads even when bytes remain retained for evidence. Reading an immutable snapshot does not install or execute its scripts; Worker execution and materialization retain their existing owners. The consumer uses the catalog's verified retained snapshot reader for metadata-first selection and bounded file reads, with current removal and payload-availability checks. This does not expand other internal roles' Tool sets or establish Worker delivery acceptance.
 
 ## Related Specifications And Sources
 

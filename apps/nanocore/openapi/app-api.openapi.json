@@ -7220,6 +7220,55 @@
         }
       }
     },
+    "/api/app/operations/memory.search": {
+      "post": {
+        "operationId": "memory.search",
+        "tags": [
+          "memory"
+        ],
+        "summary": "Search current self Memory with a separate budget in the existing private Timeline.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/memory.search.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Search current self Memory with a separate budget in the existing private Timeline.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/memory.search.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/memory.source.register": {
       "post": {
         "operationId": "memory.source.register",
@@ -10309,6 +10358,371 @@
         }
       }
     },
+    "/api/app/operations/catalog.skill-version-list": {
+      "post": {
+        "operationId": "catalog.skill-version-list",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List immutable Skill versions and original provenance.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-version-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List immutable Skill versions and original provenance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-version-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.skill-update-check": {
+      "post": {
+        "operationId": "catalog.skill-update-check",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Check an immutable Skill version against its source without changing catalog selection.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-update-check.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Check an immutable Skill version against its source without changing catalog selection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-update-check.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.skill-version-read": {
+      "post": {
+        "operationId": "catalog.skill-version-read",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Read one immutable Skill version and original provenance.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-version-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read one immutable Skill version and original provenance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-version-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.skill-content-read": {
+      "post": {
+        "operationId": "catalog.skill-content-read",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Read exact file bytes from a verified retained Skill version.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-content-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read exact file bytes from a verified retained Skill version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-content-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.skill-diff": {
+      "post": {
+        "operationId": "catalog.skill-diff",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Compare exact inventories of two verified retained Skill versions.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-diff.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Compare exact inventories of two verified retained Skill versions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-diff.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.skill-remove": {
+      "post": {
+        "operationId": "catalog.skill-remove",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Block future Skill selection while retaining historical bytes and lineage.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-remove.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Block future Skill selection while retaining historical bytes and lineage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-remove.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.skill-purge": {
+      "post": {
+        "operationId": "catalog.skill-purge",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Purge exact Skill bytes only after complete current retention admission.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-purge.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Purge exact Skill bytes only after complete current retention admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-purge.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/catalog.skill-candidate-submit": {
       "post": {
         "operationId": "catalog.skill-candidate-submit",
@@ -10412,6 +10826,66 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/catalog.skill-candidate-decide.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.skill-candidate-withdraw": {
+      "post": {
+        "operationId": "catalog.skill-candidate-withdraw",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Withdraw a proposed Skill candidate submitted by the current actor.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.skill-candidate-withdraw.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Withdraw a proposed Skill candidate submitted by the current actor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.skill-candidate-withdraw.output"
                 }
               }
             }
@@ -41185,6 +41659,27 @@
                     "max"
                   ]
                 },
+                "skillSelections": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "skillId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "skillId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "triggerSource": {
                   "anyOf": [
                     {
@@ -41758,6 +42253,27 @@
               "xhigh",
               "max"
             ]
+          },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -44134,6 +44650,27 @@
               "xhigh",
               "max"
             ]
+          },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
           },
           "triggerSource": {
             "anyOf": [
@@ -46640,6 +47177,27 @@
               "max"
             ]
           },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
+          },
           "triggerSource": {
             "anyOf": [
               {
@@ -46831,6 +47389,131 @@
           "createdAt": {
             "type": "string",
             "minLength": 1
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "actor": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "user"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "agent",
+                            "integration",
+                            "system"
+                          ]
+                        },
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "automation"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "submittedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "rating": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "good",
+                        "bad"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "actor",
+                "submittedAt",
+                "rating",
+                "note"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -46838,7 +47521,8 @@
           "agentId",
           "rating",
           "note",
-          "createdAt"
+          "createdAt",
+          "history"
         ],
         "additionalProperties": false
       },
@@ -49234,6 +49918,27 @@
               "max"
             ]
           },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
+          },
           "triggerSource": {
             "anyOf": [
               {
@@ -51566,7 +52271,8 @@
                 "type": "string",
                 "enum": [
                   "workspace",
-                  "server"
+                  "server",
+                  "user"
                 ]
               }
             },
@@ -53832,6 +54538,441 @@
       "knowledge.delete.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "null"
+      },
+      "memory.search.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "default": 5,
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 20
+          },
+          "pinnedReferences": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scopeId": {
+                  "type": "string"
+                },
+                "objectId": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                }
+              },
+              "required": [
+                "scopeId",
+                "objectId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "states": {
+            "default": [
+              "active"
+            ],
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "active",
+                "draft",
+                "archived",
+                "superseded"
+              ]
+            }
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "query",
+          "limit",
+          "pinnedReferences",
+          "states",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "memory.search.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "queryContext": {
+            "type": "object",
+            "properties": {
+              "serverId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "actor": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "agent",
+                          "integration",
+                          "system"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "responsibleUserId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "responsibleUserId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "automation"
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "responsibleUserId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "responsibleUserId"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "threadId": {
+                "type": "string",
+                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "turnId": {
+                "type": "string",
+                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "serverId",
+              "workspaceId",
+              "actor"
+            ],
+            "additionalProperties": false
+          },
+          "sourceScope": {
+            "type": "string"
+          },
+          "notebookRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caller": {
+            "type": "string",
+            "enum": [
+              "assistant",
+              "task-mode",
+              "app-api"
+            ]
+          },
+          "requestDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "retrievalParameters": {
+            "type": "object",
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 20
+              },
+              "pinnedReferences": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "states": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "draft",
+                    "archived",
+                    "superseded"
+                  ]
+                }
+              },
+              "sourceScope": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server",
+                  "user"
+                ]
+              }
+            },
+            "required": [
+              "limit",
+              "pinnedReferences",
+              "states",
+              "sourceScope"
+            ],
+            "additionalProperties": false
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "score": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "sourceReferences": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "required": [
+                "reference",
+                "revision",
+                "contentDigest",
+                "score",
+                "sourceReferences"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sourceReferences": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "sensitive_content",
+                    "lower_conformance",
+                    "policy_excluded",
+                    "freshness_expired",
+                    "budget_exceeded",
+                    "source_unavailable"
+                  ]
+                }
+              },
+              "required": [
+                "reference",
+                "revision",
+                "contentDigest",
+                "sourceReferences",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "retrievalTraceRef": {
+            "type": "object",
+            "properties": {
+              "scopeId": {
+                "type": "string"
+              },
+              "objectId": {
+                "type": "string",
+                "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "scopeId",
+              "objectId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "queryContext",
+          "sourceScope",
+          "notebookRevision",
+          "caller",
+          "requestDigest",
+          "retrievalParameters",
+          "createdAt",
+          "workspaceId",
+          "selected",
+          "excluded"
+        ],
+        "additionalProperties": false
       },
       "memory.source.register.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -70513,6 +71654,27 @@
                   "max"
                 ]
               },
+              "skillSelections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skillId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "skillId",
+                    "digest"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "triggerSource": {
                 "anyOf": [
                   {
@@ -75266,6 +76428,27 @@
                   "max"
                 ]
               },
+              "skillSelections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skillId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "skillId",
+                    "digest"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "triggerSource": {
                 "anyOf": [
                   {
@@ -77180,6 +78363,54 @@
                   "type": "string",
                   "minLength": 1
                 },
+                "decision": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "actor": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "user",
+                                "agent",
+                                "system"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "auditRef": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "decidedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "actor",
+                        "auditRef",
+                        "decidedAt"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "disposition": {
                   "type": "string",
                   "enum": [
@@ -77197,6 +78428,57 @@
                   "type": "string",
                   "pattern": "^cand_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
+                "producer": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "agent",
+                        "system"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                "submitter": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "user",
+                            "agent",
+                            "system"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "summary": {
                   "type": "string",
                   "minLength": 1
@@ -77206,9 +78488,12 @@
                 "baseDigest",
                 "candidateDigest",
                 "createdAt",
+                "decision",
                 "disposition",
                 "entryId",
                 "id",
+                "producer",
+                "submitter",
                 "summary"
               ],
               "additionalProperties": false
@@ -77481,6 +78766,13 @@
                   "items": {
                     "type": "object",
                     "properties": {
+                      "contentState": {
+                        "type": "string",
+                        "enum": [
+                          "retained",
+                          "purged"
+                        ]
+                      },
                       "createdAt": {
                         "type": "string",
                         "minLength": 1
@@ -77491,6 +78783,7 @@
                       }
                     },
                     "required": [
+                      "contentState",
                       "createdAt",
                       "digest"
                     ],
@@ -77644,6 +78937,21 @@
               "additionalProperties": false
             }
           },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "sourceSubpath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "sourceSkillName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -77653,7 +78961,6 @@
           "activate",
           "displayName",
           "expectedRevision",
-          "tree",
           "workspaceId"
         ],
         "additionalProperties": false
@@ -77715,6 +79022,13 @@
           "version": {
             "type": "object",
             "properties": {
+              "contentState": {
+                "type": "string",
+                "enum": [
+                  "retained",
+                  "purged"
+                ]
+              },
               "createdAt": {
                 "type": "string",
                 "minLength": 1
@@ -77777,6 +79091,113 @@
                   "additionalProperties": false
                 }
               },
+              "producer": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "agent",
+                      "system"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind"
+                ],
+                "additionalProperties": false
+              },
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "baseDigest": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "pluginMemberKey": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "pluginVersionDigest": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sourceCommit": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sourceLocator": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8192
+                  },
+                  "sourceSubpath": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "uploadedSourceId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "baseDigest",
+                  "pluginMemberKey",
+                  "pluginVersionDigest",
+                  "sourceCommit",
+                  "sourceSubpath",
+                  "uploadedSourceId"
+                ],
+                "additionalProperties": false
+              },
               "publisherVersion": {
                 "type": [
                   "string",
@@ -77785,11 +79206,14 @@
               }
             },
             "required": [
+              "contentState",
               "createdAt",
               "digest",
               "digestFormat",
               "entryId",
               "inventory",
+              "producer",
+              "provenance",
               "publisherVersion"
             ],
             "additionalProperties": false
@@ -77799,6 +79223,867 @@
           "entry",
           "revision",
           "version"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-version-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "skillId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-version-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "contentState": {
+                  "type": "string",
+                  "enum": [
+                    "retained",
+                    "purged"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "digestFormat": {
+                  "type": "string",
+                  "const": "openkit-tree-v1"
+                },
+                "entryId": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "inventory": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "executable": {
+                        "type": "boolean"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "directory",
+                          "file"
+                        ]
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sha256": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "executable",
+                      "kind",
+                      "path",
+                      "sha256",
+                      "size"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "producer": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "agent",
+                        "system"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                "provenance": {
+                  "type": "object",
+                  "properties": {
+                    "baseDigest": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pluginMemberKey": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pluginVersionDigest": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "sourceCommit": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "sourceLocator": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 8192
+                    },
+                    "sourceSubpath": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "uploadedSourceId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "baseDigest",
+                    "pluginMemberKey",
+                    "pluginVersionDigest",
+                    "sourceCommit",
+                    "sourceSubpath",
+                    "uploadedSourceId"
+                  ],
+                  "additionalProperties": false
+                },
+                "publisherVersion": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "contentState",
+                "createdAt",
+                "digest",
+                "digestFormat",
+                "entryId",
+                "inventory",
+                "producer",
+                "provenance",
+                "publisherVersion"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-update-check.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "skillId",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-update-check.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "unchanged",
+              "unavailable"
+            ]
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "sourceCommit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observedDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observedCommit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "digest",
+          "sourceCommit",
+          "observedDigest",
+          "observedCommit"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-version-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "skillId",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-version-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "object",
+            "properties": {
+              "contentState": {
+                "type": "string",
+                "enum": [
+                  "retained",
+                  "purged"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "digestFormat": {
+                "type": "string",
+                "const": "openkit-tree-v1"
+              },
+              "entryId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "inventory": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "executable": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "directory",
+                        "file"
+                      ]
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sha256": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "size": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "executable",
+                    "kind",
+                    "path",
+                    "sha256",
+                    "size"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "producer": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "agent",
+                      "system"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind"
+                ],
+                "additionalProperties": false
+              },
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "baseDigest": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "pluginMemberKey": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "pluginVersionDigest": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sourceCommit": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sourceLocator": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8192
+                  },
+                  "sourceSubpath": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "uploadedSourceId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "baseDigest",
+                  "pluginMemberKey",
+                  "pluginVersionDigest",
+                  "sourceCommit",
+                  "sourceSubpath",
+                  "uploadedSourceId"
+                ],
+                "additionalProperties": false
+              },
+              "publisherVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "contentState",
+              "createdAt",
+              "digest",
+              "digestFormat",
+              "entryId",
+              "inventory",
+              "producer",
+              "provenance",
+              "publisherVersion"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-content-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "skillId",
+          "digest",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-content-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "contentBase64": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "contentBase64",
+          "digest",
+          "entryId",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-diff.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baseDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "candidateDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "skillId",
+          "baseDigest",
+          "candidateDigest"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-diff.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "candidateDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "after": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "executable": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "directory",
+                            "file"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "executable",
+                        "kind",
+                        "path",
+                        "sha256",
+                        "size"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "before": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "executable": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "directory",
+                            "file"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "sha256": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "executable",
+                        "kind",
+                        "path",
+                        "sha256",
+                        "size"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "after",
+                "before",
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "baseDigest",
+          "candidateDigest",
+          "changes",
+          "entryId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-remove.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "workspaceId",
+          "skillId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-remove.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-purge.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "workspaceId",
+          "skillId",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-purge.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
         ],
         "additionalProperties": false
       },
@@ -77826,6 +80111,14 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "skillId": {
+            "type": "string",
+            "minLength": 1
           },
           "tree": {
             "minItems": 1,
@@ -77858,20 +80151,35 @@
               "additionalProperties": false
             }
           },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          },
-          "skillId": {
-            "type": "string",
-            "minLength": 1
+          "artifact": {
+            "type": "object",
+            "properties": {
+              "artifactId": {
+                "type": "string",
+                "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "artifactId",
+              "version",
+              "contentDigest"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
           "baseDigest",
           "expectedRevision",
           "summary",
-          "tree",
           "workspaceId",
           "skillId"
         ],
@@ -77903,6 +80211,54 @@
                 "type": "string",
                 "minLength": 1
               },
+              "decision": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "actor": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "agent",
+                              "system"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "auditRef": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "decidedAt": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "actor",
+                      "auditRef",
+                      "decidedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "disposition": {
                 "type": "string",
                 "enum": [
@@ -77920,6 +80276,57 @@
                 "type": "string",
                 "pattern": "^cand_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "producer": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "agent",
+                      "system"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind"
+                ],
+                "additionalProperties": false
+              },
+              "submitter": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "agent",
+                          "system"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "summary": {
                 "type": "string",
                 "minLength": 1
@@ -77929,9 +80336,12 @@
               "baseDigest",
               "candidateDigest",
               "createdAt",
+              "decision",
               "disposition",
               "entryId",
               "id",
+              "producer",
+              "submitter",
               "summary"
             ],
             "additionalProperties": false
@@ -77960,6 +80370,17 @@
               "withdrawn"
             ]
           },
+          "expectedCurrentDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "expectedRevision": {
             "type": "integer",
             "minimum": 0,
@@ -77976,6 +80397,7 @@
         },
         "required": [
           "decision",
+          "expectedCurrentDigest",
           "expectedRevision",
           "workspaceId",
           "candidateId"
@@ -77983,6 +80405,46 @@
         "additionalProperties": false
       },
       "catalog.skill-candidate-decide.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-candidate-withdraw.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "candidateId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "workspaceId",
+          "candidateId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.skill-candidate-withdraw.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -78005,6 +80467,17 @@
             "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
+          "expectedCurrentDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "expectedRevision": {
             "type": "integer",
             "minimum": 0,
@@ -78021,6 +80494,7 @@
         },
         "required": [
           "digest",
+          "expectedCurrentDigest",
           "expectedRevision",
           "workspaceId",
           "skillId"
@@ -78057,6 +80531,17 @@
               }
             ]
           },
+          "expectedPinDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "expectedRevision": {
             "type": "integer",
             "minimum": 0,
@@ -78073,6 +80558,7 @@
         },
         "required": [
           "digest",
+          "expectedPinDigest",
           "expectedRevision",
           "workspaceId",
           "skillId"
@@ -88284,6 +90770,27 @@
                   "max"
                 ]
               },
+              "skillSelections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skillId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "skillId",
+                    "digest"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "triggerSource": {
                 "anyOf": [
                   {
@@ -94172,8 +96679,15 @@
                 "type": "object",
                 "properties": {
                   "releaseTag": {
-                    "type": "string",
-                    "pattern": "^v((?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^v((?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "sourceCommit": {
                     "type": "string",
@@ -103376,5 +105890,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:2587e951f670e63cde748b19da9b67612b250a6fc1137c93102d73bddc305d8a"
+  "x-openkit-source-digest": "sha256:72ec2d697a628b04593e84a925f1c7da4aafeda03aad61d1e36f34b897883a99"
 }

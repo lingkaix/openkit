@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   projectWorkspaceCatalogExport,
   reconstructImportedWorkspaceCatalog,
@@ -29,6 +30,7 @@ import {
   projectEffectiveWorkspaceMcpCatalog,
   replaceWorkspaceEffectiveMcpCatalog,
   selectWorkspaceMcpVersion,
+  selectWorkspaceSkillDefault,
   setWorkspaceSkillPin,
   submitWorkspaceSkillCandidate,
   updateWorkspaceMcpBinding,
@@ -40,8 +42,15 @@ function skillTree(body = '# Hello\n'): Array<{
   kind: 'directory' | 'file';
   path: string;
 }> {
+  const content = body.startsWith('---\n')
+    ? body
+    : `---\nname: alpha\ndescription: Exercise retained catalog behavior.\n---\n${body}`;
   return [
-    { contentBase64: Buffer.from(body, 'utf8').toString('base64'), kind: 'file', path: 'SKILL.md' },
+    {
+      contentBase64: Buffer.from(content, 'utf8').toString('base64'),
+      kind: 'file',
+      path: 'SKILL.md',
+    },
   ];
 }
 
@@ -52,7 +61,10 @@ function writeStdioPluginPackage(packageRoot: string, scriptBody: string): void 
     join(packageRoot, 'plugin.json'),
     JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
   );
-  writeFileSync(join(packageRoot, 'skills', 'alpha', 'SKILL.md'), '# Alpha\n');
+  writeFileSync(
+    join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
+    '---\nname: alpha\ndescription: Exercise package import.\n---\n# Alpha\n'
+  );
   writeFileSync(join(packageRoot, 'scripts', 'run.sh'), scriptBody);
   writeFileSync(
     join(packageRoot, 'mcp.json'),
@@ -308,6 +320,212 @@ describe('workspace resource catalog', () => {
       expect(() =>
         loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
       ).toThrow();
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('retains exact Skill provenance when a later PluginVersion has identical Skill bytes', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-provenance-plugin-'));
+    const packageRoot = join(dataRoot, 'plugin-source');
+    try {
+      mkdirSync(join(packageRoot, 'skills', 'alpha'), { recursive: true });
+      writeFileSync(
+        join(packageRoot, 'plugin.json'),
+        JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
+      );
+      writeFileSync(
+        join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
+        '---\nname: alpha\ndescription: Explain the first version.\n---\n# Alpha\n'
+      );
+      const first = importWorkspacePlugin({
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        install: true,
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' },
+        treeRoot: packageRoot,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const original = first.catalog.skills.versions[0]!;
+      expect.soft(original.provenance).toEqual({
+        baseDigest: null,
+        pluginMemberKey: 'skills/alpha',
+        pluginVersionDigest: first.version.digest,
+        sourceCommit: null,
+        sourceSubpath: 'skills/alpha',
+        uploadedSourceId: null,
+      });
+      expect(first.version.members).toEqual([
+        {
+          catalogId: original.entryId,
+          kind: 'skill',
+          packageKey: 'skills/alpha',
+          versionDigest: original.digest,
+        },
+      ]);
+      expect(first.catalog.skills.entries[0]?.currentDigest).toBeNull();
+
+      // Package metadata changes package identity without changing the Skill's immutable origin.
+      writeFileSync(
+        join(packageRoot, 'plugin.json'),
+        JSON.stringify({ name: 'demo-pack', version: '2.0.0' })
+      );
+      const second = importWorkspacePlugin({
+        createdAt: '2026-09-08T00:01:00.000Z',
+        dataRoot,
+        expectedRevision: first.catalog.revision,
+        install: true,
+        producer: { id: testEntityId('usr', 'user_later'), kind: 'user' },
+        treeRoot: packageRoot,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, testEntityId('ws', 'ws_demo'));
+      expect(second.version.digest).not.toBe(first.version.digest);
+      expect(second.version.members).toEqual(first.version.members);
+      expect(reopened.plugins.versions).toEqual([first.version, second.version]);
+      expect(reopened.plugins.installations[0]?.versionDigest).toBe(second.version.digest);
+      expect(reopened.skills.versions).toEqual([original]);
+      expect
+        .soft(reopened.skills.versions[0]?.provenance.pluginVersionDigest)
+        .toBe(first.version.digest);
+      expect(reopened.skills.entries[0]?.currentDigest).toBeNull();
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('retains the exact candidate base without rewriting original PluginVersion membership', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-provenance-candidate-'));
+    const packageRoot = join(dataRoot, 'plugin-source');
+    try {
+      mkdirSync(join(packageRoot, 'skills', 'alpha'), { recursive: true });
+      writeFileSync(
+        join(packageRoot, 'plugin.json'),
+        JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
+      );
+      writeFileSync(
+        join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
+        '---\nname: alpha\ndescription: Explain the first version.\n---\n# Alpha\n'
+      );
+      const imported = importWorkspacePlugin({
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        install: true,
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' },
+        treeRoot: packageRoot,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const original = imported.catalog.skills.versions[0]!;
+      const selected = selectWorkspaceSkillDefault({
+        dataRoot,
+        digest: original.digest,
+        entryId: original.entryId,
+        expectedRevision: imported.catalog.revision,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const pinned = setWorkspaceSkillPin({
+        dataRoot,
+        digest: original.digest,
+        entryId: original.entryId,
+        expectedRevision: selected.revision,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const producer = { id: 'agent_improver', kind: 'agent' as const };
+      const submitted = submitWorkspaceSkillCandidate({
+        baseDigest: original.digest,
+        createdAt: '2026-09-08T00:01:00.000Z',
+        dataRoot,
+        entryId: original.entryId,
+        expectedRevision: pinned.revision,
+        producer,
+        summary: 'Clarify the instructions.',
+        tree: skillTree(
+          '---\nname: alpha\ndescription: Explain the improved version.\n---\n# Improved Alpha\n'
+        ),
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, testEntityId('ws', 'ws_demo'));
+      const improved = reopened.skills.versions.find(
+        (version) => version.digest === submitted.candidate.candidateDigest
+      )!;
+      expect(improved.digest).not.toBe(original.digest);
+      expect.soft(improved.provenance).toEqual({
+        baseDigest: original.digest,
+        pluginMemberKey: null,
+        pluginVersionDigest: null,
+        sourceCommit: null,
+        sourceSubpath: null,
+        uploadedSourceId: null,
+      });
+      expect(improved.producer).toEqual(producer);
+      expect(
+        reopened.skills.versions.find((version) => version.digest === original.digest)
+      ).toEqual(original);
+      expect(reopened.skills.candidates).toEqual([submitted.candidate]);
+      expect(submitted.candidate).toMatchObject({
+        baseDigest: original.digest,
+        disposition: 'proposed',
+        producer,
+      });
+      expect(reopened.plugins.versions).toEqual([imported.version]);
+      expect(reopened.plugins.versions[0]?.members).toEqual([
+        {
+          catalogId: original.entryId,
+          kind: 'skill',
+          packageKey: 'skills/alpha',
+          versionDigest: original.digest,
+        },
+      ]);
+      expect(reopened.plugins.installations).toEqual(imported.catalog.plugins.installations);
+      expect(reopened.skills.entries[0]?.currentDigest).toBe(original.digest);
+      expect(reopened.skills.pins).toEqual(pinned.skills.pins);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('returns retained immutable Skill facts for a same-entry identical-byte reimport', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-provenance-reimport-'));
+    try {
+      const tree = skillTree(
+        '---\nname: alpha\ndescription: Explain the first version.\n---\n# Alpha\n'
+      );
+      const original = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        displayName: 'Alpha',
+        expectedRevision: 0,
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' },
+        tree,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const path = catalogDocumentPath(dataRoot, testEntityId('ws', 'ws_demo'));
+      const retained = annotateCatalogHistory(original.catalog);
+      writeFileSync(path, JSON.stringify(retained));
+      const repeated = importWorkspaceSkill({
+        activate: false,
+        createdAt: '2026-09-08T00:01:00.000Z',
+        dataRoot,
+        displayName: 'Alpha',
+        expectedRevision: original.catalog.revision,
+        id: original.version.entryId,
+        producer: { id: 'agent_later', kind: 'agent' },
+        tree,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, testEntityId('ws', 'ws_demo'));
+      expect.soft(repeated.version).toEqual(original.version);
+      expect.soft(repeated.version).toEqual(repeated.catalog.skills.versions[0]);
+      expect(reopened.skills.versions).toEqual([original.version]);
+      expect(reopened.skills.entries[0]?.currentDigest).toBe(original.version.digest);
+      expect(reopened.skills.candidates).toEqual([]);
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+        ...(retained as object),
+        revision: repeated.catalog.revision,
+      });
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }
@@ -651,8 +869,14 @@ describe('workspace resource catalog', () => {
         join(packageRoot, 'plugin.json'),
         JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
       );
-      writeFileSync(join(packageRoot, 'skills', 'alpha', 'SKILL.md'), '# Alpha\n');
-      writeFileSync(join(packageRoot, 'skills', 'beta', 'SKILL.md'), '# Beta\n');
+      writeFileSync(
+        join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
+        '---\nname: alpha\ndescription: Exercise package import.\n---\n# Alpha\n'
+      );
+      writeFileSync(
+        join(packageRoot, 'skills', 'beta', 'SKILL.md'),
+        '---\nname: beta\ndescription: Exercise package import.\n---\n# Beta\n'
+      );
       writeFileSync(
         join(packageRoot, 'mcp.json'),
         JSON.stringify({
@@ -1004,7 +1228,7 @@ describe('workspace resource catalog', () => {
     }
   });
 
-  it('does not leave failed snapshot staging that blocks later catalog reads', () => {
+  it('rejects file and directory collisions without staging residue and permits corrected import', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-staging-'));
     try {
       expect(() =>
@@ -1017,7 +1241,10 @@ describe('workspace resource catalog', () => {
           producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
           tree: [
             {
-              contentBase64: Buffer.from('# Skill\n', 'utf8').toString('base64'),
+              contentBase64: Buffer.from(
+                '---\nname: broken-tree\ndescription: Exercise failed tree publication.\n---\n# Skill\n',
+                'utf8'
+              ).toString('base64'),
               kind: 'file',
               path: 'SKILL.md',
             },
@@ -1034,7 +1261,7 @@ describe('workspace resource catalog', () => {
           ],
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
-      ).toThrow();
+      ).toThrow(/duplicate path/);
       expect(catalogHasStagingResidue(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')).toBe(
         false
       );

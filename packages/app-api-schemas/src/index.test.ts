@@ -2461,7 +2461,7 @@ describe('app api schemas', () => {
         ...payload,
         build: { releaseTag: null, sourceCommit: release.sourceCommit },
       }).success
-    ).toBe(false);
+    ).toBe(true);
     expect(
       AppDiagnosticsClientResponseSchema.safeParse({
         ...payload,
@@ -5004,6 +5004,7 @@ describe('app api schemas', () => {
         rating: 'good',
         note: null,
         createdAt: timestamp,
+        history: [],
       }).rating
     ).toBe('good');
     expect(

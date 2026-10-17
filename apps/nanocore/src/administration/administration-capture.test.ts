@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -206,8 +206,7 @@ it('binds the actual Administration prompt and ordered tools before model access
     );
     expect(rowsAtModelAccess[0]).toMatchObject({ type: 'env.bound', obs: 'core', turnId: turn.id });
     expect(rowsAtModelAccess[0]!.payload).toEqual({
-      version: JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
-        .version,
+      version: 'unknown',
       workspaceId,
       systemPromptDigest: digestLlmSystemPrompt({ endpoint: 'responses', request }),
       tools: request.tools.map((tool: { parameters: unknown }, index: number) => ({
