@@ -24,7 +24,13 @@ export const STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS = 240_000;
 const ContextRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('workspace'), id: WorkspaceIdSchema }).strict(),
   z.object({ kind: z.literal('thread'), id: ThreadIdSchema }).strict(),
-  z.object({ kind: z.literal('artifact'), id: ArtifactIdSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('artifact'),
+      id: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive().optional(),
+    })
+    .strict(),
   z.object({ kind: z.literal('knowledge'), id: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('item'), id: ItemIdSchema }).strict(),
 ]);
@@ -79,7 +85,7 @@ const StructuredWorkerDelegationReviewContextSchema = z.discriminatedUnion('verd
 ]);
 
 /**
- * Source reference used by delegation preparation records.
+ * Source selector used by delegation preparation; only Artifact references may pin an immutable version.
  */
 export type DelegationContextRef = z.infer<typeof ContextRefSchema>;
 

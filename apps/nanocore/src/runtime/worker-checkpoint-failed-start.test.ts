@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -108,7 +109,11 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     collectTranscript: async () => ({ itemsJsonl: '' }),
     collectWorkspaceChanges: async () => [],
   };
-  const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+  const executor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    backend,
+    coreDb,
+  });
   const setup = createTestAgentSetup({
     requiredCapabilities: provenance ? ['worker.runtime-provenance.v1'] : [],
   });
@@ -225,7 +230,11 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     'ws_00000000-0000-7000-8000-000000000001',
     attempt.inputRef!
   );
-  const restartedExecutor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+  const restartedExecutor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    backend,
+    coreDb,
+  });
   const restartedApp = createApp({
     coreDb,
     dataRoot,
@@ -592,6 +601,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
     }
   });
 
+  // Allow fixture I/O and both byte-proof passes; product deadlines remain unchanged.
   it.each([
     'open',
     'reconnecting',
@@ -904,5 +914,5 @@ describe('checkpoint-owned never-submitted failed start', () => {
       getSchedulerPreparationClaims(f.coreDb).delete(f.attempt.queueEntryId);
       f.cleanup();
     }
-  });
+  }, 60_000);
 });

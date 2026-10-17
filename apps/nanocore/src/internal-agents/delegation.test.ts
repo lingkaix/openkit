@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createStructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
+  serializeStructuredWorkerDelegationRequest,
 } from './delegation.js';
 
 describe('structured worker delegation requests', () => {
@@ -13,6 +14,8 @@ describe('structured worker delegation requests', () => {
       contextRefs: [
         { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
         { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000007', artifactVersion: 7 },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000008' },
       ],
       resources: [
         {
@@ -55,6 +58,8 @@ describe('structured worker delegation requests', () => {
       contextRefs: [
         { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
         { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000007', artifactVersion: 7 },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000008' },
       ],
       resources: [
         {
@@ -89,6 +94,21 @@ describe('structured worker delegation requests', () => {
       escalationConditions: ['Escalate if repository setup is invalid.'],
       reviewContext: null,
     });
+    expect(JSON.parse(serializeStructuredWorkerDelegationRequest(request))).toEqual(request);
+  });
+
+  it('allows positive Artifact versions only on Artifact context references', () => {
+    const refs = StructuredWorkerDelegationRequestSchema.shape.contextRefs;
+    expect(
+      refs.safeParse([
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-0000000003ea', artifactVersion: 0 },
+      ]).success
+    ).toBe(false);
+    expect(
+      refs.safeParse([
+        { kind: 'item', id: 'it_00000000-0000-7000-8000-0000000003ea', artifactVersion: 7 },
+      ]).success
+    ).toBe(false);
   });
 
   it('rejects malformed or oversized structured worker delegation requests', () => {
