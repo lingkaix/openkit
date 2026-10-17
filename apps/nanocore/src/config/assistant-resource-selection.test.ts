@@ -31,7 +31,9 @@ function createSelectionFixture(): { dataRoot: string; path: string } {
         {
           kind: 'file',
           path: 'SKILL.md',
-          contentBase64: Buffer.from(`# ${id}\n`).toString('base64'),
+          contentBase64: Buffer.from(
+            `---\nname: ${id}\ndescription: Guidance for ${id}.\n---\n# ${id}\n`
+          ).toString('base64'),
         },
       ],
       workspaceId: 'ws_selection',
