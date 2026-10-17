@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RequestIdSchema, WorkspaceIdSchema, ThreadIdSchema, TurnIdSchema } from '../common/ids.js';
+import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '../common/ids.js';
 import { ActorRefSchema, UserActorRefSchema } from './actor.js';
 
 /** Exact durable notebook owner; query context and source restrictions remain independent. */
@@ -13,15 +13,17 @@ export const KnowledgeOwnerScopeSchema = z.union([
 export type KnowledgeOwnerScope = z.infer<typeof KnowledgeOwnerScopeSchema>;
 
 /** The native maintenance outcome retained on its existing terminal Status Item and returned on command replay. */
-export const KnowledgeMaintenanceOutcomeSchema = z.object({
-  threadId: ThreadIdSchema,
-  turnId: TurnIdSchema,
-  outcome: z.enum(['published', 'review-required', 'no-change', 'skipped', 'failed']),
-  notebookRevision: z.string().min(1),
-  candidateRevision: z.string().min(1).optional(),
-  proposalId: z.string().min(1).optional(),
-  summary: z.string().min(1),
-}).strict();
+export const KnowledgeMaintenanceOutcomeSchema = z
+  .object({
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    outcome: z.enum(['published', 'review-required', 'no-change', 'skipped', 'failed']),
+    notebookRevision: z.string().min(1),
+    candidateRevision: z.string().min(1).optional(),
+    proposalId: z.string().min(1).optional(),
+    summary: z.string().min(1),
+  })
+  .strict();
 
 /** Exact SHA-256 content identity, distinct from an opaque Git notebook revision. */
 export const KnowledgeContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);

@@ -124,6 +124,8 @@ Discover `knowledge.notebook.history`, `knowledge.notebook.diff` and `knowledge.
 
 Present knowledge proposals and conflicts to the user with their evidence and scope. Resolve or promote them only through an exposed operation and explicit user direction when that decision changes shared knowledge.
 
+Read `knowledge.proposal.read` before accepting a saved Proposal. First read its changed paths, then request each path and follow `nextOffset` until it is null. Offsets count Unicode code points. Retain the returned Proposal digest, base and candidate commits for the human decision. Every part must match that tuple; a stale or unavailable preview needs inspection before another decision. Web presents the same complete diff before enabling acceptance.
+
 A retrieved page is not automatically a sufficient answer. `knowledge.ask` runs the configured Knowledge Manager model with governed retrieval and page reads. It returns scope-qualified citations and uncertainty, with its own Thread, Turn and usage. Workspace work may also read Server Knowledge when the current Server owner admits the actor. User Memory does not enter shared work. The existing `knowledge.answer` operation uses the same agent path.
 
 Use `openkit ops describe knowledge.ask` and `openkit ops call knowledge.ask --input -` for a one-shot question. Supply `workspaceId` and `question` in the JSON input. Use `knowledge.tell` for explicit information and Sources, or `knowledge.maintain` for an `instruction` with optional `pageIds` and `sourceIds`. Describe each operation first. A tell grants no publication authority: read its native outcome, and review the exact candidate when required. Retain the request identity for replay; use a new request only for new work. The daily Workspace switch defaults off and is separate from publication delegation. Server and User maintenance execution remain separate pending joins.
@@ -278,6 +280,16 @@ Keep the user's objective open-ended. Discover the operations needed to accompli
 Use an admitted Assistant or selected Worker to create and update a Kernel app through the available native Kernel tools. A published native view in the same Thread can read and edit that same data. Expand Source history to inspect its admitted answer or Tool result.
 
 A reopened presentation shows historical values. Use its Refresh action to read current data. Save applies the form's explicit record update through Core. An error or stale-write conflict keeps the unsaved input visible; inspect the error and refresh before the next explicit save. Refresh does not save the draft. Unsaved input is local to the open browser view and does not survive a reload. Richer operators, destructive writes, HTML delegates and saved views retain their separate admission gates.
+
+## Manage Light App Definitions
+
+Open Catalog in the selected Workspace and use Light App definitions. Import a declarative JSON definition with a display name and catalog ID, or import an exported history. History shows each immutable version, its parent, actor and time. Export carries definitions and history, without app business data. A source default or pin selects a version for a later explicit action; changing it does not migrate a running app. Imported history does not automatically select or pin its source version.
+
+Use Create app to instantiate the selected version, or select an existing app and use Apply definition with current app and schema revisions. Supported changes are new collections, new optional fields, rename with retained IDs, and field removal. Field removal deletes those values from the current app. Every definition or kernel format migration first takes a consistent SQLite snapshot. No user script or down migration runs.
+
+Select a recovery snapshot and confirm Restore only when replacing later data is intended. New Restore and Upgrade requests require an active app and do not reactivate retired apps. Restore replaces the data file and its definition and format markers; later app writes are lost. A snapshot with an older supported kernel format remains unavailable until explicit Upgrade. Snapshot recovery files stay local; the logical Workspace export contains current admitted schema and records plus catalog history, while a deployment data-root backup includes local snapshots. Errors do not repair authority or replay a mutation automatically. Refresh and inspect current state before a new explicit request.
+
+The same controls are available through discovered catalog.light-app and kernel operations in the administrator CLI. Use describe for exact current input, retain request IDs for retries and use the returned revisions for a new action.
 
 ## Locate Results
 

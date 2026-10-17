@@ -502,11 +502,15 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
         (input.auditLineage === undefined
           ? null
           : RequestIdSchema.parse(input.auditLineage.commandRequestId));
-      const extensions = input.deliveredKnowledgeAnswer === undefined ? call.extensions_json
-        : JSON.stringify(CanonicalCapabilityCallExtensionsSchema.parse({
-          ...(call.extensions_json ? JSON.parse(call.extensions_json) : {}),
-          'openkit.knowledge/delivery': { answer: input.deliveredKnowledgeAnswer },
-        }));
+      const extensions =
+        input.deliveredKnowledgeAnswer === undefined
+          ? call.extensions_json
+          : JSON.stringify(
+              CanonicalCapabilityCallExtensionsSchema.parse({
+                ...(call.extensions_json ? JSON.parse(call.extensions_json) : {}),
+                'openkit.knowledge/delivery': { answer: input.deliveredKnowledgeAnswer },
+              })
+            );
       capabilityCallFromRow({
         ...call,
         completed_at: completedAt,

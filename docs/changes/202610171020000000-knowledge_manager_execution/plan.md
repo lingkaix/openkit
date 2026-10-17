@@ -31,6 +31,7 @@ At 11:07Z, the engineer clarified that Server Knowledge shares facts across Work
 | Tell and explicit or daily maintenance start fresh bounded Turns in one maintenance Thread | Maintenance adapter and recurring scan | Maintenance and schedule suites |
 | Inputs retain base, source range, trigger, instructions and human changes; own KM work is excluded | Turn execution metadata and admitted snapshot | Maintenance input and human-edit regressions |
 | An admitted fixed-base candidate publishes under delegation or becomes a real Proposal | In-memory editor and existing publisher/Review | Editor, publisher and maintenance suites |
+| Required review exposes the complete saved diff and acceptance submits its displayed identity | Existing Proposal preview and Web Knowledge row | Native preview and Web complete-part/failed-read regressions |
 | A failed or skipped run remains visible; replay never repeats model work or publication | Native Status Item and existing command receipt | Late Provider failure and exact replay regression; app schedule regression |
 | Compaction uses the shared context-summary Item, pins model/strategy/threshold and retains exact history | Internal loop, history and shared context evidence | Compaction, rolling, history and portability suites |
 

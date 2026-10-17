@@ -11,6 +11,7 @@ import {
   Server,
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
+import { operationToolName } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import {
@@ -23,10 +24,6 @@ import {
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
 import type { AuthVariables } from './auth/middleware.js';
-import type { OperationInvocationDependencies } from './operation-composition.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
-import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
-import { operationToolName } from '@openkit/app-api-schemas';
 import { currentWorkerLineageWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
@@ -36,11 +33,14 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   DISPLAY_PROJECTION_REFRESH_FIELDS,
   type FsStore,
 } from './lib/store.js';
+import type { OperationInvocationDependencies } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -447,20 +447,44 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       workspaceDb: activeWorkspaceDb,
                       knowledgeAgent: input.knowledgeAgent,
                       knowledgeCallId: call.id,
-                      knowledgePublicationAdmission: (publication) => readWorkspaceNotebookAdmission({
-                        store: input.store, coreDb: input.coreDb!, workspaceDb: activeWorkspaceDb!,
-                        request: publication,
-                        actor: { kind: 'user', id: responsibleUserIdForActor(environmentPackage.scope.triggerActor)! },
-                        currentAuthority: () => {
-                          requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-                          requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
-                          if (!currentWorkerLineageWorkspaceAuthority(input.coreDb!,
-                            { ...environmentPackage.scope, packageSnapshotId: environmentPackage.snapshotId }, 'knowledge.write', true)) throw mcpDeniedError();
-                        },
-                        notebook: new KnowledgeNotebook({ repositoryPath: join(input.coreDb!.dataRoot, 'workspaces', environmentPackage.scope.workspaceId, 'knowledge', 'notebook.git') }),
-                        runtimeConfigManager: { current: input.runtimeConfig },
-                        workspaceMutationAdmission: input.workspaceMutationAdmission,
-                      }),
+                      knowledgePublicationAdmission: (publication) =>
+                        readWorkspaceNotebookAdmission({
+                          store: input.store,
+                          coreDb: input.coreDb!,
+                          workspaceDb: activeWorkspaceDb!,
+                          request: publication,
+                          actor: {
+                            kind: 'user',
+                            id: responsibleUserIdForActor(environmentPackage.scope.triggerActor)!,
+                          },
+                          currentAuthority: () => {
+                            requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+                            requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+                            if (
+                              !currentWorkerLineageWorkspaceAuthority(
+                                input.coreDb!,
+                                {
+                                  ...environmentPackage.scope,
+                                  packageSnapshotId: environmentPackage.snapshotId,
+                                },
+                                'knowledge.write',
+                                true
+                              )
+                            )
+                              throw mcpDeniedError();
+                          },
+                          notebook: new KnowledgeNotebook({
+                            repositoryPath: join(
+                              input.coreDb!.dataRoot,
+                              'workspaces',
+                              environmentPackage.scope.workspaceId,
+                              'knowledge',
+                              'notebook.git'
+                            ),
+                          }),
+                          runtimeConfigManager: { current: input.runtimeConfig },
+                          workspaceMutationAdmission: input.workspaceMutationAdmission,
+                        }),
                       ...(input.fileAdmission ? { fileAdmission: input.fileAdmission } : {}),
                       ...(input.captureArtifact ? { captureArtifact: input.captureArtifact } : {}),
                       signal: toolCancellation.signal,
@@ -468,10 +492,24 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                         requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
                         requireRawOutputCapabilityAdmission(activeWorkspaceDb!, environmentPackage);
                         requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
-                        if ([operationToolName('knowledge.ask'), operationToolName('knowledge.tell')].includes(request.params.name) &&
-                          !currentWorkerLineageWorkspaceAuthority(input.coreDb!,
-                            { ...environmentPackage.scope, packageSnapshotId: environmentPackage.snapshotId },
-                            request.params.name === operationToolName('knowledge.ask') ? 'knowledge.read' : 'knowledge.write', true)) throw mcpDeniedError();
+                        if (
+                          [
+                            operationToolName('knowledge.ask'),
+                            operationToolName('knowledge.tell'),
+                          ].includes(request.params.name) &&
+                          !currentWorkerLineageWorkspaceAuthority(
+                            input.coreDb!,
+                            {
+                              ...environmentPackage.scope,
+                              packageSnapshotId: environmentPackage.snapshotId,
+                            },
+                            request.params.name === operationToolName('knowledge.ask')
+                              ? 'knowledge.read'
+                              : 'knowledge.write',
+                            true
+                          )
+                        )
+                          throw mcpDeniedError();
                         if (request.params.name === 'work_submit_artifact')
                           requireCurrentArtifactWorkspaceAuthority(
                             input.coreDb!,
@@ -488,7 +526,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     status: 'succeeded',
                     workspaceDb: activeWorkspaceDb,
                     ...(request.params.name === operationToolName('knowledge.ask')
-                      ? { deliveredKnowledgeAnswer: JSON.stringify(delivered) } : {}),
+                      ? { deliveredKnowledgeAnswer: JSON.stringify(delivered) }
+                      : {}),
                   });
                   return delivered;
                 }

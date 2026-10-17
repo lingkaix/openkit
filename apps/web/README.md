@@ -6,6 +6,8 @@ This guide owns the package's local purpose, boundaries, commands, and workflow.
 
 ## Boundaries
 
+Knowledge Proposal rows read the saved candidate through the Core Client before acceptance. The preview fixes the Proposal digest and base/candidate revisions. Each changed page is read in bounded parts and marked inspected; a summary or partial diff cannot enable acceptance. Current read failures hide preview bytes. Rejection and deferral retain their existing independent actions. Proposal preview state is keyed by the Workspace and exact candidate identity.
+
 The Web UI is a product surface over NanoCore and App API contracts, and it consumes the server only through the composed `@openkit/core-client` sub-clients. Its shared schema and client imports must remain browser-safe through every transitive package export; the complete `@openkit/config-schema` root includes Node-only modules and cannot enter this graph.
 
 [`docs/specs/20260628-web_product_surface_projection.md`](../../docs/specs/20260628-web_product_surface_projection.md) owns that posture, ordinary-user inclusion and dispositions, and the current implementation projection. [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md) owns the implementation stack, the token bridge, the separation of server state and UI state, and the shared Composer component boundary.
@@ -54,6 +56,8 @@ pnpm --filter @openkit/web brand:generate
 ```
 
 Do not hand-edit the generated SVG, PNG, or ICO files.
+
+The selected-Workspace Catalog mounts LightAppDefinitions for definition JSON/history import and export, immutable version inspection, default and pin selection, explicit native app creation and activation, and confirmed local snapshot restoration. It uses definition-derived Core Client operations; query state is a projection and each mutation is an explicit user action without automatic retry. The focused source suite is src/screens/workspace/LightAppDefinitions.test.tsx, and e2e/light-app-catalog.spec.ts proves the actual isolated browser-to-native recovery journey.
 
 ## Commands
 

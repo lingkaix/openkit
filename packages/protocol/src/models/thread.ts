@@ -4,7 +4,11 @@ import { ThreadIdSchema, UserIdSchema, WorkspaceIdSchema } from '../common/ids.j
 import { TimestampSchema } from '../common/timestamps.js';
 
 /** Server-authored product entry that owns one Thread's continuation path. */
-export const ThreadEntryPathSchema = z.enum(['conversation', 'administration', 'knowledge-manager']);
+export const ThreadEntryPathSchema = z.enum([
+  'conversation',
+  'administration',
+  'knowledge-manager',
+]);
 
 /**
  * A long-lived conversation/work container within a workspace.

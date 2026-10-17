@@ -310,6 +310,12 @@ export type CommandRequestName =
   | 'material.restore'
   | 'kernel.apps.create'
   | 'kernel.schema.update'
+  | 'kernel.snapshots.rollback'
+  | 'kernel.format.upgrade'
+  | 'catalog.light-app-import'
+  | 'catalog.light-app-history-import'
+  | 'catalog.light-app-select'
+  | 'catalog.light-app-pin'
   | 'kernel.apps.retire'
   | 'kernel.records.create'
   | 'kernel.records.update'
@@ -320,6 +326,8 @@ export type CommandRequestName =
  * Resource kind returned by an idempotent command.
  */
 export type CommandRequestResponseKind =
+  | 'light_app_definition'
+  | 'light_app_catalog'
   | 'skill_version'
   | 'skill_catalog'
   | 'skill_candidate'

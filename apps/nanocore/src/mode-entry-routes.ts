@@ -3086,7 +3086,9 @@ export function createConversationService({
         );
         const completedAt = new Date().toISOString();
         const turn = inputTurn ?? createChatTurn(completedAt);
-        const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.reference).join(', ');
+        const sourceTitles = knowledgeAnswer.citations
+          .map((citation) => citation.reference)
+          .join(', ');
         const answerItem = store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
           workspaceId,

@@ -5,8 +5,8 @@ import {
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
 } from '@openkit/protocol';
-import type { FsStore } from '../lib/store.js';
 import type { Actor } from '../auth/identity.js';
+import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -92,8 +92,9 @@ export function readInternalContextEvidence(
           kind: 'user' as const,
           id: input.actor!.userId,
         },
-        ...(input.actor ?? input.nativeAuthority?.requestActor
-          ? { requestActor: input.actor ?? input.nativeAuthority?.requestActor } : {}),
+        ...((input.actor ?? input.nativeAuthority?.requestActor)
+          ? { requestActor: input.actor ?? input.nativeAuthority?.requestActor }
+          : {}),
         ...(input.serverKnowledgeActor ? { serverKnowledgeActor: input.serverKnowledgeActor } : {}),
         outputThreadId:
           input.strategy === 'compaction'

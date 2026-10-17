@@ -20,10 +20,10 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   ListHumanAttentionResponseSchema,
+  operationToolName,
   StartTaskModeResponseSchema,
   SubmitConversationResponseSchema,
   WorkspaceExportResponseSchema,
-  operationToolName,
 } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
@@ -41,7 +41,11 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from './auth/nanohost-transport-session.js';
-import { finishCapabilityCall, startCapabilityCall, listWorkspaceCapabilityCalls } from './capability/usage-ledger.js';
+import {
+  finishCapabilityCall,
+  listWorkspaceCapabilityCalls,
+  startCapabilityCall,
+} from './capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -490,8 +494,13 @@ describe('worker MCP routes', () => {
     recordMcpWorkerLineage(coreDb, environmentPackage);
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const app = new Hono();
-    const knowledgeAnswer = { threadId: testEntityId('th', 'km-query'), turnId: testEntityId('tu', 'km-query'),
-      answer: 'The cited answer has exact bytes: é.', citations: [], uncertainty: 'Fixture delivery only.' };
+    const knowledgeAnswer = {
+      threadId: testEntityId('th', 'km-query'),
+      turnId: testEntityId('tu', 'km-query'),
+      answer: 'The cited answer has exact bytes: é.',
+      citations: [],
+      uncertainty: 'Fixture delivery only.',
+    };
     const askKnowledge = vi.fn(async () => knowledgeAnswer);
     registerWorkerMcpRoutes({
       app,
@@ -569,19 +578,33 @@ describe('worker MCP routes', () => {
         'work_read_peer',
         'work_submit_artifact',
       ]);
-      const delivered = await workClient.callTool({ name: operationToolName('knowledge.ask'), arguments: { question: 'What is known?' } });
-      expect(askKnowledge).toHaveBeenCalledWith(expect.objectContaining({
-        caller: 'worker', workspaceId: turn.workspaceId, question: 'What is known?',
-        access: expect.objectContaining({ outputThreadId: turn.threadId, outputTurnId: turn.id }),
-      }));
+      const delivered = await workClient.callTool({
+        name: operationToolName('knowledge.ask'),
+        arguments: { question: 'What is known?' },
+      });
+      expect(askKnowledge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          caller: 'worker',
+          workspaceId: turn.workspaceId,
+          question: 'What is known?',
+          access: expect.objectContaining({ outputThreadId: turn.threadId, outputTurnId: turn.id }),
+        })
+      );
       const knowledgeDb = openWorkspaceDb(dataRoot, turn.workspaceId);
       try {
-        const retained = listWorkspaceCapabilityCalls(knowledgeDb, turn.workspaceId)
-          .find((call) => call.extensions?.['openkit.knowledge/delivery']);
+        const retained = listWorkspaceCapabilityCalls(knowledgeDb, turn.workspaceId).find(
+          (call) => call.extensions?.['openkit.knowledge/delivery']
+        );
         expect(retained?.status).toBe('succeeded');
-        expect(JSON.parse(retained!.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(delivered);
-        expect(delivered.content).toEqual([{ type: 'text', text: JSON.stringify(knowledgeAnswer) }]);
-      } finally { knowledgeDb.sqlite.close(); }
+        expect(JSON.parse(retained!.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
+          delivered
+        );
+        expect(delivered.content).toEqual([
+          { type: 'text', text: JSON.stringify(knowledgeAnswer) },
+        ]);
+      } finally {
+        knowledgeDb.sqlite.close();
+      }
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
       try {

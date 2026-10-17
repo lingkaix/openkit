@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { KnowledgeMaintenanceOutcomeSchema } from './knowledge-notebook.js';
 import {
   AgentIdSchema,
   ArtifactIdSchema,
@@ -14,6 +13,7 @@ import {
 } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { ActorRefSchema, UserActorRefSchema } from './actor.js';
+import { KnowledgeMaintenanceOutcomeSchema } from './knowledge-notebook.js';
 
 /**
  * Closed lifecycle states shared by all turn item records.
