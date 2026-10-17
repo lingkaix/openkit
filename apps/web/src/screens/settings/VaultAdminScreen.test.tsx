@@ -17,7 +17,7 @@ const STATUS = {
   secret: POISON,
 };
 
-/** Only the three accepted deployment Vault operations are available. */
+/** Deployment lifecycle and redacted shared-MCP inventory operations are available. */
 function makeClient(): CoreClient {
   return {
     app: {},
@@ -25,6 +25,12 @@ function makeClient(): CoreClient {
       'vault.status': vi.fn().mockResolvedValue(STATUS),
       'vault.unlock': vi.fn().mockResolvedValue({ ...STATUS, state: 'available' }),
       'vault.lock': vi.fn().mockResolvedValue(STATUS),
+      'vault.server-mcp-secret-create': vi.fn(),
+      'vault.server-mcp-reference-list': vi.fn().mockResolvedValue({ items: [] }),
+      'vault.server-mcp-grant-list': vi.fn().mockResolvedValue({ items: [] }),
+      'vault.server-mcp-injection-plan-list': vi.fn().mockResolvedValue({ items: [] }),
+      'vault.server-mcp-injection-receipt-list': vi.fn().mockResolvedValue({ items: [] }),
+      'vault.server-use-list': vi.fn().mockResolvedValue({ vaultUseRecords: [] }),
     },
   } as unknown as CoreClient;
 }
@@ -236,6 +242,7 @@ describe('Vault backend administration', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Lock' }));
     await screen.findByRole('alert');
     expect(screen.getByRole('button', { name: 'Lock' })).toBeDisabled();
+    expect(screen.queryByLabelText('Shared MCP secret value')).not.toBeInTheDocument();
     expectSafeCaches(queryClient);
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByText('locked', { exact: true });
@@ -304,4 +311,30 @@ describe('Vault backend administration', () => {
     expect(client.operations['vault.unlock']).not.toHaveBeenCalled();
     expect(client.operations['vault.lock']).not.toHaveBeenCalled();
   });
+});
+
+it('blocks Vault lock during a pending shared-MCP material write', async () => {
+  const client = makeClient();
+  vi.mocked(client.operations['vault.status']).mockResolvedValue({ ...STATUS, state: 'available' });
+  let finish = () => {};
+  vi.mocked(client.operations['vault.server-mcp-secret-create']).mockImplementationOnce(
+    () =>
+      new Promise<never>((_resolve, reject) => {
+        finish = () => reject(new Error(POISON));
+      })
+  );
+  const { queryClient } = renderScreen(client);
+  const material = await screen.findByLabelText('Shared MCP secret value');
+  await waitFor(() => expect(material).toBeEnabled());
+  await userEvent.type(material, POISON);
+  await userEvent.click(screen.getByRole('button', { name: 'Add shared MCP secret' }));
+  await waitFor(() =>
+    expect(client.operations['vault.server-mcp-secret-create']).toHaveBeenCalledTimes(1)
+  );
+  expect(screen.getByRole('button', { name: 'Lock' })).toBeDisabled();
+  expect(material).toHaveValue('');
+  expect(client.operations['vault.lock']).not.toHaveBeenCalled();
+  await act(async () => finish());
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Lock' })).toBeEnabled());
+  expectSafeCaches(queryClient);
 });

@@ -110,6 +110,8 @@ const RESPONSE_ID_CASES = [
   ['knowledge_proposal_review', 'kr'],
   ['generative_presentation', 'pres'],
   ['worker_environment', 'wst'],
+  ['vault_reference', 'vault'],
+  ['vault_grant', 'grant'],
 ] as const satisfies readonly (readonly [CommandRequestResponseKind, EntityKind])[];
 
 describe('kind-named command response pointers', () => {

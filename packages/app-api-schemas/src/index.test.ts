@@ -5766,7 +5766,7 @@ describe('WP5 Workspace sharing schemas', () => {
     accessCause: 'membership',
     workspace,
     ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-    effectiveRole: 'owner',
+    isOwner: true,
     registryRevision: 4,
     membershipRevision: 2,
   } as const;
@@ -5774,8 +5774,8 @@ describe('WP5 Workspace sharing schemas', () => {
     workspaceId: workspace.id,
     userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     status: 'active',
-    accessLevel: 'editor',
-    effectiveRole: 'owner',
+
+    isOwner: true,
     invitationId: null,
     joinedAt: timestamp,
     removedAt: null,
@@ -5787,7 +5787,7 @@ describe('WP5 Workspace sharing schemas', () => {
     invitationId: 'inv_00000000-0000-745d-88a0-12495fca5f0d',
     workspaceId: workspace.id,
     inviteeUserId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
-    proposedAccessLevel: 'viewer',
+
     inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     effectiveStatus: 'pending',
     expiresAt: timestamp,
@@ -5801,7 +5801,7 @@ describe('WP5 Workspace sharing schemas', () => {
   const accessRecovery = {
     workspaceId: workspace.id,
     ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-    administratorRole: null,
+    administratorMembershipStatus: null,
     registryRevision: 4,
   } as const;
   const workspaceDeletion = {
@@ -5818,8 +5818,8 @@ describe('WP5 Workspace sharing schemas', () => {
     expect(
       appApiSchemas.ListAuthorizedWorkspacesResponseSchema.parse({
         items: [authorizedWorkspace],
-      }).items[0]?.effectiveRole
-    ).toBe('owner');
+      }).items[0]?.isOwner
+    ).toBe(true);
     expect(
       appApiSchemas.ListWorkspaceMembersResponseSchema.parse({ items: [activeOwner] }).items[0]
         ?.revision
@@ -5900,7 +5900,6 @@ describe('WP5 Workspace sharing schemas', () => {
       appApiSchemas.CreateWorkspaceInvitationRequestSchema.parse({
         requestId,
         inviteeEmail: 'invitee@example.com',
-        proposedAccessLevel: 'viewer',
       }).inviteeEmail
     ).toBe('invitee@example.com');
 
@@ -5916,13 +5915,10 @@ describe('WP5 Workspace sharing schemas', () => {
       expect(schema.safeParse({ requestId, expectedRevision: 0 }).success).toBe(false);
     }
 
+    expect(Object.hasOwn(appApiSchemas, 'ChangeWorkspaceMemberAccessRequestSchema')).toBe(false);
     expect(
-      appApiSchemas.ChangeWorkspaceMemberAccessRequestSchema.safeParse({
-        requestId,
-        expectedRevision: 2,
-        accessLevel: 'editor',
-      }).success
-    ).toBe(true);
+      Object.hasOwn(appApiSchemas.OPERATION_DEFINITIONS, 'workspace.member-access-change')
+    ).toBe(false);
     expect(
       appApiSchemas.TransferWorkspaceOwnershipRequestSchema.safeParse({
         requestId,
@@ -5930,7 +5926,7 @@ describe('WP5 Workspace sharing schemas', () => {
         expectedRegistryRevision: 4,
       }).success
     ).toBe(true);
-    for (const action of ['add-self-as-editor', 'transfer-ownership-to-self']) {
+    for (const action of ['add-self-as-member', 'transfer-ownership-to-self']) {
       expect(
         appApiSchemas.RecoverWorkspaceAccessRequestSchema.safeParse({
           action,
@@ -6067,7 +6063,7 @@ describe('WP5 Workspace sharing schemas', () => {
     expect(
       appApiSchemas.WorkspaceAccessRecoveryStateSchema.safeParse({
         ...accessRecovery,
-        administratorRole: 'administrator',
+        administratorMembershipStatus: 'administrator',
       }).success
     ).toBe(false);
     expect(
@@ -6086,12 +6082,12 @@ describe('WP5 Workspace sharing schemas', () => {
     expect(
       appApiSchemas.WorkspaceMemberSchema.safeParse({
         ...activeOwner,
-        accessLevel: 'viewer',
+        isOwner: 'owner',
       }).success
     ).toBe(false);
     for (const mismatch of [
-      { accessLevel: 'viewer', effectiveRole: 'editor' },
-      { accessLevel: 'editor', effectiveRole: 'viewer' },
+      { accessLevel: 'viewer', isOwner: false },
+      { accessLevel: 'editor', isOwner: false },
     ] as const) {
       expect(
         appApiSchemas.WorkspaceMemberSchema.safeParse({
@@ -6114,12 +6110,20 @@ describe('WP5 Workspace sharing schemas', () => {
         acceptedAt: timestamp,
       }).success
     ).toBe(true);
-    for (const forbiddenField of ['organizationId', 'tenantId', 'storageOwnerUserId', 'rawToken']) {
+    for (const forbiddenField of [
+      'organizationId',
+      'tenantId',
+      'storageOwnerUserId',
+      'rawToken',
+      'proposedAccessLevel',
+      'accessLevel',
+      'effectiveRole',
+    ]) {
       expect(
         appApiSchemas.CreateWorkspaceInvitationRequestSchema.safeParse({
           requestId,
           inviteeEmail: 'invitee@example.com',
-          proposedAccessLevel: 'viewer',
+
           [forbiddenField]: 'forbidden',
         }).success
       ).toBe(false);

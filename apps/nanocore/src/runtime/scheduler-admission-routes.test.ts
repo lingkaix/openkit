@@ -63,7 +63,7 @@ describe('scheduler admission routes', () => {
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
-        effectiveRole: 'owner',
+        isOwner: true,
         kind: 'workspace',
         policyOperation: 'turn.run',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -157,7 +157,7 @@ describe('scheduler admission routes', () => {
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
-        effectiveRole: 'owner',
+        isOwner: true,
         kind: 'workspace',
         policyOperation: 'turn.run',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -272,7 +272,7 @@ describe('scheduler admission routes', () => {
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       c.set('workspaceAccess', {
-        effectiveRole: 'owner',
+        isOwner: true,
         kind: 'workspace',
         policyOperation: 'turn.run',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

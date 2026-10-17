@@ -16,6 +16,8 @@ import {
   ThreadIdSchema,
   TurnIdSchema,
   UserIdSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -154,6 +156,9 @@ const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<
   light_app_batch: null,
   generative_presentation: PresentationIdSchema,
   worker_environment: WorkerStorageTargetIdSchema,
+  catalog_mcp: null,
+  vault_reference: VaultReferenceIdSchema,
+  vault_grant: VaultGrantIdSchema,
 };
 
 const COMMAND_REQUEST_SELECT = `SELECT

@@ -1,9 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { recordServerAuditEvent } from './audit-events.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
@@ -90,6 +93,90 @@ describe('injection receipts', () => {
     }
   });
 
+  it('requires exact human delivery Audit for a preview receipt with no Worker lineage', () => {
+    const coreDb = createCoreDb();
+    try {
+      createVaultReference(coreDb, {
+        referenceId: testEntityId('vault', 'preview-reference'),
+        ownerScope: 'server',
+        backendKind: 'encrypted-file',
+        secretKind: 'mcp-token',
+        displayName: 'Preview',
+      });
+      createVaultGrant(coreDb, {
+        grantId: testEntityId('grant', 'preview-grant'),
+        vaultReferenceId: testEntityId('vault', 'preview-reference'),
+        ownerScope: 'server',
+        lifetime: 'server',
+        allowedInjectionPaths: ['gateway-only'],
+      });
+      createVaultInjectionPlan(coreDb, {
+        planId: 'preview_plan',
+        grantId: testEntityId('grant', 'preview-grant'),
+        capabilityId: 'mcp.list_tools',
+        injectionVisibility: 'gateway-only',
+        expirationBehavior: 'grant-lifetime',
+        revocationBehavior: 'close-temporary-gateway-session',
+        redactionRule: 'exact-resolved-material',
+        backendCapabilityRequirement: 'mcp-gateway:http',
+      });
+      const receipt = {
+        receiptId: 'preview_receipt',
+        planId: 'preview_plan',
+        grantId: testEntityId('grant', 'preview-grant'),
+        backendSummary: 'mcp-gateway:http:preview',
+        injectedAt: '2026-07-05T00:10:00.000Z',
+        revocationStatus: 'active' as const,
+      };
+      const delivery = {
+        coreDb,
+        actor: { kind: 'user' as const, id: testEntityId('usr', 'preview-administrator') },
+        workspaceId: null,
+        requestId: randomUUID(),
+        vaultGrantId: testEntityId('grant', 'preview-grant'),
+        action: 'administration.mcp-discovery-preview.delivery',
+        resource: 'vault-injection-plan:preview_plan',
+        outcome: 'succeeded' as const,
+        summary: 'Synthetic completed transport delivery.',
+      };
+      for (const patch of [
+        { action: 'administration.mcp-discovery-preview' },
+        { outcome: 'failed' as const },
+        { resource: 'vault-injection-plan:another_plan' },
+        { vaultGrantId: testEntityId('grant', 'another-preview-grant') },
+        { requestId: null },
+        {
+          actor: {
+            kind: 'system' as const,
+            id: 'system',
+            responsibleUserId: testEntityId('usr', 'preview-administrator'),
+          },
+        },
+      ]) {
+        const event = recordServerAuditEvent({ ...delivery, ...patch });
+        expect(() =>
+          createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: event.id })
+        ).toThrow();
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+      }
+      expect(() =>
+        createVaultInjectionReceipt(coreDb, {
+          ...receipt,
+          auditEventId: testEntityId('aud', 'missing-preview-audit'),
+        })
+      ).toThrow();
+      const audit = recordServerAuditEvent(delivery);
+      const created = createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: audit.id });
+      expect(created).toMatchObject({
+        agentSessionId: null,
+        capabilityCallId: null,
+        auditEventId: audit.id,
+      });
+      expect(createVaultInjectionReceipt(coreDb, { ...created })).toEqual(created);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
   it('requires an existing plan, matching grant, and a session or capability call', () => {
     const coreDb = createCoreDb();
 

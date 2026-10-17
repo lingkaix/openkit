@@ -13,6 +13,7 @@ import {
   TextField,
 } from '../../primitives';
 import { useCurrentWorkspaceId } from './data';
+import { ServerVaultSecretsPanel } from './ServerVaultSecretsPanel';
 import { redactSecretShapedText } from './secret-safe';
 import { VaultSecretsPanel } from './VaultSecretsPanel';
 
@@ -166,8 +167,15 @@ export function VaultAdminScreen() {
               Refresh status
             </Button>
           </Card>
-          {status.data?.state === 'available' && !operation.isPending ? (
-            <SelectedWorkspaceSecrets />
+          {status.data?.state === 'available' &&
+          !status.isFetching &&
+          !status.isError &&
+          !operation.isPending &&
+          !operation.isError ? (
+            <>
+              <SelectedWorkspaceSecrets />
+              <ServerVaultSecretsPanel />
+            </>
           ) : null}
           {operation.isPending ? (
             <p role="status" className="text-sm text-fg-muted">

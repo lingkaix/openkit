@@ -3156,6 +3156,7 @@ describe('createConfiguredTurnExecutor', () => {
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
+    // Three resident Workspaces and the dispatch database exceed the default budget under contention.
   }, 60_000);
 
   // The runner covers real fixture setup and publication; product deadlines stay unchanged.
@@ -12832,7 +12833,7 @@ describe('createConfiguredTurnExecutor', () => {
         insertFactoryUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001');
         coreDb.sqlite
           .prepare(
-            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,access_level,revision,joined_at,created_at,updated_at) VALUES (?, 'usr_00000000-0000-7000-8000-000000000001','active','editor',1,?,?,?)"
+            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,revision,joined_at,created_at,updated_at) VALUES (?, 'usr_00000000-0000-7000-8000-000000000001','active',1,?,?,?)"
           )
           .run(
             residentPackage.scope.workspaceId,

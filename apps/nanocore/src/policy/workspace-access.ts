@@ -1,5 +1,4 @@
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
-import type { WorkspaceRole } from '../workspace-membership.js';
 
 /** Closed V1 product-operation to NGAC access-right registry. */
 export const PRODUCT_OPERATION_ACCESS_RIGHTS = {
@@ -36,120 +35,83 @@ export const PRODUCT_OPERATION_ACCESS_RIGHTS = {
 /** Product operation registered by the V1 authorization vocabulary. */
 export type ProductOperation = keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS;
 
-/** Product operations governed directly by an active Workspace fixed role. */
-type WorkspaceRoleOperation = Exclude<
-  ProductOperation,
-  'api.call' | 'deployment.recover' | 'invitation.respond' | 'administration.configuration.apply'
->;
+/** Product operations supplied by the single active-member association. */
+const WORKSPACE_MEMBER_OPERATIONS = [
+  'approval.respond',
+  'artifact.read',
+  'artifact.write',
+  'audit.read',
+  'knowledge.propose',
+  'knowledge.read',
+  'knowledge.write',
+  'llm.gateway.use',
+  'membership.manage',
+  'network.egress',
+  'review.apply',
+  'runtime.launch',
+  'thread.read',
+  'tool.grant',
+  'tool.use',
+  'turn.run',
+  'vault.admin',
+  'vault.use',
+  'workspace.configure',
+  'workspace.export',
+  'workspace.leave',
+  'workspace.lifecycle',
+  'workspace.read',
+  'workspace.write',
+] satisfies readonly ProductOperation[];
 
-/** Input for evaluating the fixed-role ceiling of one Workspace operation. */
-export interface EvaluateWorkspaceRoleAccessInput {
-  /** Concrete registered product operation, or an unknown value that must fail closed. */
+/** Input for membership-derived eligibility; identity and credential checks precede this adapter. */
+export interface EvaluateWorkspaceMemberAccessInput {
+  /** Registered operation, or an unknown value which fails closed. */
   operation: string;
-  /** Effective role already derived from authoritative Core membership facts. */
-  role: WorkspaceRole;
 }
 
-/** Fixed-role operation ceilings; deployment- and user-only operations stay outside this adapter. */
-const WORKSPACE_ROLE_OPERATION_CEILINGS: Readonly<
-  Record<WorkspaceRole, readonly WorkspaceRoleOperation[]>
-> = {
-  owner: [
-    'approval.respond',
-    'artifact.read',
-    'artifact.write',
-    'audit.read',
-    'knowledge.propose',
-    'knowledge.read',
-    'knowledge.write',
-    'llm.gateway.use',
-    'membership.manage',
-    'network.egress',
-    'review.apply',
-    'runtime.launch',
-    'thread.read',
-    'tool.grant',
-    'tool.use',
-    'turn.run',
-    'vault.admin',
-    'vault.use',
-    'workspace.configure',
-    'workspace.export',
-    'workspace.lifecycle',
-    'workspace.read',
-    'workspace.write',
-  ],
-  editor: [
-    'approval.respond',
-    'artifact.read',
-    'artifact.write',
-    'audit.read',
-    'knowledge.propose',
-    'knowledge.read',
-    'knowledge.write',
-    'llm.gateway.use',
-    'network.egress',
-    'review.apply',
-    'runtime.launch',
-    'thread.read',
-    'tool.use',
-    'turn.run',
-    'vault.use',
-    'workspace.leave',
-    'workspace.read',
-    'workspace.write',
-  ],
-  viewer: ['artifact.read', 'knowledge.read', 'thread.read', 'workspace.leave', 'workspace.read'],
-};
-
-/** Fixed-role operations presented to the policy kernel. */
-const WORKSPACE_ROLE_OPERATIONS = [
-  ...new Set(Object.values(WORKSPACE_ROLE_OPERATION_CEILINGS).flat()),
-].map((operation) => ({
-  accessRights: [PRODUCT_OPERATION_ACCESS_RIGHTS[operation]],
-  id: operation,
-}));
-
 /**
- * Evaluates one operation against the maximum access-right association for an effective fixed role.
- * Resource lifecycle, token, approval, and policy restrictions may only narrow this result downstream.
+ * Evaluates one operation against the access-right association of an active Workspace member.
+ * Resource lifecycle, credential, audience and owner-specific Policy constraints remain mandatory.
  *
- * @param input Effective Workspace role and requested product operation.
+ * @param input Requested product operation after current active-member admission.
  * @returns Existing policy-kernel decision, including a structural trace and fail-closed reason.
  */
-export function evaluateWorkspaceRoleAccess(
-  input: EvaluateWorkspaceRoleAccessInput
+export function evaluateWorkspaceMemberAccess(
+  input: EvaluateWorkspaceMemberAccessInput
 ): PolicyDecision {
   const subjectId = 'user:workspace-actor';
-  const roleAttributeId = `ua:workspace-role:${input.role}`;
+  const memberAttributeId = 'ua:workspace-active-member';
   const targetId = 'object:workspace-resource';
   const targetAttributeId = 'oa:workspace-resources';
   const policyClassId = 'pc:workspace';
   const policy: PolicyState = {
     associations: [
       {
-        accessRights: WORKSPACE_ROLE_OPERATION_CEILINGS[input.role].map(
+        accessRights: WORKSPACE_MEMBER_OPERATIONS.map(
           (operation) => PRODUCT_OPERATION_ACCESS_RIGHTS[operation]
         ),
-        id: `assoc:workspace-role:${input.role}`,
+        id: 'assoc:workspace-active-member',
         targetAttribute: targetAttributeId,
-        userAttribute: roleAttributeId,
+        userAttribute: memberAttributeId,
       },
     ],
     assignments: [
-      { child: subjectId, parent: roleAttributeId },
-      { child: roleAttributeId, parent: policyClassId },
+      { child: subjectId, parent: memberAttributeId },
+      { child: memberAttributeId, parent: policyClassId },
       { child: targetId, parent: targetAttributeId },
       { child: targetAttributeId, parent: policyClassId },
     ],
     elements: [
       { id: subjectId, kind: 'user' },
-      { id: roleAttributeId, kind: 'userAttribute' },
+      { id: memberAttributeId, kind: 'userAttribute' },
       { id: targetId, kind: 'object' },
       { id: targetAttributeId, kind: 'objectAttribute' },
       { id: policyClassId, kind: 'policyClass' },
     ],
-    operations: WORKSPACE_ROLE_OPERATIONS,
+    operations: WORKSPACE_MEMBER_OPERATIONS.map((operation) => ({
+      id: operation,
+      accessRights: [PRODUCT_OPERATION_ACCESS_RIGHTS[operation]],
+    })),
   };
 
   return evaluateAccess(policy, {
