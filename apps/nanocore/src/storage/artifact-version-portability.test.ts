@@ -558,11 +558,95 @@ it('round trips target-owned judgements, exact range results and candidate choic
     },
     201
   );
+  const description = {
+    artifactId: candidates[0]!.artifactId,
+    materialId,
+    candidateSetId: set.candidateSetId,
+  };
+  /** Adds ignored descriptions whose reference-looking strings must survive without reminting. */
+  function addDescriptions(raw: {
+    actor: object;
+    target: object;
+    choice: unknown;
+    description?: unknown;
+  }) {
+    raw.description = description;
+    raw.actor = { ...raw.actor, description: 'Historical actor' };
+    raw.target = { ...raw.target, description: 'Historical target' };
+    if (typeof raw.choice === 'object' && raw.choice !== null)
+      raw.choice = { ...raw.choice, description: 'Historical choice' };
+  }
+  const sourceDb = openWorkspaceDb(dataRoot, workspace.id);
+  try {
+    const setRow = sourceDb.sqlite
+      .prepare(
+        'SELECT payload_json AS payload FROM evaluation_candidate_sets WHERE candidate_set_id = ?'
+      )
+      .get(set.candidateSetId) as { payload: string };
+    const rawSet = JSON.parse(setRow.payload);
+    rawSet.description = description;
+    rawSet.createdBy.description = 'Historical creator';
+    rawSet.candidates[0].description = 'Historical member';
+    addDescriptions(rawSet.judgements[0]);
+    sourceDb.sqlite
+      .prepare('UPDATE evaluation_candidate_sets SET payload_json = ? WHERE candidate_set_id = ?')
+      .run(JSON.stringify(rawSet), set.candidateSetId);
+    const reviewRow = sourceDb.sqlite
+      .prepare(
+        'SELECT judgements FROM artifact_reviews WHERE artifact_id = ? AND artifact_version = 1'
+      )
+      .get(candidates[0]!.artifactId) as { judgements: string };
+    const reviewJudgements = JSON.parse(reviewRow.judgements);
+    addDescriptions(reviewJudgements[0]);
+    sourceDb.sqlite
+      .prepare(
+        'UPDATE artifact_reviews SET judgements = ? WHERE artifact_id = ? AND artifact_version = 1'
+      )
+      .run(JSON.stringify(reviewJudgements), candidates[0]!.artifactId);
+    const revisionRow = sourceDb.sqlite
+      .prepare(
+        'SELECT judgements FROM workspace_material_revisions WHERE material_id = ? AND revision_id = ?'
+      )
+      .get(materialId, originalRevisionId) as { judgements: string };
+    const rangeJudgements = JSON.parse(revisionRow.judgements);
+    addDescriptions(rangeJudgements[0]);
+    rangeJudgements[0].choice.resultingRevision.description = 'Historical correction result';
+    sourceDb.sqlite
+      .prepare(
+        'UPDATE workspace_material_revisions SET judgements = ? WHERE material_id = ? AND revision_id = ?'
+      )
+      .run(JSON.stringify(rangeJudgements), materialId, originalRevisionId);
+  } finally {
+    sourceDb.sqlite.close();
+  }
   const exportedResponse = await app.request(
     ...operationRequest('workspace.export', { workspaceId: workspace.id })
   );
   expect(exportedResponse.status, await exportedResponse.clone().text()).toBe(200);
   const exported = WorkspaceExportResponseSchema.parse(await exportedResponse.json());
+  const verified = verifyWorkspaceExportTree({
+    exportRoot: existingWorkspaceExportRoot(dataRoot, workspace.id, exported.exportId),
+  });
+  const files = new Map(verified.fileContents);
+  const revisionsPath = 'records/workspace-material-revisions.jsonl';
+  const invalidRevisions = files
+    .get(revisionsPath)!
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  invalidRevisions.find(
+    (revision) => revision.revisionId === originalRevisionId
+  ).judgements[0].target.originalText = 'xx';
+  files.set(
+    revisionsPath,
+    `${invalidRevisions.map((revision) => JSON.stringify(revision)).join('\n')}\n`
+  );
+  expect(() =>
+    readWorkspaceImportSnapshot({
+      verified: { ...verified, fileContents: files },
+      targetWorkspaceId: workspace.id,
+    })
+  ).toThrow('Portable judgement contradicts its exact original UTF-16 Material range.');
   const imported = WorkspaceImportResponseSchema.parse(
     await post(
       'workspace.import',
@@ -646,6 +730,44 @@ it('round trips target-owned judgements, exact range results and candidate choic
         },
       },
     });
+    const rawSet = JSON.parse(
+      (
+        restoredDb.sqlite
+          .prepare(
+            'SELECT payload_json AS payload FROM evaluation_candidate_sets WHERE candidate_set_id = ?'
+          )
+          .get(restoredSet.candidateSetId) as { payload: string }
+      ).payload
+    );
+    expect(rawSet.description).toEqual(description);
+    expect(rawSet.createdBy.description).toBe('Historical creator');
+    expect(rawSet.candidates[0].description).toBe('Historical member');
+    const rawReview = JSON.parse(
+      (
+        restoredDb.sqlite
+          .prepare(
+            'SELECT judgements FROM artifact_reviews WHERE artifact_id = ? AND artifact_version = 1'
+          )
+          .get(restoredArtifact!.id) as { judgements: string }
+      ).judgements
+    );
+    const rawRange = JSON.parse(
+      (
+        restoredDb.sqlite
+          .prepare(
+            'SELECT judgements FROM workspace_material_revisions WHERE material_id = ? AND revision_id = ?'
+          )
+          .get(material.materialId, original.revisionId) as { judgements: string }
+      ).judgements
+    );
+    for (const judgement of [rawSet.judgements[0], rawReview[0], rawRange[0]]) {
+      expect(judgement.description).toEqual(description);
+      expect(judgement.actor.description).toBe('Historical actor');
+      expect(judgement.target.description).toBe('Historical target');
+    }
+    expect(rawSet.judgements[0].choice.description).toBe('Historical choice');
+    expect(rawRange[0].choice.description).toBe('Historical choice');
+    expect(rawRange[0].choice.resultingRevision.description).toBe('Historical correction result');
   } finally {
     restoredDb.sqlite.close();
   }

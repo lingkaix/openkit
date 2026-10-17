@@ -17,6 +17,8 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createZstdCompress } from 'node:zlib';
 import {
+  type CandidateSetRecord,
+  CandidateSetRecordReaderSchema,
   WorkspaceExportResponseSchema,
   WorkspaceImportDryRunResponseSchema,
   WorkspaceImportResponseSchema,
@@ -169,6 +171,7 @@ import { exportRecurringPortableHistory } from './recurring-portable-history.js'
 import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
 import {
   artifactReviews,
+  evaluationCandidateSets,
   threadMaterialBindings,
   workspaceMaterialRevisions,
   workspaceMaterials,
@@ -566,6 +569,25 @@ export function existingWorkspaceExportRoot(
   return exportRoot;
 }
 
+/** Validates candidate payload ownership while retaining original nested descriptive content for export. */
+function readExportableCandidateSets(workspaceDb: WorkspaceDb): CandidateSetRecord[] {
+  const rows = workspaceDb.sqlite
+    .prepare(
+      'SELECT candidate_set_id AS candidateSetId, payload_json AS payloadJson FROM evaluation_candidate_sets WHERE workspace_id = ? ORDER BY rowid'
+    )
+    .all(workspaceDb.workspaceId) as Array<{ candidateSetId: string; payloadJson: string }>;
+  return rows.map((row) => {
+    const raw = JSON.parse(row.payloadJson);
+    const record = CandidateSetRecordReaderSchema.parse(raw);
+    if (
+      record.workspaceId !== workspaceDb.workspaceId ||
+      record.candidateSetId !== row.candidateSetId
+    )
+      throw new Error('Portable candidate set contradicts its Workspace row owner.');
+    return raw as CandidateSetRecord;
+  });
+}
+
 /**
  * Collects every portable workspace-database row family for one export.
  *
@@ -607,6 +629,7 @@ function collectWorkspaceExportRows(
         workerOutputManifests: [],
       },
       artifactReviews: [],
+      evaluationCandidateSets: [],
       workspaceMaterialRows: { bindings: [], materials: [], revisions: [] },
       generativePresentations: [],
     };
@@ -619,6 +642,7 @@ function collectWorkspaceExportRows(
       const workspaceMaterialRows = listExportableWorkspaceMaterialRows(workspaceDb);
       return {
         artifactReviews: listExportableArtifactReviews(workspaceDb),
+        evaluationCandidateSets: readExportableCandidateSets(workspaceDb),
         auditEvents: listPortableWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
         agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
@@ -721,6 +745,18 @@ function importWorkspaceDatabaseRows({
               proposalMaterialId: materialProposal?.materialId ?? null,
               proposalBaseRevisionId: materialProposal?.baseRevisionId ?? null,
               proposalBaseContentDigest: materialProposal?.baseContentDigest ?? null,
+            }))
+          )
+          .run();
+      }
+      if (snapshot.evaluationCandidateSets.length > 0) {
+        workspaceDb.db
+          .insert(evaluationCandidateSets)
+          .values(
+            snapshot.evaluationCandidateSets.map((record) => ({
+              workspaceId: importedWorkspaceId,
+              candidateSetId: record.candidateSetId,
+              payloadJson: record,
             }))
           )
           .run();
@@ -1431,6 +1467,7 @@ export function createVerifiedWorkspaceExport({
     itemRevisions: canonicalItemRevisions,
     artifacts: store.listArtifacts(workspaceId),
     artifactReviews: workspaceRowFamilies.artifactReviews,
+    evaluationCandidateSets: workspaceRowFamilies.evaluationCandidateSets,
     threadMaterialBindings: workspaceRowFamilies.workspaceMaterialRows.bindings,
     workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
     workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
