@@ -34,7 +34,8 @@ import {
   workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
-import type { WorkspaceDb } from './db.js';
+import type { CoreDb, WorkspaceDb } from './db.js';
+import { readServerTurnRecord } from './server-thread-records.js';
 import {
   appendCanonicalTextFile,
   assertCanonicalDirectory,
@@ -266,7 +267,11 @@ const payloadSchemas = {
   'env.bound': z
     .object({
       version: z.string().min(1),
-      workspaceId: WorkspaceIdSchema,
+      workspaceId: WorkspaceIdSchema.optional(),
+      owner: z
+        .object({ kind: z.literal('server') })
+        .strict()
+        .optional(),
       assistantSkillAdmission: AssistantSkillAdmissionSchema.optional(),
       systemPromptDigest: SystemPromptDigestSchema,
       tools: z.array(
@@ -278,7 +283,14 @@ const payloadSchemas = {
           .strip()
       ),
     })
-    .strip(),
+    .strip()
+    .superRefine((environment, context) => {
+      if ((environment.workspaceId === undefined) === (environment.owner === undefined))
+        context.addIssue({
+          code: 'custom',
+          message: 'Environment binding requires exactly one Workspace or Server owner.',
+        });
+    }),
   'runtime.observed': WorkerObservationDataSchema,
   'model.observed': z.discriminatedUnion('direction', [
     z
@@ -362,7 +374,8 @@ export function parseWorkObservationRecord(value: unknown): WorkObservationRecor
               ref.locator === body.bundleId &&
               ref.digest === body.sha256 &&
               ref.scope.pathClass === 'backend' &&
-              typeof ref.scope.workspaceId === 'string'
+              ((typeof ref.scope.workspaceId === 'string' && ref.scope.owner === undefined) ||
+                (ref.scope.owner === 'server' && ref.scope.workspaceId === undefined))
           )
       )
     )
@@ -373,11 +386,28 @@ export function parseWorkObservationRecord(value: unknown): WorkObservationRecor
 
 /** Validates persisted lineage and reads historical coverage without using current policy. */
 export function readWorkObservationTurnBinding(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ) {
-  for (const id of [workspaceDb.workspaceId, input.threadId, input.turnId])
+  for (const id of [
+    ...(workspaceDb.scope === 'workspace' ? [workspaceDb.workspaceId] : []),
+    input.threadId,
+    input.turnId,
+  ])
     assertSafeWorkspacePathSegment(id, 'Observation owner');
+  if (workspaceDb.scope === 'core') {
+    let root = workspaceDb.dataRoot;
+    for (const part of ['server', 'threads', input.threadId, 'turns', input.turnId]) {
+      root = join(root, part);
+      assertCanonicalDirectory(root);
+    }
+    const turn = readServerTurnRecord(workspaceDb.dataRoot, input.threadId, input.turnId);
+    const raw = JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))) as Record<
+      string,
+      unknown
+    >;
+    return { root, turn, raw, coverage: turn.captureCoverage ?? null };
+  }
   let root = workspaceDb.dataRoot;
   for (const part of ['workspaces', workspaceDb.workspaceId, 'threads', input.threadId]) {
     root = join(root, part);
@@ -414,7 +444,7 @@ export function readWorkObservationTurnBinding(
 
 /** Reads committed LF-terminated rows only; malformed interior data fails closed. */
 export function readWorkObservations(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ): readonly WorkObservationRecord[] {
   const { root, raw } = readWorkObservationTurnBinding(workspaceDb, input);
@@ -432,7 +462,7 @@ export function readWorkObservations(
 
 /** Commits exact admitted bodies through evidence, then the single observation publication marker. */
 export function appendWorkObservation(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   input: {
     readonly threadId: string;
     readonly turnId: string;
@@ -448,6 +478,14 @@ export function appendWorkObservation(
   const binding = readWorkObservationTurnBinding(workspaceDb, input);
   if (!binding.coverage) throw new Error('recovery_required: missing capture coverage');
   const draft = draftSchema.parse(input.observation);
+  if (
+    draft.type === 'env.bound' &&
+    (workspaceDb.scope === 'core'
+      ? draft.payload.workspaceId !== undefined ||
+        (draft.payload.owner as { kind?: string } | undefined)?.kind !== 'server'
+      : draft.payload.workspaceId !== workspaceDb.workspaceId || draft.payload.owner !== undefined)
+  )
+    throw new Error('Environment binding database owner mismatch.');
   if (draft.refs?.some((ref) => ref.edge !== 'association') || 'bodies' in draft.payload)
     throw new Error('Publication descriptors belong to the observation writer');
   if (input.bodies.length && binding.coverage.value !== 'on')
@@ -478,7 +516,7 @@ export function appendWorkObservation(
       boundary: body.boundary,
       sha256: createHash('sha256').update(body.bytes).digest('hex'),
       bundleId: workObservationBodyBundleId(
-        workspaceDb.workspaceId,
+        workspaceDb.scope === 'core' ? { kind: 'server' } : workspaceDb.workspaceId,
         input.threadId,
         input.turnId,
         draft.id,
@@ -488,7 +526,12 @@ export function appendWorkObservation(
   });
   const refs: WorkObservationReference[] = descriptors.map((body) => ({
     kind: 'evidence-bundle',
-    scope: { workspaceId: workspaceDb.workspaceId, pathClass: 'backend' },
+    scope: {
+      ...(workspaceDb.scope === 'core'
+        ? { owner: 'server' }
+        : { workspaceId: workspaceDb.workspaceId }),
+      pathClass: 'backend',
+    },
     locator: body.bundleId,
     digest: body.sha256,
     edge: 'publication' as const,
@@ -602,11 +645,14 @@ interface ObservationAppendState {
 }
 
 // Scope reusable state to the borrowed database lifetime, without a second durable index.
-const observationAppendStates = new WeakMap<WorkspaceDb, Map<string, ObservationAppendState>>();
+const observationAppendStates = new WeakMap<
+  WorkspaceDb | CoreDb,
+  Map<string, ObservationAppendState>
+>();
 
 /** Opens a ledger with full validation; only this writer's unchanged committed prefix is reusable. */
 function readAppendState(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   path: string,
   turnId: string
 ): ObservationAppendState {

@@ -66,6 +66,9 @@ const CORE_TABLES = [
   'workspace_invitations',
   'workspace_members',
   'workspace_registry',
+  'capability_calls',
+  'usage_records',
+  'evidence_bundles',
 ];
 
 const WORKSPACE_TABLES = [
@@ -207,6 +210,7 @@ describe('database setup', () => {
         '0002_durable_recurring_schedules.sql',
         '0003_notebook_admission.sql',
         '0004_equal_workspace_members.sql',
+        '0005_server_capability_usage.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -219,8 +223,12 @@ describe('database setup', () => {
         'core_0002_durable_recurring_schedules',
         'core_0003_notebook_admission',
         'core_0004_equal_workspace_members',
+        'core_0005_server_capability_usage',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
+      for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
+        expect(listColumnNames(coreDb, table)).toContain('workspace_id');
+      }
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
       for (const retired of [
         'scheduler_capacity_records',
