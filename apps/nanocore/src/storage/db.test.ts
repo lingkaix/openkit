@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -14,6 +15,8 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
@@ -267,6 +270,41 @@ describe('scoped storage databases', () => {
       openBootVerifiedWorkspaceDb(dataRoot, 'ws_00000000-0000-7490-845b-dcfa3ee49925')
     ).toThrow();
     expect(readdirSync(workspaceRoot)).toEqual([]);
+  });
+
+  it('fails boot closed without recreating a registered Workspace database that was lost', () => {
+    const dataRoot = createDataRoot();
+    const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      const ownerUserId = ensureLocalUser(coreDb);
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb);
+      workspaceDb.sqlite.close();
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+      const databasePath = workspaceDbPath(dataRoot, workspaceId);
+      const retainedPath = join(dataRoot, 'workspaces', workspaceId, 'retained-evidence.txt');
+      const retained = Buffer.from('Keep the existing Workspace evidence.');
+      writeFileSync(retainedPath, retained);
+      rmSync(databasePath);
+
+      expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).toThrow(
+        `Workspace database is missing: ${workspaceId}`
+      );
+      expect(existsSync(databasePath)).toBe(false);
+      expect(readdirSync(dirname(databasePath))).toEqual([]);
+      expect(readFileSync(retainedPath)).toEqual(retained);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
+          .pluck()
+          .get(workspaceId)
+      ).toBe('active');
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('migrates real scoped databases without treating Workspace staging as a scope', () => {
@@ -591,9 +629,8 @@ process.kill(process.pid, 'SIGKILL');`,
     mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'db'), {
       recursive: true,
     });
-    mkdirSync(join(dataRoot, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'db'), {
-      recursive: true,
-    });
+    const initialWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+    initialWorkspaceDb.sqlite.close();
 
     verifyAndMigrateExistingScopedDatabases(dataRoot);
 
