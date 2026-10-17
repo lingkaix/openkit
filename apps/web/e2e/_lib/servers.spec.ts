@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 
-import { spawnSync } from 'node:child_process';
+import childProcess, { type ChildProcess, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -23,6 +23,136 @@ import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
+
+/**
+ * Retains actual startup children when a marker or assertion fails before PID observation.
+ *
+ * @returns Emergency teardown for the single fixture running in this worker.
+ */
+function captureStartupChildren() {
+  const originalSpawn = childProcess.spawn;
+  const originalKill = process.kill;
+  const children: { child: ChildProcess; detached: boolean }[] = [];
+  let stopping = false;
+  /** Kills only the captured child or its explicitly detached process group. */
+  const kill = ({ child, detached }: (typeof children)[number]) => {
+    if (child.pid === undefined || child.pid <= 0) return;
+    try {
+      if (detached) originalKill(-child.pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  };
+  childProcess.spawn = ((...args: Parameters<typeof childProcess.spawn>) => {
+    const child = originalSpawn(...args);
+    const owned = { child, detached: args[2]?.detached === true };
+    children.push(owned);
+    if (stopping) kill(owned);
+    return child;
+  }) as typeof childProcess.spawn;
+  syncBuiltinESMExports();
+
+  return async (startup: Promise<unknown>) => {
+    stopping = true;
+    try {
+      for (const owned of children) kill(owned);
+      // A failed assertion must not wait for readiness before terminating its children.
+      // Keep interception active so a concurrent late startup spawn is also terminated.
+      await startup.catch(() => {});
+      await Promise.all(
+        children.map(({ child }) =>
+          child.pid === undefined || child.exitCode !== null || child.signalCode !== null
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => child.once('exit', () => resolve()))
+        )
+      );
+    } finally {
+      childProcess.spawn = originalSpawn;
+      syncBuiltinESMExports();
+    }
+  };
+}
+
+test('reaps fixture children after an assertion fails before startup settles', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-web-assertion-cleanup-'));
+  const marker = join(root, 'descendant.json');
+  const stopChildren = captureStartupChildren();
+  const originalKill = process.kill;
+  const descendantSource = `
+require('node:fs').writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ pid: process.pid }));
+process.on('SIGTERM', () => {});
+setInterval(() => {}, 1000);
+`;
+  const leader = childProcess.spawn(
+    process.execPath,
+    [
+      '-e',
+      `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], { stdio: 'ignore' }); setInterval(() => {}, 1000);`,
+    ],
+    { detached: true, stdio: 'ignore' }
+  );
+  const startup = new Promise<void>((resolve) => leader.once('exit', () => resolve()));
+  let descendantPid: number | undefined;
+  let scenario: Promise<unknown> | undefined;
+  /** Reports actual PID disappearance; permission failures remain test failures. */
+  const gone = (pid: number) => {
+    try {
+      originalKill(pid, 0);
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
+      throw error;
+    }
+  };
+
+  try {
+    await expect
+      .poll(() => {
+        descendantPid = readPublishedPid(marker, 'pid');
+        return descendantPid;
+      })
+      .toBeDefined();
+    expect(leader.pid).toBeGreaterThan(0);
+    scenario = (async () => {
+      try {
+        expect('fixture assertion sentinel').toBe('startup ready');
+      } finally {
+        await stopChildren(startup);
+      }
+    })().catch((error: unknown) => error);
+    await expect
+      .poll(
+        () => ({
+          leaderGone: gone(leader.pid!),
+          descendantGone: gone(descendantPid!),
+        }),
+        { message: 'Emergency teardown must not wait for startup settlement.' }
+      )
+      .toEqual({
+        leaderGone: true,
+        descendantGone: true,
+      });
+    expect(await scenario).toBeInstanceOf(Error);
+    expect(((await scenario) as Error).message).toContain('fixture assertion sentinel');
+  } finally {
+    // This outer guard also reaps a red run whose emergency teardown never reached its signal.
+    if (leader.pid !== undefined && leader.pid > 0) {
+      try {
+        originalKill(-leader.pid, 'SIGKILL');
+      } catch {}
+    }
+    await stopChildren(startup);
+    await scenario;
+    await expect
+      .poll(() => ({
+        leaderGone: gone(leader.pid!),
+        descendantGone: descendantPid === undefined || gone(descendantPid),
+      }))
+      .toEqual({ leaderGone: true, descendantGone: true });
+    rmSync(root, { force: true, recursive: true });
+  }
+});
 
 /**
  * Reads only positive integer PIDs so an unpublished marker cannot become kill(0) in cleanup.
@@ -541,6 +671,7 @@ setInterval(() => {}, 1000);
   process.env.OPENKIT_TEST_WEB_PID_MARKER = webPidMarker;
   process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
 
+  const stopChildren = captureStartupChildren();
   const failurePromise = startIsolatedWebStack({
     dataRoot,
     mode: 'local',
@@ -625,17 +756,7 @@ setInterval(() => {}, 1000);
   } finally {
     Date.now = originalDateNow;
     process.kill = originalKill;
-    await failurePromise.catch(() => {});
-    if (webPid !== undefined && webPid > 0) {
-      try {
-        originalKill(-webPid, 'SIGKILL');
-      } catch {}
-    }
-    if (nanoCorePid !== undefined && nanoCorePid > 0) {
-      try {
-        originalKill(nanoCorePid, 'SIGKILL');
-      } catch {}
-    }
+    await stopChildren(failurePromise);
     if (originalMarker === undefined) delete process.env.OPENKIT_TEST_WEB_PID_MARKER;
     else process.env.OPENKIT_TEST_WEB_PID_MARKER = originalMarker;
     if (originalPath === undefined) delete process.env.PATH;
@@ -721,6 +842,7 @@ setTimeout(() => process.exit(23), 2000);
   );
   process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
 
+  const stopChildren = captureStartupChildren();
   const failurePromise = startIsolatedWebStack({
     dataRoot,
     mode: 'local',
@@ -766,27 +888,7 @@ setTimeout(() => process.exit(23), 2000);
       nanoCoreAlive: false,
     });
   } finally {
-    await failurePromise.catch(() => {});
-    if (nanoCorePid !== undefined && nanoCorePid > 0) {
-      try {
-        process.kill(nanoCorePid, 'SIGTERM');
-      } catch {}
-      const stopDeadline = Date.now() + 2_000;
-      let stopped = false;
-      while (!stopped && Date.now() < stopDeadline) {
-        try {
-          process.kill(nanoCorePid, 0);
-          await delay(20);
-        } catch {
-          stopped = true;
-        }
-      }
-      if (!stopped) {
-        try {
-          process.kill(nanoCorePid, 'SIGKILL');
-        } catch {}
-      }
-    }
+    await stopChildren(failurePromise);
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
     rmSync(harnessRoot, { force: true, recursive: true });
@@ -908,6 +1010,7 @@ setInterval(() => {}, 1000);
   process.env.OPENKIT_TEST_WEB_PID_MARKER = webPidMarker;
   process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
 
+  const stopChildren = captureStartupChildren();
   const failurePromise = startIsolatedWebStack({
     dataRoot,
     mode: 'local',
@@ -967,13 +1070,7 @@ setInterval(() => {}, 1000);
       webAlive: false,
     });
   } finally {
-    await failurePromise.catch(() => {});
-    for (const pid of [webPid, nanoCorePid]) {
-      if (pid === undefined || pid <= 0) continue;
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {}
-    }
+    await stopChildren(failurePromise);
     if (originalMarker === undefined) delete process.env.OPENKIT_TEST_WEB_PID_MARKER;
     else process.env.OPENKIT_TEST_WEB_PID_MARKER = originalMarker;
     if (originalPath === undefined) delete process.env.PATH;
@@ -1027,6 +1124,7 @@ setInterval(() => {}, 1000);
   process.env.OPENKIT_TEST_WEB_DESCENDANT_PATH = descendantPath;
   process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
 
+  const stopChildren = captureStartupChildren();
   const failurePromise = startIsolatedWebStack({
     dataRoot,
     mode: 'local',
@@ -1096,13 +1194,7 @@ setInterval(() => {}, 1000);
     });
   } finally {
     Date.now = originalDateNow;
-    await failurePromise.catch(() => {});
-    for (const pid of [descendantPid, leaderPid, nanoCorePid]) {
-      if (pid === undefined || pid <= 0) continue;
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {}
-    }
+    await stopChildren(failurePromise);
     if (originalDescendantMarker === undefined) {
       delete process.env.OPENKIT_TEST_WEB_DESCENDANT_MARKER;
     } else {
