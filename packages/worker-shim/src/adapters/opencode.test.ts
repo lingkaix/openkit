@@ -1302,8 +1302,37 @@ describe('OpenCode resident adapter', () => {
           content: [{ type: 'text', text: 'known-secret' }],
         },
       },
+      {
+        type: 'tool',
+        id: 'error-only',
+        name: 'shell',
+        state: {
+          status: 'error',
+          input: { command: 'exit 1' },
+          error: { type: 'ShellError', message: 'safe-tool-failure' },
+        },
+      },
       { type: 'tool', id: 'call-3', state: { status: 'unknown' } },
     ]);
+    const list = f.client.message.list;
+    f.client.message.list = async (input) => {
+      const response = await list(input);
+      return {
+        ...response,
+        data: response.data.map((row) =>
+          row.id === 'answer-2'
+            ? {
+                ...row,
+                error: {
+                  type: 'ProviderError',
+                  message: `Native generation failed: ${f.creds.inferenceCredential}.`,
+                  response: { body: 'private-provider-body' },
+                },
+              }
+            : row
+        ),
+      } as typeof response;
+    };
     const session = await f.adapter.openSession(openInput(f.layout, f.creds));
     sessions.push(session);
     const received: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
@@ -1341,7 +1370,16 @@ describe('OpenCode resident adapter', () => {
     else {
       expect(bodies).toContain('safe-result');
       expect(bodies).toContain('echo safe');
+      expect(bodies).toContain('safe-tool-failure');
     }
+    const failed = await (await session.startTurn({ ...input, turnId: 'failed-turn' })).settled;
+    expect(failed).toMatchObject({
+      status: 'failed',
+      assistantText: null,
+      diagnostics: { native: 'Native generation failed: [redacted].' },
+    });
+    expect(JSON.stringify(failed)).not.toContain(f.creds.inferenceCredential);
+    expect(JSON.stringify(failed)).not.toContain('private-provider-body');
   });
 
   it.each([

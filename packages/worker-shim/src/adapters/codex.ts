@@ -284,6 +284,12 @@ function assistantTexts(value: unknown): string[] {
   return texts;
 }
 
+/** Selects the correlated native explanation without additional details or provider payloads. */
+function codexTurnErrorMessage(value: unknown): string | undefined {
+  const message = (value as { error?: { message?: unknown } } | null)?.error?.message;
+  return typeof message === 'string' ? message : undefined;
+}
+
 const KNOWN_ITEM_TYPES = new Set(codexThreadItemTypes());
 const KNOWN_TURN_STATUSES = new Set(codexTurnStatuses());
 if (!KNOWN_ITEM_TYPES.has('agentMessage') || !KNOWN_TURN_STATUSES.has('completed')) {
@@ -349,6 +355,7 @@ class CodexResidentSession implements WorkerResidentSession {
         status: string;
         texts: readonly string[];
         interruptRequested: boolean;
+        errorMessage?: string | undefined;
       }) => void;
       reject: (error: Error) => void;
     }
@@ -359,6 +366,7 @@ class CodexResidentSession implements WorkerResidentSession {
     status: string;
     texts: readonly string[];
     interruptRequested: boolean;
+    errorMessage?: string | undefined;
   } | null = null;
   private acceptingTurn = false;
   /** Per-Turn delivery evidence; no native effort selection is cached. */
@@ -731,7 +739,7 @@ class CodexResidentSession implements WorkerResidentSession {
         throw new Error('Codex item identity did not match the accepted Turn.');
       assistantTexts(started.turn);
       this.currentTurnId = turnId;
-      const settled = this.finishTurn(turnId, status, started.turn, capture, input.turnInput);
+      const settled = this.finishTurn(turnId, status, started.turn, capture, input);
       return {
         settled,
         interrupt: async (
@@ -951,23 +959,27 @@ class CodexResidentSession implements WorkerResidentSession {
     status: string,
     turn: unknown,
     capture: CodexRuntimeCapture | null,
-    input: string
+    input: WorkerResidentTurnInput
   ): Promise<WorkerAdapterResult> {
     if (status !== 'inProgress' && this.terminalSeen)
       void this.invalidateTurn('duplicate-terminal').catch(() => undefined);
     if (status !== 'inProgress') this.terminalSeen = true;
     const completion =
       status === 'inProgress' && !this.earlyTerminal
-        ? new Promise<{ status: string; texts: readonly string[]; interruptRequested: boolean }>(
-            (resolve, reject) => {
-              this.turnWaiters.set(turnId, { resolve, reject });
-            }
-          )
+        ? new Promise<{
+            status: string;
+            texts: readonly string[];
+            interruptRequested: boolean;
+            errorMessage?: string | undefined;
+          }>((resolve, reject) => {
+            this.turnWaiters.set(turnId, { resolve, reject });
+          })
         : Promise.resolve(
             this.earlyTerminal ?? {
               status,
               texts: assistantTexts(turn),
               interruptRequested: this.interruptRequested,
+              errorMessage: codexTurnErrorMessage(turn),
             }
           );
     this.earlyTerminal = null;
@@ -991,12 +1003,28 @@ class CodexResidentSession implements WorkerResidentSession {
           KNOWN_TURN_STATUSES.has(outcome.status) &&
           outcome.status !== 'inProgress'
         )
-          this.lastTerminal = { id: turnId, input, status: outcome.status, texts: outcome.texts };
+          this.lastTerminal = {
+            id: turnId,
+            input: input.turnInput,
+            status: outcome.status,
+            texts: outcome.texts,
+          };
         let result = normalizeCodexAssistant(
           outcome.status,
           outcome.texts,
           outcome.interruptRequested
         );
+        if (result.status !== 'completed' && outcome.errorMessage) {
+          result = {
+            ...result,
+            diagnostics: {
+              native: redactDiagnostic(outcome.errorMessage, [
+                ...this.secrets,
+                ...input.runtimeCapture.credentialValues,
+              ]),
+            },
+          };
+        }
         await Promise.race([
           capture?.finalize().catch(() => {
             collectionIncomplete = true;
@@ -1023,7 +1051,10 @@ class CodexResidentSession implements WorkerResidentSession {
     result: WorkerAdapterResult,
     collectionIncomplete = false
   ): WorkerAdapterResult {
-    const diagnostics: Record<string, string> = { reasoningEffort: 'unknown' };
+    const diagnostics: Record<string, string> = {
+      ...result.diagnostics,
+      reasoningEffort: 'unknown',
+    };
     if (collectionIncomplete) diagnostics.runtimeCapture = 'incomplete';
     if (this.reasoningEffortDelivery)
       diagnostics.reasoningEffortDelivery = this.reasoningEffortDelivery;
@@ -1108,9 +1139,10 @@ class CodexResidentSession implements WorkerResidentSession {
     this.terminalSeen = true;
     // Snapshot at correlation, including terminals arriving before turn/start acknowledges.
     const interruptRequested = this.interruptRequested;
-    if (waiter) waiter.resolve({ status, texts, interruptRequested });
+    const errorMessage = codexTurnErrorMessage(turn);
+    if (waiter) waiter.resolve({ status, texts, interruptRequested, errorMessage });
     else if (this.acceptingTurn && !this.earlyTerminal)
-      this.earlyTerminal = { turnId: turn.id, status, texts, interruptRequested };
+      this.earlyTerminal = { turnId: turn.id, status, texts, interruptRequested, errorMessage };
     else void this.invalidateTurn('identity-mismatch').catch(() => undefined);
   }
 

@@ -1786,6 +1786,8 @@ interface NativeMessage {
   outcome?: string;
   text: string;
   error?: boolean;
+  /** Selected native explanation; provider response bodies are not retained here. */
+  errorMessage?: string | undefined;
   type: string;
   /** Native tool snapshots consumed only by the existing structural/content collector. */
   tools?: Record<string, unknown>[];
@@ -1942,12 +1944,19 @@ function readAssistant(row: Record<string, unknown>): NativeMessage {
     ...(typeof row.finish === 'string' ? { finish: row.finish } : {}),
     id: String(row.id),
     error: row.error !== undefined,
+    errorMessage: nativeErrorMessage(row.error),
     text,
     type: 'assistant',
     tools: row.content.filter(
       (part) => (part as Record<string, unknown>).type === 'tool'
     ) as Record<string, unknown>[],
   };
+}
+
+/** Selects the native explanation without provider response bodies or arbitrary metadata. */
+function nativeErrorMessage(value: unknown): string | undefined {
+  const message = (value as { message?: unknown } | null)?.message;
+  return typeof message === 'string' ? message : undefined;
 }
 
 /** Maps observed native message snapshots into the existing semantic collector; reasoning is excluded. */
@@ -2043,6 +2052,13 @@ async function captureOpenCodeMessage(
         mediaType: 'application/json',
         boundary: 'runtime.tool.result',
       });
+    const errorMessage = nativeErrorMessage(record.error);
+    if (phase === 'failed' && errorMessage !== undefined)
+      await capture.emit(sourceRef, fact, {
+        bytes: Buffer.from(errorMessage),
+        mediaType: 'text/plain',
+        boundary: 'runtime.tool.result',
+      });
   }
   await capture.flushCompleted();
 }
@@ -2100,7 +2116,10 @@ function interpretMessages(
   if (idle?.outcome === 'interrupted')
     return { assistantText: null, status: 'interrupted', stopReason: 'interrupted' };
   if (idle?.outcome === 'failed') {
-    return failedResult(`OpenCode turn outcome is ${idle.outcome}.`, secrets);
+    return failedResult(
+      assistant?.errorMessage || `OpenCode turn outcome is ${idle.outcome}.`,
+      secrets
+    );
   }
   if (!assistant) {
     if (idle?.outcome === 'succeeded') {
