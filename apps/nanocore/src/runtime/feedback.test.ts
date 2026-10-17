@@ -49,7 +49,7 @@ describe('turn feedback', () => {
     writeFileSync(path, JSON.stringify({ ...original, futureNote: 'retained' }));
     expect(readTurnFeedback(store, turn.id)).toEqual(original);
     expect(
-      updateTurnFeedback(store, turn.id, { rating: 'good', note: 'Updated' })
+      updateTurnFeedback(store, turn.id, { rating: 'good', note: 'Updated' }, turn.triggerActor)
     ).not.toHaveProperty('futureNote');
     expect(readTurnFeedback(createDemoStore({ dataRoot }), turn.id).rating).toBe('good');
     expect(JSON.parse(readFileSync(path, 'utf8')).futureNote).toBe('retained');
@@ -192,8 +192,18 @@ describe('turn feedback', () => {
       store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
       const path = feedbackFilePath(store, store.getTurnById(turn.id));
       const entriesBefore = readdirSync(dirname(path)).sort();
-      updateTurnFeedback(store, turn.id, { note: 'Prior feedback', rating: 'bad' });
-      updateTurnFeedback(store, turn.id, { note: 'Replacement feedback', rating: 'good' });
+      updateTurnFeedback(
+        store,
+        turn.id,
+        { note: 'Prior feedback', rating: 'bad' },
+        turn.triggerActor
+      );
+      updateTurnFeedback(
+        store,
+        turn.id,
+        { note: 'Replacement feedback', rating: 'good' },
+        turn.triggerActor
+      );
       expect(readTurnFeedback(createDemoStore({ dataRoot }), turn.id)).toMatchObject({
         note: 'Replacement feedback',
         rating: 'good',
@@ -204,7 +214,7 @@ describe('turn feedback', () => {
     }
   });
 
-  it('keeps feedback Workspace-owned across authenticated request actors', async () => {
+  it('retains attributable feedback history across actors and reopen', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const ownerStore = createDemoStore({ dataRoot }, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
     const workspace = ownerStore.listWorkspaces().find((item) => item.kind === 'code') ?? null;
@@ -220,7 +230,10 @@ describe('turn feedback', () => {
     });
     ownerStore.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const coreDb = openCoreDb(dataRoot);
-    onTestFinished(() => coreDb.sqlite.close());
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     for (const userId of [
@@ -256,6 +269,22 @@ describe('turn feedback', () => {
       mode: 'server',
     });
 
+    const first = await app.request(
+      ...operationRequest(
+        'turn.feedback',
+        { turnId: turn.id },
+        {
+          body: JSON.stringify({ note: 'Owner rating.', rating: 'good' }),
+          headers: {
+            'content-type': 'application/json',
+            'x-user-id': 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+          },
+          method: 'POST',
+        }
+      )
+    );
+    expect(first.status).toBe(200);
+
     const res = await app.request(
       ...operationRequest(
         'turn.feedback',
@@ -272,9 +301,26 @@ describe('turn feedback', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(readTurnFeedback(ownerStore, turn.id)).toMatchObject({
+    const history = [
+      {
+        actor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+        note: 'Owner rating.',
+        rating: 'good',
+        submittedAt: expect.any(String),
+      },
+      {
+        actor: { kind: 'user', id: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f' },
+        note: 'Shared feedback.',
+        rating: 'bad',
+        submittedAt: expect.any(String),
+      },
+    ];
+    await expect(res.json()).resolves.toMatchObject({ history });
+    const reopened = createDemoStore({ dataRoot }, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    expect(readTurnFeedback(reopened, turn.id)).toMatchObject({
       note: 'Shared feedback.',
       rating: 'bad',
+      history,
     });
   });
 });

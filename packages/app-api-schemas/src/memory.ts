@@ -8,8 +8,10 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  KnowledgeRetrievalResponseSchema,
   KnowledgeSourceSchema,
   RegisterKnowledgeSourceRequestSchema,
+  RetrieveKnowledgeRequestSchema,
 } from './knowledge-manager.js';
 import {
   KnowledgeNotebookPathSchema,
@@ -102,6 +104,11 @@ export const RegisterUserMemorySourceRequestSchema = RegisterKnowledgeSourceRequ
   content: true,
 }).extend({ requestId: RequestIdSchema, kind: z.literal('document') });
 
+/** One separately budgeted self Memory query; NanoCore derives its private Timeline and User owner. */
+export const SearchMemoryRequestSchema = RetrieveKnowledgeRequestSchema.omit({
+  sourceScope: true,
+}).extend({ workspaceId: WorkspaceIdSchema });
+
 const credentials = ['local-user', 'user-session', 'deployment-administrator'] as const;
 const self = {
   credentials,
@@ -115,6 +122,14 @@ const self = {
 
 /** Explicit self Memory and literal Source management; no Worker, automatic capture or caller-selected owner is admitted. */
 export const MEMORY_OPERATION_DEFINITIONS = {
+  'memory.search': {
+    ...self,
+    description:
+      'Search current self Memory with a separate budget in the existing private Timeline.',
+    inputSchema: SearchMemoryRequestSchema,
+    outputSchema: KnowledgeRetrievalResponseSchema,
+    mutating: false,
+  },
   'memory.source.register': {
     ...self,
     description: 'Capture one exact literal document in the authenticated User Source scope.',

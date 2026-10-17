@@ -432,7 +432,8 @@ function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
     return {
       root,
       path,
-      write: () => updateTurnFeedback(store, turn.id, { rating: 'good', note: 'retained' }),
+      write: () =>
+        updateTurnFeedback(store, turn.id, { rating: 'good', note: 'retained' }, turn.triggerActor),
       read: () => readTurnFeedback(new FsStore({ dataRoot: root }), turn.id).note,
       expected: 'retained',
     };
