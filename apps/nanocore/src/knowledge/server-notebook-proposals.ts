@@ -11,7 +11,7 @@ import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
-import type { FsStore } from '../lib/store.js';
+import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
 import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -103,9 +103,7 @@ export function createServerNotebookProposal(
     ...context.revalidate(),
   });
   if (report.errors.length) throw new NotebookError('invalid_request');
-  const id = `kp_${createHash('sha256')
-    .update(JSON.stringify({ ownerScope: { kind: 'server' }, requestId: edit.requestId }))
-    .digest('hex')}`;
+  const id = knowledgeAuthorityId('kp_', { ownerScope: 'server', requestId: edit.requestId });
   if (existsSync(proposalPath(context.coreDb, id))) throw new NotebookError('conflict');
   const candidateRevision = git.prepare({
     baseRevision: edit.baseRevision,
