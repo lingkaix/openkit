@@ -1,10 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -14,8 +13,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ItemSchema, PROTOCOL_VERSION } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { ensureLayout } from './fs-layout.js';
 import { parseCanonicalWorkspaceHistory } from './workspace-file-records.js';
@@ -69,61 +69,107 @@ function createBoundaryFixture() {
   };
 }
 
+/** Fresh import supplies actual User attribution; no materialized page directory initializes content. */
+function createNotebookBoundaryFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-notebook-'));
+  onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+  const source = new FsStore();
+  const workspace = source.createWorkspace('Notebook boundary workspace');
+  const store = new FsStore({ dataRoot });
+  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+  const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
+  return {
+    dataRoot,
+    workspace,
+    store,
+    workspaceRoot,
+    repositoryPath,
+    notebook: new KnowledgeNotebook({ repositoryPath }),
+    initialize: (files: Record<string, string>) =>
+      store.importWorkspaceSnapshot({
+        workspace,
+        threads: [],
+        turns: [],
+        knowledge: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+        initialNotebookFiles: files,
+        notebookInitialization: {
+          requestId: randomUUID(),
+          producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          instructionReference: 'fixture:workspace-import',
+        },
+      }),
+  };
+}
+
 describe('workspace file-record write and load boundaries', () => {
-  it('ensures the OKF v0.2 root index once and preserves valid human-authored bytes', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-index-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('OKF index workspace');
-    const pagesRoot = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages');
+  // Fresh navigation and body-only normalization belong to notebook-initialization.test.ts, under the Notebook owner's Content, Revisions And History section.
+  it('preserves the authored Git index during Thread writes without adopting materialized bytes', () => {
+    const f = createNotebookBoundaryFixture();
+    const authored = '---\nokf_version: "0.2"\n---\n# Team knowledge\n\nKeep this navigation.\n';
+    f.initialize({ 'index.md': authored });
+    const revision = f.notebook.publishedRevision();
+    const pagesRoot = join(f.workspaceRoot, 'knowledge', 'pages');
     const indexPath = join(pagesRoot, 'index.md');
 
-    expect(readFileSync(indexPath, 'utf8')).toBe('---\nokf_version: "0.2"\n---\n# Knowledge\n');
+    expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
+    expect(existsSync(indexPath)).toBe(false);
+    mkdirSync(pagesRoot, { recursive: true });
+    const materialized = '# Materialized navigation is not content authority.\n';
+    writeFileSync(indexPath, materialized);
+    f.store.createThread(f.workspace.id, 'Do not adopt the materialized index');
 
-    const authored = '---\nokf_version: "0.2"\n---\n# Team knowledge\n\nKeep this navigation.\n';
-    writeFileSync(indexPath, authored);
-    store.createThread(workspace.id, 'Do not rewrite the index');
-    expect(readFileSync(indexPath, 'utf8')).toBe(authored);
+    expect(f.notebook.publishedRevision()).toBe(revision);
+    expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
+    expect(readFileSync(indexPath, 'utf8')).toBe(materialized);
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    expect(reopened.listThreads(f.workspace.id)).toEqual(f.store.listThreads(f.workspace.id));
+    expect(f.notebook.publishedRevision()).toBe(revision);
+    expect(readFileSync(indexPath, 'utf8')).toBe(materialized);
 
     rmSync(indexPath);
-    mkdirSync(join(pagesRoot, 'topic'));
-    writeFileSync(join(pagesRoot, 'topic', 'page.md'), '---\ntype: Topic\n---\n# Topic\n');
-    store.createThread(workspace.id, 'Recreate the missing index');
-    expect(readFileSync(indexPath, 'utf8')).toBe(
-      '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n'
-    );
+    reopened.createThread(f.workspace.id, 'Do not recreate a materialized index');
+    expect(existsSync(indexPath)).toBe(false);
+    expect(f.notebook.publishedRevision()).toBe(revision);
+    expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
   });
 
-  it('adds only the v0.2 version block to a body-only root index', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-body-index-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Body index workspace');
-    const indexPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages', 'index.md');
-    const body = '# Hand-written index\n\nKeep every body byte.\n';
-    writeFileSync(indexPath, body);
+  it('does not repair corrupt published Git from materialized pages during Thread writes', () => {
+    const f = createNotebookBoundaryFixture();
+    const authored = '---\nokf_version: "0.2"\n---\n# Retained navigation\n';
+    f.initialize({ 'index.md': authored });
+    const indexPath = join(f.workspaceRoot, 'knowledge', 'pages', 'index.md');
+    mkdirSync(join(f.workspaceRoot, 'knowledge', 'pages'), { recursive: true });
+    writeFileSync(indexPath, authored);
+    const publishedPath = join(f.repositoryPath, 'refs', 'heads', 'published');
+    const corruptRef = `${'0'.repeat(40)}\n`;
+    writeFileSync(publishedPath, corruptRef);
 
-    store.createThread(workspace.id, 'Version the existing index');
+    f.store.createThread(f.workspace.id, 'Do not repair the Notebook');
 
-    expect(readFileSync(indexPath, 'utf8')).toBe(`---\nokf_version: "0.2"\n---\n${body}`);
+    expect(() => f.notebook.publishedRevision()).toThrow('Notebook recovery required.');
+    expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow('Notebook recovery required.');
+    expect(readFileSync(publishedPath, 'utf8')).toBe(corruptRef);
+    expect(readFileSync(indexPath, 'utf8')).toBe(authored);
   });
 
   it.each([
     '---\nokf_version: ["0.2"]\n---\n# Invalid scalar\n',
     '---\nokf_version: "0.1"\n---\n# Conflicting version\n',
     '---\nokf_version: "0.2"\n# Unclosed frontmatter\n',
-  ])('rejects an invalid root index before writing other canonical records', (content) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-invalid-index-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Invalid index workspace');
-    const indexPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages', 'index.md');
-    const threadsRoot = join(dataRoot, 'workspaces', workspace.id, 'threads');
-    const originalThreads = store.listThreads(workspace.id);
-    const originalDirectories = readdirSync(threadsRoot);
-    writeFileSync(indexPath, content);
+  ])('rejects an invalid initial root index before publishing the Workspace', (content) => {
+    const f = createNotebookBoundaryFixture();
+    const originalWorkspaces = f.store.listWorkspaces();
+    const files = { 'index.md': content };
 
-    expect(() => store.createThread(workspace.id, 'Reject the index')).toThrow();
-    expect(readFileSync(indexPath, 'utf8')).toBe(content);
-    expect(readdirSync(threadsRoot)).toEqual(originalDirectories);
-    expect(new FsStore({ dataRoot }).listThreads(workspace.id)).toEqual(originalThreads);
+    expect(() => f.initialize(files)).toThrow('Notebook invalid request.');
+    expect(files['index.md']).toBe(content);
+    expect(existsSync(f.workspaceRoot)).toBe(false);
+    expect(f.store.listWorkspaces()).toEqual(originalWorkspaces);
+    expect(new FsStore({ dataRoot: f.dataRoot }).listWorkspaces()).toEqual(originalWorkspaces);
   });
   it('does not fall back to owner-nested workspace records when the canonical root is absent', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-no-fallback-'));
