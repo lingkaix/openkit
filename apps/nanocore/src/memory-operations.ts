@@ -309,8 +309,8 @@ export function createMemoryOperationImplementations(
             sources: 'content' in input ? input.sources : (input.sourceIds ?? []),
             ...('content' in input ? { tellContent: input.content } : {}),
             ...('pageIds' in input && input.pageIds ? { pageIds: input.pageIds } : {}),
-            askingThreadId: context.queryContext?.threadId,
-            askingTurnId: context.queryContext?.turnId,
+            ...(context.queryContext ? { askingThreadId: context.queryContext.threadId } : {}),
+            ...(context.queryContext?.turnId ? { askingTurnId: context.queryContext.turnId } : {}),
             signal: context.signal ?? new AbortController().signal,
           },
           writer.userDb
@@ -352,7 +352,7 @@ export function createMemoryOperationImplementations(
             workspaceId: input.workspaceId,
             question: input.question,
             source: 'memory',
-            caller: 'internal-agent',
+            caller: context.delivery === 'model' ? 'internal-agent' : 'app-api',
             access,
             signal: context.signal ?? new AbortController().signal,
             capabilityCallId: call.id,
@@ -379,9 +379,21 @@ export function createMemoryOperationImplementations(
     'memory.tell': maintain,
     'memory.maintain': maintain,
     'memory.proposal.read': (input, context) =>
-      self(context, (writer) => readUserMemoryProposalPreview(proposalContext(writer), input)),
+      self(context, (writer) =>
+        readUserMemoryProposalPreview(proposalContext(writer), {
+          proposalId: input.proposalId,
+          offset: input.offset,
+          ...(input.path ? { path: input.path } : {}),
+        })
+      ),
     'memory.proposal.decide': (input, context) =>
       self(context, async (writer) => {
+        if (context.delivery === 'model')
+          throw new OperationError(
+            'human_review_required',
+            'A human must decide this Memory candidate.',
+            403
+          );
         const owner = proposalContext(writer);
         const { proposal } = readUserMemoryProposal(owner, input.proposalId);
         const result = await decideUserMemoryProposal(owner, input);

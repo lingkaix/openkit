@@ -1,5 +1,4 @@
 import { allocateEntityId } from '@openkit/protocol';
-import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { isCanonicalUserOperationAuthorized } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -48,8 +47,13 @@ export function scanUserMemoryMaintenance(input: {
         .filter((turn) => turn.startedAt !== null)
         .map((turn) => ({
           startedAt: turn.startedAt!,
-          ...(turn.internalExecution
-            ? { internalExecution: turn.internalExecution }
+          ...(turn.internalExecution?.knowledge
+            ? {
+                internalExecution: {
+                  roleId: turn.internalExecution.roleId,
+                  knowledge: turn.internalExecution.knowledge,
+                },
+              }
             : turn.triggerSource?.kind === 'automation' &&
                 turn.triggerSource.summary === 'User Memory maintenance.'
               ? {
@@ -70,10 +74,6 @@ export function scanUserMemoryMaintenance(input: {
       try {
         let actor: Actor | undefined;
         if (input.localUserId === userId) actor = { kind: 'local', userId };
-        else {
-          const tokenId = resolveSessionDeploymentAdminTokenId(coreDb, userId);
-          if (tokenId) actor = { kind: 'token', userId, tokenId, tokenScope: 'server-admin' };
-        }
         if (!actor || !isCanonicalUserOperationAuthorized(coreDb, actor))
           throw new Error('Current User maintenance authority is unavailable.');
         ensureUserQuickChatWorkspace({ coreDb, store, userId });
@@ -96,15 +96,15 @@ export function scanUserMemoryMaintenance(input: {
           execute: async () => {
             try {
               await prepared.execute();
-            } catch (error) {
-              prepared.fail(error);
+            } catch {
+              prepared.fail();
             } finally {
               ownedDb.sqlite.close();
             }
           },
-          fail: (error: unknown) => {
+          fail: () => {
             try {
-              prepared.fail(error);
+              prepared.fail();
             } finally {
               if (ownedDb.sqlite.open) ownedDb.sqlite.close();
             }

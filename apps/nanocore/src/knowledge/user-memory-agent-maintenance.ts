@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
@@ -330,8 +330,13 @@ export function prepareUserMemoryMaintenance(
           ({ payload }) => payload.pageId
         )
       );
+    const navigationUnavailable = (path: string) =>
+      suppressed().size > 0 && ['index.md', 'log.md'].includes(basename(path));
     const readPage = (revision: string, path: string) => {
-      if (suppressed().has(path.slice(0, -3))) throw new NotebookError('invalid_request');
+      // Reserved navigation can still carry forgotten prose. Keep canonical bytes, withhold all
+      // such bodies and historical diffs, and invalidate a run if suppression arrives after read.
+      if (navigationUnavailable(path) || suppressed().has(path.slice(0, -3)))
+        throw new NotebookError('invalid_request');
       // Current owner/schema and Source authority apply also to historical human diffs.
       admitMemoryContext(context);
       const content = notebook.readRevision(revision, [path]).files[path];
@@ -348,7 +353,11 @@ export function prepareUserMemoryMaintenance(
       return content;
     };
     for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
-      if (suppressed().has(path.slice(0, -3)) || (selected && !selected.has(path.slice(0, -3))))
+      if (
+        navigationUnavailable(path) ||
+        suppressed().has(path.slice(0, -3)) ||
+        (selected && !selected.has(path.slice(0, -3)))
+      )
         continue;
       const content = readPage(baseRevision, path);
       const parsed = parseOkfDocument({ path, content });
@@ -580,6 +589,7 @@ export function prepareUserMemoryMaintenance(
           ...Object.keys(parent?.entries ?? {}),
         ])) {
           if (
+            navigationUnavailable(path) ||
             suppressed().has(path.slice(0, -3)) ||
             (selected && !selected.has(path.slice(0, -3))) ||
             revision.entries[path] === parent?.entries[path]
@@ -630,7 +640,10 @@ export function prepareUserMemoryMaintenance(
                 files: Object.keys(files),
                 selectedPageIds: input.pageIds ?? [],
                 humanEdits: boundedNotebookDiff(humanChanges, false),
-                overview: excerpt(files['index.md'] ?? '', 16 * 1024),
+                overview:
+                  files['index.md'] === undefined
+                    ? { unavailable: true }
+                    : excerpt(files['index.md'], 16 * 1024),
                 sources: (() => {
                   let remaining = 64 * 1024;
                   return [...sources].map(([id, source]) => {

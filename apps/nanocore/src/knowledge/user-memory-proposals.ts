@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   KnowledgeManagerDraftedProposalSchema,
   KnowledgeProposalReviewSchema,
@@ -21,6 +21,7 @@ import {
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { admitMemoryContext } from './memory-lifecycle.js';
+import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { projectKnowledgeProposalPreview } from './notebook-proposal-preview.js';
 import {
@@ -254,6 +255,11 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
     )
   )
     throw new NotebookError('recovery_required');
+  if (
+    paths.some((path) => ['index.md', 'log.md'].includes(basename(path))) &&
+    readMemorySuppressions(admitMemoryContext(context).notebookRoot, context.userDb.userId).length
+  )
+    throw new NotebookError('invalid_request');
   const baseAdmission = context.revalidate(base.files);
   const candidateAdmission = context.revalidate(candidate.files, paths);
   const validation = validateNotebookCandidate({

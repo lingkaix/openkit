@@ -30,6 +30,7 @@ import {
   runUserMemoryMaintenanceCommand,
 } from './user-memory-agent-maintenance.js';
 import {
+  createUserMemoryProposal,
   decideUserMemoryProposal,
   readUserMemoryProposal,
   readUserMemoryProposalPreview,
@@ -302,6 +303,52 @@ describe('User-private bounded Memory maintenance', () => {
     const f = fixture();
     const first = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
     const content = f.notebook().readRevision(first.notebookRevision).files['labels.md']!;
+    const navigationMarker = 'FORGOTTEN_NAVIGATION_MARKER';
+    const humanRevision = f.notebook().prepare({
+      baseRevision: first.notebookRevision,
+      changes: { 'index.md': `---\nokf_version: "0.2"\n---\n# ${navigationMarker}\n` },
+      metadata: {
+        summary: 'Human navigation edit',
+        producer: { kind: 'user', id: userId },
+        authority: { kind: 'direct', instructionReference: 'human navigation edit' },
+        sourceReferences: [],
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: commandInputHash(navigationMarker),
+        },
+      },
+    });
+    f.notebook().publish({
+      baseRevision: first.notebookRevision,
+      candidateRevision: humanRevision,
+    });
+    const proposalContext = {
+      ...f.dependencies,
+      actor: f.input.requestActor,
+      revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
+        readUserMemoryNotebookAdmission(
+          { ...f.dependencies, actor: f.input.requestActor },
+          files,
+          paths
+        ),
+    };
+    const pending = createUserMemoryProposal(
+      proposalContext,
+      {
+        requestId: randomUUID(),
+        baseRevision: humanRevision,
+        changes: [
+          {
+            path: 'index.md',
+            content: `---\nokf_version: "0.2"\n---\n# ${navigationMarker} candidate\n`,
+          },
+        ],
+        summary: 'Pending navigation edit',
+      },
+      { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
+      []
+    );
+
     const refs = stringListFrontmatterField(
       parseOkfDocument({ path: 'labels.md', content }).document!,
       'source_refs'
@@ -320,6 +367,13 @@ describe('User-private bounded Memory maintenance', () => {
       actorId: userId,
       sourceFingerprints: refs,
     });
+    expect(() =>
+      readUserMemoryProposalPreview(proposalContext, {
+        proposalId: pending.id,
+        path: 'index.md',
+        offset: 0,
+      })
+    ).toThrow();
     const denied = await runUserMemoryMaintenanceCommand(f.dependencies, {
       ...f.input,
       requestId: randomUUID(),
@@ -330,9 +384,12 @@ describe('User-private bounded Memory maintenance', () => {
     expect(f.run).toHaveBeenCalledTimes(1);
     f.run.mockImplementationOnce(async (run) => {
       expect(JSON.stringify(run.messages)).not.toContain('I prefer green labels.');
+      expect(JSON.stringify(run.messages)).not.toContain(navigationMarker);
+      const prompt = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
+      expect(prompt.overview).toEqual({ unavailable: true });
       const editor = run.tools.find((tool) => tool.name === 'knowledge.notebook-workspace.update')!;
       const read = await editor.execute(
-        { script: 'cat labels.md' },
+        { script: 'cat labels.md; cat index.md' },
         { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
       );
       expect(JSON.stringify(read)).not.toContain('I prefer green labels.');
@@ -354,7 +411,7 @@ describe('User-private bounded Memory maintenance', () => {
       tellContent: undefined,
     });
     expect(next.outcome).toBe('no-change');
-    expect(f.notebook().publishedRevision()).toBe(first.notebookRevision);
+    expect(f.notebook().publishedRevision()).toBe(humanRevision);
   });
 
   it('checks current identity before native effects and never overwrites a newer notebook base', async () => {

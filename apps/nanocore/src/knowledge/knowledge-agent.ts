@@ -120,7 +120,7 @@ export async function askKnowledgeAgent(
   const memory = input.source === 'memory';
   const target = { dataRoot, workspaceId: input.workspaceId, access: input.access };
   if (memory) {
-    if (input.caller !== 'internal-agent' || !input.access.userDb)
+    if (input.caller === 'worker' || !input.access.userDb)
       throw new OperationError('memory_access_denied', 'Memory retrieval access denied.', 403);
     admitUserMemoryRetrieval(target);
   } else admitKnowledgeRetrieval(target);
@@ -352,7 +352,7 @@ export async function askKnowledgeAgent(
             ? await retrieveUserMemory({
                 ...bound,
                 access: memoryAccess,
-                caller: 'assistant',
+                caller: input.caller === 'app-api' ? 'app-api' : 'assistant',
                 ...args,
               })
             : await retrieveWorkspaceKnowledge({ ...bound, caller: retrievalCaller, ...args });
