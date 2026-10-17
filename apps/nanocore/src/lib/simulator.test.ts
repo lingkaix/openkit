@@ -402,6 +402,15 @@ describe('SimulatedTurnExecutor', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
+    // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
+    const completions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    let nextExecution = 0;
+    const startTurn = executor.startTurn.bind(executor);
+    const executions = vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      const completion = startTurn(...args);
+      completions[nextExecution++]?.resolve(completion);
+      return completion;
+    });
     const app = createApp({
       fileAdmission,
       agentManifests: [createTestAgentSetup().manifest],
@@ -443,6 +452,7 @@ describe('SimulatedTurnExecutor', () => {
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
+      await completions[0].promise;
       await vi.waitFor(() => {
         expect(store.getTurnById(first.turn.id).status).toBe('completed');
         expect(
@@ -484,6 +494,7 @@ describe('SimulatedTurnExecutor', () => {
       const secondBody = await secondResponse.clone().text();
       expect.soft(secondResponse.status, secondBody).toBe(202);
       const acceptedSecond = StartTaskModeResponseSchema.parse(JSON.parse(secondBody));
+      await completions[1].promise;
       await vi.waitFor(() =>
         expect(store.getTurnById(acceptedSecond.turn.id).status).toBe('completed')
       );
@@ -516,6 +527,7 @@ describe('SimulatedTurnExecutor', () => {
       expect.soft(new Set(leases.map((lease) => lease.leaseId)).size).toBe(2);
       expect.soft(new Set(leases.map((lease) => lease.turnId)).size).toBe(2);
     } finally {
+      executions.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -527,6 +539,15 @@ describe('SimulatedTurnExecutor', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
+    // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
+    const completions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    let nextExecution = 0;
+    const startTurn = executor.startTurn.bind(executor);
+    const executions = vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      const completion = startTurn(...args);
+      completions[nextExecution++]?.resolve(completion);
+      return completion;
+    });
     const providerRegistry = new ProviderRegistry([
       {
         defaultModel: 'openai/gpt-5.2',
@@ -579,6 +600,7 @@ describe('SimulatedTurnExecutor', () => {
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
+      await completions[0].promise;
       await vi.waitFor(() => {
         expect(store.getTurnById(first.turn.id).status).toBe('completed');
         expect(
@@ -637,6 +659,7 @@ describe('SimulatedTurnExecutor', () => {
         const secondBody = await secondResponse.clone().text();
         expect.soft(secondResponse.status, secondBody).toBe(202);
         const acceptedSecond = StartTaskModeResponseSchema.parse(JSON.parse(secondBody));
+        await completions[1].promise;
         await vi.waitFor(() =>
           expect(store.getTurnById(acceptedSecond.turn.id).status).toBe('completed')
         );
@@ -733,6 +756,7 @@ describe('SimulatedTurnExecutor', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      executions.mockRestore();
       coreDb.sqlite.close();
     }
   });
