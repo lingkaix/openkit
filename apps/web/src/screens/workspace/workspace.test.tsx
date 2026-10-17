@@ -2774,7 +2774,7 @@ describe('Catalog', () => {
     expect(screen.getByRole('button', { name: 'Import plugin package' })).toBeDisabled();
   });
 
-  it('preserves MCP deny and approval policy when toggling enablement', async () => {
+  it('preserves MCP policy on enable and saves explicit human tool-rule edits', async () => {
     const user = userEvent.setup();
     const digest = `sha256:${'c'.repeat(64)}`;
     const updateMcpBinding = vi.fn().mockResolvedValue({ revision: 4 });
@@ -2814,6 +2814,49 @@ describe('Catalog', () => {
       deniedTools: ['secret'],
       enabled: true,
     });
+    const allowed = screen.getByRole('textbox', { name: 'Echo allowed tools' });
+    const approval = screen.getByRole('textbox', { name: 'Echo approval-required tools' });
+    const denied = screen.getByRole('textbox', { name: 'Echo denied tools' });
+    expect(allowed).toHaveValue('echo');
+    expect(approval).toHaveValue('danger');
+    expect(denied).toHaveValue('secret');
+    await user.clear(allowed);
+    await user.type(allowed, 'read, send');
+    await user.clear(approval);
+    await user.type(approval, 'send');
+    await user.clear(denied);
+    await user.type(denied, 'delete');
+    await user.click(screen.getByRole('button', { name: 'Save Echo tool rules' }));
+    await waitFor(() => expect(updateMcpBinding).toHaveBeenCalledTimes(2));
+    expect(updateMcpBinding.mock.calls[1]?.[0]).toMatchObject({
+      workspaceId: WORKSPACE_A.id,
+      mcpId: 'echo',
+      allowedTools: ['read', 'send'],
+      approvalRequiredTools: ['send'],
+      deniedTools: ['delete'],
+      enabled: false,
+      bindingRevision: 2,
+      expectedRevision: 3,
+      schemaPolicy: 'tracking',
+      timeoutMs: 60_000,
+      requestId: expect.any(String),
+    });
+    updateMcpBinding.mockRejectedValueOnce(new ApiCallError(409, 'Binding changed'));
+    await user.click(screen.getByRole('button', { name: 'Save Echo tool rules' }));
+    expect(await screen.findByText(/Tool-rule save could not be confirmed/)).toBeInTheDocument();
+    expect(allowed).toHaveValue('read, send');
+    expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeDisabled();
+    get.mockRejectedValueOnce(new Error('Current binding unavailable'));
+    await user.click(screen.getByRole('button', { name: 'Refresh Echo rules' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Refresh Echo rules' })).toBeEnabled()
+    );
+    expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Refresh Echo rules' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeEnabled()
+    );
+    expect(updateMcpBinding).toHaveBeenCalledTimes(3);
   });
 });
 
