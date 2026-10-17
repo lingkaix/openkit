@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -136,6 +137,7 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
+  const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -147,6 +149,7 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
     createTestAgentSetup({ ...(agentId ? { agentId } : {}) }).manifest
   );
   const app = createApp({
+    fileAdmission,
     ...(agentId
       ? {
           agentManifests: [createTestAgentSetup({ agentId }).manifest],
@@ -165,7 +168,7 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
     dataRoot,
     ...(workerMcpGateway ? { workerMcpGateway } : {}),
     store,
-    turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+    turnExecutor: new SimulatedTurnExecutor({ coreDb, fileAdmission }),
   });
   return { app, coreDb, dataRoot, store };
 }

@@ -5,6 +5,7 @@ import { afterEach } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -25,7 +26,7 @@ export function createAppWithLocalIdentity(
 }
 
 /**
- * Creates a NanoCore app with an explicit deterministic executor for unit tests.
+ * Creates a NanoCore app with an explicit deterministic executor and shared file admission for unit tests.
  *
  * @param options Production app options, including an optional executor override.
  * @returns NanoCore app configured for deterministic unit tests.
@@ -51,8 +52,19 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
   const providerSupportsDefaultGateway =
     !options.providerRegistry ||
     options.providerRegistry.get('agent-openrouter')?.models.includes('openai/gpt-5.2') === true;
+  const fileAdmission =
+    options.fileAdmission ??
+    new FileStorageAdmission(
+      options.dataRoot ?? options.store?.dataRoot ?? options.coreDb?.dataRoot ?? '.',
+      () =>
+        BigInt(
+          options.runtimeConfigManager?.current().openKitConfig.server?.fileReserveBytes ??
+            options.openKitConfig?.server?.fileReserveBytes ??
+            1_000_000_000
+        )
+    );
   const turnExecutor =
-    options.turnExecutor ?? new SimulatedTurnExecutor({ coreDb: options.coreDb });
+    options.turnExecutor ?? new SimulatedTurnExecutor({ coreDb: options.coreDb, fileAdmission });
   return createAppWithLocalIdentity({
     ...(ownsRuntimeConfig && providerSupportsDefaultGateway
       ? { gatewayConfig: createTestGatewayConfig() }
@@ -61,6 +73,7 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
       ? { providerRegistry: defaultProviderRegistry }
       : {}),
     ...options,
+    fileAdmission,
     turnExecutor,
   });
 }
