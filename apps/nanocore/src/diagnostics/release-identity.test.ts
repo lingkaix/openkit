@@ -32,6 +32,12 @@ describe('App release identity', () => {
 
     expect(readReleaseIdentity(path)).toEqual({ releaseTag: TAG, sourceCommit: COMMIT });
     expect(readReleaseIdentity(missing)).toEqual({ releaseTag: null, sourceCommit: null });
+    const untagged = writeIdentity(JSON.stringify({ releaseTag: null, sourceCommit: COMMIT }));
+    expect(readReleaseIdentity(untagged)).toEqual({ releaseTag: null, sourceCommit: COMMIT });
+    expect(AppDiagnosticsResponseSchema.shape.build.parse(readReleaseIdentity(untagged))).toEqual({
+      releaseTag: null,
+      sourceCommit: COMMIT,
+    });
     expect(RELEASE_IDENTITY_PATH).toBe('/usr/local/lib/openkit/release-identity.json');
 
     const app = createApp({ releaseIdentity: readReleaseIdentity(path) });
