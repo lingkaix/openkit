@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
@@ -238,5 +238,10 @@ describe('public self Memory search', () => {
     expect(readdirSync(tracesRoot).sort()).toEqual(traceFiles);
     expect(notebook.publishedRevision()).toBe(baseRevision);
     expect(f.store.listThreadTurns(f.workspace.id, timeline.id)).toEqual([]);
+    const exported = await f.call(0, 'workspace.export', {
+      workspaceId: f.workspace.id,
+      requestId: randomUUID(),
+    });
+    expect(exported.status).toBe(200);
   });
 });

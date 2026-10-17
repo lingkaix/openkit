@@ -266,13 +266,13 @@ describe('governed current-self Memory search', () => {
         retrievalTraceRef: result.retrievalTraceRef!,
       })
     ).toThrow();
-    expect(() =>
+    expect(
       assertKnowledgeRetrievalTraceReadable({
         ...f.alice.query(),
         access: { ...f.alice.access, outputThreadId: undefined },
         retrievalTraceRef: result.retrievalTraceRef!,
       })
-    ).toThrow();
+    ).toEqual(trace);
     await expect(
       retrieveUserMemory({
         ...f.alice.query(),

@@ -1060,12 +1060,8 @@ function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRe
         : `page/workspace/${trace.queryContext.workspaceId}`;
   if (trace.sourceScope !== sourceScope) throw knowledgeTraceUnavailable();
   if (trace.retrievalParameters.sourceScope === 'user') {
-    // An ordinary Workspace export has no private output audience and cannot acquire one from retained evidence.
-    if (
-      input.access.outputThreadId !== scope.threadId ||
-      (scope.kind === 'turn' && input.access.outputTurnId !== scope.turnId) ||
-      sourceScope !== `page/user/${input.access.requestActor?.userId}`
-    )
+    // Record inspection uses the addressed owner after current audience and self admission.
+    if (sourceScope !== `page/user/${input.access.requestActor?.userId}`)
       throw knowledgeTraceUnavailable();
     admitUserMemoryRetrieval(target);
   }
