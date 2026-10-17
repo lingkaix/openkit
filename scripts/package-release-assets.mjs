@@ -51,14 +51,19 @@ const INNER_CHECKSUM_FILES = NANOHOST_FILES.filter((name) => name !== 'SHA256SUM
  */
 export function packageReleaseAssets(input) {
   parseVersionTag(input.tag);
-  const ref = input.ref ?? 'HEAD';
-  if (!/^[0-9A-Za-z][0-9A-Za-z._/-]*$/.test(ref)) {
-    throw new Error(`Git revision contains unsupported characters: ${ref}`);
+  const selectedRef = input.ref ?? 'HEAD';
+  if (!/^[0-9A-Za-z][0-9A-Za-z._/-]*$/.test(selectedRef)) {
+    throw new Error(`Git revision contains unsupported characters: ${selectedRef}`);
   }
   const repoRoot = resolve(input.repoRoot);
+  // Resolve once so every archived byte and its identity use the same immutable source.
+  const ref = run('git', ['rev-parse', `${selectedRef}^{commit}`], {
+    cwd: repoRoot,
+    message: 'Unable to resolve release source commit',
+  }).stdout.trim();
   const outputDir = resolve(input.outputDir);
   mkdirSync(outputDir, { recursive: true });
-  const ops = gitArchiveSkill(repoRoot, ref, outputDir, `openkit-ops-skill-${input.tag}`, [
+  const ops = gitArchiveSkill(repoRoot, ref, input.tag, outputDir, [
     'LICENSE',
     'skills/openkit-ops',
     'scripts/docker/app-update-helper.py',
@@ -88,23 +93,37 @@ export function packageReleaseAssets(input) {
   };
 }
 
-/** Archives the operations package, reviewed helper and license from the selected revision. */
-function gitArchiveSkill(repoRoot, ref, outputDir, prefix, paths) {
+/** Archives the selected operations package, reviewed helper, license and release identity. */
+function gitArchiveSkill(repoRoot, ref, tag, outputDir, paths) {
+  const prefix = `openkit-ops-skill-${tag}`;
   const archiveName = `${prefix}.tar.gz`;
   const archivePath = resolve(outputDir, archiveName);
-  run(
-    'git',
-    [
-      'archive',
-      '--format=tar.gz',
-      `--prefix=${prefix}/`,
-      `--output=${archivePath}`,
-      ref,
-      '--',
-      ...paths,
-    ],
-    { cwd: repoRoot, message: 'Unable to archive release assets' }
-  );
+  const temporary = mkdtempSync(join(tmpdir(), 'openkit-ops-package-'));
+  try {
+    const identityPath = join(temporary, 'release-identity.json');
+    writeMode(
+      identityPath,
+      `${JSON.stringify({ sourceCommit: ref, releaseTag: tag }, null, 2)}\n`,
+      0o644
+    );
+    run(
+      'git',
+      [
+        'archive',
+        '--format=tar.gz',
+        `--prefix=${prefix}/`,
+        `--output=${archivePath}`,
+        // Git applies the selected commit timestamp to this generated member as well.
+        `--add-file=${identityPath}`,
+        ref,
+        '--',
+        ...paths,
+      ],
+      { cwd: repoRoot, message: 'Unable to archive release assets' }
+    );
+  } finally {
+    rmSync(temporary, { force: true, recursive: true });
+  }
   return { archiveName, archivePath };
 }
 
@@ -115,7 +134,7 @@ function gitArchiveSkill(repoRoot, ref, outputDir, prefix, paths) {
  * @param {string} input.archivePath Path to `openkit-ops-skill-<tag>.tar.gz`.
  * @param {string} input.destDir Empty directory that receives the extracted envelope.
  * @returns {{ envelopePath: string, skillPath: string, cliPath: string }} Extracted envelope and entrypoint.
- * @throws {Error} When package inputs, reference closure, executable mode, Node runtime or local discovery are invalid.
+ * @throws {Error} When release identity, package inputs, reference closure, executable mode, Node runtime or local discovery are invalid.
  */
 export function verifyOperationsSkillArchive(input) {
   const archivePath = resolve(input.archivePath);
@@ -131,6 +150,24 @@ export function verifyOperationsSkillArchive(input) {
   const envelopePath = join(destDir, entries[0]);
   if (!lstatSync(envelopePath, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Error('Operations Skill archive envelope is missing.');
+  }
+  const identityPath = join(envelopePath, 'release-identity.json');
+  if (!lstatSync(identityPath, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error('Operations Skill archive is missing release-identity.json.');
+  }
+  const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
+  if (
+    !identity ||
+    Array.isArray(identity) ||
+    Object.keys(identity).sort().join(',') !== 'releaseTag,sourceCommit' ||
+    !/^[0-9a-f]{40}$/.test(identity.sourceCommit) ||
+    typeof identity.releaseTag !== 'string'
+  ) {
+    throw new Error('Operations Skill archive release identity is invalid.');
+  }
+  parseVersionTag(identity.releaseTag);
+  if (entries[0] !== `openkit-ops-skill-${identity.releaseTag}`) {
+    throw new Error('Operations Skill archive release tag does not match its envelope.');
   }
   const licensePath = join(envelopePath, 'LICENSE');
   const skillPath = join(envelopePath, 'skills', 'openkit-ops', 'SKILL.md');
