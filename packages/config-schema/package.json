@@ -23,6 +23,10 @@
     "./workspace-export": {
       "types": "./dist/workspace-export.d.ts",
       "default": "./dist/workspace-export.js"
+    },
+    "./workspace-resource-policy": {
+      "types": "./dist/workspace-resource-policy.d.ts",
+      "default": "./dist/workspace-resource-policy.js"
     }
   },
   "scripts": {

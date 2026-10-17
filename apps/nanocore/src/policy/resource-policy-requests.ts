@@ -1,13 +1,25 @@
+import { WorkspaceResourcePolicyChangeSchema as ResourcePolicyChangeSchema } from '@openkit/app-api-schemas';
+
+export { WorkspaceResourcePolicyChangeSchema as ResourcePolicyChangeSchema } from '@openkit/app-api-schemas';
+
+import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
-  WORKSPACE_RESOURCE_POLICY_FEATURE,
-  WorkspaceConfigSchema,
-  WorkspacePolicyResourceSchema,
-  WorkspaceResourceAccessEntrySchema,
-} from '@openkit/config-schema';
+  AccessTokenIdSchema,
+  AgentSessionIdSchema,
+  responsibleUserIdForActor,
+  ThreadIdSchema,
+  TurnIdSchema,
+  UserIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import { authorizeWorkspace } from '../auth/operation-authorizer.js';
+import {
+  authorizeWorkspace,
+  currentWorkerLineageWorkspaceAuthority,
+  requireCurrentDeploymentAdmin,
+} from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
@@ -26,30 +38,43 @@ import {
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-membership.js';
 
-/** Exact replacement of one managed boundary; null explicitly removes that boundary. */
-export const ResourcePolicyChangeSchema = z
-  .object({
-    resource: WorkspacePolicyResourceSchema,
-    replacement: WorkspaceResourceAccessEntrySchema.nullable(),
-    expectedRevision: z.string().min(1),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (
-      value.replacement &&
-      (value.resource.family !== value.replacement.resource.family ||
-        value.resource.id !== value.replacement.resource.id)
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['replacement', 'resource'],
-        message: 'The replacement must identify the captured resource.',
-      });
-    }
-  });
+/** Captured non-secret credential or Worker lineage, rechecked by its existing current authority owners. */
+export const ResourcePolicyRequestOriginSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('public'),
+      actor: z
+        .object({
+          userId: UserIdSchema,
+          kind: z.enum(['local', 'session', 'token']),
+          tokenId: AccessTokenIdSchema.optional(),
+          tokenScope: z.enum(['server-admin', 'workspace', 'workspace-readonly']).optional(),
+          tokenWorkspaceIds: z.array(WorkspaceIdSchema).optional(),
+          adminTokenId: AccessTokenIdSchema.optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('worker'),
+      lineage: z
+        .object({
+          workspaceId: WorkspaceIdSchema,
+          threadId: ThreadIdSchema,
+          turnId: TurnIdSchema,
+          agentSessionId: AgentSessionIdSchema,
+          packageSnapshotId: z.string().min(1),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+
 const IntentSchema = z
   .object({
     operation: z.literal('workspace.resource-access-change'),
+    origin: ResourcePolicyRequestOriginSchema,
     change: ResourcePolicyChangeSchema,
   })
   .strict();
@@ -58,7 +83,7 @@ const IntentSchema = z
 export interface ResourcePolicyRequestDependencies {
   readonly coreDb: CoreDb;
   readonly store: FsStore;
-  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceDb: Pick<WorkspaceDb, 'sqlite'>;
   readonly manager: RuntimeConfigManager;
   readonly files: RuntimeConfigFileService;
   /** The existing requester/Worker authority owner must confirm the captured current responsibility. */
@@ -78,12 +103,17 @@ export function isResourcePolicyRequest(record: PendingRequestRecord): boolean {
 export function raiseResourcePolicyRequest(
   dependencies: Pick<ResourcePolicyRequestDependencies, 'store' | 'workspaceDb'>,
   input: Omit<RaisePendingRequestInput, 'kind' | 'approval' | 'governedIntent' | 'call'>,
-  change: z.input<typeof ResourcePolicyChangeSchema>
+  change: z.input<typeof ResourcePolicyChangeSchema>,
+  origin: z.input<typeof ResourcePolicyRequestOriginSchema>
 ): PendingRequestRecord {
   const raisedInput: RaisePendingRequestInput = {
     ...input,
     kind: 'approval',
-    governedIntent: IntentSchema.parse({ operation: 'workspace.resource-access-change', change }),
+    governedIntent: IntentSchema.parse({
+      operation: 'workspace.resource-access-change',
+      change,
+      origin,
+    }),
     approval: {
       kind: 'permission',
       title: 'Workspace resource access change',
@@ -124,6 +154,55 @@ export function raiseResourcePolicyRequest(
   return record;
 }
 
+/** Rechecks the original credential or trusted Worker responsibility without replaying its original Turn. */
+export function isResourcePolicyRequesterCurrent(
+  dependencies: Pick<ResourcePolicyRequestDependencies, 'coreDb' | 'store' | 'manager'>,
+  record: PendingRequestRecord
+): boolean {
+  if (!isResourcePolicyRequest(record)) return false;
+  try {
+    const { origin } = IntentSchema.parse(record.governedIntent);
+    if (origin.kind === 'public') {
+      const actor: Actor = {
+        kind: origin.actor.kind,
+        userId: origin.actor.userId,
+        ...(origin.actor.tokenId ? { tokenId: origin.actor.tokenId } : {}),
+        ...(origin.actor.tokenScope ? { tokenScope: origin.actor.tokenScope } : {}),
+        ...(origin.actor.tokenWorkspaceIds
+          ? { tokenWorkspaceIds: origin.actor.tokenWorkspaceIds }
+          : {}),
+        ...(origin.actor.adminTokenId ? { adminTokenId: origin.actor.adminTokenId } : {}),
+      };
+      return (
+        actor.userId === record.responsibleUserId &&
+        authorizeWorkspace(dependencies.coreDb, actor, record.workspaceId, {
+          policyOperation: 'workspace.read',
+          mutating: false,
+        }) !== null
+      );
+    }
+    const turn = dependencies.store.getTurnById(origin.lineage.turnId);
+    return (
+      turn.workspaceId === record.workspaceId &&
+      turn.threadId === record.threadId &&
+      turn.id === record.raisingTurnId &&
+      turn.agentId === record.agentId &&
+      turn.agentSessionId === record.agentSessionId &&
+      turn.agentSessionId === origin.lineage.agentSessionId &&
+      responsibleUserIdForActor(turn.triggerActor) === record.responsibleUserId &&
+      dependencies.manager.current().agentManifests.some((agent) => agent.id === turn.agentId) &&
+      currentWorkerLineageWorkspaceAuthority(
+        dependencies.coreDb,
+        { ...origin.lineage, triggerActor: turn.triggerActor },
+        'workspace.read',
+        true
+      ) !== null
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Rechecks current Workspace Policy administration, requester responsibility and canonical target facts. */
 export function checkResourcePolicyCommandIntent(
   dependencies: ResourcePolicyRequestDependencies,
@@ -131,12 +210,27 @@ export function checkResourcePolicyCommandIntent(
   actor: Actor
 ): void {
   if (!isResourcePolicyRequest(record)) return;
+  if (actor.kind === 'session' && actor.adminTokenId) {
+    try {
+      if (requireCurrentDeploymentAdmin(dependencies.coreDb, actor).tokenId !== actor.adminTokenId)
+        throw new Error('Administrator credential changed.');
+    } catch {
+      throw new PendingRequestCommandError(
+        'workspace_access_denied',
+        'The deciding credential is no longer current.',
+        403
+      );
+    }
+  }
   if (
     !authorizeWorkspace(dependencies.coreDb, actor, record.workspaceId, {
       policyOperation: 'workspace.configure',
       mutating: true,
     }) ||
-    dependencies.requesterAuthority(record) !== true
+    !(
+      dependencies.requesterAuthority(record) ??
+      isResourcePolicyRequesterCurrent(dependencies, record)
+    )
   ) {
     throw new PendingRequestCommandError(
       'workspace_access_denied',

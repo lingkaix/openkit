@@ -86,7 +86,8 @@ function fixture() {
         responsibleUserId: actor.userId,
         now: new Date().toISOString(),
       },
-      change
+      change,
+      { kind: 'public', actor }
     );
   };
   return {
@@ -132,9 +133,13 @@ describe('resource Policy Pending Request commands', () => {
       const publish = vi.spyOn(f.store, 'createItem').mockImplementationOnce(() => {
         throw new Error('Item publication failed');
       });
-      expect(() => raiseResourcePolicyRequest(f, input, change)).toThrow('Item publication failed');
+      expect(() =>
+        raiseResourcePolicyRequest(f, input, change, { kind: 'public', actor: f.actor })
+      ).toThrow('Item publication failed');
       publish.mockRestore();
-      expect(() => raiseResourcePolicyRequest(f, input, change)).toThrow('contradictory');
+      expect(() =>
+        raiseResourcePolicyRequest(f, input, change, { kind: 'public', actor: f.actor })
+      ).toThrow('contradictory');
       expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual([]);
     } finally {
       f.close();
@@ -153,6 +158,7 @@ describe('resource Policy Pending Request commands', () => {
       expect(record.state).toBe('pending');
       expect(record.governedIntent).toEqual({
         operation: 'workspace.resource-access-change',
+        origin: { kind: 'public', actor: f.actor },
         change: {
           resource: missing,
           replacement: { ...f.replacement, resource: missing },

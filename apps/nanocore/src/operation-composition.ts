@@ -51,6 +51,7 @@ import type {
 } from './operation-contract.js';
 import { createInternalOperationEngine, createOperationEngine } from './operation-invocation.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
+import { checkResourcePolicyOperationIntent } from './policy/resource-policy-operations.js';
 import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
@@ -245,6 +246,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       store: dependencies.store!,
       checkCommandIntent: (sqlite, record, actor) => {
         checkVaultGrantCommandIntent(dependencies, record, actor);
+        checkResourcePolicyOperationIntent(dependencies, sqlite, record, actor);
         dependencies.pendingRequestServices?.checkCommandIntent?.(sqlite, record, actor);
       },
     }),

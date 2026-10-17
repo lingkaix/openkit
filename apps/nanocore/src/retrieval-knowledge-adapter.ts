@@ -17,7 +17,7 @@ import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
-import { isThreadVisible } from './auth/thread-visibility.js';
+import { canDiscloseThreadToAudience, isThreadVisible } from './auth/thread-visibility.js';
 import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { admitMemoryContext, memoryPageFacts } from './knowledge/memory-lifecycle.js';
 import { readMemorySuppressions } from './knowledge/memory-maintenance.js';
@@ -503,11 +503,11 @@ export function threadReadable(
       )
     )
       return false;
-    if (!access.outputThreadId || thread.visibility === 'workspace') return true;
-    const destination = access.store.getThread(workspaceId, access.outputThreadId);
-    return (
-      destination.visibility === 'private' &&
-      destination.privateOwnerUserId === thread.privateOwnerUserId
+    if (!access.outputThreadId) return true;
+    return canDiscloseThreadToAudience(
+      access.store,
+      thread,
+      access.store.getThread(workspaceId, access.outputThreadId)
     );
   } catch {
     return false;

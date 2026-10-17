@@ -4,7 +4,7 @@ import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/
 export { PRODUCT_OPERATION_ACCESS_RIGHTS, type ProductOperation } from '@openkit/config-schema';
 
 /** Product operations supplied by the single active-member association. */
-const WORKSPACE_MEMBER_OPERATIONS = [
+export const WORKSPACE_MEMBER_OPERATIONS = [
   'approval.respond',
   'artifact.read',
   'artifact.write',

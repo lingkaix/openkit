@@ -10,6 +10,7 @@ import Database from 'better-sqlite3';
 import {
   authorizedWorkspaceSet,
   authorizeWorkspace,
+  authorizeWorkspaceEligibility,
   currentWorkerLineageWorkspaceAuthority,
   DeploymentAdminRequiredError,
   hasWorkspaceDeletionRetryAuthority,
@@ -32,6 +33,10 @@ import type {
 import { OperationError } from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
 import { evaluateServerAccess } from './policy/server-access.js';
+import {
+  evaluateWorkspaceResourceAccess,
+  type ResourcePolicyActor,
+} from './policy/workspace-resource-access.js';
 import { requireCoordinatorGoal } from './runtime/goal-owner.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -249,13 +254,20 @@ export function admitOperation(
           !store ||
           !dependencies.repositoryWorkspaceDb ||
           admission.isClosed(entry.workspaceId) ||
-          !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition)
+          !authorizeWorkspaceEligibility(coreDb, entry.actor, entry.workspaceId, definition)
         )
           throw denied();
         const db = dependencies.repositoryWorkspaceDb(entry.workspaceId);
         try {
           requireCoordinatorGoal(store, db, entry);
-          requireThreadAudience(store, coreDb, entry, entry.workspaceId, entry.threadId);
+          requireThreadAudience(
+            store,
+            coreDb,
+            entry,
+            entry.workspaceId,
+            entry.threadId,
+            definition.policyOperation
+          );
         } finally {
           db.sqlite.close();
         }
@@ -331,13 +343,19 @@ export function admitOperation(
               definition.policyOperation,
               true
             )
-          : authorizeWorkspace(coreDb, entry.actor, workspaceId, definition);
+          : authorizeWorkspaceEligibility(coreDb, entry.actor, workspaceId, definition);
       if (
         definition.scope.kind === 'actor-quick-chat-workspace' &&
         (!authorized || typeof authorized === 'string' || !authorized.isOwner)
       )
         throw denied();
       if (definition.target.kind === 'workspace-deletion') {
+        if (
+          authorized &&
+          entry.kind !== 'worker' &&
+          !authorizeWorkspace(coreDb, entry.actor, workspaceId, definition)
+        )
+          throw denied();
         if (
           entry.kind !== 'public' ||
           (!authorized &&
@@ -371,19 +389,45 @@ export function admitOperation(
         }
         if (!resolvedLineage || resolvedLineage.workspaceId !== workspaceId) throw denied();
         if (resolvedLineage.threadId)
-          requireThreadAudience(store, coreDb, entry, workspaceId, resolvedLineage.threadId);
+          requireThreadAudience(
+            store,
+            coreDb,
+            entry,
+            workspaceId,
+            resolvedLineage.threadId,
+            definition.policyOperation
+          );
       }
+      resolveTarget(
+        definition.target,
+        input,
+        dependencies,
+        entry,
+        workspaceId,
+        definition.policyOperation
+      );
       if (
-        entry.kind === 'worker' &&
-        !isThreadIdVisible(
-          store,
-          workspaceId,
-          entry.lineage.threadId,
-          responsibleUserIdForActor(actorRef) ?? undefined
-        )
+        entry.kind !== 'worker' &&
+        definition.target.kind !== 'addressed-thread' &&
+        definition.target.kind !== 'addressed-turn' &&
+        !(
+          definition.target.kind === 'optional-addressed-thread' &&
+          input[definition.target.threadField] !== undefined
+        ) &&
+        !resolvedLineage?.threadId &&
+        definition.target.kind !== 'workspace-deletion' &&
+        !authorizeWorkspace(coreDb, entry.actor, workspaceId, definition)
       )
         throw denied();
-      resolveTarget(definition.target, input, dependencies, entry, workspaceId);
+      if (entry.kind === 'worker' && definition.target.kind === 'workspace')
+        requireThreadAudience(
+          store,
+          coreDb,
+          entry,
+          workspaceId,
+          entry.lineage.threadId,
+          definition.policyOperation
+        );
       scope = { kind: 'workspace', workspaceId };
       if (definition.mutating && definition.target.kind !== 'workspace-deletion')
         mutationWorkspaceId = workspaceId;
@@ -430,9 +474,12 @@ export function admitOperation(
 function requireThreadAudience(
   store: FsStore,
   coreDb: CoreDb,
-  entry: Exclude<OperationInvocationContext, { kind: 'bootstrap' }>,
+  entry:
+    | Exclude<OperationInvocationContext, { kind: 'bootstrap' }>
+    | AssistantOperationInvocationContext,
   workspaceId: string,
-  threadId: string
+  threadId: string,
+  operation = 'thread.read'
 ): void {
   const userId =
     entry.kind === 'worker' ? responsibleUserIdForActor(entry.actor) : entry.actor.userId;
@@ -442,10 +489,36 @@ function requireThreadAudience(
       workspaceId,
       threadId,
       userId ?? undefined,
-      entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor)
+      entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),
+      null
     )
   )
     throw new OperationError('not_found', 'Thread not found.', 404);
+  try {
+    let actor: ResourcePolicyActor = { kind: 'user', userId: userId! };
+    if (entry.kind === 'worker') {
+      const turn = store.getTurnById(entry.lineage.turnId);
+      if (!turn.agentId || turn.agentSessionId !== entry.lineage.agentSessionId) throw denied();
+      actor = {
+        kind: 'agent',
+        userId: userId!,
+        agentId: turn.agentId,
+        processId: entry.lineage.agentSessionId,
+      };
+    }
+    if (
+      evaluateWorkspaceResourceAccess({
+        actor,
+        eligible: true,
+        resource: { family: 'thread', id: threadId },
+        operation,
+        resourceAccess: store.getWorkspaceResourceAccess(workspaceId),
+      }).effect !== 'allow'
+    )
+      throw denied();
+  } catch {
+    throw new OperationError('not_found', 'Thread not found.', 404);
+  }
 }
 
 /** Static wiring dispatches declared target strategies, including Recovery's distinct missing-lineage outcome. */
@@ -454,7 +527,8 @@ function resolveTarget(
   input: Record<string, unknown>,
   dependencies: OperationAdmissionDependencies,
   entry: Exclude<OperationInvocationContext, { kind: 'bootstrap' }>,
-  workspaceId: string
+  workspaceId: string,
+  operation: string
 ): void {
   switch (target.kind) {
     case 'addressed-thread':
@@ -463,7 +537,8 @@ function resolveTarget(
         dependencies.coreDb!,
         entry,
         workspaceId,
-        selector(input, target.threadField)
+        selector(input, target.threadField),
+        operation
       );
       return;
     case 'optional-addressed-thread':
@@ -473,7 +548,8 @@ function resolveTarget(
           dependencies.coreDb!,
           entry,
           workspaceId,
-          selector(input, target.threadField)
+          selector(input, target.threadField),
+          operation
         );
       return;
     case 'addressed-turn': {
@@ -483,7 +559,8 @@ function resolveTarget(
         dependencies.coreDb!,
         entry,
         workspaceId,
-        threadId
+        threadId,
+        operation
       );
       let lineage: ReturnType<typeof readTurnOperationLineage>;
       switch (target.lineage) {
@@ -510,7 +587,8 @@ function resolveTarget(
           dependencies.coreDb!,
           entry,
           workspaceId,
-          lineage.threadId
+          lineage.threadId,
+          operation
         );
       return;
     }
@@ -629,17 +707,26 @@ export function admitInternalOperation(
     !coreDb ||
     !store ||
     coreDb.dataRoot !== store.getDataRoot() ||
-    !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition) ||
+    !authorizeWorkspaceEligibility(coreDb, entry.actor, entry.workspaceId, definition) ||
     !isThreadIdVisible(
       store,
       entry.workspaceId,
       entry.threadId,
       entry.actor.userId,
-      isCurrentDeploymentAdministrator(coreDb, entry.actor)
+      isCurrentDeploymentAdministrator(coreDb, entry.actor),
+      null
     )
   )
     throw denied();
   try {
+    requireThreadAudience(
+      store,
+      coreDb,
+      entry,
+      entry.workspaceId,
+      entry.threadId,
+      definition.policyOperation
+    );
     const thread = store.getThread(entry.workspaceId, entry.threadId);
     const turn = store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
     if (

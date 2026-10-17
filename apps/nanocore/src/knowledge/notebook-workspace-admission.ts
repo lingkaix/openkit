@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { ActorRef } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
+import { canDiscloseThreadToAudience } from '../auth/thread-visibility.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
 import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
 import type { FsStore } from '../lib/store.js';
@@ -82,7 +83,8 @@ export function readWorkspaceNotebookAdmission(
 
   const permitThreadDisclosure = (threadId: string): void => {
     const thread = input.store.getThread(workspaceId, threadId);
-    if (thread.visibility === 'workspace') return;
+    if (thread.visibility === 'workspace' && canDiscloseThreadToAudience(input.store, thread, null))
+      return;
     // The personal Workspace has one fixed private audience under its existing owner-only membership contract.
     if (workspace.kind === 'personal' && thread.privateOwnerUserId === input.actor.id) return;
     throw new OperationError('workspace_access_denied', 'Notebook source disclosure denied.', 403);

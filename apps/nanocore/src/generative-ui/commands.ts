@@ -25,7 +25,11 @@ import {
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
-import { isThreadIdVisible, isThreadVisible } from '../auth/thread-visibility.js';
+import {
+  canDiscloseThreadToAudience,
+  isThreadIdVisible,
+  isThreadVisible,
+} from '../auth/thread-visibility.js';
 import {
   getLightApp,
   type KernelCommandContext,
@@ -986,11 +990,7 @@ function assertItemSourcePublishable(
   }
   const sourceThread = context.store.getThread(item.workspaceId, item.threadId);
   // Administrator read eligibility does not authorize disclosure into a different audience.
-  if (
-    sourceThread.visibility === 'private' &&
-    (destThread.visibility !== 'private' ||
-      destThread.privateOwnerUserId !== sourceThread.privateOwnerUserId)
-  ) {
+  if (!canDiscloseThreadToAudience(context.store, sourceThread, destThread)) {
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
 }

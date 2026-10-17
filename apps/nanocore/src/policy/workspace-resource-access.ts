@@ -5,6 +5,7 @@ import {
   WorkspaceResourceAccessSchema,
 } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
+import { WORKSPACE_MEMBER_OPERATIONS } from './workspace-access.js';
 
 /** Authenticated current responsibility; a runtime process is mapped to a User, never an NGAC element. */
 export type ResourcePolicyActor =
@@ -48,8 +49,8 @@ export function evaluateWorkspaceResourceAccess(input: {
   const baseline = 'ua:workspace-eligible';
   const objects = 'oa:workspace-resource';
   const baselineClass = 'pc:workspace';
-  const operations = Object.entries(PRODUCT_OPERATION_ACCESS_RIGHTS).filter(
-    ([operation]) => operation !== 'administration.configuration.apply'
+  const operations = WORKSPACE_MEMBER_OPERATIONS.map(
+    (operation) => [operation, PRODUCT_OPERATION_ACCESS_RIGHTS[operation]] as const
   );
   const policy: PolicyState = {
     elements: [

@@ -105,6 +105,10 @@ import {
 import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import {
+  checkResourcePolicyCommandIntent,
+  isResourcePolicyRequest,
+} from './policy/resource-policy-requests.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
@@ -852,6 +856,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
+  sharedStore.setWorkspaceResourcePolicyProjection((workspaceId) => {
+    const loaded = runtimeConfigManager
+      .current()
+      .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId);
+    return loaded ? (loaded.config.workspace.policy?.resourceAccess ?? []) : null;
+  });
   const automationStore =
     options.automationStore ??
     (options.coreDb ? new AutomationStore(options.coreDb, workspaceMutationAdmission) : undefined);
@@ -1799,6 +1809,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   registerWorkspaceTransferRoutes({
+    reloadConfiguration: () => {
+      runtimeConfigManager.reload({ dryRun: false, mode: 'safe' });
+    },
     app,
     fileAdmission,
     coreDb: options.coreDb,
@@ -1972,7 +1985,20 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     record,
     actor
   ) => {
-    if (record.governedIntent?.operation === 'memory.forget')
+    if (isResourcePolicyRequest(record))
+      checkResourcePolicyCommandIntent(
+        {
+          coreDb: options.coreDb!,
+          store: sharedStore,
+          workspaceDb: { sqlite },
+          manager: runtimeConfigManager,
+          files: runtimeConfigFileService({ get: () => actor }),
+          requesterAuthority: goalRequesterAuthority,
+        },
+        record,
+        actor
+      );
+    else if (record.governedIntent?.operation === 'memory.forget')
       checkMemoryForgetIntent(sqlite, record, actor, options.coreDb!, sharedStore);
     else checkGoalCommandIntent(sqlite, record);
   };

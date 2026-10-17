@@ -44,6 +44,12 @@ export * from './pending-request.js';
 export * from './provider-subscriptions.js';
 export { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
 export * from './resource-catalog.js';
+export {
+  RESOURCE_POLICY_OPERATION_DEFINITIONS,
+  WorkspaceResourcePolicyChangeSchema,
+  WorkspaceResourcePolicyRequestSchema,
+  WorkspaceResourcePolicyTermsSchema,
+} from './resource-policy-operations.js';
 export * from './runtime-config.js';
 export * from './runtime-evidence.js';
 export { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';

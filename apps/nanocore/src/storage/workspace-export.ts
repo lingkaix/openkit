@@ -6,6 +6,7 @@ import {
   parseWorkspaceExportManifest,
   type RequiredFeatureId,
   WORKSPACE_EXPORT_FORMAT_VERSION,
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
   WorkspaceConfigSchema,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
@@ -26,6 +27,7 @@ import {
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
+import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
@@ -392,6 +394,8 @@ export function writeWorkspaceExportTree(
   const workspaceConfig = WorkspaceConfigSchema.parse(
     parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc')
   );
+  const resourceAccess = workspaceConfig.workspace.policy?.resourceAccess ?? [];
+  assertPortableResourcePolicy(resourceAccess, history.threads);
   if (workspaceConfig.workspace.name !== history.workspace.name) {
     throw new Error('Workspace config name does not match the public Workspace projection.');
   }
@@ -833,6 +837,7 @@ export function writeWorkspaceExportTree(
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
     ];
+    if (resourceAccess.length) requiredFeatures.push(WORKSPACE_RESOURCE_POLICY_FEATURE);
     if (
       input.lightApps?.length ||
       input.lightAppDefinitions?.length ||
@@ -875,6 +880,7 @@ export function writeWorkspaceExportTree(
       supportedFeatures: [
         WORKSPACE_EXPORT_CATALOG_FEATURE,
         RECURRING_PORTABLE_FEATURE,
+        WORKSPACE_RESOURCE_POLICY_FEATURE,
         'workspace.generative-kernel.v1',
         'workspace.generative-ui.native-v1',
         'openkit.work-observations.v1',
@@ -981,6 +987,7 @@ export function verifyWorkspaceExportTree(
     supportedFeatures: [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
+      WORKSPACE_RESOURCE_POLICY_FEATURE,
       'workspace.generative-kernel.v1',
       'workspace.generative-ui.native-v1',
       'openkit.work-observations.v1',

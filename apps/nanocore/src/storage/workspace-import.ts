@@ -54,6 +54,7 @@ import {
   WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
   type WorkspaceExportManifest,
+  type WorkspacePolicySubject,
 } from '@openkit/config-schema';
 import {
   AgentSessionIdSchema,
@@ -125,6 +126,7 @@ import {
 import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
+import { remintResourcePolicyConfig } from '../policy/resource-policy-portability.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { TaskTerminalFactSchema } from '../runtime/task-terminal-fact.js';
@@ -564,6 +566,8 @@ export interface ReadWorkspaceImportSnapshotInput {
   targetWorkspaceId: string;
   /** Current target Server identity used for reminted trusted query context. */
   targetServerId?: string;
+  /** Current target authority validates source principals; absence rejects every assignment. */
+  resourcePolicySubjectEligible?: (subject: WorkspacePolicySubject) => boolean;
 }
 
 /** Importable record snapshot extracted from one workspace export. */
@@ -806,6 +810,8 @@ interface ImportRemintContext {
   targetWorkspaceId: string;
   /** Current target Server identity, required when the export contains retrieval traces. */
   targetServerId?: string;
+  /** Current target authority validates source principals; absence rejects every assignment. */
+  resourcePolicySubjectEligible?: (subject: WorkspacePolicySubject) => boolean;
   /** Parsed source Material owners. */
   sourceWorkspaceMaterials: ImportedWorkspaceMaterial[];
   /** Parsed source Material revisions. */
@@ -924,6 +930,9 @@ export function readWorkspaceImportSnapshot(
     report,
     targetWorkspaceId: input.targetWorkspaceId,
     ...(input.targetServerId ? { targetServerId: input.targetServerId } : {}),
+    ...(input.resourcePolicySubjectEligible
+      ? { resourcePolicySubjectEligible: input.resourcePolicySubjectEligible }
+      : {}),
     sourceWorkspaceMaterials,
     sourceWorkspaceMaterialRevisions,
     sourceThreadMaterialBindings,
@@ -4657,7 +4666,15 @@ function readPortableFileStateFromExport(
     const workspacePath = exportPath.slice('workspace-files/'.length);
     assertPortableWorkspaceFilePath(workspacePath);
     if (workspacePath === 'config/workspace.jsonc') {
-      workspaceConfig = content;
+      workspaceConfig = remintResourcePolicyConfig({
+        content,
+        threadIds: context.threadIds,
+        threads: readWorkspaceExportThreads(files),
+        manifestFeatures: context.report.manifest.requiredFeatures,
+        ...(context.resourcePolicySubjectEligible
+          ? { subjectEligible: context.resourcePolicySubjectEligible }
+          : {}),
+      });
     } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
     } else if (workspacePath.startsWith('knowledge/pages/')) {
