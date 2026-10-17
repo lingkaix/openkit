@@ -4,9 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
+import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
+import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
 import {
   appendCanonicalTextFile,
   loadWorkspaceFileRecords,
@@ -133,33 +140,66 @@ it('refuses a retained large inline body copy while preserving its original byte
   ).toThrow('capacity');
   expect(readFileSync(payload)).toEqual(before);
 });
-it('preserves Knowledge bytes when their temporary rewrite does not fit', () => {
+it('does not rewrite canonical Notebook pages during record persistence under capacity pressure', async () => {
   const f = fixture();
-  const page = f.store.createKnowledgeEntry(f.workspace.id, {
-    kind: 'project-context',
-    title: 'Retained Knowledge',
-    content: 'k'.repeat(1024 * 1024),
+  const coreDb = openCoreDb(f.dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: f.workspace.id,
   });
-  const target = join(f.workspaceRoot, 'knowledge', 'pages', `${page.id}.md`),
-    before = readFileSync(target);
-  const records = loadWorkspaceFileRecords(f.dataRoot).find(
-    (r) => r.workspace.id === f.workspace.id
-  )!;
-  const admission = new FileStorageAdmission(
-    f.dataRoot,
-    () => 1_000_000n,
-    () => 1_000_000n + 128n * 1024n
-  );
-  // Prove a healthy capacity source before the deciding large-write refusal.
-  admission
-    .reserve({ stagingBytes: 0n, extractionBytes: 0n, derivativeBytes: 0n, publicationBytes: 0n })
-    .release();
-  expect(() =>
-    withCanonicalFileWriteAdmission(admission, () =>
-      writeWorkspaceFileRecords(f.workspaceRoot, records)
-    )
-  ).toThrow('capacity');
-  expect(readFileSync(target)).toEqual(before);
+  try {
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.workspaceRoot, 'knowledge', 'notebook.git'),
+    });
+    const app = createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
+    const response = await app.request(
+      ...knowledgeOperationRequest('knowledge.create', { workspaceId: f.workspace.id }, {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          baseRevision: notebook.publishedRevision(),
+          knowledgePageId: 'retained-knowledge',
+          kind: 'project-context',
+          title: 'Retained Knowledge',
+          content: 'k'.repeat(1024 * 1024),
+          sourceReferences: [],
+        }),
+      })
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    const page = await response.json() as { id: string };
+    const revision = notebook.publishedRevision();
+    const path = `${page.id}.md`;
+    const before = Buffer.from(notebook.readRevision(revision, [path]).files[path]!);
+    const digest = createHash('sha256').update(before).digest('hex');
+    const records = loadWorkspaceFileRecords(f.dataRoot).find(
+      (r) => r.workspace.id === f.workspace.id
+    )!;
+    // A stale projection cannot replace the Git-owned canonical page.
+    records.knowledge.find((entry) => entry.id === page.id)!.content = 'Stale projected content.';
+    const admission = new FileStorageAdmission(
+      f.dataRoot,
+      () => 1_000_000n,
+      () => 1_000_000n + 128n * 1024n
+    );
+    // Prove a healthy capacity source before persistence under the small budget.
+    admission
+      .reserve({ stagingBytes: 0n, extractionBytes: 0n, derivativeBytes: 0n, publicationBytes: 0n })
+      .release();
+    expect(() =>
+      withCanonicalFileWriteAdmission(admission, () =>
+        writeWorkspaceFileRecords(f.workspaceRoot, records)
+      )
+    ).not.toThrow();
+    expect(notebook.publishedRevision()).toBe(revision);
+    const after = Buffer.from(notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!);
+    expect(after).toEqual(before);
+    expect(createHash('sha256').update(after).digest('hex')).toBe(digest);
+  } finally {
+    coreDb.sqlite.close();
+  }
 });
 it('skips equal JSON cores but reserves retained additive fields when the core changes', () => {
   const f = fixture(),
