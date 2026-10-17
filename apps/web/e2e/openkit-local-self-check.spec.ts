@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
+  type ArtifactReviewView,
   StartTaskModeResponseSchema,
+  SubmitConversationResponseSchema,
   ThreadDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
@@ -118,6 +120,8 @@ interface MaterialSummary {
 interface MaterialRevision {
   /** Workspace-owned immutable revision identity. */
   revisionId: string;
+  /** Digest of the exact immutable original used by range feedback. */
+  contentDigest: string;
 }
 
 /** Minimal pending proposal identity used only to route visible review actions. */
@@ -536,6 +540,30 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('complementary', { name: 'Provenance and review' })).toContainText(
     threadId
   );
+  const chosenRange = {
+    materialId: primary.materialId,
+    revisionId: revisionTwo!.revisionId,
+    contentDigest: revisionTwo!.contentDigest,
+    start: revisionTwoContent.indexOf('Revision two'),
+    end: revisionTwoContent.indexOf('Revision two') + 'Revision two'.length,
+    originalText: 'Revision two',
+  };
+  await page
+    .getByRole('textbox', { name: 'Range start', exact: true })
+    .fill(String(chosenRange.start));
+  await page.getByRole('textbox', { name: 'Range end', exact: true }).fill(String(chosenRange.end));
+  await page.getByRole('button', { name: 'Use feedback range', exact: true }).click();
+  await page
+    .getByRole('textbox', { name: 'Review feedback', exact: true })
+    .fill('Keep this exact wording.');
+  const turnsBeforeChoice = await threadTurnIds(threadId);
+  await page
+    .getByRole('textbox', { name: 'Selection reason', exact: true })
+    .fill('Use the first exact candidate.');
+  await page.getByRole('button', { name: 'Select candidate', exact: true }).click();
+  await expect(page.getByText('Candidate selected.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Awaiting decision.', { exact: true })).toBeVisible();
+  expect(await threadTurnIds(threadId)).toEqual(turnsBeforeChoice);
   const previousViewport = page.viewportSize() ?? { width: 1280, height: 720 };
   await page.setViewportSize({ width: 800, height: 600 });
   const overflow = await page.evaluate(() => ({
@@ -549,6 +577,17 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(accept).toBeVisible();
   await accept.click();
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
+  const decidedReview = (
+    await getJson<{ reviews: ArtifactReviewView[] }>('/api/app/operations/artifact.review-list', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: proposals[0]!.id,
+    })
+  ).reviews.find((review) => review.artifactVersion === proposals[0]!.version)!;
+  expect(decidedReview.rangeFeedback).toEqual(chosenRange);
+  expect(decidedReview.candidateSelections).toHaveLength(1);
+  expect(decidedReview.candidateSelections[0]).toMatchObject({
+    reason: 'Use the first exact candidate.',
+  });
   await page.setViewportSize(previousViewport);
 
   await page.goto(
@@ -725,6 +764,92 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .locator('..')
       .locator('dd')
   ).toHaveText('Unknown / none / not available');
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`
+  );
+  await expect(page.getByRole('region', { name: 'Recorded feedback range' })).toContainText(
+    chosenRange.originalText
+  );
+  await expect(page.getByText('Use the first exact candidate.', { exact: true })).toBeVisible();
+  const recoveredReview = (
+    await getJson<{ reviews: ArtifactReviewView[] }>('/api/app/operations/artifact.review-list', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: proposals[0]!.id,
+    })
+  ).reviews.find((review) => review.artifactVersion === proposals[0]!.version)!;
+  expect(recoveredReview.rangeFeedback).toEqual(chosenRange);
+  expect(recoveredReview.candidateSelections).toEqual(decidedReview.candidateSelections);
+  const beforeUse = await threadTurnIds(threadId);
+  await page.getByRole('button', { name: 'Use in next Turn', exact: true }).click();
+  await expect(page).toHaveURL(
+    `${stack.webUrl}/chat/ws_00000000-0000-7000-8000-000000000001/${threadId}`
+  );
+  await expect(page.getByRole('group', { name: 'Selected artifacts' })).toBeVisible();
+  expect(await threadTurnIds(threadId)).toEqual(beforeUse);
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Continue from this exact candidate.');
+  await page.getByRole('button', { name: /Conversation agent$/ }).click();
+  await page.getByRole('option', { name: 'New Shard + Worker', exact: true }).click();
+  const nextTurnResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
+      response.request().method() === 'POST'
+  );
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  const nextResponse = await nextTurnResponse;
+  expect(nextResponse.status(), await nextResponse.text()).toBe(202);
+  expect(nextResponse.request().postDataJSON().artifactRefs).toEqual([
+    { artifactId: proposals[0]!.id, artifactVersion: proposals[0]!.version },
+  ]);
+  const nextTurn = SubmitConversationResponseSchema.parse(await nextResponse.json());
+  const nextItems = (
+    await getJson<{
+      items: Array<{
+        type: string;
+        turnId: string;
+        artifactId?: string;
+        artifactVersion?: number;
+        text?: string;
+      }>;
+    }>('/api/app/operations/thread.items', {
+      workspaceId: nextTurn.receivingWorkspaceId,
+      threadId: nextTurn.receivingThreadId,
+    })
+  ).items.filter((item) => item.turnId === nextTurn.turn.id);
+  expect(nextItems).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'artifact-reference',
+        artifactId: proposals[0]!.id,
+        artifactVersion: proposals[0]!.version,
+      }),
+    ])
+  );
+  const workerRequest = nextItems.find((item) => item.type === 'user-message');
+  expect(workerRequest?.text).toBeTruthy();
+  const delegated = JSON.parse(workerRequest!.text!) as {
+    objective: string;
+    resources: Array<{ reference: string }>;
+  };
+  expect(delegated.objective).toContain(proposals[0]!.contentDigest);
+  expect(delegated.objective).toContain(proposalTexts[0]!);
+  expect(delegated.resources).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        reference: `${proposals[0]!.id}:v${proposals[0]!.version}`,
+      }),
+    ])
+  );
+  const deliveredTurn = await getJson<{ contextPackageDigest: string | null }>(
+    '/api/app/operations/turn.read',
+    {
+      workspaceId: nextTurn.receivingWorkspaceId,
+      threadId: nextTurn.receivingThreadId,
+      turnId: nextTurn.turn.id,
+    }
+  );
+  expect(deliveredTurn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
   expect(browserRuntimeErrors, 'Plane 1 browser flow must not raise runtime errors').toEqual([]);
   await expect(page.locator('body')).not.toContainText('sk-openkit');
 });

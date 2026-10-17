@@ -8228,6 +8228,66 @@
         }
       }
     },
+    "/api/app/operations/artifact.review.select": {
+      "post": {
+        "operationId": "artifact.review.select",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Record an attributable choice of one exact available Artifact candidate.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.review.select.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Record an attributable choice of one exact available Artifact candidate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.review.select.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/artifact.review.decide": {
       "post": {
         "operationId": "artifact.review.decide",
@@ -58101,6 +58161,92 @@
                     }
                   ]
                 },
+                "rangeFeedback": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "materialId": {
+                          "type": "string",
+                          "pattern": "^mat_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "revisionId": {
+                          "type": "string",
+                          "pattern": "^mrev_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "start": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "end": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "originalText": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "materialId",
+                        "revisionId",
+                        "contentDigest",
+                        "start",
+                        "end",
+                        "originalText"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "candidateSelections": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "actorId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "requestId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "selectedAt": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "actorId",
+                      "requestId",
+                      "reason",
+                      "selectedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "decidedAt": {
                   "anyOf": [
                     {
@@ -58152,6 +58298,7 @@
                 "decision",
                 "decisionActorId",
                 "feedback",
+                "candidateSelections",
                 "decidedAt",
                 "followUpTurnId",
                 "appliedMaterialRevisionId",
@@ -58163,6 +58310,321 @@
         },
         "required": [
           "reviews"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.review.select.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "contentDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "artifactId": {
+            "type": "string",
+            "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "artifactVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "contentDigest",
+          "workspaceId",
+          "artifactId",
+          "artifactVersion"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.review.select.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "review": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "reviewId": {
+                "type": "string",
+                "pattern": "^arev_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "artifactId": {
+                "type": "string",
+                "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "artifactVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "sourceThreadId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "sourceTurnId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "sourceAgentId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "materialProposal": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "materialId": {
+                        "type": "string",
+                        "pattern": "^mat_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "baseRevisionId": {
+                        "type": "string",
+                        "pattern": "^mrev_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "baseContentDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "materialId",
+                      "baseRevisionId",
+                      "baseContentDigest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "decision": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "accepted",
+                      "needs_refinement",
+                      "redo",
+                      "rejected",
+                      "deferred"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "decisionActorId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "feedback": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rangeFeedback": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "materialId": {
+                        "type": "string",
+                        "pattern": "^mat_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "revisionId": {
+                        "type": "string",
+                        "pattern": "^mrev_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "contentDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "start": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "end": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "originalText": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "materialId",
+                      "revisionId",
+                      "contentDigest",
+                      "start",
+                      "end",
+                      "originalText"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "candidateSelections": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "actorId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "selectedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "actorId",
+                    "requestId",
+                    "reason",
+                    "selectedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "decidedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "followUpTurnId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "appliedMaterialRevisionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^mrev_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "workspaceId",
+              "reviewId",
+              "artifactId",
+              "artifactVersion",
+              "contentDigest",
+              "sourceThreadId",
+              "sourceTurnId",
+              "sourceAgentId",
+              "materialProposal",
+              "decision",
+              "decisionActorId",
+              "feedback",
+              "candidateSelections",
+              "decidedAt",
+              "followUpTurnId",
+              "appliedMaterialRevisionId",
+              "createdAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "review"
         ],
         "additionalProperties": false
       },
@@ -58183,6 +58645,46 @@
           "feedback": {
             "type": "string",
             "minLength": 1
+          },
+          "rangeFeedback": {
+            "type": "object",
+            "properties": {
+              "materialId": {
+                "type": "string",
+                "pattern": "^mat_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "revisionId": {
+                "type": "string",
+                "pattern": "^mrev_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "end": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "originalText": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "materialId",
+              "revisionId",
+              "contentDigest",
+              "start",
+              "end",
+              "originalText"
+            ],
+            "additionalProperties": false
           },
           "workspaceId": {
             "type": "string",
@@ -106795,5 +107297,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:7168fd59ed9da9fff6307847ab51ccc7af4632b4f7069d6f52e14d39be244f59"
+  "x-openkit-source-digest": "sha256:6e978ff8949d5403e927d3282f9162d27c26c6687299a3edc7bd412a9a03ccbd"
 }
