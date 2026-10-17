@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { FsStore } from '../lib/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -38,7 +38,7 @@ export class ModelCaptureError extends Error {
 /**
  * Runs one model effect with the exact admitted Turn binding and owns any Workspace database it opens.
  *
- * Optional internal-agent environment metadata commits before the effect, independently of full I/O capture.
+ * Optional internal-agent environment metadata commits before the effect, independently of full I/O capture. Its version identifies the admitted build; absent source identity stays unknown.
  *
  * Producers of selected Skills require their fixed admission with the matching prompt and Tools; re-entry must supply that original environment, because the immutable writer rejects any replacement.
  *
@@ -103,9 +103,13 @@ export async function withTurnModelCapture<T>(
           : undefined;
       if (input.environment) {
         if (binding.turn.startedAt === null) throw new ModelCaptureError();
-        const { version } = JSON.parse(
-          readFileSync(new URL('../../package.json', import.meta.url), 'utf8')
-        );
+        const { releaseTag, sourceCommit } = readReleaseIdentity();
+        const version =
+          sourceCommit === null
+            ? 'unknown'
+            : releaseTag === null
+              ? sourceCommit
+              : `${releaseTag}@${sourceCommit}`;
         // Admission time and identity let the existing writer deduplicate exact re-entry and reject rebinding.
         appendWorkObservation(captureDb, {
           threadId: turn.threadId,

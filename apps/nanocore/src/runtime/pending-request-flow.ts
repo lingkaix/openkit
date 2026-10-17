@@ -410,6 +410,7 @@ export function resolveCommandIntentApproval(input: {
       409
     );
   if (
+    input.decision === 'granted' &&
     projectApprovalEffect({
       record: current,
       store: input.store,

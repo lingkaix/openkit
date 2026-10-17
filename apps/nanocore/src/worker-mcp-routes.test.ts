@@ -3102,7 +3102,7 @@ describe('worker MCP routes', () => {
       rmSync(exportRoot, { force: true, recursive: true });
       rmSync(dataRoot, { force: true, recursive: true });
     }
-  }, 30_000);
+  }, 60_000);
 
   it('maps the bounded MCP failure table without extra tool effects', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-failures-'));

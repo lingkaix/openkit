@@ -36,7 +36,17 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^New workspace$/ }).click();
   await page.getByLabel('Name').fill('Story Workspace');
+  const workspaceCreation = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/workspace.create' &&
+      response.request().method() === 'POST'
+  );
   await page.getByRole('button', { name: /^Create workspace$/ }).click();
+  const workspaceResponse = await workspaceCreation;
+  expect(
+    workspaceResponse.ok(),
+    `Workspace creation returned HTTP ${workspaceResponse.status()}.`
+  ).toBe(true);
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
   const firstOpening = page.waitForResponse(
