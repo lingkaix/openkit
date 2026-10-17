@@ -1,7 +1,8 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-10-17"
 decider: Engineer
+superseded-by: docs/decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md
 ---
 # Knowledge Manager Agent And OpenKit Compaction
 

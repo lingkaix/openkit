@@ -1056,6 +1056,12 @@ describe('Pi controlled channel faults', () => {
         readiness = waitForPiHostReadiness(channel);
       },
     });
+    const loopback = {
+      capabilityBaseUrl: 'http://127.0.0.1:9/capabilities',
+      capabilityCredential: credential(),
+      inferenceBaseUrl: 'http://127.0.0.1:9/inference/v1',
+      inferenceCredential: credential(),
+    };
     const session = await adapter.openSession({
       agentSessionId: 'session-a',
       controlRoot: join(dirs.root, 'control'),
@@ -1065,18 +1071,13 @@ describe('Pi controlled channel faults', () => {
         PI_PEER_MODE: mode,
         ...(marker ? { PI_PEER_MARKER: marker } : {}),
       },
-      loopback: {
-        capabilityBaseUrl: 'http://127.0.0.1:9/capabilities',
-        capabilityCredential: credential(),
-        inferenceBaseUrl: 'http://127.0.0.1:9/inference/v1',
-        inferenceCredential: credential(),
-      },
+      loopback,
       resumeReference: null,
       stateRoot: dirs.stateRoot,
     });
     sessions.push(session);
     await readiness;
-    return { dirs, session };
+    return { dirs, loopback, session };
   }
 
   it.each([
@@ -1120,7 +1121,8 @@ describe('Pi controlled channel faults', () => {
 
   it('keeps a first correlated inference failure non-reusable and preserves its retained bytes on close', async () => {
     let channel!: Duplex;
-    const { dirs, session } = await peer('ordinary', undefined, {
+    const injectedCredential = credential();
+    const { dirs, loopback, session } = await peer('ordinary', undefined, {
       observeChannel: (observed) => {
         channel = observed;
       },
@@ -1130,6 +1132,25 @@ describe('Pi controlled channel faults', () => {
       (line) => {
         const frame = JSON.parse(line);
         if (frame.event === 'turn_settled') {
+          emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({
+                event: 'native',
+                turnId: frame.turnId,
+                data: {
+                  type: 'message_end',
+                  message: {
+                    role: 'assistant',
+                    stopReason: 'error',
+                    content: [],
+                    errorMessage: `Safe native inference explanation ${injectedCredential} ${loopback.inferenceCredential} ${loopback.capabilityCredential} ${'é'.repeat(9_000)}`,
+                    response: { body: 'PRIVATE_PROVIDER_RESPONSE_BODY' },
+                  },
+                },
+              })}\n`
+            )
+          );
           frame.outcome = { status: 'failed', reason: 'pi-inference-failed' };
           frame.nativeHandle = { state: 'unknown' };
         }
@@ -1147,13 +1168,30 @@ describe('Pi controlled channel faults', () => {
       return emit(event, ...args);
     });
     const writes = vi.spyOn(channel, 'write');
-    const turn = await session.startTurn(turnInput(dirs));
-    expect(await turn.settled).toMatchObject({
+    const input = turnInput(dirs);
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: { ...input.runtimeCapture, credentialValues: [injectedCredential] },
+    });
+    const outcome = await turn.settled;
+    expect(outcome).toMatchObject({
       status: 'failed',
       stopReason: 'pi-inference-failed',
       assistantText: null,
       nativeEvidence: { nativeTerminal: true },
     });
+    expect(outcome.diagnostics?.native).toContain('Safe native inference explanation');
+    expect(Buffer.byteLength(outcome.diagnostics?.native ?? '', 'utf8')).toBeLessThanOrEqual(
+      16_384
+    );
+    const diagnostics = JSON.stringify(outcome.diagnostics);
+    for (const secret of [
+      injectedCredential,
+      loopback.inferenceCredential,
+      loopback.capabilityCredential,
+    ])
+      expect(diagnostics).not.toContain(secret);
+    expect(diagnostics).not.toContain('PRIVATE_PROVIDER_RESPONSE_BODY');
     const files = await sessionJsonlFiles(dirs.stateRoot);
     expect(files).toHaveLength(1);
     const retained = await readFile(files[0]!);
@@ -2020,6 +2058,69 @@ export default function(pi) { pi.on('session_start', () => {
     expect(f.inference.requests).toHaveLength(1);
     expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
     await session.close();
+  },
+  TIMEOUT
+);
+
+it(
+  'keeps admitted Pi work at the collector after native history is removed',
+  async () => {
+    const prompt = 'Keep the echo work and its result.';
+    const answer = 'The echo result is retained.';
+    const replies: InferenceReply[] = [
+      { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'retained-input' } } },
+      { text: answer },
+    ];
+    const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'unexpected' });
+    f.capability.bound = true;
+    const session = await f.open();
+    const input = turnInput(f.dirs, { prompt });
+    const collected: Array<{ record: RuntimeObservation; body?: string }> = [];
+    const result = await (
+      await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value: 'on' },
+          emit: async (record, body) => {
+            collected.push({ record, ...(body ? { body: Buffer.from(body).toString() } : {}) });
+          },
+        },
+      })
+    ).settled;
+    await session.close();
+    expect(await sessionJsonlFiles(f.dirs.stateRoot)).not.toHaveLength(0);
+    await rm(f.dirs.stateRoot, { recursive: true });
+
+    expect(requestTexts(f.inference.requests[0]!).join(' ')).toContain(prompt);
+    expect(result).toMatchObject({
+      assistantText: answer,
+      status: 'completed',
+      stopReason: 'stop',
+      nativeEvidence: { nativeTerminal: true },
+    });
+    const tool = collected.filter(({ record }) => record.fact.kind === 'tool');
+    const started = tool.find(({ record, body }) => record.fact.phase === 'started' && body);
+    const completed = tool.find(({ record, body }) => record.fact.phase === 'completed' && body);
+    expect(started?.record.fact.toolName).toBe('mcp__openkit_work__echo');
+    expect(started?.body).toBe('{"text":"retained-input"}');
+    expect(completed?.record.fact.callRef).toBe(started?.record.fact.callRef);
+    expect(completed?.body).toContain('echo:retained-input');
+    expect(collected).toContainEqual({
+      record: expect.objectContaining({
+        fact: expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
+      }),
+      body: answer,
+    });
+    expect(collected.map(({ record }) => record.fact)).toContainEqual(
+      expect.objectContaining({ kind: 'origin', phase: 'completed' })
+    );
+    expect(collected.map(({ record }) => record.fact)).toContainEqual(
+      expect.objectContaining({ kind: 'coverage', coverage: 'ended' })
+    );
+    const retained = JSON.stringify(collected);
+    expect(retained).not.toContain(f.inferenceCredential);
+    expect(retained).not.toContain(f.capabilityCredential);
   },
   TIMEOUT
 );

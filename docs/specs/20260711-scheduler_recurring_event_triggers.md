@@ -9,6 +9,7 @@ updated: 2026-10-17
 ## Owns
 
 - Durable fixed-interval and bounded monthly UTC schedule definitions and occurrence history for requesting the existing worker Turn admission operation.
+- The closed daily Knowledge Manager maintenance trigger below, through the same scan and existing work records.
 - The one NanoCore-local five-second scan, bounded admission retry, ten-minute expiry, restart, overlap, clock, and missed-occurrence rules for those schedules.
 - The boundary between occurrence admission history and the existing scheduler, Turn, worker-runtime, permission, audit, storage, backup, and product-surface owners.
 
@@ -77,6 +78,12 @@ All existing responsible-user, automation actor, membership, policy, Thread audi
 Acceptance includes January 28, February 28 and March 28 at one explicit UTC time through the existing native admission service over the same retained definition and Thread, with a Core/Store reopen before February and no duplicate after repeat scans or another reopen. Exact history must show the three distinct accepted instants, immutable responsible actor and request, actual queue states and real Turn links where publication exists. January-to-February and February-to-March have different elapsed lengths. Lower-level checks cover leap years, year boundaries, invalid days and zones, resume mismatch, overflow, old-revision sealing, long-outage range counts, SQL live-frontier ordering and the inherited failure rules. This proves local monthly admission, not real host execution or completion.
 
 Recurring Goal creation remains an open follow-up only. This variant creates no Goal or Coordinator Turn, carries no Plan approval, changes no Goal wake marker, and grants no Goal progression or completion authority. The accepted ruling is [Bounded Monthly UTC Recurring Work](../decisions/20261017-monthly_utc_recurring_work.md).
+
+### Knowledge Manager daily maintenance
+
+The same recurring scan also triggers one closed internal operation: a bounded Knowledge Manager maintenance Turn for one Server, User or Workspace notebook scope. It is not an arbitrary operation target or Worker dispatch. Each scope has one independent on/off setting, default off. The cadence is fixed daily; explicit run requests remain available through the Knowledge Manager owner. There are no additional schedule knobs, a second timer, a new scheduler or a new occurrence family. Existing Worker schedule definitions and their admission rules remain unchanged.
+
+The [Knowledge Manager owner](20260704-knowledge_manager_internal_agent_runtime.md#query-and-maintenance-execution) owns fresh input assembly, single-writer admission, instructions and fixed-base publication. Existing scope configuration and maintenance Thread, Turn and Item records retain enablement, due-run lineage and visible outcomes; no Worker identity or Workspace membership is fabricated for User or Server scopes. The trigger checks current scope authority and delegation. Failed or skipped scheduled work records a visible outcome and reason through the existing work owners. It never authorizes publication, automatically retries a model run or silently claims that a source range was processed. This target is accepted v0.1.0 scope and is not implemented.
 
 ### Durable definition
 
