@@ -284,7 +284,7 @@ function containsRawSecret(value: unknown): boolean {
 }
 
 /** Serializes values with stable object-key ordering for entry digests. */
-function stableJson(value: unknown): string {
+export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object') {
     return `{${Object.entries(value)

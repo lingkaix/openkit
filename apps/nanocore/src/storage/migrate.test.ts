@@ -876,6 +876,8 @@ describe('database setup', () => {
     const offenders = listSourceFiles(sourceRoot)
       .filter((path) => !path.endsWith('migrate.test.ts'))
       .filter((path) => !path.endsWith(`generative-kernel${sep}native.ts`))
+      // The populated Light App fixture verifies real native format migration and snapshot restore.
+      .filter((path) => !path.endsWith(`generative-kernel${sep}snapshots.test.ts`))
       .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.ts`))
       .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.test.ts`))
       // Accepted Goal removal uses one one-way cutover and its populated migration fixture.

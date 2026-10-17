@@ -240,8 +240,11 @@ export async function writeHotDataRootBackup(
   mkdirSync(dirname(input.backupRoot), { recursive: true });
   copyDataRootTree(input.dataRoot, input.backupRoot);
 
-  for (const path of listRegularBackupFiles(input.dataRoot).filter((path) =>
-    path.endsWith('.sqlite')
+  // Recovery copies are immutable, digest-bound files; SQLite backup would change their headers.
+  for (const path of listRegularBackupFiles(input.dataRoot).filter(
+    (path) =>
+      path.endsWith('.sqlite') &&
+      !/^workspaces\/[^/]+\/light-apps\/[^/]+\/snapshots\/[^/]+\.sqlite$/.test(path)
   )) {
     const sourceDb = new Database(join(input.dataRoot, path), {
       fileMustExist: true,
