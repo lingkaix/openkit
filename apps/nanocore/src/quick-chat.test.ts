@@ -1726,6 +1726,8 @@ describe('quick chat app API', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       'threads',
       'th_00000000-0000-7000-8000-000000000001',
+      'turns',
+      parsed.turn.id,
       'retrieval-traces'
     );
     const traces = existsSync(traceRoot)
