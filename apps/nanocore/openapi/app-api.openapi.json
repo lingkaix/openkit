@@ -5389,6 +5389,104 @@
         }
       }
     },
+    "/api/app/operations/thread.read-state": {
+      "post": {
+        "operationId": "thread.read-state",
+        "tags": [
+          "thread"
+        ],
+        "summary": "Read the current User read receipt and unread messages without marking any read.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/thread.read-state.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read the current User read receipt and unread messages without marking any read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/thread.read-state.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/thread.mark-read": {
+      "post": {
+        "operationId": "thread.mark-read",
+        "tags": [
+          "thread"
+        ],
+        "summary": "Record displayed completed message Item IDs for the current User. Omit itemIds only for explicit Mark read of all current messages.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/thread.mark-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Record displayed completed message Item IDs for the current User. Omit itemIds only for explicit Mark read of all current messages.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/thread.mark-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/thread.dashboard": {
       "post": {
         "operationId": "thread.dashboard",
@@ -37537,6 +37635,102 @@
         ],
         "additionalProperties": false
       },
+      "thread.read-state.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "thread.read-state.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "readItemIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "unreadItemIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          }
+        },
+        "required": [
+          "readItemIds",
+          "unreadItemIds"
+        ],
+        "additionalProperties": false
+      },
+      "thread.mark-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "itemIds": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "thread.mark-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "readItemIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "unreadItemIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          }
+        },
+        "required": [
+          "readItemIds",
+          "unreadItemIds"
+        ],
+        "additionalProperties": false
+      },
       "thread.dashboard.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -64621,13 +64815,19 @@
                 "lastActivityAt": {
                   "type": "string",
                   "minLength": 1
+                },
+                "unreadCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
                 "thread",
                 "activity",
                 "state",
-                "lastActivityAt"
+                "lastActivityAt",
+                "unreadCount"
               ],
               "additionalProperties": false
             }
@@ -99537,5 +99737,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:12211f4041deeef4bcf495758cc830bcae66f14afc2bdd10b5ff10a061d5ab67"
+  "x-openkit-source-digest": "sha256:8c0e32e86ea7222424a13ffd5448afc5f2de1817f98f5065bac9f984c0b4b6ee"
 }

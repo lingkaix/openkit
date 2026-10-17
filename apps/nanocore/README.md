@@ -14,6 +14,8 @@ The authorized Thread dashboard derives taskInputs objective summaries through t
 
 The authorized Thread dashboard projects the authenticated viewer and only recorded Item actors and assigned Turn Agents with current User or Agent display names. It exposes no email or unrelated user directory; absent names retain stable actor ids.
 
+Public `turn.interrupt` records its admitted requester and exact Workspace, Thread, Turn and request in the existing Workspace Audit family after fresh successful command execution. Replay does not add or relabel that event. The success event means Stop-request acceptance, not completed runtime cleanup; it never reuses Turn.triggerActor. Audit errors remain explicit and cannot undo a reached runtime effect. Missing historical facts or crash gaps stay unavailable, with no new replay or repair owner. `audit.workspace-list` filters Thread-scoped events by current Thread audience as well as current Workspace admission. See [Turn Interruption Attribution](../../docs/specs/20260703-audit_usage_evidence_records.md#turn-interruption-attribution).
+
 Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.
 
 Thread dashboard work status projects selected Agent, active Turn status, pending attention counts and latest Artifact only. Workspace active-work rows project recorded Turn activity without a mode label. Product mode and handoff proof comes from the owning conversation, Task or Goal result and its exact Thread, Turn and Item lineage; dashboards compute no routing decision.
@@ -553,6 +555,8 @@ The App-update family includes an administrator-only content-free deployment pre
 Vault injection plans and receipts preserve immutable intent and completion lineage under repeated creation. Changed input for an existing identity fails without mutation. Exact replay preserves current revocation state and original timestamps. See the [Vault guide](src/vault/README.md) for the focused checks.
 
 All NanoCore Vitest unit and e2e configurations use the shared [temporary-directory setup](../../tests/support/vitest-global-setup.mjs), including the default-off real Codex gate. Workers inherit one private invocation directory; normal teardown reclaims it after success or failure. Tests close database handles and remove owned fixtures before the run-level backstop.
+
+`thread-read-state.ts` joins authenticated User-owned read receipts to current eligible completed message Items. `thread.read-state` reads without marking; `thread.mark-read` accepts displayed Item identities, or an omitted list for explicit Mark read. Existing operation admission supplies the current User and Workspace/Thread audience; callers cannot select another User. Invalid or cross-Thread identities refuse the complete batch before mutation. Conversation navigation projects unread counts from the same receipt owner.
 
 ## Discord And Notification Delivery
 

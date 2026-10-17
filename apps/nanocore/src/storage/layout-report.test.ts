@@ -53,7 +53,7 @@ describe('storage layout report', () => {
             userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
             userDb: expect.objectContaining({
               exists: true,
-              appliedMigrations: ['user_0000_setup'],
+              appliedMigrations: ['user_0000_setup', 'user_0001_thread_read_receipts'],
             }),
           },
         ])

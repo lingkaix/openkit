@@ -245,7 +245,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(
       await screen.findByRole('button', { name: 'Authoritative Workspace' })
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assistant' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Knowledge' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
