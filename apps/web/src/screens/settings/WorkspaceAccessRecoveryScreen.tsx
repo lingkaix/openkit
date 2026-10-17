@@ -14,7 +14,7 @@ import {
   TextField,
 } from '../../primitives';
 
-/** Explicit administrator self-recovery, bound to the last loaded registry revision. */
+/** Explicit self-recovery after a current authority read, bound to the loaded registry revision. */
 export function WorkspaceAccessRecoveryScreen() {
   const client = useCoreClient();
   const [workspaceInput, setWorkspaceInput] = useState('');
@@ -22,11 +22,14 @@ export function WorkspaceAccessRecoveryScreen() {
   const workspaceId = workspaceInput.trim();
   const adminAccess = useQuery({
     queryKey: ['settings', 'workspace-access-recovery', 'admin-access'],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       await client.operations['token.list']({});
+      // An abandoned read cannot admit a later mount.
+      signal.throwIfAborted();
       return true;
     },
     retry: false,
+    refetchOnMount: 'always',
   });
   const recovery = useMutation({
     mutationFn: async (operation: {
@@ -49,7 +52,9 @@ export function WorkspaceAccessRecoveryScreen() {
     (error) => error instanceof ApiCallError && (error.status === 401 || error.status === 403)
   );
   const summary = recovery.data;
-  const busy = recovery.isPending || adminAccess.isFetching;
+  const admitted =
+    adminAccess.isFetchedAfterMount && adminAccess.isSuccess && adminAccess.fetchStatus === 'idle';
+  const busy = recovery.isPending || !admitted;
   const canRecover = !busy && !!summary && summary.workspaceId === workspaceId;
 
   /** Every recovery is a new explicit decision; retries only clear the previous observation. */
