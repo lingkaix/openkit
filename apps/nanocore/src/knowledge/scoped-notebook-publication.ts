@@ -14,6 +14,7 @@ import {
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
+import { admitUserMemorySources } from './scoped-knowledge-sources.js';
 import {
   pinScopedNotebook,
   resolveScopedNotebookOwner,
@@ -28,7 +29,7 @@ type WritableScopedNotebook = Omit<ScopedNotebookContext, 'target'> &
     | { readonly target: { readonly kind: 'server' } }
   );
 
-/** This foundation admits no Source-bearing content, including an edit that tries to remove unsupported provenance. */
+/** Server publication and generic scoped history grant no Source disclosure, including edits that remove unsupported provenance. */
 function assertEmptySourceReferences(files: Readonly<Record<string, string>>): void {
   for (const [path, content] of Object.entries(files)) {
     const parsed = parseOkfDocument({ path, content });
@@ -55,7 +56,7 @@ function scopeSchema(notebookRoot: string): string {
 /**
  * Joins authenticated native self/Server authority to the one existing publisher, Audit and receipt owners.
  *
- * This internal direct-human foundation accepts only empty source_refs and enforces current User suppression. Source disclosure, output audience and Agent delegation are not granted here and must be joined before broader operations exist.
+ * User edits admit only current self literal Sources and enforce current suppression. Server Source disclosure, output audience and Agent delegation remain unjoined.
  */
 export async function publishScopedNotebook(
   input: WritableScopedNotebook & {
@@ -150,15 +151,28 @@ export async function publishScopedNotebook(
             // A retained hidden page must not fence unrelated explicit human saves after failed cleanup.
             request.changes.map(({ path }) => path).filter((path) => path !== forgetPath)
           );
-        assertEmptySourceReferences(currentFiles);
-        assertEmptySourceReferences(notebook.readRevision(request.baseRevision).files);
-        assertEmptySourceReferences(
-          Object.fromEntries(
-            request.changes.flatMap(({ path, content }) =>
-              content === null ? [] : [[path, content]]
-            )
+        const changedFiles = Object.fromEntries(
+          request.changes.flatMap(({ path, content }) =>
+            content === null ? [] : [[path, content]]
           )
         );
+        const registeredSources = new Map<string, string | null>();
+        for (const files of [currentFiles, baseFiles, changedFiles]) {
+          if (!userDb) assertEmptySourceReferences(files);
+          else {
+            // Suppressed bytes left by failed cleanup cannot fence an unrelated explicit human save.
+            const visible = Object.fromEntries(
+              Object.entries(files).filter(
+                ([path]) =>
+                  path === forgetPath ||
+                  !suppressions.some(({ payload }) => `${payload.pageId}.md` === path)
+              )
+            );
+            const admitted = admitUserMemorySources({ ...input, userDb }, visible);
+            for (const [id, digest] of admitted.registeredSources)
+              registeredSources.set(id, digest);
+          }
+        }
         const current = input.runtimeConfigManager.current();
         const maintenance = userDb
           ? current.userConfigs.find(({ userId }) => userId === userDb.userId)?.config
@@ -167,7 +181,7 @@ export async function publishScopedNotebook(
         return {
           scopeSchemaText: scopeSchema(owner.notebookRoot),
           reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
-          registeredSources: new Map(),
+          registeredSources,
           resolvedReferences: new Map(),
           suppressedPageIds: suppressions.map(({ payload }) => payload.pageId),
         };

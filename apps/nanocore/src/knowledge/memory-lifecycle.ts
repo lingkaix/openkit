@@ -9,7 +9,13 @@ import {
   readMemorySuppressions,
 } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError, validateNotebookFiles } from './notebook.js';
-import { parseOkfDocument, stringFrontmatterField, stringListFrontmatterField } from './okf.js';
+import {
+  parseOkfDocument,
+  resolveRegisteredKnowledgeSourceReference,
+  stringFrontmatterField,
+  stringListFrontmatterField,
+} from './okf.js';
+import { admitUserMemorySources } from './scoped-knowledge-sources.js';
 import {
   pinScopedNotebook,
   resolveScopedNotebookOwner,
@@ -63,7 +69,7 @@ function pathFor(pageId: string): string {
   return path;
 }
 
-/** Filters already scope-admitted page bytes by supported sensitivity, User authorship and empty Source references. */
+/** Filters page structure by supported sensitivity, User authorship and literal Source grammar; actual Source authority is separate. */
 export function memoryPageFacts(path: string, content: string) {
   const parsed = parseOkfDocument({ path, content });
   if (!parsed.ok) throw new NotebookError('recovery_required');
@@ -73,7 +79,13 @@ export function memoryPageFacts(path: string, content: string) {
     return null;
   if (stringFrontmatterField(parsed.document, 'review_state') !== 'user-authored') return null;
   const sources = stringListFrontmatterField(parsed.document, 'source_refs');
-  if (!sources || sources.length > 0) return null;
+  if (
+    !sources ||
+    sources.some(
+      (reference) => !resolveRegisteredKnowledgeSourceReference(reference, new Map()).targetId
+    )
+  )
+    return null;
   return {
     id: parsed.document.conceptId,
     path,
@@ -83,7 +95,7 @@ export function memoryPageFacts(path: string, content: string) {
   };
 }
 
-/** Lists only currently authorized source-free personally authored unsuppressed page metadata at one immutable base. */
+/** Lists only currently authorized personally authored unsuppressed metadata after current literal Source admission. */
 export function listMemoryPages(input: MemoryContext) {
   const owner = admitMemoryContext(input);
   const pinned = pinScopedNotebook(owner.context);
@@ -95,13 +107,21 @@ export function listMemoryPages(input: MemoryContext) {
   const pages = Object.entries(pinned.read().files).flatMap(([path, content]) => {
     if (suppressed.has(path.slice(0, -3))) return [];
     const facts = memoryPageFacts(path, content);
+    if (facts) {
+      try {
+        admitUserMemorySources(input, { [path]: content });
+      } catch (error) {
+        if (error instanceof NotebookError && error.code === 'invalid_request') return [];
+        throw error;
+      }
+    }
     return facts ? [facts] : [];
   });
   admitMemoryContext(input);
   return { notebookRevision: pinned.notebookRevision, pages };
 }
 
-/** Reads the current exact page only after self, suppression, authored state, sensitivity and empty-Source admission. */
+/** Reads the current exact page only after self, suppression, authored state, sensitivity and current literal Source admission. */
 export function readMemoryPage(input: MemoryContext, pageId: string) {
   const owner = admitMemoryContext(input);
   const path = pathFor(pageId);
@@ -115,6 +135,14 @@ export function readMemoryPage(input: MemoryContext, pageId: string) {
   const content = pinned.read().files[path];
   if (content === undefined) return null;
   const facts = memoryPageFacts(path, content);
+  if (facts) {
+    try {
+      admitUserMemorySources(input, { [path]: content });
+    } catch (error) {
+      if (error instanceof NotebookError && error.code === 'invalid_request') return null;
+      throw error;
+    }
+  }
   admitMemoryContext(input);
   return facts ? { ...facts, notebookRevision: pinned.notebookRevision, content } : null;
 }
@@ -133,6 +161,8 @@ async function changeMemoryPage(input: MemoryWriter, change: MemoryPageChange, e
     throw new NotebookError('invalid_request');
   validateNotebookFiles({ [path]: request.content }, true);
   if (!memoryPageFacts(path, request.content)) throw new NotebookError('invalid_request');
+  if (base !== undefined) admitUserMemorySources(input, { [path]: base });
+  admitUserMemorySources(input, { [path]: request.content });
   return publishScopedNotebook(
     { ...input, target: { kind: 'user' } },
     {
@@ -194,5 +224,7 @@ export function recordMemorySuppression(
     digest: request.digest,
     requestId: request.requestId,
     actorId: input.actor!.userId,
+    sourceFingerprints: admitUserMemorySources(input, { [`${page.id}.md`]: page.content })
+      .sourceFingerprints,
   });
 }

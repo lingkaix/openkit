@@ -6,6 +6,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import { checkMemoryForgetSourceAdmission } from '../knowledge/memory-forget.js';
 import { readMemorySuppressions } from '../knowledge/memory-maintenance.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
@@ -70,6 +71,7 @@ export function projectApprovalEffect(input: {
         ).some((row) => row.payload.pageId === pageId)
       )
         return { status: 'unavailable', reason: 'The Memory target is unavailable.' };
+      checkMemoryForgetSourceAdmission(coreDb, actor, record);
     }
     const intent = record.serverId
       ? JSON.parse(record.canonicalArgumentsJson!)

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -25,6 +25,7 @@ import {
   saveMemoryPage,
 } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { registerUserKnowledgeSource } from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -66,7 +67,8 @@ function fixture() {
   const request = (
     base = baseRevision,
     pageId = 'preferences',
-    body = 'Earlier exact text.\r\n'
+    body = 'Earlier exact text.\r\n',
+    sourceReferences: string[] = []
   ) => ({
     requestId: randomUUID(),
     baseRevision: base,
@@ -77,7 +79,7 @@ function fixture() {
         kind: 'preference',
         title: 'Private preferences',
         content: body,
-        sourceReferences: [],
+        sourceReferences,
         createdAt: '2026-10-17T00:00:00.000Z',
         updatedAt: '2026-10-17T00:00:00.000Z',
       },
@@ -100,7 +102,65 @@ function retained(f: ReturnType<typeof fixture>, content: string, publish = true
   return candidateRevision;
 }
 
-describe('source-free native Memory history', () => {
+describe('native self Memory history', () => {
+  it('admits current self Source versions for exact history, diff and restore and fails closed after Source corruption', async () => {
+    const f = fixture();
+    const source = await registerUserKnowledgeSource(f.input, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Personal source',
+      content: 'Exact retained evidence.',
+    });
+    const refs = [`source:${source.id}@${source.contentDigest}`];
+    const original = f.request(f.baseRevision, 'preferences', 'Earlier sourced text.\r\n', refs);
+    const saved = await saveMemoryPage(f.input, original);
+    const edited = await editMemoryPage(
+      f.input,
+      f.request(saved.notebookRevision, 'preferences', 'Later sourced text.\n', refs)
+    );
+    const selection = {
+      baseRevision: edited.notebookRevision,
+      fromRevision: saved.notebookRevision,
+      pageIds: ['preferences'],
+    };
+    expect(readMemoryHistory(f.input, {}).revisions[0]).toMatchObject({
+      availability: 'available',
+      changedPaths: ['preferences.md'],
+    });
+    expect(diffMemoryHistory(f.input, selection).changes[0]?.after).toBe(original.content);
+    const restored = await restoreMemoryHistory(f.input, {
+      ...selection,
+      requestId: randomUUID(),
+      summary: 'Restore my sourced text',
+    });
+    expect(readMemoryPage(f.input, 'preferences')?.content).toBe(original.content);
+    const material = join(
+      f.input.coreDb.dataRoot,
+      'users',
+      userId,
+      'sources',
+      'materials',
+      source.id,
+      'content.txt'
+    );
+    writeFileSync(material, 'Corrupt evidence.');
+    expect(() => readMemoryHistory(f.input, {})).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(() => diffMemoryHistory(f.input, selection)).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    await expect(
+      restoreMemoryHistory(f.input, {
+        ...selection,
+        baseRevision: restored.notebookRevision,
+        requestId: randomUUID(),
+        summary: 'Refuse corrupt source',
+      })
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(f.notebook.publishedRevision()).toBe(restored.notebookRevision);
+  });
+
   it('reads published history and exact diffs, then restores through one new publication and receipt', async () => {
     const f = fixture();
     const original = f.request();
@@ -240,7 +300,7 @@ describe('source-free native Memory history', () => {
 
   it.each([
     [
-      'source-bearing',
+      'unjoined Source',
       (content: string) => content.replace('source_refs: []', 'source_refs: ["source:private"]'),
     ],
     [

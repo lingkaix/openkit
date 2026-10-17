@@ -19,6 +19,7 @@ import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-re
 import { readMemoryPage, recordMemorySuppression } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
 import type { NotebookEdit } from './notebook-publication.js';
+import { registerUserKnowledgeSource } from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import { publishScopedNotebook, readScopedNotebookHistory } from './scoped-notebook-publication.js';
 
@@ -432,7 +433,7 @@ describe('internal direct User and Server Notebook publication', () => {
     ).toBe(f.initialServer);
   });
 
-  it('refuses unsupported Source refs in new edits and retained history instead of granting disclosure', async () => {
+  it('refuses unavailable Source storage in self edits and keeps generic native history source-free', async () => {
     const f = fixture();
     const scope = { kind: 'user', userId: alice } as const;
     const request = edit(f.initialUser, scope);
@@ -444,7 +445,7 @@ describe('internal direct User and Server Notebook publication', () => {
         ...request,
         changes: [{ path: 'note.md', content: sourceContent }],
       })
-    ).rejects.toMatchObject({ code: 'invalid_request' });
+    ).rejects.toMatchObject({ code: 'recovery_required' });
     expect(counts(f.userDb)).toEqual({ audit: 2, receipts: 0 });
     const retained = notebook(f.user);
     const candidate = retained.prepare({
@@ -456,9 +457,56 @@ describe('internal direct User and Server Notebook publication', () => {
     expect(() => readScopedNotebookHistory(f.user)).toThrow('Notebook invalid request.');
     await expect(
       publishScopedNotebook(f.user, { ...request, baseRevision: candidate })
-    ).rejects.toMatchObject({ code: 'invalid_request' });
+    ).rejects.toMatchObject({ code: 'recovery_required' });
     expect(retained.publishedRevision()).toBe(candidate);
     expect(counts(f.userDb)).toEqual({ audit: 2, receipts: 0 });
+  });
+
+  it('admits self literal Sources without extending Server or administrative inspection publication', async () => {
+    const f = fixture();
+    const source = await registerUserKnowledgeSource(f.user, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Self Source',
+      content: 'Exact self evidence.',
+    });
+    const references = [`source:${source.id}@${source.contentDigest}`];
+    const request = {
+      ...edit(f.initialUser, { kind: 'user', userId: alice }),
+      changes: [
+        {
+          path: 'note.md',
+          content: page({ kind: 'user', userId: alice }, 'My interpretation.', references),
+        },
+      ],
+    };
+    const saved = await publishScopedNotebook(f.user, request);
+    expect(notebook(f.user).readRevision(saved.notebookRevision).metadata.sourceReferences).toEqual(
+      references
+    );
+    expect(() => readScopedNotebookHistory(f.user)).toThrow('Notebook invalid request.');
+    await expect(
+      publishScopedNotebook(f.server, {
+        ...edit(f.initialServer, { kind: 'server' }),
+        changes: [
+          {
+            path: 'note.md',
+            content: page({ kind: 'server' }, 'Do not import User Source.', references),
+          },
+        ],
+      })
+    ).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(
+      publishScopedNotebook(
+        {
+          ...f.user,
+          actor: f.administrator,
+          target: { kind: 'user-inspection', userId: alice },
+        } as unknown as typeof f.user,
+        request
+      )
+    ).rejects.toThrow('Scoped notebook access denied.');
+    expect(notebook(f.server).publishedRevision()).toBe(f.initialServer);
   });
 
   it.each([

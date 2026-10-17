@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseRecordEnvelope, RecordEnvelopeSchema } from '@openkit/config-schema';
-import { UserIdSchema } from '@openkit/protocol';
+import { KnowledgeSourceIdSchema, UserIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   appendCanonicalTextFile,
@@ -10,14 +10,24 @@ import {
   readCanonicalJsonLines,
 } from '../storage/workspace-file-records.js';
 import { NotebookError, validateNotebookFiles } from './notebook.js';
+import { resolveRegisteredKnowledgeSourceReference } from './okf.js';
 
 const REQUIRED_FEATURES = ['openkit.memory-suppression.v1'] as const;
+/** Minimal complete Source-version identity; citation parsing remains with the existing OKF resolver. */
+export const MemorySourceFingerprintSchema = z
+  .string()
+  .refine(
+    (reference) =>
+      /^source:[^@]+@sha256:[a-f0-9]{64}$/.test(reference) &&
+      KnowledgeSourceIdSchema.safeParse(
+        resolveRegisteredKnowledgeSourceReference(reference, new Map()).targetId
+      ).success
+  );
 const PayloadSchema = z.object({
   pageId: z.string().min(1),
   lastRevision: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  // This native slice refuses Source-bearing content. It cannot manufacture a source fingerprint.
-  sourceFingerprints: z.array(z.string()).length(0),
+  sourceFingerprints: z.array(MemorySourceFingerprintSchema),
   actorId: UserIdSchema,
 });
 const SuppressionSchema = z.object({
@@ -109,6 +119,7 @@ export function appendMemorySuppression(
     readonly lastRevision: string;
     readonly digest: string;
     readonly actorId: string;
+    readonly sourceFingerprints: readonly string[];
   }
 ): MemorySuppression {
   try {
@@ -116,7 +127,7 @@ export function appendMemorySuppression(
       pageId: input.pageId,
       lastRevision: input.lastRevision,
       digest: input.digest,
-      sourceFingerprints: [],
+      sourceFingerprints: [...input.sourceFingerprints],
       actorId: input.actorId,
     });
     validateNotebookFiles({ [`${payload.pageId}.md`]: '' }, true);

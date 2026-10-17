@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { lstatSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { isSealedTurnTerminal, responsibleUserIdForActor } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -31,10 +33,14 @@ import {
   refuseCommandIntentGrant,
 } from '../runtime/pending-requests.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { userDbPath } from '../storage/fs-layout.js';
+import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
 import { type MemoryWriter, readMemoryPage, recordMemorySuppression } from './memory-lifecycle.js';
-import { readMemorySuppressions } from './memory-maintenance.js';
+import { MemorySourceFingerprintSchema, readMemorySuppressions } from './memory-maintenance.js';
 import { NotebookError } from './notebook.js';
 import type { NotebookPublication } from './notebook-publication.js';
+import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
+import { admitUserMemorySources } from './scoped-knowledge-sources.js';
 import { pinScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
 
@@ -71,6 +77,8 @@ const RETENTION = {
   backup:
     'Existing backup bytes remain subject to their separate retention rules. Published external copies are not erased.',
 } as const;
+const SOURCE_RETENTION =
+  'Registered Source versions and captured bytes remain independently retained. Their fingerprints block automatic re-extraction; an explicit later human save must use a new page identity.';
 
 const IntentSchema = z.object({
   operation: z.literal('memory.forget'),
@@ -80,10 +88,11 @@ const IntentSchema = z.object({
   notebookRevision: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   content: z.string(),
+  sourceFingerprints: z.array(MemorySourceFingerprintSchema),
   disclosure: z.object({
     suppression: z.literal(RETENTION.suppression),
     git: z.literal(RETENTION.git),
-    source: z.literal(RETENTION.source),
+    source: z.enum([RETENTION.source, SOURCE_RETENTION]),
     evidence: z.literal(RETENTION.evidence),
     backup: z.literal(RETENTION.backup),
   }),
@@ -156,14 +165,17 @@ function intentFor(record: PendingRequestRecord): ForgetIntent {
     parsed.data.ownerScope.userId !== record.responsibleUserId ||
     parsed.data.requestId !== record.requestId ||
     `sha256:${createHash('sha256').update(parsed.data.content).digest('hex')}` !==
-      parsed.data.digest
+      parsed.data.digest ||
+    parsed.data.disclosure.source !==
+      (parsed.data.sourceFingerprints.length ? SOURCE_RETENTION : RETENTION.source)
   )
     refuse('recovery_required', 'The exact Memory confirmation is unavailable.');
   return parsed.data;
 }
 
-/** Rechecks the captured bytes through current scoped admission, without opening or creating another database. */
-function checkTarget(coreDb: CoreDb, actor: Actor, intent: ForgetIntent) {
+/** Rechecks the exact captured page and its current Source versions; existing databases are never initialized or replaced. */
+function checkTarget(coreDb: CoreDb, actor: Actor, record: PendingRequestRecord) {
+  const intent = intentFor(record);
   const self = actor.userId === intent.ownerScope.userId;
   if (!self && !isCurrentDeploymentAdministrator(coreDb, actor))
     refuse('workspace_access_denied', 'Current Memory confirmation authority is unavailable.', 403);
@@ -187,6 +199,54 @@ function checkTarget(coreDb: CoreDb, actor: Actor, intent: ForgetIntent) {
     pin.read([`${intent.pageId}.md`]).files[`${intent.pageId}.md`] !== intent.content
   )
     refuse('grant_conflict', 'The exact Memory target changed after confirmation.');
+  checkMemoryForgetSourceAdmission(coreDb, actor, record);
+}
+
+/** Rechecks captured Source versions before confirmation disclosure, grant or apply; User Source inspection remains self-only. */
+export function checkMemoryForgetSourceAdmission(
+  coreDb: CoreDb,
+  actor: Actor,
+  record: PendingRequestRecord
+): void {
+  const intent = intentFor(record);
+  const parsed = parseOkfDocument({ path: `${intent.pageId}.md`, content: intent.content });
+  if (!parsed.ok) refuse('recovery_required', 'The captured Memory target is unavailable.');
+  const references = stringListFrontmatterField(parsed.document, 'source_refs');
+  if (!references) refuse('recovery_required', 'The captured Memory target is unavailable.');
+  if (!references.length && !intent.sourceFingerprints.length) return;
+  if (actor.userId !== intent.ownerScope.userId)
+    refuse('workspace_access_denied', 'Current self Source authority is unavailable.', 403);
+  const owner = resolveScopedNotebookOwner({ coreDb, actor, target: { kind: 'user' } });
+  const userRoot = dirname(owner.notebookRoot);
+  let sqlite: Database.Database | undefined;
+  try {
+    for (const path of [
+      coreDb.dataRoot,
+      join(coreDb.dataRoot, 'users'),
+      userRoot,
+      join(userRoot, 'db'),
+    ])
+      assertCanonicalDirectory(path);
+    const path = userDbPath(coreDb.dataRoot, actor.userId);
+    const file = lstatSync(path);
+    if (!file.isFile() || file.isSymbolicLink()) throw new Error('Unavailable User database.');
+    // Approval and preview readers must never initialize, migrate or replace a missing User database.
+    sqlite = new Database(path, { readonly: true, fileMustExist: true });
+    const admitted = admitUserMemorySources(
+      {
+        coreDb,
+        actor,
+        userDb: { scope: 'user', dataRoot: coreDb.dataRoot, userId: actor.userId, sqlite },
+      },
+      { [`${intent.pageId}.md`]: intent.content }
+    );
+    if (JSON.stringify(admitted.sourceFingerprints) !== JSON.stringify(intent.sourceFingerprints))
+      throw new Error('Unavailable Source versions.');
+  } catch {
+    refuse('recovery_required', 'The captured Memory Source versions are unavailable.', 503);
+  } finally {
+    sqlite?.close();
+  }
 }
 
 /** Binds native database handles to the authenticated owner before any retained request is inspected. */
@@ -219,7 +279,7 @@ function prepared(record: PendingRequestRecord, intent: ForgetIntent) {
   };
 }
 
-/** Captures only an admitted exact source-free self target under the current protected-page rule. */
+/** Captures an admitted exact personally authored self target and actual Source versions under the protected-page rule. */
 function captureIntent(
   writer: MemoryForgetWriter,
   input: Omit<PrepareMemoryForgetInput, 'threadId' | 'turnId'>
@@ -228,6 +288,9 @@ function captureIntent(
   const page = readMemoryPage(writer, input.pageId);
   if (!page || page.notebookRevision !== input.notebookRevision || page.digest !== input.digest)
     refuse('conflict', 'The exact Memory target is unavailable or changed.');
+  const { sourceFingerprints } = admitUserMemorySources(writer, {
+    [`${page.id}.md`]: page.content,
+  });
   return IntentSchema.parse({
     operation: 'memory.forget',
     requestId: input.requestId,
@@ -236,7 +299,11 @@ function captureIntent(
     notebookRevision: input.notebookRevision,
     digest: input.digest,
     content: page.content,
-    disclosure: RETENTION,
+    sourceFingerprints,
+    disclosure: {
+      ...RETENTION,
+      source: sourceFingerprints.length ? SOURCE_RETENTION : RETENTION.source,
+    },
   });
 }
 
@@ -331,7 +398,7 @@ function checkProtectedPage(writer: MemoryForgetWriter, pageId: string): void {
     );
 }
 
-/** Captures an exact source-free self page and raises one canonical destructive-action Item on the admitted command Turn. */
+/** Captures an exact self page and raises one canonical destructive-action Item on the admitted command Turn. */
 export function prepareMemoryForget(writer: MemoryForgetWriter, input: PrepareMemoryForgetInput) {
   const turn = admitWriter(writer, input)!;
   const previous = readPendingRequest(writer.workspaceDb.sqlite, input.requestId);
@@ -355,6 +422,7 @@ export function prepareMemoryForget(writer: MemoryForgetWriter, input: PrepareMe
         'idempotency_key_conflict',
         'The request id already names a different Memory confirmation.'
       );
+    checkMemoryForgetSourceAdmission(writer.coreDb, writer.actor!, record);
     return prepared(record, intent);
   }
   if (turn.status !== 'running')
@@ -411,7 +479,7 @@ export function checkMemoryForgetIntent(
   );
   const intent = intentFor(canonical);
   admitContext(coreDb, store, actor, canonical, intent.ownerScope.userId, 'approval.respond');
-  checkTarget(coreDb, actor, intent);
+  checkTarget(coreDb, actor, canonical);
 }
 
 /** Replays only a complete content-free result that matches this exact original captured effect. */
@@ -518,7 +586,7 @@ export async function applyMemoryForget(
     refuse('grant_conflict', 'The Memory grant is no longer available for execution.');
   try {
     checkProtectedPage(writer, intent.pageId);
-    checkTarget(writer.coreDb, writer.actor!, intent);
+    checkTarget(writer.coreDb, writer.actor!, record);
     if (
       !record.decidingActorContext ||
       record.decidingActor?.kind !== 'user' ||

@@ -25,6 +25,13 @@ import {
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { admitMemoryContext, type MemoryContext, type MemoryWriter } from './memory-lifecycle.js';
+import { NotebookError } from './notebook.js';
+import {
+  parseOkfDocument,
+  resolveRegisteredKnowledgeSourceReference,
+  stringFrontmatterField,
+  stringListFrontmatterField,
+} from './okf.js';
 import { ScopedNotebookAccessError } from './scoped-notebook-owner.js';
 
 const OPERATION = 'knowledge.source.register';
@@ -216,6 +223,46 @@ export function readUserKnowledgeSource(
     if (error instanceof ScopedNotebookAccessError) throw error;
     return unavailable();
   }
+}
+
+/** Admits only current self literal Source versions before page disclosure or publication; source-free pages need no Source family. */
+export function admitUserMemorySources(
+  input: MemoryContext,
+  files: Readonly<Record<string, string>>
+): { registeredSources: Map<string, string | null>; sourceFingerprints: readonly string[] } {
+  admitMemoryContext(input);
+  const registeredSources = new Map<string, string | null>();
+  const fingerprints = new Set<string>();
+  for (const [path, content] of Object.entries(files)) {
+    const parsed = parseOkfDocument({ path, content });
+    if (!parsed.ok) throw new NotebookError('invalid_request');
+    const references = stringListFrontmatterField(parsed.document, 'source_refs');
+    if (references === null) {
+      if (!parsed.document.reserved || Object.hasOwn(parsed.document.frontmatter, 'source_refs'))
+        throw new NotebookError('invalid_request');
+      continue;
+    }
+    if (
+      references.length &&
+      (parsed.document.reserved ||
+        stringFrontmatterField(parsed.document, 'review_state') !== 'user-authored')
+    )
+      throw new NotebookError('invalid_request');
+    for (const reference of references) {
+      const { targetId } = resolveRegisteredKnowledgeSourceReference(reference, registeredSources);
+      if (!targetId) throw new NotebookError('invalid_request');
+      if (!registeredSources.has(targetId)) {
+        const retained = readUserKnowledgeSource(input, targetId);
+        if (!retained) throw new NotebookError('invalid_request');
+        registeredSources.set(targetId, retained.source.contentDigest);
+      }
+      if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
+        throw new NotebookError('invalid_request');
+      fingerprints.add(`source:${targetId}@${registeredSources.get(targetId)}`);
+    }
+  }
+  admitMemoryContext(input);
+  return { registeredSources, sourceFingerprints: [...fingerprints].sort() };
 }
 
 /** Captures one immutable literal Source through existing User command receipts and Audit, without public or model activation. */

@@ -24,6 +24,7 @@ import {
   stringListFrontmatterField,
   validateScopeKnowledgeSchema,
 } from './okf.js';
+import { admitUserMemorySources } from './scoped-knowledge-sources.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
 
 const RestoreRequestSchema = RestoreKnowledgeNotebookRequestSchema.omit({
@@ -60,7 +61,6 @@ class AuthorizedMemoryHistory {
     if (!schema.ok) throw new NotebookError('recovery_required');
     const selected = this.notebook.readRevision(revision, paths);
     validateNotebookFiles(selected.files, true);
-    if (selected.metadata.sourceReferences.length > 0) throw new MemoryPageUnavailableError();
     for (const [path, content] of Object.entries(selected.files)) {
       const parsed = parseOkfDocument({ path, content });
       if (!parsed.ok) throw new NotebookError('recovery_required');
@@ -77,6 +77,13 @@ class AuthorizedMemoryHistory {
       const report = validateScopeKnowledgeSchema(parsed.document, schema.schema, owner.ownerScope);
       if (report.conformance !== 'scope-schema-valid' || report.errors.length)
         throw new NotebookError('recovery_required');
+    }
+    try {
+      admitUserMemorySources(this.context, selected.files);
+    } catch (error) {
+      if (error instanceof NotebookError && error.code === 'invalid_request')
+        throw new MemoryPageUnavailableError();
+      throw error;
     }
     admitMemoryContext(this.context);
     assertMemoryPagesNotSuppressed(owner.notebookRoot, this.context.userDb.userId, paths);
