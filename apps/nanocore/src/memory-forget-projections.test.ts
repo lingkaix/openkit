@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
@@ -7,6 +7,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
+import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
@@ -63,6 +64,52 @@ function fixture() {
 }
 
 describe('public Item-confirmed self Memory forget', () => {
+  it('denies an absent Workspace before either forget operation creates its storage', async () => {
+    const f = fixture();
+    const content = f.content(f.userId, 'preferences', 'Keep this existing personal preference.');
+    const saved = await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'preferences',
+      content,
+      summary: 'Save my preference',
+    });
+    expect(saved.status).toBe(200);
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000099';
+    const directory = join(f.dataRoot, 'workspaces', workspaceId);
+    const database = workspaceDbPath(f.dataRoot, workspaceId);
+    expect(existsSync(directory)).toBe(false);
+    expect(existsSync(database)).toBe(false);
+    const requestId = randomUUID();
+    const prepared = await f.call('memory.forget.prepare', {
+      requestId,
+      workspaceId,
+      pageId: 'preferences',
+      notebookRevision: saved.body.notebookRevision,
+      digest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+    });
+    const afterPrepare = { directory: existsSync(directory), database: existsSync(database) };
+    const applied = await f.call('memory.forget', {
+      requestId,
+      pendingRequestId: requestId,
+      workspaceId,
+      threadId: 'th_00000000-0000-7000-8000-000000000099',
+    });
+    expect(prepared.status).toBe(403);
+    expect(applied.status).toBe(403);
+    expect({
+      afterPrepare,
+      afterForget: { directory: existsSync(directory), database: existsSync(database) },
+    }).toEqual({
+      afterPrepare: { directory: false, database: false },
+      afterForget: { directory: false, database: false },
+    });
+    expect(await f.call('memory.read', { pageId: 'preferences' })).toMatchObject({
+      status: 200,
+      body: { page: { content, notebookRevision: saved.body.notebookRevision } },
+    });
+  });
+
   it('separates the public approval grant from removal and suppresses public projections while preserving exact replay', async () => {
     const f = fixture();
     const pageId = 'private-preference';
