@@ -15,7 +15,7 @@ export async function runKnowledgeMaintenanceCommand(
   const command = input.tellContent === undefined ? 'knowledge.maintain' : 'knowledge.tell';
   const scope = { workspaceId: input.workspaceId, actorId: input.actor.id };
   const canonicalInput = { workspaceId: input.workspaceId, instructions: input.instructions,
-    sources: input.sources, tellContent: input.tellContent,
+    sources: input.sources, pageIds: input.pageIds, tellContent: input.tellContent,
     askingThreadId: input.askingThreadId, askingTurnId: input.askingTurnId };
   const workspaceDb = dependencies.openWorkspace(input.workspaceId);
   try {

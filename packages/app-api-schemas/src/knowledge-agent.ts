@@ -1,5 +1,6 @@
-import { KnowledgeMaintenanceOutcomeSchema, RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import { KnowledgeMaintenanceOutcomeSchema, KnowledgeSourceIdSchema, RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { KnowledgeNotebookPathSchema } from './knowledge-notebook.js';
 
 /** A question carries no scope or authority beyond its native Workspace admission. */
 export const KnowledgeAskRequestSchema = z.object({
@@ -36,7 +37,11 @@ export const KnowledgeTellRequestSchema = z.object({
 export const KnowledgeMaintainRequestSchema = z.object({
   workspaceId: WorkspaceIdSchema,
   requestId: RequestIdSchema,
-  instructions: z.string().min(1).max(65_536),
+  instruction: z.string().min(1).max(65_536),
+  pageIds: z.array(z.string().refine((id) => KnowledgeNotebookPathSchema.safeParse(`${id}.md`).success)).min(1).max(256)
+    .refine((ids) => new Set(ids).size === ids.length, 'Page IDs must be unique.').optional(),
+  sourceIds: z.array(KnowledgeSourceIdSchema).min(1).max(256)
+    .refine((ids) => new Set(ids).size === ids.length, 'Source IDs must be unique.').optional(),
 }).strict();
 
 /** The Turn and notebook candidate remain the sole work and review records. */

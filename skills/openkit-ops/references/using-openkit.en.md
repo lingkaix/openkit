@@ -124,7 +124,9 @@ Discover `knowledge.notebook.history`, `knowledge.notebook.diff` and `knowledge.
 
 Present knowledge proposals and conflicts to the user with their evidence and scope. Resolve or promote them only through an exposed operation and explicit user direction when that decision changes shared knowledge.
 
-A retrieved page is not automatically a sufficient answer. The Knowledge Manager answer operation checks distinct query-term coverage and can return `insufficient-evidence` even when retrieval found a page. Assistant Chat then uses its selected model; explicit Knowledge Manager calls retain the insufficient-evidence result.
+A retrieved page is not automatically a sufficient answer. `knowledge.ask` runs the configured Knowledge Manager model with governed retrieval and page reads. It returns scope-qualified citations and uncertainty, with its own Thread, Turn and usage. Workspace work may also read Server Knowledge when the current Server owner admits the actor. User Memory does not enter shared work. The existing `knowledge.answer` operation uses the same agent path.
+
+Use `openkit ops describe knowledge.ask` and `openkit ops call knowledge.ask --input -` for a one-shot question. Supply `workspaceId` and `question` in the JSON input. Use `knowledge.tell` for explicit information and Sources, or `knowledge.maintain` for an `instruction` with optional `pageIds` and `sourceIds`. Describe each operation first. A tell grants no publication authority: read its native outcome, and review the exact candidate when required. Retain the request identity for replay; use a new request only for new work. The daily Workspace switch defaults off and is separate from publication delegation. Server and User maintenance execution remain separate pending joins.
 
 Use retrieval or bounded context preparation to obtain scoped knowledge evidence. Worker delivery is owned by Task Mode and its governed Context Package; do not create or materialize a second standalone Knowledge package. Do not bulk-load the knowledge store when a scoped query is sufficient, and do not treat retrieved context as authorization to mutate another record or external system.
 

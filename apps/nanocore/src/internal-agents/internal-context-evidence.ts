@@ -92,7 +92,8 @@ export function readInternalContextEvidence(
           kind: 'user' as const,
           id: input.actor!.userId,
         },
-        ...(input.actor ? { requestActor: input.actor } : {}),
+        ...(input.actor ?? input.nativeAuthority?.requestActor
+          ? { requestActor: input.actor ?? input.nativeAuthority?.requestActor } : {}),
         ...(input.serverKnowledgeActor ? { serverKnowledgeActor: input.serverKnowledgeActor } : {}),
         outputThreadId:
           input.strategy === 'compaction'

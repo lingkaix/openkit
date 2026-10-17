@@ -220,7 +220,8 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         text: JSON.stringify(new AuthorizedHistory(notebook, dataRoot, input.workspaceId, access).history({ revision: baseRevision, limit: 20 })) }] }; },
     },
   ];
-  const nativeAuthority = { actorRef: input.access.actor, assertCurrent };
+  const nativeAuthority = { actorRef: input.access.actor, assertCurrent,
+    requestActor: access.requestActor ?? access.serverKnowledgeActor };
   const history = createAssistantHistory({ store, coreDb: input.access.coreDb,
     workspaceId: input.workspaceId, threadId: thread.id, turnId: turn.id, nativeAuthority });
   tools.push(history.tool);

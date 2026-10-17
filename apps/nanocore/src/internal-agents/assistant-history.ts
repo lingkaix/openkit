@@ -42,6 +42,8 @@ export type AssistantHistoryAuthority =
       readonly actor?: never;
       readonly nativeAuthority: {
         readonly actorRef: ActorRef;
+        /** Actual authenticated credential retained by native assembly, never model input. */
+        readonly requestActor?: Actor | undefined;
         readonly assertCurrent: () => void;
       };
     };
@@ -65,7 +67,7 @@ function requireAudience(input: AssistantHistoryContext): void {
   const userId = responsibleUserIdForActor(actorRef);
   if (!userId) throw unavailable();
   if (
-    !currentWorkspaceAuthority(coreDb, workspaceId, actorRef, 'thread.read', true) ||
+    !currentWorkspaceAuthority(coreDb, workspaceId, actorRef, 'thread.read', true, actor ?? input.nativeAuthority?.requestActor) ||
     (actor &&
       !isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
         mutating: false,

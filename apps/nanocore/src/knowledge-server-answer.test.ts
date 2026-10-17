@@ -13,6 +13,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 it('projects an admitted Server citation through the existing answer operation with its actual scope', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-server-answer-'));
@@ -55,6 +56,7 @@ Release after the shared gate passes.
   const turn = store.createTurn(workspace.id, thread.id, 'Release rule', { kind: 'user', id: userId }, null,
     { agentId: 'knowledge-manager', executorKind: 'assistant' });
   const invoke = createOperationInvocation({ coreDb, store, inflightCommands: new WeakMap(),
+    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     repositoryWorkspaceDb: (workspaceId) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
       applyScopedMigrations(db);
