@@ -1245,7 +1245,7 @@ describe('Knowledge Manager answer operation', () => {
     });
     expect(
       roleTurns[0]!.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)
-    ).toEqual(['knowledge.retrieval', 'knowledge.page.read']);
+    ).toEqual(['knowledge.retrieval', 'knowledge.page.read', 'knowledge.result']);
     expect(body).not.toHaveProperty('confidence');
 
     coreDb.sqlite.close();
@@ -2099,11 +2099,15 @@ describe('Knowledge Manager answer operation', () => {
           }
         )
       );
-      expect(response.status).toBe(500);
-      expect(await response.json()).toMatchObject({
-        code: 'knowledge_manager_answer_failed',
-        message: 'Knowledge Manager answer failed.',
+      expect(response.status).toBe(422);
+      const refusal = await response.json();
+      expect(refusal).toMatchObject({
+        code: 'knowledge_query_failed',
+        message: 'Knowledge query failed. Inspect the retained Turn before a new request.',
+        details: { threadId: expect.any(String), turnId: expect.any(String) },
       });
+      expect(JSON.stringify(refusal)).not.toContain('private-secret');
+      expect(JSON.stringify(refusal)).not.toContain('/Users/private/');
       expect(createResponses).toHaveBeenCalled();
     } finally {
       coreDb.sqlite.close();
