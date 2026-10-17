@@ -33,7 +33,7 @@ test('creates a second Artifact version and inspects and downloads the first ori
     );
     await page.getByRole('button', { name: 'Import', exact: true }).click();
     const imported = await importing;
-    expect(imported.status()).toBe(200);
+    expect(imported.status()).toBe(201);
     const { artifactId } = await imported.json();
     await page.getByRole('button', { name: /Versioned report/ }).click();
     const history = page.getByRole('region', { name: 'Artifact version history' });
@@ -51,7 +51,7 @@ test('creates a second Artifact version and inspects and downloads the first ori
     );
     await draft.getByRole('button', { name: 'Save new version', exact: true }).click();
     const committed = await committing;
-    expect(committed.status()).toBe(200);
+    expect(committed.status()).toBe(201);
     const result = await committed.json();
     expect(result.artifact.id).toBe(artifactId);
     expect(result.artifact.version).toBe(2);
