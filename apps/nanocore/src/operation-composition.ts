@@ -23,6 +23,8 @@ import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
 import { createTaskConversationOperationImplementations } from './conversation-operation-implementations.js';
 import { createDiagnosticsOperationImplementations } from './diagnostics/diagnostics-operations.js';
+import { createEvaluationJudgementOperationImplementations } from './evaluation-judgement-operations.js';
+import { createEvaluationOperationImplementations } from './evaluation-operations.js';
 import {
   createGenerativeUiOperationImplementations,
   createRemainingKernelOperationImplementations,
@@ -219,6 +221,8 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createKnowledgeOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),
+    createEvaluationOperationImplementations(dependencies),
+    createEvaluationJudgementOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),
     createTaskConversationOperationImplementations(dependencies),
     createPendingRequestOperationImplementations({
