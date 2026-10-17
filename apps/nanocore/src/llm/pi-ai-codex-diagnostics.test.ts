@@ -254,7 +254,7 @@ describe('stock Codex HTTP rejection diagnostics', () => {
 });
 
 describe('stock xAI HTTP rejection diagnostics', () => {
-  it('observes only HTTP 422 from a stock Responses stream without granting replay', async () => {
+  it('retains bounded typed HTTP 422 details without granting replay', async () => {
     const models = createModels();
     models.setProvider(xaiProvider());
     const model = models
@@ -268,7 +268,19 @@ describe('stock xAI HTTP rejection diagnostics', () => {
     const urls: string[] = [];
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
       urls.push(input instanceof Request ? input.url : String(input));
-      const response = rejection(422);
+      const response = new Response(
+        JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            code: 'unsupported_tool_type',
+            param: 'tools[0].type',
+            message: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
+            body: 'body-canary',
+          },
+          private: 'unselected-canary',
+        }),
+        { status: 422 }
+      );
       response.headers.set('x-private-provider', 'header-canary');
       return response;
     });
@@ -304,7 +316,21 @@ describe('stock xAI HTTP rejection diagnostics', () => {
     expect(attempted).toEqual(['0:0']);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(urls).toEqual(['https://api.x.ai/v1/responses']);
-    expect(observe.mock.calls).toEqual([[422]]);
+    expect(observe.mock.calls).toEqual([
+      [
+        422,
+        {
+          type: 'invalid_request_error',
+          code: 'unsupported_tool_type',
+          param: 'tools[0].type',
+          message: `Unsupported custom tool; [redacted]; ${'detail '.repeat(80)}`.slice(0, 200),
+        },
+      ],
+    ]);
+    expect(JSON.stringify(observe.mock.calls)).not.toContain(syntheticAuth);
+    expect(JSON.stringify(observe.mock.calls)).not.toMatch(
+      /header-canary|body-canary|unselected-canary/
+    );
   });
 });
 
