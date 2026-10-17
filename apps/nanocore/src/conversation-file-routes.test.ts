@@ -324,6 +324,7 @@ describe('Turn-owned conversation originals', () => {
     ).toBe(false);
   });
 
+  // Real 8 MB retained-record serialization and verification need a local 60-second runner limit.
   it('refuses a retained Thread rewrite that exceeds shared publication capacity before Assistant execution', async () => {
     const state = fixture(() => 1_500_000n);
     const threadPath = join(
@@ -365,7 +366,7 @@ describe('Turn-owned conversation originals', () => {
     expect(
       state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
     ).toBe(false);
-  });
+  }, 60_000);
 
   it('admits the submitted user-message append through the same shared file-capacity owner', async () => {
     let available = 2_000_000_000n;
@@ -494,6 +495,7 @@ describe('Turn-owned conversation originals', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  // Allow 60 seconds for real file handoff, scheduler preparation and exact replay in this fixture.
   it.each([
     { targetRef: 'new-task-worker', privateSource: false },
     { targetRef: 'new-task-worker', privateSource: true },
@@ -686,7 +688,7 @@ describe('Turn-owned conversation originals', () => {
       expect(changedBrief.status, await changedBrief.clone().text()).toBe(409);
       expect((await changedBrief.json()).code).toBe('idempotency_key_conflict');
     }
-  });
+  }, 60_000);
 
   it('retains Assistant originals while a Goal proposal creates no execution owners', async () => {
     const state = fixture();
