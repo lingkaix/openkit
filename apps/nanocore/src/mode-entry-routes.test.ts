@@ -71,6 +71,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import * as observationOwners from './storage/work-observations.js';
@@ -1372,6 +1373,7 @@ describe('conversation.submit worker acceptance wait', () => {
   ])('replays the original failed Task after native image preparation refusal only when cleanup completes (%s)', async (cleanupFails) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-image-refusal-'));
     const coreDb = openCoreDb(dataRoot);
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000n);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
@@ -1389,6 +1391,7 @@ describe('conversation.submit worker acceptance wait', () => {
       throw new Error('Controlled native image preparation refusal.');
     });
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission,
       coreDb,
       store,
       env: {},
@@ -1408,6 +1411,7 @@ describe('conversation.submit worker acceptance wait', () => {
     if (cleanupFails)
       vi.spyOn(backend, 'cleanupSession').mockRejectedValue(new Error('Cleanup is unproved.'));
     const app = createAppWithWorkspaceAuthority({
+      fileAdmission,
       coreDb,
       dataRoot,
       store,
