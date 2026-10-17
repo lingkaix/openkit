@@ -1,4 +1,4 @@
-import type { CoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
@@ -129,16 +129,25 @@ describe('Skill retained history', () => {
   });
 
   it.each([
-    'remove',
-    'purge',
-  ] as const)('names a lost %s response as unknown and offers read-only inspection', async (action) => {
+    { action: 'remove', error: new TypeError('response lost') },
+    { action: 'purge', error: new TypeError('response lost') },
+    {
+      action: 'purge',
+      error: new ApiCallError(409, 'Completion evidence unavailable.', {
+        code: 'recovery_required',
+      }),
+    },
+  ] as const)('names an uncertain $action result as unknown and offers read-only inspection', async ({
+    action,
+    error,
+  }) => {
     const user = userEvent.setup();
     const operations = fixture();
     await user.click(await screen.findByRole('button', { name: /Inspect sha256:aaaa/ }));
     await screen.findByText('owner/repo');
     const mutation =
       action === 'remove' ? operations['catalog.skill-remove'] : operations['catalog.skill-purge'];
-    mutation.mockRejectedValue(new TypeError('response lost'));
+    mutation.mockRejectedValue(error);
     const name =
       action === 'remove' ? 'Remove Skill from future selection' : 'Confirm permanent deletion';
     if (action === 'purge')

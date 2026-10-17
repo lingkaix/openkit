@@ -385,7 +385,7 @@ function preview(contentBase64: string): string {
 
 /** A refused command is definite; a lost or invalid response requires inspection before another effect. */
 function mutationFailure(error: unknown, action: 'removal' | 'deletion'): string {
-  return error instanceof ApiCallError && error.status < 500
+  return error instanceof ApiCallError && error.status < 500 && error.code !== 'recovery_required'
     ? `Core refused Skill ${action}. Inspect current state before another change.`
     : `The Skill ${action} result is unknown. Inspect current state before requesting another change.`;
 }
