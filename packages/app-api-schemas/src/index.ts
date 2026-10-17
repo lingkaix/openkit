@@ -21,6 +21,8 @@ export * from './data-root-admin-operations.js';
 export * from './diagnostics.js';
 export * from './diagnostics-operations.js';
 export * from './environment-operations.js';
+export * from './evaluation.js';
+export * from './evaluation-operations.js';
 export * from './evidence-bundles.js';
 export * from './feedback.js';
 export * from './generative-operations.js';
