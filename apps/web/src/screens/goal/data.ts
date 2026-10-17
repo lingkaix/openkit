@@ -4,7 +4,7 @@ import type {
   OperationInput,
 } from '@openkit/app-api-schemas';
 import type { CoreClient, GetArtifactResponse } from '@openkit/core-client';
-import { createRequestId } from '@openkit/core-client';
+import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
@@ -92,7 +92,17 @@ export function useArtifactReviews(workspaceId: string | null, artifactId: strin
   });
 }
 
-/** Submit one exact version-keyed decision and await its authoritative Review refetch. */
+/** Identifies contract-defined refusal before any Review or follow-up effect. */
+function reviewCommandRefused(error: unknown) {
+  return (
+    error instanceof ApiCallError &&
+    ['conflict', 'thread_busy', 'invalid_request', 'forbidden', 'not_found', 'stale'].includes(
+      error.code ?? ''
+    )
+  );
+}
+
+/** Submit one exact decision, retaining its identity until an authoritative outcome or refusal. */
 export function useSubmitArtifactReview(
   workspaceId: string,
   artifactId: string,
@@ -100,18 +110,76 @@ export function useSubmitArtifactReview(
 ) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: ArtifactReviewDecisionInput) =>
-      client.operations['artifact.review.decide']({
+  const pending = useRef<{ signature: string; requestId: string } | null>(null);
+  const mutation = useMutation({
+    mutationFn: (input: ArtifactReviewDecisionInput) => {
+      const signature = JSON.stringify({ workspaceId, artifactId, artifactVersion, input });
+      if (pending.current && pending.current.signature !== signature)
+        throw new Error('Inspect or retry the unconfirmed Review decision before changing it.');
+      pending.current ??= { signature, requestId: input.requestId ?? createRequestId() };
+      return client.operations['artifact.review.decide']({
         workspaceId,
         artifactId,
         artifactVersion,
         ...input,
-      }),
-    onSuccess: () =>
-      queryClient.refetchQueries({
+        requestId: pending.current.requestId,
+      });
+    },
+    onError: (error) => {
+      if (reviewCommandRefused(error)) pending.current = null;
+    },
+    onSuccess: async () => {
+      pending.current = null;
+      await queryClient.refetchQueries({
         queryKey: goalKeys.reviews(workspaceId, artifactId),
         exact: true,
-      }),
+      });
+    },
   });
+  return { ...mutation, isUncertain: mutation.isError && !reviewCommandRefused(mutation.error) };
+}
+
+/** Records an exact candidate choice with one request identity retained through uncertain retry. */
+export function useSelectArtifactCandidate(
+  workspaceId: string,
+  artifactId: string,
+  artifactVersion: number,
+  contentDigest: string
+) {
+  const client = useCoreClient();
+  const cache = useQueryClient();
+  const pending = useRef<{ signature: string; requestId: string } | null>(null);
+  const mutation = useMutation({
+    mutationFn: (reason: string | undefined) => {
+      const signature = JSON.stringify({
+        workspaceId,
+        artifactId,
+        artifactVersion,
+        contentDigest,
+        reason,
+      });
+      if (pending.current && pending.current.signature !== signature)
+        throw new Error('Inspect or retry the unconfirmed candidate choice before changing it.');
+      pending.current ??= { signature, requestId: createRequestId() };
+      return client.operations['artifact.review.select']({
+        workspaceId,
+        artifactId,
+        artifactVersion,
+        contentDigest,
+        requestId: pending.current.requestId,
+        ...(reason ? { reason } : {}),
+      });
+    },
+    onError: (error) => {
+      if (reviewCommandRefused(error)) pending.current = null;
+    },
+    onSuccess: async () => {
+      pending.current = null;
+      await cache.refetchQueries({
+        queryKey: goalKeys.reviews(workspaceId, artifactId),
+        exact: true,
+      });
+    },
+  });
+  return { ...mutation, isUncertain: mutation.isError && !reviewCommandRefused(mutation.error) };
 }

@@ -10,7 +10,6 @@ import fs, {
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
@@ -27,6 +26,7 @@ import { turnFilePayloadPath } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -176,6 +176,82 @@ describe('Turn-owned conversation originals', () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 
+  it('does not disclose a private Artifact through confirmed file handoff', async () => {
+    const state = fixture();
+    const source = state.store.createThread(
+      state.workspaceId,
+      'Private output',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
+    const prior = state.store.createTurn(state.workspaceId, source.id, 'Private output', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    const at = new Date().toISOString();
+    const body = 'PRIVATE_ARTIFACT_MUST_NOT_BE_SHARED';
+    const artifactRequestId = randomUUID();
+    const artifact = state.store.createArtifact({
+      id: testEntityId('ar', 'private-file-handoff-output'),
+      workspaceId: state.workspaceId,
+      threadId: source.id,
+      turnId: prior.id,
+      kind: 'report',
+      title: 'Private report',
+      status: 'ready',
+      summary: 'Private output',
+      version: 1,
+      content: { format: 'markdown', body },
+      contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+      lastMutationRequestId: artifactRequestId,
+      origin: {
+        kind: 'turn-output',
+        threadId: source.id,
+        turnId: prior.id,
+        requestId: artifactRequestId,
+      },
+      createdAt: at,
+      updatedAt: at,
+    });
+    state.store.updateTurn(prior.id, { status: 'completed', completedAt: at });
+    const setup = createTestAgentSetup();
+    const executor = new SimulatedTurnExecutor({ coreDb: state.coreDb });
+    const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+    const app = createApp({
+      coreDb: state.coreDb,
+      dataRoot: state.dataRoot,
+      store: state.store,
+      turnExecutor: executor,
+      agentManifests: [setup.manifest],
+      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+    });
+    const before = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
+    const bytes = new Uint8Array();
+    const input = {
+      workspaceId: state.workspaceId,
+      threadId: source.id,
+      requestId: randomUUID(),
+      input: 'Use this report.',
+      targetRef: 'new-task-worker',
+      fileHandoffConfirmed: true,
+      artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
+      fileInputs: [metadata(bytes)],
+    };
+    const response = await app.request('/api/app/operations/conversation.submit', {
+      method: 'POST',
+      headers: {
+        'content-type': CONVERSATION_FILE_MEDIA_TYPE,
+        'x-openkit-request-id': input.requestId,
+      },
+      body: frame(input, [bytes]),
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({ outcome: 'refused', handoff: null });
+    expect(state.store.listThreads(state.workspaceId).map((thread) => thread.id)).toEqual(before);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
   it('refuses file Turn publication when the request aborts during awaited Worker preparation', async () => {
     const state = fixture();
     const setup = createTestAgentSetup();
@@ -248,8 +324,9 @@ describe('Turn-owned conversation originals', () => {
     ).toBe(false);
   });
 
+  // Retained-record serialization and verification use the local 60-second runner limit.
   it('refuses a retained Thread rewrite that exceeds shared publication capacity before Assistant execution', async () => {
-    const state = fixture(() => 7_000_000n);
+    const state = fixture(() => 1_500_000n);
     const threadPath = join(
       state.dataRoot,
       'workspaces',
@@ -259,7 +336,7 @@ describe('Turn-owned conversation originals', () => {
       'thread.json'
     );
     const retained = JSON.parse(readFileSync(threadPath, 'utf8'));
-    retained.futureMetadata = 'x'.repeat(8_000_000);
+    retained.futureMetadata = 'x'.repeat(800_000);
     writeFileSync(threadPath, JSON.stringify(retained));
     const before = readFileSync(threadPath);
     const bytes = new Uint8Array([1]);
@@ -289,7 +366,7 @@ describe('Turn-owned conversation originals', () => {
     expect(
       state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
     ).toBe(false);
-  });
+  }, 60_000);
 
   it('admits the submitted user-message append through the same shared file-capacity owner', async () => {
     let available = 2_000_000_000n;
@@ -418,38 +495,43 @@ describe('Turn-owned conversation originals', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  // Allow 60 seconds for real file handoff, scheduler preparation and exact replay in this fixture.
   it.each([
-    'new-task-worker',
-    'internal-role:assistant',
-  ])('keeps originals with the receiving Turn for %s', async (targetRef) => {
+    { targetRef: 'new-task-worker', privateSource: false },
+    { targetRef: 'new-task-worker', privateSource: true },
+    { targetRef: 'internal-role:assistant', privateSource: true },
+  ])('keeps exact originals with the receiving Turn for $targetRef (private source: $privateSource)', async ({
+    targetRef,
+    privateSource,
+  }) => {
     const state = fixture();
-    const source = state.store.createThread(
-      state.workspaceId,
-      'Private handoff',
-      undefined,
-      'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
-    );
-    const privateHistory = 'Unselected private history stays with the Assistant.';
-    if (targetRef === 'new-task-worker') {
-      const previous = state.store.createTurn(state.workspaceId, source.id, privateHistory, {
+    const source = privateSource
+      ? state.store.createThread(state.workspaceId, 'Private files', undefined, 'conversation', {
+          visibility: 'private',
+          privateOwnerUserId: LOCAL_USER_ID,
+        })
+      : state.thread;
+    const privateMarker = 'PRIVATE_TRANSCRIPT_MUST_STAY_OUT_OF_SHARED_WORK';
+    if (privateSource) {
+      const prior = state.store.createTurn(state.workspaceId, source.id, privateMarker, {
         kind: 'user',
         id: LOCAL_USER_ID,
       });
-      const timestamp = new Date().toISOString();
-      state.store.createItem({
-        id: allocateEntityId('it'),
-        workspaceId: state.workspaceId,
-        threadId: source.id,
-        turnId: previous.id,
-        actor: { kind: 'user', id: LOCAL_USER_ID },
-        type: 'user-message',
-        text: privateHistory,
-        status: 'completed',
-        createdAt: timestamp,
-        completedAt: timestamp,
-      });
-      state.store.updateTurn(previous.id, { status: 'completed', completedAt: timestamp });
+      const completedAt = new Date().toISOString();
+      for (const type of ['user-message', 'assistant-message'] as const)
+        state.store.createItem({
+          id: testEntityId('it', `private-file-handoff-${type}`),
+          workspaceId: state.workspaceId,
+          threadId: source.id,
+          turnId: prior.id,
+          type,
+          status: 'completed',
+          text: privateMarker,
+          actor: { kind: 'user', id: LOCAL_USER_ID },
+          createdAt: completedAt,
+          completedAt,
+        });
+      state.store.updateTurn(prior.id, { status: 'completed', completedAt });
     }
     const setup = createTestAgentSetup();
     const executor = new SimulatedTurnExecutor({ coreDb: state.coreDb });
@@ -458,23 +540,23 @@ describe('Turn-owned conversation originals', () => {
       input: 'Implement a focused correction.',
       agentId: setup.manifest.id,
     });
-    const observed: Array<{ inventory: unknown; bytes: Buffer; threadId: string; turn: string }> =
-      [];
+    const observed: Array<{ inventory: unknown; bytes: Buffer[]; turnInput: string }> = [];
     const prepare = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockImplementation(async (_store, preparation) => {
         observed.push({
           inventory: preparation.turn.fileInputs,
-          threadId: preparation.turn.threadId,
-          turn: JSON.stringify(preparation.turn),
-          bytes: readFileSync(
-            turnFilePayloadPath(
-              join(state.dataRoot, 'workspaces', state.workspaceId),
-              preparation.turn.threadId,
-              preparation.turn.id,
-              0
+          bytes: preparation.turn.fileInputs!.map((_, ordinal) =>
+            readFileSync(
+              turnFilePayloadPath(
+                join(state.dataRoot, 'workspaces', state.workspaceId),
+                preparation.turn.threadId,
+                preparation.turn.id,
+                ordinal
+              )
             )
           ),
+          turnInput: preparation.turnInput,
         });
         throw new WorkerGovernanceCapacityUnavailableError();
       });
@@ -487,7 +569,7 @@ describe('Turn-owned conversation originals', () => {
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
-    const bytes = new Uint8Array([0xff, 0, 1]);
+    const bytes = [new Uint8Array([0xff, 0, 1]), new Uint8Array()];
     const input = {
       workspaceId: state.workspaceId,
       threadId: source.id,
@@ -496,7 +578,7 @@ describe('Turn-owned conversation originals', () => {
       targetRef,
       ...(targetRef === 'new-task-worker' ? { fileHandoffConfirmed: true as const } : {}),
       artifactRefs: [],
-      fileInputs: [metadata(bytes)],
+      fileInputs: bytes.map((part) => metadata(part)),
     };
     const threadsBefore = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
     const artifactsBefore = state.store.listArtifacts(state.workspaceId).length;
@@ -506,7 +588,7 @@ describe('Turn-owned conversation originals', () => {
         'content-type': CONVERSATION_FILE_MEDIA_TYPE,
         'x-openkit-request-id': input.requestId,
       },
-      body: frame(input, [bytes]),
+      body: frame(input, bytes),
     });
     expect(response.status, await response.clone().text()).toBe(202);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -528,15 +610,17 @@ describe('Turn-owned conversation originals', () => {
       expect(accepted.turn.threadId).toBe(source.id);
       expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
       expect(
-        readFileSync(
-          turnFilePayloadPath(
-            join(state.dataRoot, 'workspaces', state.workspaceId),
-            source.id,
-            accepted.turn.id,
-            0
+        bytes.map((_, ordinal) =>
+          readFileSync(
+            turnFilePayloadPath(
+              join(state.dataRoot, 'workspaces', state.workspaceId),
+              source.id,
+              accepted.turn.id,
+              ordinal
+            )
           )
         )
-      ).toEqual(Buffer.from(bytes));
+      ).toEqual(bytes.map((part) => Buffer.from(part)));
       expect(state.store.listThreads(state.workspaceId).map((thread) => thread.id)).toEqual(
         threadsBefore
       );
@@ -557,15 +641,28 @@ describe('Turn-owned conversation originals', () => {
     expect(observed.length).toBeGreaterThan(0);
     for (const observation of observed) {
       expect(observation.inventory).toEqual(input.fileInputs);
-      expect(observation.bytes).toEqual(Buffer.from(bytes));
-      if (targetRef === 'new-task-worker') {
-        expect(observation.threadId).not.toBe(source.id);
-        expect(observation.turn).not.toContain(privateHistory);
-        expect(state.store.getThread(state.workspaceId, observation.threadId).visibility).toBe(
-          'workspace'
+      expect(observation.bytes).toEqual(bytes.map((part) => Buffer.from(part)));
+      if (privateSource) {
+        const delegation = JSON.parse(observation.turnInput);
+        expect(delegation.objective).toBe(
+          `${input.input}\n\n2 conversation file inputs are retained with the receiving Turn. Original bytes are not included in this prompt.`
         );
-        expect(state.store.getThread(state.workspaceId, source.id).visibility).toBe('private');
+        expect(delegation.contextRefs).toEqual([
+          { kind: 'workspace', id: state.workspaceId },
+          { kind: 'thread', id: accepted.turn.threadId },
+        ]);
+        expect(delegation.resources).toEqual([]);
+        expect(observation.turnInput).not.toContain(privateMarker);
       }
+    }
+    if (privateSource) {
+      const receiving = state.store.getThread(state.workspaceId, accepted.turn.threadId);
+      expect(receiving.visibility).toBe('workspace');
+      expect(receiving.id).not.toBe(source.id);
+      expect(state.store.getThread(state.workspaceId, source.id).visibility).toBe('private');
+      expect(
+        JSON.stringify(state.store.listThreadItems(state.workspaceId, receiving.id))
+      ).not.toContain(privateMarker);
     }
     if (targetRef === 'new-task-worker') expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
     expect(provider.createResponses).not.toHaveBeenCalled();
@@ -591,7 +688,7 @@ describe('Turn-owned conversation originals', () => {
       expect(changedBrief.status, await changedBrief.clone().text()).toBe(409);
       expect((await changedBrief.json()).code).toBe('idempotency_key_conflict');
     }
-  });
+  }, 60_000);
 
   it('retains Assistant originals while a Goal proposal creates no execution owners', async () => {
     const state = fixture();

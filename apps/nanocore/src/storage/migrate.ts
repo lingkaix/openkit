@@ -49,10 +49,20 @@ export function applyScopedMigrations(
  * connection already has an open transaction.
  *
  * @param sqlite Open app SQLite connection.
+ * @param beforePendingMigration Synchronous recovery copy before pending app DDL.
  * @throws BootConfigError when the journal is missing or fails to apply.
  */
-export function applyAppMigrations(sqlite: SetupDb['sqlite']): void {
-  applyNativeScopeMigrations(sqlite, 'app');
+export function applyAppMigrations(
+  sqlite: SetupDb['sqlite'],
+  beforePendingMigration?: () => void
+): void {
+  const migrationsFolder = findMigrationsFolder('app');
+  const journal = readJournal(migrationsFolder);
+  const applied = listAppliedNativeMigrationIds(sqlite, 'app', migrationsFolder);
+  if (journal.entries.some((entry) => !applied.includes(`app_${entry.tag}`))) {
+    beforePendingMigration?.();
+  }
+  applyNativeScopeMigrations(sqlite, 'app', migrationsFolder);
 }
 
 /**

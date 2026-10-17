@@ -19,7 +19,11 @@ import {
   publishCanonicalPath,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
-import { loadWorkspaceResourceCatalog, readWorkspaceSkillSnapshot } from './resource-catalog.js';
+import {
+  loadWorkspaceResourceCatalog,
+  readWorkspaceSkillSnapshot,
+  validateLightAppDefinitionCatalog,
+} from './resource-catalog.js';
 
 /** Inventory path for the portable catalog projection. */
 export const AGENT_RESOURCE_CATALOG_EXPORT_PATH = 'records/agent-resource-catalog.json';
@@ -57,6 +61,14 @@ export function projectWorkspaceCatalogExport(
 ): WorkspaceCatalogExportProjection {
   const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
   const portable = parsePortableAgentResourceCatalog({
+    lightApps: {
+      entries: catalog.lightApps.entries.map(({ currentDigest, ...entry }) => ({
+        ...entry,
+        sourceCurrentDigest: currentDigest,
+      })),
+      pins: catalog.lightApps.pins,
+      versions: catalog.lightApps.versions,
+    },
     mcp: {
       entries: catalog.mcp.entries.map(({ currentVersionDigest: _current, ...entry }) => entry),
       versions: catalog.mcp.versions.map((version) => ({
@@ -179,7 +191,17 @@ export function reconstructImportedWorkspaceCatalog(
       throw new Error(`Skill payload inventory mismatch: ${path}`);
     }
   }
-  return parseResourceCatalogDocument({
+  const catalog = parseResourceCatalogDocument({
+    lightApps: {
+      entries: portable.lightApps.entries.map(
+        ({ sourceCurrentDigest: _sourceCurrentDigest, ...entry }) => ({
+          ...entry,
+          currentDigest: null,
+        })
+      ),
+      pins: [],
+      versions: portable.lightApps.versions,
+    },
     mcp: {
       bindings: [],
       entries: portable.mcp.entries.map((entry) => ({
@@ -208,6 +230,18 @@ export function reconstructImportedWorkspaceCatalog(
       versions: portable.skills.versions,
     },
   });
+  validateLightAppDefinitionCatalog({
+    ...catalog,
+    lightApps: {
+      entries: portable.lightApps.entries.map(({ sourceCurrentDigest, ...entry }) => ({
+        ...entry,
+        currentDigest: sourceCurrentDigest,
+      })),
+      pins: portable.lightApps.pins,
+      versions: portable.lightApps.versions,
+    },
+  });
+  return catalog;
 }
 
 /**
@@ -222,6 +256,7 @@ export function writeImportedWorkspaceCatalog(
   catalog: ResourceCatalogDocument,
   payloads: readonly PortableSkillPayload[]
 ): void {
+  validateLightAppDefinitionCatalog(catalog);
   const catalogDir = join(workspaceRoot, 'catalog');
   mkdirSync(join(catalogDir, 'skill-snapshots'), { recursive: true });
   mkdirSync(join(catalogDir, 'plugin-snapshots'), { recursive: true });

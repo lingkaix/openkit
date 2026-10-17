@@ -89,8 +89,11 @@ describe('notebook publication admission in the existing Audit owners', () => {
     const journal = JSON.parse(readFileSync(join(current, 'meta', '_journal.json'), 'utf8')) as {
       entries: Array<{ tag: string }>;
     };
-    expect(journal.entries.at(-1)!.tag).toContain('notebook_admission');
-    const previous = { ...journal, entries: journal.entries.slice(0, -1) };
+    const admissionIndex = journal.entries.findIndex(({ tag }) =>
+      tag.endsWith('_notebook_admission')
+    );
+    expect(admissionIndex).toBeGreaterThanOrEqual(0);
+    const previous = { ...journal, entries: journal.entries.slice(0, admissionIndex) };
     mkdirSync(join(predecessor, 'meta'));
     writeFileSync(join(predecessor, 'meta', '_journal.json'), JSON.stringify(previous));
     for (const entry of previous.entries)
@@ -141,7 +144,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
     applyNativeScopeMigrations(sqlite, scope, current);
     applyNativeScopeMigrations(sqlite, scope, current);
     expect(sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get()).toEqual({
-      count: previousCount + 1,
+      count: previousCount + journal.entries.length - admissionIndex,
     });
     const after = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
     expect(after.map(({ notebook_admission_json: _newField, ...row }) => row)).toEqual(before);

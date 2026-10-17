@@ -10,6 +10,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { LIGHT_APP_KERNEL_FORMAT_VERSION } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 
 import { KernelCommandError } from '../generative-kernel/errors.js';
@@ -73,9 +74,15 @@ export function lightAppsRoot(dataRoot: string, workspaceId: string): string {
  * @param dataRoot Data root.
  * @param workspaceId Workspace id.
  * @param appId App UUID.
+ * @param admission Current-format reads or explicit native migration admission.
  * @returns Open app database.
  */
-export function openExistingAppDb(dataRoot: string, workspaceId: string, appId: string): AppDb {
+export function openExistingAppDb(
+  dataRoot: string,
+  workspaceId: string,
+  appId: string,
+  admission: 'current' | 'format-upgrade' = 'current'
+): AppDb {
   const path = lightAppDbPath(dataRoot, workspaceId, appId);
   assertNotSymlink(path);
   if (!existsSync(path)) {
@@ -86,9 +93,9 @@ export function openExistingAppDb(dataRoot: string, workspaceId: string, appId: 
   applyAppPragmas(sqlite);
   const db: AppDb = { scope: 'app', sqlite, dataRoot, workspaceId, appId };
   try {
-    applyAppMigrations(db.sqlite);
     assertAppIdentity(db);
-    assertDefinitionMatches(db);
+    assertAppDefinitionMatches(db);
+    assertKnownKernelFormat(db, admission === 'format-upgrade');
     return db;
   } catch (error) {
     sqlite.close();
@@ -120,16 +127,20 @@ export function createAppDb(dataRoot: string, workspaceId: string, appId: string
 }
 
 /**
- * Durably writes one UTF-8 file and fsyncs the file plus its directory.
+ * Durably writes exact UTF-8 or binary bytes and fsyncs the file plus its directory.
  *
  * @param path Destination path.
- * @param contents Exact UTF-8 bytes.
+ * @param contents Exact UTF-8 text or binary bytes.
  */
-export function writeDurableFile(path: string, contents: string): void {
+export function writeDurableFile(path: string, contents: string | Buffer): void {
   mkdirSync(dirname(path), { recursive: true });
   const fd = openSync(path, 'wx');
   try {
-    writeSync(fd, contents);
+    const bytes = typeof contents === 'string' ? Buffer.from(contents, 'utf8') : contents;
+    let offset = 0;
+    while (offset < bytes.length) {
+      offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    }
     fsyncSync(fd);
   } finally {
     closeSync(fd);
@@ -206,7 +217,8 @@ function assertAppIdentity(db: AppDb): void {
   }
 }
 
-function assertDefinitionMatches(db: AppDb): void {
+/** Verifies retained definition bytes against the selected app authority. */
+export function assertAppDefinitionMatches(db: AppDb): void {
   const row = db.sqlite
     .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
     .get() as { schemaDigest: string } | undefined;
@@ -261,5 +273,21 @@ function assertSqliteIntegrity(path: string): void {
     throw new KernelCommandError('unavailable', 'App database failed integrity check.');
   } finally {
     sqlite?.close();
+  }
+}
+
+/** Refuses unknown app formats before applying any pending native migration. */
+function assertKnownKernelFormat(db: AppDb, permitMigrationBase = false): void {
+  const columns = db.sqlite.pragma('table_info(app_metadata)') as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'kernel_format_version')) {
+    if (permitMigrationBase) return;
+    throw new KernelCommandError('unavailable', 'App kernel format requires an explicit upgrade.');
+  }
+  const version = db.sqlite
+    .prepare('SELECT kernel_format_version FROM app_metadata LIMIT 1')
+    .pluck()
+    .get();
+  if (version !== LIGHT_APP_KERNEL_FORMAT_VERSION) {
+    throw new KernelCommandError('unavailable', 'App kernel format is unsupported.');
   }
 }

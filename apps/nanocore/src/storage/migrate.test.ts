@@ -604,6 +604,7 @@ describe('database setup', () => {
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
+        'workspace_0003_exact_review_feedback',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -875,6 +876,8 @@ describe('database setup', () => {
     const offenders = listSourceFiles(sourceRoot)
       .filter((path) => !path.endsWith('migrate.test.ts'))
       .filter((path) => !path.endsWith(`generative-kernel${sep}native.ts`))
+      // The populated Light App fixture verifies real native format migration and snapshot restore.
+      .filter((path) => !path.endsWith(`generative-kernel${sep}snapshots.test.ts`))
       .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.ts`))
       .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.test.ts`))
       // Accepted Goal removal uses one one-way cutover and its populated migration fixture.
@@ -891,6 +894,54 @@ describe('database setup', () => {
 });
 
 describe('native Drizzle migrate', () => {
+  it('adds range and choice columns without changing retained Review decisions', () => {
+    const journal = JSON.parse(
+      readFileSync(join(process.cwd(), 'drizzle/workspace/meta/_journal.json'), 'utf8')
+    ) as { entries: Array<{ tag: string; when: number }> };
+    const setup = journal.entries[0]!;
+    const folder = createNativeJournalFolder([
+      {
+        ...setup,
+        sql: readFileSync(join(process.cwd(), `drizzle/workspace/${setup.tag}.sql`), 'utf8'),
+      },
+    ]);
+    const db = openWorkspaceDb(folder, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyNativeScopeMigrations(db.sqlite, 'workspace', folder);
+      db.sqlite
+        .prepare(
+          `INSERT INTO artifact_reviews (workspace_id, review_id, artifact_id, artifact_version, content_digest, decision, decision_actor_id, decision_request_id, feedback, decided_at, created_at) VALUES (?, ?, ?, 1, ?, 'rejected', ?, 'retained-decision', 'Keep the old reason.', ?, ?)`
+        )
+        .run(
+          db.workspaceId,
+          'arev_00000000-0000-5000-8000-000000000001',
+          'ar_00000000-0000-7000-8000-000000000001',
+          `sha256:${'a'.repeat(64)}`,
+          'usr_00000000-0000-7000-8000-000000000001',
+          '2026-10-17T00:00:00.000Z',
+          '2026-10-17T00:00:00.000Z'
+        );
+      const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').get() as Record<
+        string,
+        unknown
+      >;
+      applyScopedMigrations(db);
+      expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual({
+        ...before,
+        range_feedback: null,
+        candidate_selections: '[]',
+      });
+      expect(listAppliedNativeMigrationIds(db.sqlite, 'workspace')).toEqual([
+        'workspace_0000_setup',
+        'workspace_0001_assistant_handoff',
+        'workspace_0002_notebook_admission',
+        'workspace_0003_exact_review_feedback',
+      ]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it('carries retained Sandbox, Harness and binding rows through the concurrent-Turn journal', () => {
     const journal = JSON.parse(
       readFileSync(join(process.cwd(), 'drizzle/core/meta/_journal.json'), 'utf8')

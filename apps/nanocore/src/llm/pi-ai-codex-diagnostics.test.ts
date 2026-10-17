@@ -8,6 +8,7 @@ import {
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
@@ -249,6 +250,61 @@ describe('stock Codex HTTP rejection diagnostics', () => {
     expect(calls).toBe(2);
     expect(first.mock.calls).toEqual([[401]]);
     expect(second.mock.calls).toEqual([[403]]);
+  });
+});
+
+describe('stock xAI HTTP rejection diagnostics', () => {
+  it('observes only HTTP 422 from a stock Responses stream without granting replay', async () => {
+    const models = createModels();
+    models.setProvider(xaiProvider());
+    const model = models
+      .getModels()
+      .find((entry) => entry.provider === 'xai' && entry.api === 'openai-responses');
+    if (!model) throw new Error('The stock xAI fixture requires a native Responses model.');
+    const provider = { ...providerConfig(model.id), adapterId: 'xai' };
+    const dispatcher = new LLMGatewayProviderDispatcher({
+      piAiClient: new PiAiGatewayClient({ models }),
+    });
+    const urls: string[] = [];
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      urls.push(input instanceof Request ? input.url : String(input));
+      const response = rejection(422);
+      response.headers.set('x-private-provider', 'header-canary');
+      return response;
+    });
+    vi.stubGlobal('fetch', fetch);
+    const observe = vi.fn();
+    const attempted: string[] = [];
+    const logicalModel: ResolvedLogicalModel = {
+      id: 'fixture-logical',
+      displayName: 'Fixture',
+      capabilities: [],
+      modelFamilyId: null,
+      autoFailover: true,
+      routes: ['primary', 'backup'].map((id) => ({
+        id,
+        providerProfileId: id,
+        providerModel: model.id,
+        available: true,
+        unavailableReason: null,
+      })),
+    };
+    const outcome = await dispatchLogicalModel({
+      logicalModel,
+      signal: new AbortController().signal,
+      resolveGatewayProvider: () => provider,
+      attempt: async ({ provider: selected, execution }) => {
+        attempted.push(`${execution.attemptOrder}:${execution.retryIndex}`);
+        return invoke(dispatcher, selected, 'responses', true, {
+          onProviderHttpRejection: observe,
+        });
+      },
+    }).catch((error: unknown) => error);
+    expectUnsettledUnknown(outcome);
+    expect(attempted).toEqual(['0:0']);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(urls).toEqual(['https://api.x.ai/v1/responses']);
+    expect(observe.mock.calls).toEqual([[422]]);
   });
 });
 

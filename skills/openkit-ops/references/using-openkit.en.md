@@ -277,6 +277,16 @@ Use an admitted Assistant or selected Worker to create and update a Kernel app t
 
 A reopened presentation shows historical values. Use its Refresh action to read current data. Save applies the form's explicit record update through Core. An error or stale-write conflict keeps the unsaved input visible; inspect the error and refresh before the next explicit save. Refresh does not save the draft. Unsaved input is local to the open browser view and does not survive a reload. Richer operators, destructive writes, HTML delegates and saved views retain their separate admission gates.
 
+## Manage Light App Definitions
+
+Open Catalog in the selected Workspace and use Light App definitions. Import a declarative JSON definition with a display name and catalog ID, or import an exported history. History shows each immutable version, its parent, actor and time. Export carries definitions and history, without app business data. A source default or pin selects a version for a later explicit action; changing it does not migrate a running app. Imported history does not automatically select or pin its source version.
+
+Use Create app to instantiate the selected version, or select an existing app and use Apply definition with current app and schema revisions. Supported changes are new collections, new optional fields, rename with retained IDs, and field removal. Field removal deletes those values from the current app. Every definition or kernel format migration first takes a consistent SQLite snapshot. No user script or down migration runs.
+
+Select a recovery snapshot and confirm Restore only when replacing later data is intended. New Restore and Upgrade requests require an active app and do not reactivate retired apps. Restore replaces the data file and its definition and format markers; later app writes are lost. A snapshot with an older supported kernel format remains unavailable until explicit Upgrade. Snapshot recovery files stay local; the logical Workspace export contains current admitted schema and records plus catalog history, while a deployment data-root backup includes local snapshots. Errors do not repair authority or replay a mutation automatically. Refresh and inspect current state before a new explicit request.
+
+The same controls are available through discovered catalog.light-app and kernel operations in the administrator CLI. Use describe for exact current input, retain request IDs for retries and use the returned revisions for a new action.
+
 ## Locate Results
 
 Search for `thread`, `turn`, `artifact`, `evidence`, `audit` and `usage` as needed, then describe the relevant operations. Retain the Workspace, Thread and Turn identifiers from the actual responses. Read the terminal result and meaningful output; use the existing evidence and audit operations to establish only the facts they expose. Preserve pagination, missing records and partial coverage in the report.
@@ -307,6 +317,11 @@ Use the Artifact screen to import an arbitrary file as an immutable original. Th
 
 The raw App API binding for `artifact.import` sends bounded query metadata with the original byte body and `X-OpenKit-Request-Id`. `artifact.download` streams one exact id and version. Binary bodies do not belong in JSON operation or model Tool payloads. Use the Web screen or the Core Client `artifactFiles` methods for this binding. `server.fileReserveBytes` in server configuration sets the shared Data Root free-space reserve, default 1,000,000,000 bytes. Current uploads, publication and pending file writes share that reserve. Reducing it changes later admission only and does not remove accepted originals.
 
+## Give exact Review feedback and use a candidate
+
+Open an Artifact Review to inspect its exact version, digest and provenance. For a binary original, use Download original; the metadata is not a text comparison. For a Markdown or plain-text Material proposal, select text from the recorded base and check the displayed revision, digest and original range. Include that range with your Review feedback. Accept still applies the complete reviewed revision; range feedback does not apply a partial edit or relocate text after another edit.
+
+Select candidate records your exact choice and optional reason. It does not accept the result or start work. Use in next Turn opens the source conversation with that exact candidate in the draft. Check the message and select Send when ready. If the candidate is unavailable or has changed, return to the Review and select an available candidate; the app does not substitute a newer version. Finish any existing unfinished message before using another candidate in that conversation.
 A Timeline can contain a `context-summary` Item. `thread.items` returns its continuation text, source-range endpoints, Item count and digests. This shows the earlier history represented in the model window. Exact earlier Items remain available through `thread.items`; a summary does not delete or replace them. If summary production fails, inspect the failed Turn cause before you submit a new request. Exact replay does not regenerate it.
 
 Assistant Task and Goal proposals show the exact shared payload and receiving Workspace in a pending question. Select `Confirm exact handoff` only for the shown work, or `Do not start`. Confirmation selects the work; current permissions and any required effect Approval still apply. The later native outcome creates a linked receiving Thread and keeps the private Timeline history in place.

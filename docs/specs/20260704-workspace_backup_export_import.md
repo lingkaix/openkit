@@ -486,3 +486,9 @@ The accepted workspace export version is V3. The canonical archived extension re
 - `docs/specs/20260713-work_resource_interaction_model.md`
 - `docs/specs/20260703-worker_context_package.md`
 - `skills/openkit-ops/references/nanocore-data-root-config.en.md`
+
+## Light App Definition Catalog Projection
+
+Reusable definition entries, immutable parent/producer/time history and exact declarative bytes travel in the existing resource-catalog representation under lightApps. Definition-only export contains no business rows, credentials, active grants or execution bindings. Import validates schema, digest and parent closure before the existing staged catalog publication, retains provenance as history and leaves imported target selections inactive. An existing target keeps its own current choice. Explicit subsequent creation or activation uses current target authority through the Kernel owner.
+
+The live per-app SQLite file remains the data and migration boundary. Existing logical Workspace export projects the admitted current app definition and records through Generative portability; it does not turn local automatic migration recovery copies into a second portable record family. Deployment data-root backup includes those sealed snapshot files and their local metadata. A definition export or logical Workspace copy is not a claim that all earlier data recovery points were copied. Snapshot restore and one-way format/definition migration are owned by [Generative Kernel Data Operations](20260908-generative_kernel_data_operations.md).

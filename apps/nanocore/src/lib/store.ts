@@ -294,6 +294,7 @@ export type CommandRequestName =
   | 'artifact.introduce'
   | 'artifact.submit'
   | 'artifact.review.decide'
+  | 'artifact.review.select'
   | 'material.create'
   | 'material.save'
   | 'material.bind'
@@ -302,6 +303,12 @@ export type CommandRequestName =
   | 'material.restore'
   | 'kernel.apps.create'
   | 'kernel.schema.update'
+  | 'kernel.snapshots.rollback'
+  | 'kernel.format.upgrade'
+  | 'catalog.light-app-import'
+  | 'catalog.light-app-history-import'
+  | 'catalog.light-app-select'
+  | 'catalog.light-app-pin'
   | 'kernel.apps.retire'
   | 'kernel.records.create'
   | 'kernel.records.update'
@@ -312,6 +319,8 @@ export type CommandRequestName =
  * Resource kind returned by an idempotent command.
  */
 export type CommandRequestResponseKind =
+  | 'light_app_definition'
+  | 'light_app_catalog'
   | 'skill_version'
   | 'skill_catalog'
   | 'skill_candidate'
@@ -3676,6 +3685,14 @@ export class FsStore {
     return artifact;
   }
 
+  /** Resolves this Workspace's existing single Git content owner. */
+  private proposalNotebook(workspaceId: string): KnowledgeNotebook {
+    if (!this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
+    return new KnowledgeNotebook({
+      repositoryPath: join(this.workspaceRootPath(workspaceId), 'knowledge', 'notebook.git'),
+    });
+  }
+
   /** Verifies the exact original without materializing a file body or substituting another version. */
   public assertArtifactContent(artifact: Artifact): void {
     if (artifact.content.format === 'file') {
@@ -3705,14 +3722,6 @@ export class FsStore {
         'Artifact content integrity is invalid.'
       );
     }
-  }
-
-  /** Resolves this Workspace's existing single Git content owner. */
-  private proposalNotebook(workspaceId: string): KnowledgeNotebook {
-    if (!this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
-    return new KnowledgeNotebook({
-      repositoryPath: join(this.workspaceRootPath(workspaceId), 'knowledge', 'notebook.git'),
-    });
   }
 
   /**

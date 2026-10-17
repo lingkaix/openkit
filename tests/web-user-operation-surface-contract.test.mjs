@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 271;
+const EXPECTED_CATALOG_SIZE = 284;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 211;
+const EXPECTED_INCLUDED_SIZE = 224;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -81,10 +81,10 @@ const WEB_OPERATION_GROUPS = {
     'turn.feedback': { disposition: 'live', surface: 'Chat' },
   },
   Artifacts: {
-    'artifact.download': { disposition: 'live', surface: 'Artifacts' },
-    'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },
-    'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
     'artifact.import': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.download': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },
     'artifact.introduce': { disposition: 'live', surface: 'Artifacts' },
   },
   recovery: {
@@ -104,6 +104,19 @@ const WEB_OPERATION_GROUPS = {
     'automation.update': { disposition: 'live', surface: 'Automations' },
   },
   Catalog: {
+    'catalog.light-app-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-import': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-history-import': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-export': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-select': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-pin': { disposition: 'live', surface: 'Catalog' },
+    'kernel.apps.instantiate': { disposition: 'live', surface: 'Catalog' },
+    'kernel.schema.activate': { disposition: 'live', surface: 'Catalog' },
+    'kernel.snapshots.list': { disposition: 'live', surface: 'Catalog' },
+    'kernel.snapshots.rollback': { disposition: 'live', surface: 'Catalog' },
+    'kernel.format.upgrade': { disposition: 'live', surface: 'Catalog' },
+
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-candidate-decide': { disposition: 'live', surface: 'Catalog' },
     'catalog.read': { disposition: 'live', surface: 'Catalog' },
@@ -230,6 +243,7 @@ const WEB_OPERATION_GROUPS = {
     'artifact.review-list': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.reverse': { disposition: 'roadmap', roadmap: 'R072' },
     'artifact.review.decide': { disposition: 'live', surface: 'Artifact review' },
+    'artifact.review.select': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.decide': { disposition: 'live', surface: 'Knowledge' },
   },
   Portability: {
