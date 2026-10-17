@@ -787,7 +787,11 @@ function createWorkResourceLineageExportInput(
     .update(knowledgeContent)
     .digest('hex')}`;
   const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
+    repositoryPath: join(
+      sourceSnapshotRoot ?? join(dirname(input.exportRoot), 'source'),
+      'knowledge',
+      'notebook.git'
+    ),
   });
   const notebookRevision = notebook.initialize({
     files: { [`${knowledgePageId}.md`]: knowledgeContent },
