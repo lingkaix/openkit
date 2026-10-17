@@ -71,13 +71,13 @@ function pdf(pages: readonly string[], metadataTitle?: string): Buffer {
   objects.push(Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'));
   for (const page of pages) {
     const stream =
-      (page === '@scanned'
+      page === '@scanned'
         ? Buffer.concat([
             Buffer.from('q 100 0 0 100 72 600 cm BI /W 1 /H 1 /CS /RGB /BPC 8 ID '),
             Buffer.from([255, 255, 255]),
             Buffer.from(' EI Q\n'),
           ])
-        : Buffer.from(page ? `BT /F1 12 Tf 72 720 Td (${page}) Tj ET\n` : ''));
+        : Buffer.from(page ? `BT /F1 12 Tf 72 720 Td (${page}) Tj ET\n` : '');
     objects.push(
       Buffer.from(
         `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${objects.length + 2} 0 R >>`
@@ -85,9 +85,7 @@ function pdf(pages: readonly string[], metadataTitle?: string): Buffer {
     );
     objects.push(
       Buffer.concat([
-        Buffer.from(
-          `<< /Length ${stream.length} >>\nstream\n`
-        ),
+        Buffer.from(`<< /Length ${stream.length} >>\nstream\n`),
         stream,
         Buffer.from('\nendstream'),
       ])
@@ -180,7 +178,12 @@ describe('isolated PDF text-layer representation', () => {
     expect(d.source.originalDigest).toBe(sha(bytes));
     expect(d.processor).toMatchObject({
       id: 'pdfjs-pdf-text-layer-v1',
-      configuration: { encoding: 'UTF-8', textLayout: 'pdfjs-items-v1', eol: 'unix', options: { isEvalSupported: false } },
+      configuration: {
+        encoding: 'UTF-8',
+        textLayout: 'pdfjs-items-v1',
+        eol: 'unix',
+        options: { isEvalSupported: false },
+      },
     });
     expect(d.processor.pdfjsVersion).toMatch(/^\d+\.\d+/);
     expect(d.processor.nodeVersion).toBe(process.versions.node);
@@ -209,16 +212,20 @@ describe('isolated PDF text-layer representation', () => {
     expect(observations.launches).toHaveLength(1);
     const launch = observations.launches[0]!;
     expect(d.processor.resourceProfileDigest).toBe(
-      sha(JSON.stringify({
-        pdfjsVersion: d.processor.pdfjsVersion,
-        nodeVersion: d.processor.nodeVersion,
-        configuration: d.processor.configuration,
-        invocation: {
-          command: process.execPath,
-          arguments: launch.args.map((arg) => arg.endsWith('/input.pdf') ? '/private-source' : arg),
-          environment: launch.env,
-        },
-      }))
+      sha(
+        JSON.stringify({
+          pdfjsVersion: d.processor.pdfjsVersion,
+          nodeVersion: d.processor.nodeVersion,
+          configuration: d.processor.configuration,
+          invocation: {
+            command: process.execPath,
+            arguments: launch.args.map((arg) =>
+              arg.endsWith('/input.pdf') ? '/private-source' : arg
+            ),
+            environment: launch.env,
+          },
+        })
+      )
     );
     expect(launch.env).toEqual({ LC_ALL: 'C', LANG: 'C', TZ: 'UTC' });
     expect(launch.args).toEqual([
@@ -281,9 +288,7 @@ describe('isolated PDF text-layer representation', () => {
   });
 
   it('does not accept page-count or encryption fields forged inside private metadata', async () => {
-    const f = await fixture(
-      pdf(['One', 'Two'], 'PRIVATE_TITLE\nPages: 1\nEncrypted: yes\n')
-    );
+    const f = await fixture(pdf(['One', 'Two'], 'PRIVATE_TITLE\nPages: 1\nEncrypted: yes\n'));
     const result = await processPdfTextLayer(f.input);
     expect(result.status).toBe('available');
     if (result.status === 'unavailable') throw new Error(result.reason);
@@ -357,7 +362,8 @@ describe('isolated PDF text-layer representation', () => {
       controller.abort();
     };
     expect(await processPdfTextLayer({ ...f.input, signal: controller.signal })).toMatchObject({
-      status: 'unavailable', reason: 'cancelled',
+      status: 'unavailable',
+      reason: 'cancelled',
     });
     expect(childPid).toBeTypeOf('number');
     expect(() => process.kill(childPid!, 0)).toThrow();
@@ -366,10 +372,15 @@ describe('isolated PDF text-layer representation', () => {
 
   it('kills a stopped real child at the parent wall deadline', async () => {
     const f = await fixture(pdf(['Text']));
-    observations.onParser = (pid) => { process.kill(pid!, 'SIGSTOP'); };
+    observations.onParser = (pid) => {
+      process.kill(pid!, 'SIGSTOP');
+    };
     const started = Date.now();
     expect(await processPdfTextLayer({ ...f.input, limits: { wallTimeMs: 200 } })).toEqual({
-      status: 'unavailable', reason: 'resource-limited', complete: false, provesCompleteBodyAbsence: false,
+      status: 'unavailable',
+      reason: 'resource-limited',
+      complete: false,
+      provesCompleteBodyAbsence: false,
     });
     expect(observations.launches).toHaveLength(1);
     expect(observations.launches[0]!.signal).toBe('SIGKILL');

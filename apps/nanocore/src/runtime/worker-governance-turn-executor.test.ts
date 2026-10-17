@@ -8741,7 +8741,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
-    const fixture = await createWorkerContextExecutorFixture('task-knowledge', { maxContextTokens: 240_000 });
+    const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
+      maxContextTokens: 240_000,
+    });
     const app = createApp({
       coreDb: fixture.coreDb,
       dataRoot: fixture.coreDb.dataRoot,

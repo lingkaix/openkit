@@ -19,7 +19,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type AgentEnvironmentPackage, AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import {
+  type AgentEnvironmentPackage,
+  AgentEnvironmentPackageSchema,
+} from '@openkit/config-schema';
 import { deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
@@ -707,7 +710,11 @@ describe('worker request source selector projection', () => {
     expect(projectWorkerContextRequest(JSON.stringify(request))).toEqual({
       contextBudgetTokens: 4096,
       requestKind: 'structured-delegation',
-      requestedItemIds: ['it_00000000-0000-767c-97eb-d0af46940f44', 'it_00000000-0000-7d5c-b364-336c2c54fdf3', 'it_00000000-0000-7a18-85bb-ebc66a6f69bc'],
+      requestedItemIds: [
+        'it_00000000-0000-767c-97eb-d0af46940f44',
+        'it_00000000-0000-7d5c-b364-336c2c54fdf3',
+        'it_00000000-0000-7a18-85bb-ebc66a6f69bc',
+      ],
       requestedArtifactRefs: [
         { artifactId: 'ar_00000000-0000-7000-8000-0000000003ea', artifactVersion: 7 },
         { artifactId: 'ar_00000000-0000-7000-8000-0000000003e8' },
@@ -742,7 +749,9 @@ describe('worker request source selector projection', () => {
       contextBudgetTokens: 240000,
       requestKind: 'artifact-review',
       requestedItemIds: [],
-      requestedArtifactRefs: [{ artifactId: 'ar_00000000-0000-7000-8000-0000000003ea', artifactVersion: 7 }],
+      requestedArtifactRefs: [
+        { artifactId: 'ar_00000000-0000-7000-8000-0000000003ea', artifactVersion: 7 },
+      ],
     });
   });
 
@@ -1088,7 +1097,11 @@ describe('worker Context Package owner', () => {
     const requestId = 'req_context';
     const threadId = conversationTaskThreadId(actor, workspaceId, origin, requestId);
     const turnId = conversationTaskTurnId(actor, workspaceId, origin, threadId, requestId);
-    const fixture = await createAcceptedFixture(workspaceRoot, { threadId, turnId, knowledge: true });
+    const fixture = await createAcceptedFixture(workspaceRoot, {
+      threadId,
+      turnId,
+      knowledge: true,
+    });
     expect(
       writeWorkerContextPackageTrace({
         workspaceRoot,
@@ -1544,7 +1557,10 @@ describe('worker Context Package owner', () => {
           const linkedRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-link-'));
           const redirected = mkdtempSync(join(tmpdir(), 'openkit-worker-context-redirect-'));
           mkdirSync(join(linkedRoot, 'threads'));
-          symlinkSync(redirected, join(linkedRoot, 'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5'));
+          symlinkSync(
+            redirected,
+            join(linkedRoot, 'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5')
+          );
           return writeWorkerContextPackageFiles(
             linkedRoot,
             await createPackage(linkedRoot, false),
@@ -1801,11 +1817,15 @@ describe('bounded S39 source representations', () => {
           yield chunk.subarray(0, count);
         }
       });
-      const originalSnapshotPath = 'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ec/1/payload';
+      const originalSnapshotPath =
+        'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ec/1/payload';
       const sourceFile: WorkerContextPackageSourceFileInput = {
         source: {
           kind: 'artifact',
-          reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db', objectId: 'ar_00000000-0000-7000-8000-0000000003ec' },
+          reference: {
+            scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+            objectId: 'ar_00000000-0000-7000-8000-0000000003ec',
+          },
           artifactVersion: 1,
         },
         originalDigest: STREAMED_ORIGINAL_DIGEST,
@@ -1895,7 +1915,10 @@ function sourceFixture(
   return {
     source: {
       kind: 'artifact',
-      reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db', objectId: 'ar_00000000-0000-7000-8000-0000000003e9' },
+      reference: {
+        scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+        objectId: 'ar_00000000-0000-7000-8000-0000000003e9',
+      },
       artifactVersion: 1,
     },
     originalDigest: sha256(Buffer.from(bytes)),
@@ -2065,7 +2088,10 @@ describe('S39 bounded delivery and publication refusal', () => {
       await expect(
         writeWorkerContextPackageFiles(root, files, { admission, signal: controller.signal })
       ).rejects.toThrow();
-      const packageRoot = join(root, 'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package');
+      const packageRoot = join(
+        root,
+        'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package'
+      );
       expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
       expect(existsSync(join(packageRoot, source.originalSnapshotPath))).toBe(false);
       expect(release).toHaveBeenCalledTimes(2);
@@ -2155,7 +2181,10 @@ describe('S39 original source authority and retained proof', () => {
       {
         source: {
           kind: 'artifact',
-          reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000402', objectId: 'ar_00000000-0000-7000-8000-0000000003e9' },
+          reference: {
+            scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000402',
+            objectId: 'ar_00000000-0000-7000-8000-0000000003e9',
+          },
           artifactVersion: 1,
         },
       },
@@ -2165,7 +2194,10 @@ describe('S39 original source authority and retained proof', () => {
       {
         source: {
           kind: 'artifact',
-          reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db', objectId: 'ar_00000000-0000-7000-8000-0000000003e9' },
+          reference: {
+            scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+            objectId: 'ar_00000000-0000-7000-8000-0000000003e9',
+          },
           artifactVersion: 2,
         },
       },
@@ -2220,7 +2252,9 @@ describe('S39 exact original UTF-8 ranges', () => {
       ],
     };
     const files = createWorkerContextPackageFiles(input);
-    const delivered = files.files.find((file) => file.path.endsWith('mrev_00000000-0000-7000-8000-0000000003f5.txt'))!.bytes;
+    const delivered = files.files.find((file) =>
+      file.path.endsWith('mrev_00000000-0000-7000-8000-0000000003f5.txt')
+    )!.bytes;
     expect(Buffer.from(delivered).equals(Buffer.from(deliveredContent))).toBe(true);
     expect(delivered.byteLength).toBe(51_003);
     expect(() =>
@@ -2272,7 +2306,8 @@ describe('S39 historical publication fence', () => {
 function sharedMaterialInputs(): Parameters<typeof createWorkerContextPackageFiles>[0] {
   const content = '# Shared material\nOriginal remainder.\n';
   const deliveredContent = '# Shared material';
-  const originalSnapshotPath = 'originals/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f8/payload';
+  const originalSnapshotPath =
+    'originals/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f8/payload';
   const projection: WorkerContextPackageProjection = {
     kind: 'excerpt',
     sourceRevision: 'mrev_00000000-0000-7000-8000-0000000003f8',
@@ -2307,14 +2342,18 @@ function sharedMaterialInputs(): Parameters<typeof createWorkerContextPackageFil
       {
         source: {
           kind: 'material',
-          reference: { scopeId: 'material/workspace/ws_00000000-0000-7990-bde7-4411160ea0db', objectId: 'mat_00000000-0000-7000-8000-0000000003f4' },
+          reference: {
+            scopeId: 'material/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+            objectId: 'mat_00000000-0000-7000-8000-0000000003f4',
+          },
           revisionId: 'mrev_00000000-0000-7000-8000-0000000003f8',
         },
         originalDigest: sha256(content),
         byteLength: Buffer.byteLength(content),
         mediaType: 'text/markdown',
         originalSnapshotPath,
-        packagePath: 'workspace/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f8.md',
+        packagePath:
+          'workspace/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f8.md',
         projection,
         deliveredBytes: Buffer.from(deliveredContent),
         async *open() {
@@ -2345,7 +2384,10 @@ describe('S39 one bound Material delivery path', () => {
     await writeWorkerContextPackageFiles(root, files, {
       admission: new FileStorageAdmission(root, () => 0n),
     });
-    const packageRoot = join(root, 'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package');
+    const packageRoot = join(
+      root,
+      'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package'
+    );
     expect(readFileSync(join(packageRoot, selected.packagePath), 'utf8')).toBe(
       input.materialSelections[0]!.deliveredContent
     );
@@ -2374,12 +2416,20 @@ describe('S39 one bound Material delivery path', () => {
         ? {
             source: {
               kind: 'material' as const,
-              reference: { scopeId: 'material/workspace/ws_00000000-0000-7990-bde7-4411160ea0db', objectId: 'mat_00000000-0000-7000-8000-0000000003f2' },
+              reference: {
+                scopeId: 'material/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+                objectId: 'mat_00000000-0000-7000-8000-0000000003f2',
+              },
               revisionId: 'mrev_00000000-0000-7000-8000-0000000003f8',
             },
           }
         : {}),
-      ...(change === 'path' ? { packagePath: 'workspace/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f6.md' } : {}),
+      ...(change === 'path'
+        ? {
+            packagePath:
+              'workspace/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f6.md',
+          }
+        : {}),
       ...(change === 'projection'
         ? { projection: { ...source.projection, representationId: 'other-representation' } }
         : {}),
@@ -2390,7 +2440,10 @@ describe('S39 one bound Material delivery path', () => {
         ? {
             source: {
               kind: 'artifact' as const,
-              reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db', objectId: 'mat_00000000-0000-7000-8000-0000000003f4' },
+              reference: {
+                scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+                objectId: 'mat_00000000-0000-7000-8000-0000000003f4',
+              },
               artifactVersion: 1,
             },
           }
@@ -2472,7 +2525,8 @@ describe('S39 complete derived representation publication', () => {
           ranges: [{ start: 0, end: preview.length }],
           truncated: true,
           availability: 'incomplete',
-          representationSnapshotPath: 'representations/artifacts/ar_00000000-0000-7000-8000-0000000003e9/1/text.txt',
+          representationSnapshotPath:
+            'representations/artifacts/ar_00000000-0000-7000-8000-0000000003e9/1/text.txt',
         },
         async *openRepresentation() {
           yield Buffer.from('wrong derived bytes');
@@ -2489,7 +2543,14 @@ describe('S39 complete derived representation publication', () => {
       await expect(writeWorkerContextPackageFiles(root, files, { admission })).rejects.toThrow(
         /digest mismatch/
       );
-      const packageRoot = join(root, 'threads', boundedInputs().threadId, 'turns', boundedInputs().turnId, 'context-package');
+      const packageRoot = join(
+        root,
+        'threads',
+        boundedInputs().threadId,
+        'turns',
+        boundedInputs().turnId,
+        'context-package'
+      );
       expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
       expect(existsSync(join(packageRoot, source.projection.representationSnapshotPath!))).toBe(
         false

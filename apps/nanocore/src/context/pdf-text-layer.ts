@@ -347,15 +347,20 @@ function runChild(sourcePath: string, limits: PdfTextLayerLimits, signal: AbortS
             )
           );
         try {
-          const result = z.object({
-            text: z.string(),
-            pages: PdfTextLayerEvidenceSchema.shape.pages,
-            totalPages: z.number().int().positive(),
-          }).parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(output))));
+          const result = z
+            .object({
+              text: z.string(),
+              pages: PdfTextLayerEvidenceSchema.shape.pages,
+              totalPages: z.number().int().positive(),
+            })
+            .parse(
+              JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(output)))
+            );
           if (
             Buffer.byteLength(result.text) > limits.maxOutputBytes ||
             result.pages.length !== Math.min(result.totalPages, limits.maxPages)
-          ) throw new ProcessorFailure('resource-limited');
+          )
+            throw new ProcessorFailure('resource-limited');
           resolve(result);
         } catch (error) {
           reject(error instanceof ProcessorFailure ? error : new ProcessorFailure('invalid-pdf'));
@@ -379,7 +384,11 @@ function digest(bytes: string): string {
 function validLimits(limits: PdfTextLayerLimits): boolean {
   return Object.entries(PDF_TEXT_LAYER_LIMITS).every(([key, ceiling]) => {
     const value = limits[key as keyof PdfTextLayerLimits];
-    return Number.isSafeInteger(value) && value > 0 && value <= ceiling &&
-      (key !== 'heapBytes' || value >= 1_048_576);
+    return (
+      Number.isSafeInteger(value) &&
+      value > 0 &&
+      value <= ceiling &&
+      (key !== 'heapBytes' || value >= 1_048_576)
+    );
   });
 }
