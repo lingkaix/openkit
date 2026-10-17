@@ -143,6 +143,7 @@ async function createLineageFixture() {
       foreignKnowledgeSource,
       foreignThread,
       foreignTurn,
+      foreignWorkspace,
       store,
     };
   } catch (error) {
