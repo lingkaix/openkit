@@ -4,7 +4,7 @@ import { KnowledgeAskResponseSchema, type KnowledgeRetrievalCandidate } from '@o
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import { z } from 'zod';
 import { runKnowledgeManagerAgent, type KnowledgeManagerAgentDependencies } from '../internal-agents/knowledge-manager-agent.js';
-import { internalContextDigest } from '../internal-agents/rolling-context.js';
+import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { createAssistantHistory } from '../internal-agents/assistant-history.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
@@ -13,6 +13,7 @@ import { admitKnowledgeRetrieval, knowledgeSourceAudienceReadable, readAuthorize
 import type { WorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { AuthorizedHistory } from './notebook-history.js';
 
 /** Trusted query context remains that of the asker, separate from the Knowledge Manager work Turn. */
 export interface KnowledgeAgentQuestion {
@@ -90,7 +91,7 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
     const { $schema: _schema, ...result } = z.toJSONSchema(value, { io: 'input' });
     return result;
   };
-  const tools = [
+  const tools: AgentTool[] = [
     {
       name: 'knowledge.retrieval', description: 'Search active pages in the admitted Workspace notebook. Read selected pages before citing them.',
       inputSchema: schema(searchSchema),
@@ -142,7 +143,7 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
       name: 'knowledge.notebook.history', description: 'Read bounded commit history of this fixed notebook base; history grants no publication authority.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       execute: async () => { assertCurrent(); return { content: [{ type: 'text' as const,
-        text: JSON.stringify(notebook.history({ revision: baseRevision, limit: 20 })) }] }; },
+        text: JSON.stringify(new AuthorizedHistory(notebook, dataRoot, input.workspaceId, access).history({ revision: baseRevision, limit: 20 })) }] }; },
     },
   ];
   const nativeAuthority = { actorRef: input.access.actor, assertCurrent };
