@@ -1041,6 +1041,7 @@ describe('worker inference routes', () => {
       if (mapped) {
         expect(coreRequests[0]?.body.openkit_runtime_hint).toEqual({
           runtimeFamily: 'codex',
+          requestKind: 'turn',
           nativeSessionId: 'native-session',
           nativeThreadId: 'native-thread',
           nativeCacheLineageId: 'private-cache',
