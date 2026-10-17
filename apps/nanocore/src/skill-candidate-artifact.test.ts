@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { type Actor, ensureLocalUser } from './auth/identity.js';
@@ -16,7 +17,6 @@ import {
   type SkillCandidateArtifactSelection,
 } from './skill-candidate-artifact.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -45,14 +45,14 @@ function fixture(body = JSON.stringify(tree)) {
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const userId = ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot }, userId);
   const workspaceId = store.listWorkspaces().find((workspace) => workspace.kind !== 'personal')!.id;
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: LOCAL_USER_ID });
-  const actor: Actor = { kind: 'session', userId: LOCAL_USER_ID };
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
+  const actor: Actor = { kind: 'session', userId };
   const selection: SkillCandidateArtifactSelection = {
     workspaceId,
-    artifactId: 'ar_candidate',
+    artifactId: allocateEntityId('ar'),
     version: 1,
     contentDigest: digest(body),
   };
@@ -74,7 +74,7 @@ function fixture(body = JSON.stringify(tree)) {
       sourceKind: 'direct-import',
       sourceId: 'import-candidate',
       sourceDigest: selection.contentDigest,
-      actor: { kind: 'user', id: LOCAL_USER_ID },
+      actor: { kind: 'user', id: userId },
       requestId: 'import-candidate',
       recordedAt: '2026-10-16T00:00:00Z',
     },
@@ -130,7 +130,7 @@ function workSource(
   const original = state.store.getArtifact(workspaceId, state.selection.artifactId);
   const artifact = state.store.createArtifact({
     ...original,
-    id: 'ar_work_candidate',
+    id: allocateEntityId('ar'),
     threadId: thread.id,
     turnId: turn.id,
     origin: {
@@ -201,7 +201,7 @@ describe('Skill Artifact source admission', () => {
   });
 
   it('does not disclose another private Thread even to a Workspace owner', () => {
-    const state = workSource(fixture(), 'user_other', 'ag_private');
+    const state = workSource(fixture(), allocateEntityId('usr'), 'ag_private');
     refuses(state, 'source_unavailable');
   });
 
@@ -228,14 +228,15 @@ describe('Skill Artifact source admission', () => {
 
   it('rejects a missing Artifact without revealing an identifier or bytes', () => {
     const state = fixture();
+    const missingArtifactId = allocateEntityId('ar');
     refuses(
-      { ...state, selection: { ...state.selection, artifactId: 'ar_missing' } },
+      { ...state, selection: { ...state.selection, artifactId: missingArtifactId } },
       'source_unavailable'
     );
     try {
       readSkillCandidateArtifact({
         ...state,
-        selection: { ...state.selection, artifactId: 'ar_missing' },
+        selection: { ...state.selection, artifactId: missingArtifactId },
       });
     } catch (error) {
       expect((error as Error).message).toBe('Skill Artifact is unavailable.');
