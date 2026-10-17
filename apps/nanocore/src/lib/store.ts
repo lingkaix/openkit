@@ -80,7 +80,12 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
-import { type CoreDb, openWorkspaceDbAtRoot, type WorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openWorkspaceDbAtRoot,
+  type UserDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import {
   ensureLayoutDirectories,
   ensureWorkspaceLayout,
@@ -1257,14 +1262,14 @@ export class FsStore {
    * @param command Stable command name.
    * @param requestId Caller-supplied idempotency id.
    * @param scope Non-secret command scope ids.
-   * @param commandDb Optional open Core or Workspace database for transaction-local reads.
+   * @param commandDb Optional open Core, User, Workspace or App database for owner-local reads.
    * @returns Matching command request record, or null.
    */
   public getCommandRequest(
     command: CommandRequestName,
     requestId: string,
     scope: CommandRequestScope,
-    commandDb?: CoreDb | WorkspaceDb | AppDb
+    commandDb?: CoreDb | UserDb | WorkspaceDb | AppDb
   ): CommandRequestRecord | null {
     const key = commandRequestKey(command, requestId, scope);
 
@@ -1285,12 +1290,12 @@ export class FsStore {
    * Records the resource pointer for a completed idempotent command.
    *
    * @param input Idempotency record input.
-   * @param commandDb Optional open Core or Workspace database for transaction-local writes.
+   * @param commandDb Optional open Core, User, Workspace or App database for owner-local writes.
    * @returns Persisted idempotency record.
    */
   public recordCommandRequest(
     input: CommandRequestRecordInput,
-    commandDb?: CoreDb | WorkspaceDb | AppDb
+    commandDb?: CoreDb | UserDb | WorkspaceDb | AppDb
   ): CommandRequestRecord {
     const createdAt = input.createdAt ?? now();
     const record: CommandRequestRecord = {
