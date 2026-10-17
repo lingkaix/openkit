@@ -30,7 +30,8 @@ import {
 import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
-import { SOURCE_PREVIEW_LIMITS } from '../context/bounded-source-view.js';
+import { openBoundedSourceView } from '../context/bounded-source-view.js';
+import { admitModelRequest, ModelRequestAdmissionError } from '../context/model-request-admission.js';
 import { prepareMaterialSourceInput } from '../context/material-source-files.js';
 import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
@@ -401,6 +402,7 @@ export async function prepareWorkerTurnContextPackage(
     queuedMaterialSelection = bindingCandidate;
   }
 
+  let knowledgeCandidates: NonNullable<ReturnType<typeof resolveWorkspaceKnowledgeRetrievalPages>> = [];
   const knowledgeSelections: WorkerContextPackageKnowledgeSelectionInput[] = [];
   const knowledgeExclusions: WorkerContextPackageKnowledgeExclusion[] = [];
   if (knowledgeSelectionInput) {
@@ -433,24 +435,7 @@ export async function prepareWorkerTurnContextPackage(
         503
       );
     }
-    for (const page of pages) {
-      // Keep the pinned canonical page within the independent preview allowance; model admission is separate.
-      const pageBytes = Buffer.byteLength(page.content, 'utf8');
-      if (
-        pageBytes > SOURCE_PREVIEW_LIMITS.bytes ||
-        page.content.split('\n', SOURCE_PREVIEW_LIMITS.lines + 2).length -
-          Number(page.content.endsWith('\n')) >
-          SOURCE_PREVIEW_LIMITS.lines
-      ) {
-        knowledgeExclusions.push({
-          contentDigest: page.contentDigest,
-          knowledgePageId: page.knowledgePageId,
-          reason: 'budget_exceeded',
-        });
-        continue;
-      }
-      knowledgeSelections.push(page);
-    }
+    knowledgeCandidates = pages;
   }
 
   const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
@@ -588,6 +573,64 @@ export async function prepareWorkerTurnContextPackage(
     refusal.cause = error;
     throw refusal;
   }
+  const assertCurrentKnowledge = () => {
+    if (!knowledgeSelectionInput) return;
+    const current = resolveWorkspaceKnowledgeRetrievalPages({
+      caller: 'task-mode',
+      dataRoot: workspaceDb.dataRoot,
+      access: { store, coreDb: coreDb ?? undefined, actor: turn.triggerActor,
+        outputThreadId: input.threadId, outputTurnId: input.turnId },
+      retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
+      workspaceId: input.workspaceId,
+    });
+    if (!current || !isDeepStrictEqual(current, knowledgeCandidates))
+      throw new TurnStartValidationError('source_unavailable', 'Selected Knowledge is unavailable.', 503);
+  };
+  assertCurrentKnowledge();
+  for (const page of knowledgeCandidates) {
+    const original = Buffer.from(page.content, 'utf8');
+    const view = await openBoundedSourceView({
+      identity: { sourceKey: `${page.reference.scopeId}/${page.knowledgePageId}`,
+        revision: page.notebookRevision, originalDigest: page.contentDigest,
+        representationId: 'original-utf8', representationDigest: page.contentDigest },
+      byteLength: original.byteLength,
+      read: async (offset, maximum, signal) => {
+        signal.throwIfAborted();
+        return original.subarray(offset, offset + maximum);
+      },
+      assertUnchanged: (signal) => { signal.throwIfAborted(); assertCurrentKnowledge(); },
+    }, { maxRepresentationBytes: 32 * 1024 * 1024, timeoutMs: 30_000, maxEnvelopeBytes: 65_536 });
+    const preview = view.status === 'ready' ? await view.preview() : view;
+    if (preview.status !== 'ready')
+      throw new TurnStartValidationError('source_unavailable', 'Selected Knowledge is unavailable.', 503);
+    const delivered = Buffer.from(preview.text);
+    const selected: WorkerContextPackageKnowledgeSelectionInput = {
+      ...page, deliveredContent: preview.text,
+      projection: {
+        kind: preview.truncated ? 'excerpt' : 'body', sourceRevision: page.notebookRevision,
+        representationId: 'original-utf8', representationDigest: page.contentDigest,
+        representationByteLength: original.byteLength,
+        deliveredDigest: `sha256:${createHash('sha256').update(delivered).digest('hex')}`,
+        ranges: [{ start: preview.range.start, end: preview.range.end }], byteLength: delivered.byteLength,
+        truncated: preview.truncated, availability: preview.truncated ? 'incomplete' : 'available',
+      },
+    };
+    try {
+      // Package selection estimates its text allowance. The final physical Provider callback admits the actual request.
+      admitModelRequest({
+        payload: { request: input.workerRequest,
+          materials: materialSelections.map((entry) => entry.deliveredContent ?? entry.content),
+          sources: sourceFiles.map((entry) => Buffer.from(entry.deliveredBytes).toString('utf8')),
+          knowledge: [...knowledgeSelections, selected].map((entry) => entry.deliveredContent) },
+        contextWindowTokens: contextBudgetTokens,
+      });
+      knowledgeSelections.push(selected);
+    } catch (error) {
+      if (!(error instanceof ModelRequestAdmissionError) || error.code !== 'internal_agent_context_exceeded') throw error;
+      knowledgeExclusions.push({ contentDigest: page.contentDigest,
+        knowledgePageId: page.knowledgePageId, reason: 'budget_exceeded' });
+    }
+  }
   const includedItemIds = [workerRequestItemId, ...includedPriorItems.map((item) => item.id)];
   const packageFiles = createWorkerContextPackageFiles({
     sourceFiles,
@@ -610,6 +653,7 @@ export async function prepareWorkerTurnContextPackage(
     'context-package'
   );
   await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
+  assertCurrentKnowledge();
   assertCurrentSources();
   for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);
   return {

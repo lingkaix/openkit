@@ -1,13 +1,13 @@
 ---
 status: Accepted
 date: "2026-10-17"
-decider: Coordinator, under delegated fallback
+decider: L-AW, under the coordinator-unavailable delegated rule
 ---
 # Local Estimate For Worker Text Packages
 
 ## Decision
 
-At 05:19:15 UTC, the coordinator adopted the delegated fallback for the Worker text budget question recorded at 05:04 UTC. Use approximate local estimation for Worker text package allowances. [Worker Context Package](../specs/20260703-worker_context_package.md#knowledge-selections) owns this rule. Reuse the existing local estimate and final physical-route complete-request callback. Keep independent byte caps, output reserve, raw-output limits and current authorization. Add no tokenizer framework, remote count call, accounting mode or refusal solely because exact accounting is unavailable. This record reports the coordinator's delegated fallback; it does not attribute that fallback to a new explicit engineer ruling.
+At 05:19:15 UTC, lane L-AW adopted the fallback under the coordinator-unavailable delegated rule for the Worker text budget question recorded at 05:04 UTC. Use approximate local estimation for Worker text package allowances. [Worker Context Package](../specs/20260703-worker_context_package.md#knowledge-selections) owns this rule. Reuse the existing local estimate and final physical-route complete-request callback. Keep independent byte caps, output reserve, raw-output limits and current authorization. Add no tokenizer framework, remote count call, accounting mode or refusal solely because exact accounting is unavailable. The coordinator did not answer or adopt this fallback. This record reports the lane's decision under the delegated rule; it does not attribute that decision to a new explicit engineer ruling.
 
 Package allowances decide which bounded representations to include. They do not prove a token upper bound or physical model fit. The final callback estimates the complete actual Provider request, after transport overlays and native continuity, with its actual output reserve against the selected physical context capacity. A preview alone proves no complete-request fit. The earlier internal-only estimate decision retains its recorded scope.
 

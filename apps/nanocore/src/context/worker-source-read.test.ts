@@ -183,3 +183,35 @@ it('refuses a stale cursor, cancellation and revocation before disclosure withou
     reason: 'unavailable',
   });
 });
+
+it('continues exact selected Notebook bytes and withholds all output after canonical read revocation', async () => {
+  const bytes = Buffer.from('界'.repeat(40_000));
+  let admitted = true;
+  const readKnowledge = vi.fn(() => {
+    if (!admitted) throw new Error('Current Knowledge read denied.');
+    return bytes.toString();
+  });
+  const input = {
+    workspaceRoot: '/unused', workspaceId: allocateEntityId('ws'),
+    threadId: allocateEntityId('th'), turnId: allocateEntityId('tu'), assertCurrent: () => {}, readKnowledge,
+    knowledge: {
+      knowledgePageId: 'pinned', notebookRevision: 'selected-notebook-commit',
+      contentDigest: digest(bytes), sourceRefs: [], packagePath: 'knowledge/pages/pinned.md',
+      projection: { kind: 'excerpt' as const, sourceRevision: 'selected-notebook-commit',
+        representationId: 'original-utf8', representationDigest: digest(bytes), representationByteLength: bytes.length,
+        deliveredDigest: digest(bytes.subarray(0, 2046)), ranges: [{ start: 0, end: 2046 }],
+        byteLength: 2046, truncated: true, availability: 'incomplete' as const },
+    },
+  };
+  const preview = await readWorkerSourceSnapshot(input);
+  if (preview.status !== 'ready' || !preview.cursor) throw new Error('Expected pinned preview.');
+  expect(preview.text).toBe('界'.repeat(682));
+  const continued = await readWorkerSourceSnapshot({ ...input, mode: 'read', cursor: preview.cursor });
+  expect(continued).toMatchObject({ status: 'ready', range: { start: 2046 } });
+  if (continued.status !== 'ready') throw new Error('Expected continuation.');
+  expect(continued.identity.revision).toBe('selected-notebook-commit');
+  expect(continued.text).not.toContain('\ufffd');
+  admitted = false;
+  expect(await readWorkerSourceSnapshot({ ...input, mode: 'read', cursor: preview.cursor }))
+    .toEqual({ status: 'unavailable', reason: 'unavailable' });
+});

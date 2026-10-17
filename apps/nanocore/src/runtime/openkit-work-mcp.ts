@@ -180,7 +180,7 @@ export const OPENKIT_WORK_TOOLS = [
   {
     name: 'work_read_source',
     description:
-      'Preview or read one source from this Turn Context Package. Use its exact inventory packagePath as path. Preview is at most 2048 UTF-8 bytes or 50 lines; read is at most 51200 bytes or 2000 lines, also bounded by the complete result envelope. Continue with mode read and the returned cursor. EOF describes the named representation only; PDF coverage may be incomplete. No host path or unselected source is accepted.',
+      'Preview or read one selected source or Knowledge page from this Turn Context Package. Use its exact sourceFiles or knowledgeSelections packagePath as path. Knowledge reads stay pinned to the selected Notebook commit and current source access. Preview is at most 2048 UTF-8 bytes or 50 lines; read is at most 51200 bytes or 2000 lines, also bounded by the complete result envelope. Continue with mode read and the returned cursor. EOF describes the named representation only; PDF coverage may be incomplete. No host path or unselected source is accepted.',
     inputSchema: mcpInputSchema(WorkReadSourceArgsSchema),
   },
   {
@@ -441,8 +441,10 @@ async function searchSource(
     });
   try {
     const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    if (!selected.source) throw new Error('Selected PDF is unavailable.');
     const projection = await searchPdfSourceSnapshot({
       ...selected,
+      source: selected.source,
       dataRoot: input.workspaceDb.dataRoot,
       query: { mode: parsed.data.mode, query: parsed.data.query, limit: parsed.data.limit },
       ...(input.signal ? { signal: input.signal } : {}),

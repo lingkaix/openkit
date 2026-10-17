@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { type BigIntStats, constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -14,6 +15,7 @@ import {
   isThreadVisible,
 } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
+import { readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -34,6 +36,7 @@ import {
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   readWorkerContextPackageTrace,
+  type WorkerContextPackageKnowledgeSelection,
   type WorkerContextPackageSourceFile,
 } from './worker-context-package.js';
 
@@ -93,7 +96,7 @@ export function resolveCurrentWorkerSource(
     const destination = input.store.getThread(scope.workspaceId, scope.threadId);
     if (!isThreadVisible(input.store, destination, userId, administrator))
       throw new Error('Current source read audience is unavailable.');
-    if (!source) return;
+    if (!source) return admission;
     const referenceScope = parseReferenceScope(source.source.reference.scopeId);
     if (
       !referenceScope ||
@@ -143,6 +146,7 @@ export function resolveCurrentWorkerSource(
       )
         throw new Error('Current source destination is unavailable.');
     }
+    return admission;
   };
   admit();
   const workspaceRoot = resolveDataRootPath(
@@ -163,10 +167,32 @@ export function resolveCurrentWorkerSource(
   )
     throw new Error('Current source package is unavailable.');
   const source = trace.sourceFiles?.find((entry) => entry.packagePath === inventoryPath);
-  if (!source) throw new Error('Selected source is unavailable.');
+  const knowledge = trace.knowledgeSelections.find((entry) => entry.packagePath === inventoryPath);
+  if ((!source && !knowledge) || (source && knowledge)) throw new Error('Selected source is unavailable.');
+  const readKnowledge = () => {
+    const admission = admit();
+    if (!knowledge?.notebookRevision || !knowledge.projection ||
+      knowledge.projection.sourceRevision !== knowledge.notebookRevision ||
+      knowledge.projection.representationId !== 'original-utf8')
+      throw new Error('Selected Knowledge is unavailable.');
+    const selected = readAuthorizedWorkspaceNotebookPages({
+      dataRoot: input.workspaceDb.dataRoot, workspaceId: scope.workspaceId,
+      notebookRevision: knowledge.notebookRevision, pageIds: [knowledge.knowledgePageId],
+      access: { store: input.store, coreDb: input.coreDb, actor: admission.triggerActor,
+        outputThreadId: scope.threadId, outputTurnId: scope.turnId },
+    });
+    const page = selected.pages[0];
+    if (selected.notebookRevision !== knowledge.notebookRevision || !page || page.contentDigest !== knowledge.contentDigest)
+      throw new Error('Selected Knowledge is unavailable.');
+    return page.content;
+  };
   admit(source);
+  if (knowledge) readKnowledge();
   return {
     source,
+    knowledge,
+    workspaceId: scope.workspaceId,
+    readKnowledge: knowledge ? readKnowledge : undefined,
     workspaceRoot,
     packageRoot: join(
       workspaceRoot,
@@ -189,9 +215,13 @@ export function resolveCurrentWorkerSource(
  */
 export async function readWorkerSourceSnapshot(input: {
   readonly workspaceRoot: string;
+  readonly workspaceId?: string | undefined;
   readonly threadId: string;
   readonly turnId: string;
-  readonly source: WorkerContextPackageSourceFile;
+  readonly source?: WorkerContextPackageSourceFile | undefined;
+  readonly knowledge?: WorkerContextPackageKnowledgeSelection | undefined;
+  /** Private canonical pinned reader supplied only after current Worker and selection admission. */
+  readonly readKnowledge?: (() => string) | undefined;
   readonly assertCurrent: () => void;
   readonly mode?: 'preview' | 'read' | undefined;
   readonly cursor?: SourceViewCursor | undefined;
@@ -200,6 +230,8 @@ export async function readWorkerSourceSnapshot(input: {
   try {
     input.signal?.throwIfAborted();
     input.assertCurrent();
+    if (input.knowledge) return await readKnowledgeSelection(input);
+    if (!input.source) return unavailable('unavailable');
     const source = structuredClone(input.source);
     const projection = source.projection;
     if (projection.kind === 'descriptor' || projection.availability === 'unavailable')
@@ -337,4 +369,39 @@ function sameFile(before: BigIntStats, after: BigIntStats): boolean {
 /** No source name, digest, body or cursor is published on refusal. */
 function unavailable(reason: SourceViewUnavailableReason): SourceViewUnavailable {
   return { status: 'unavailable', reason };
+}
+
+/**
+ * Reads an already selected Notebook representation through the existing canonical authorization callback.
+ * @param input Exact accepted selection, pinned reader and current Worker admission.
+ * @returns A bounded selected page or a content-free refusal.
+ */
+async function readKnowledgeSelection(input: Parameters<typeof readWorkerSourceSnapshot>[0]): Promise<WorkerSourceReadResult> {
+  const selected = input.knowledge!;
+  const projection = selected.projection;
+  if (!projection || !selected.notebookRevision || !input.workspaceId || !input.readKnowledge ||
+    projection.kind === 'descriptor' || projection.availability === 'unavailable')
+    return unavailable('unavailable');
+  if (input.cursor && input.mode !== 'read') return unavailable('invalid_request');
+  const bytes = Buffer.from(input.readKnowledge());
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  if (digest !== selected.contentDigest || projection.representationDigest !== digest ||
+    projection.representationByteLength !== bytes.length || projection.sourceRevision !== selected.notebookRevision)
+    return unavailable('corrupt');
+  const extra = { sourceByteLength: bytes.length, coverage: { kind: 'original-utf8' as const, complete: true as const } };
+  const view = await openBoundedSourceView({
+    identity: { sourceKey: `page/workspace/${input.workspaceId}/${selected.knowledgePageId}`,
+      revision: selected.notebookRevision, originalDigest: digest,
+      representationId: 'original-utf8', representationDigest: digest },
+    byteLength: bytes.length,
+    read: async (offset, maximum, signal) => { signal.throwIfAborted(); return bytes.subarray(offset, offset + maximum); },
+    assertUnchanged: (signal) => { signal.throwIfAborted(); input.assertCurrent(); },
+  }, { maxRepresentationBytes: 32 * 1024 * 1024, timeoutMs: 30_000,
+    maxEnvelopeBytes: 65_536 - Buffer.byteLength(JSON.stringify(extra)) }, input.signal);
+  if (view.status !== 'ready') return view;
+  const page = input.mode === 'read' ? await view.read(input.cursor, input.signal) : await view.preview(input.signal);
+  // Re-open only the exact selected commit under fresh source and destination admission before disclosure.
+  if (input.readKnowledge() !== bytes.toString('utf8')) return unavailable('stale');
+  input.assertCurrent();
+  return page.status === 'ready' ? { ...page, ...extra } : page;
 }
