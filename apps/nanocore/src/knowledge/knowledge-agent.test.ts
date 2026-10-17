@@ -708,7 +708,7 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
   );
   expect(traces).toHaveLength(1);
   expect(traces[0]!.trace).toMatchObject({
-    caller: 'worker',
+    caller: 'task-mode',
     queryContext: { threadId: thread.id, turnId: turn.id },
     selected: [],
   });
