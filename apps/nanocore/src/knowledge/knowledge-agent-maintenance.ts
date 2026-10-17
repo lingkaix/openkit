@@ -715,6 +715,12 @@ export function prepareKnowledgeMaintenance(
           items,
           strategy: 'compaction',
         }),
+      resultSchema: {
+        type: 'object',
+        properties: { summary: { type: 'string', minLength: 1 } },
+        required: ['summary'],
+        additionalProperties: false,
+      },
       validateResult: () => {
         assertCurrent();
         if (!outcome) throw new NotebookError('invalid_request');

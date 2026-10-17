@@ -116,6 +116,8 @@ Worker `knowledge.tell` remains Workspace-only. A user, or the Assistant on that
 
 ### Query and maintenance execution
 
+A run submits its final answer or maintenance result through `knowledge.result`, whose input schema is validated by the shared Tool loop. Plain model text is not a result. One invalid output permits at most one repair response within the original model-call, Tool-call and absolute deadline budgets. A failed query returns the typed `knowledge_query_failed` refusal and its retained Thread and Turn references; it does not return an unclassified HTTP 500. Maintenance success still requires an accepted notebook publication, proposal or no-change outcome; a result Tool cannot authorize publication.
+
 A query run receives bounded Retrieval Kernel search, page, Source and history reads. It may synthesize an answer but cannot mutate notebook content or acquire publication Tools from message text. Each Tool call applies the asker's current scope, source and audience checks. A separate admitted `draft-proposal` entry may create a pending candidate through the existing Proposal owner. It receives those reads and `knowledge.change.propose`, never notebook publication Tools.
 
 `knowledge.ask` and `knowledge.tell` are the canonical operation IDs. Their model-visible names are `knowledge_ask` and `knowledge_tell`, derived only by replacing dots with underscores. Worker MCP, native internal Tools and Server MCP use that same projection without hand-written aliases. Words within a canonical segment use hyphens, as in `knowledge.notebook-workspace.update`.
