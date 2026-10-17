@@ -400,8 +400,19 @@ describe('SimulatedTurnExecutor', () => {
   it('reuses one compatible current AgentSession across sequential simulator Turns', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new SimulatedTurnExecutor({ coreDb });
+    const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
+    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
+    // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
+    const completions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    let nextExecution = 0;
+    const startTurn = executor.startTurn.bind(executor);
+    const executions = vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      const completion = startTurn(...args);
+      completions[nextExecution++]?.resolve(completion);
+      return completion;
+    });
     const app = createApp({
+      fileAdmission,
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -441,6 +452,7 @@ describe('SimulatedTurnExecutor', () => {
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
+      await completions[0].promise;
       await vi.waitFor(() => {
         expect(store.getTurnById(first.turn.id).status).toBe('completed');
         expect(
@@ -482,6 +494,7 @@ describe('SimulatedTurnExecutor', () => {
       const secondBody = await secondResponse.clone().text();
       expect.soft(secondResponse.status, secondBody).toBe(202);
       const acceptedSecond = StartTaskModeResponseSchema.parse(JSON.parse(secondBody));
+      await completions[1].promise;
       await vi.waitFor(() =>
         expect(store.getTurnById(acceptedSecond.turn.id).status).toBe('completed')
       );
@@ -514,6 +527,7 @@ describe('SimulatedTurnExecutor', () => {
       expect.soft(new Set(leases.map((lease) => lease.leaseId)).size).toBe(2);
       expect.soft(new Set(leases.map((lease) => lease.turnId)).size).toBe(2);
     } finally {
+      executions.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -523,7 +537,17 @@ describe('SimulatedTurnExecutor', () => {
     const imageRefB = 'openkit/worker-codex:image-b';
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new SimulatedTurnExecutor({ coreDb });
+    const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
+    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
+    // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
+    const completions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    let nextExecution = 0;
+    const startTurn = executor.startTurn.bind(executor);
+    const executions = vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      const completion = startTurn(...args);
+      completions[nextExecution++]?.resolve(completion);
+      return completion;
+    });
     const providerRegistry = new ProviderRegistry([
       {
         defaultModel: 'openai/gpt-5.2',
@@ -534,6 +558,7 @@ describe('SimulatedTurnExecutor', () => {
       },
     ]);
     const firstApp = createApp({
+      fileAdmission,
       agentManifests: [createTestAgentSetup({ imageRef: imageRefA }).manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -543,6 +568,7 @@ describe('SimulatedTurnExecutor', () => {
       turnExecutor: executor,
     });
     const secondApp = createApp({
+      fileAdmission,
       agentManifests: [createTestAgentSetup({ imageRef: imageRefB }).manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -574,6 +600,7 @@ describe('SimulatedTurnExecutor', () => {
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
+      await completions[0].promise;
       await vi.waitFor(() => {
         expect(store.getTurnById(first.turn.id).status).toBe('completed');
         expect(
@@ -632,6 +659,7 @@ describe('SimulatedTurnExecutor', () => {
         const secondBody = await secondResponse.clone().text();
         expect.soft(secondResponse.status, secondBody).toBe(202);
         const acceptedSecond = StartTaskModeResponseSchema.parse(JSON.parse(secondBody));
+        await completions[1].promise;
         await vi.waitFor(() =>
           expect(store.getTurnById(acceptedSecond.turn.id).status).toBe('completed')
         );
@@ -728,6 +756,7 @@ describe('SimulatedTurnExecutor', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      executions.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -743,7 +772,19 @@ describe('SimulatedTurnExecutor', () => {
       () => configuredReserve,
       () => capacity
     );
-    const executions = vi.spyOn(SimulatedTurnExecutor.prototype, 'startTurn');
+    type StartedExecution = { turnId: string; completion: Promise<void> };
+    let notifyStartedExecution!: (execution: StartedExecution) => void;
+    const startedExecution = new Promise<StartedExecution>((resolve) => {
+      notifyStartedExecution = resolve;
+    });
+    const startTurn = SimulatedTurnExecutor.prototype.startTurn;
+    const executions = vi
+      .spyOn(SimulatedTurnExecutor.prototype, 'startTurn')
+      .mockImplementation(function (this: SimulatedTurnExecutor, ...args) {
+        const completion = startTurn.apply(this, args);
+        notifyStartedExecution({ turnId: args[1], completion });
+        return completion;
+      });
     const publisher = SimulatedTurnExecutor.prototype as unknown as MaterialProposalPublisher;
     const publish = publisher.publishMaterialProposals;
     let admissionProof: Promise<void> | undefined;
@@ -1043,7 +1084,10 @@ describe('SimulatedTurnExecutor', () => {
       const turnBody = await turnResponse.json();
       expect(turnResponse.status, JSON.stringify(turnBody)).toBe(202);
       const task = StartTaskModeResponseSchema.parse(turnBody);
-      await vi.waitFor(() => expect(admissionProof).toBeDefined());
+      const execution = await startedExecution;
+      expect(execution.turnId).toBe(task.turn.id);
+      await execution.completion;
+      expect(admissionProof).toBeDefined();
       await admissionProof;
       await vi.waitFor(() => expect(store.getTurnById(task.turn.id).status).toBe('completed'));
       const workerTurn = store.getTurnById(task.turn.id);
@@ -1377,12 +1421,12 @@ describe('SimulatedTurnExecutor', () => {
         deliveredDb.sqlite.close();
       }
     } finally {
-      publication.mockRestore();
       await Promise.allSettled(
         executions.mock.results
           .filter((result) => result.type === 'return')
           .map((result) => result.value)
       );
+      publication.mockRestore();
       // Let the scheduler's already-attached completion observer settle before closing its database.
       await new Promise<void>((resolve) => setImmediate(resolve));
       executions.mockRestore();

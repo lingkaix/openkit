@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   constants,
   copyFileSync,
   existsSync,
@@ -7,6 +8,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -141,7 +143,12 @@ import {
 import { assertWorkspaceDeletionRecoveryExportAuthority } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import type { FileStorageAdmission } from './artifacts/file-admission.js';
 import { verifyArtifactFilePayload } from './artifacts/file-records.js';
+import {
+  reserveCanonicalFileWrite,
+  withCanonicalFileWriteAdmission,
+} from './canonical-write-capacity.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -971,7 +978,22 @@ export function importVerifiedWorkspace({
       assertWorkspaceArchiveFilePath(path);
       const target = join(workspaceRoot, path);
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(source, target, constants.COPYFILE_EXCL);
+      const byteLength = lstatSync(source).size;
+      const reservation = reserveCanonicalFileWrite(byteLength);
+      let release = false;
+      try {
+        copyFileSync(source, target, constants.COPYFILE_EXCL);
+        reservation?.recordWritten(byteLength);
+        if (/^threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\//.test(path))
+          chmodSync(target, 0o444);
+        release = true;
+      } catch (error) {
+        rmSync(target, { force: true });
+        release = true;
+        throw error;
+      } finally {
+        if (release) reservation?.release();
+      }
     }
     for (const artifact of snapshot.artifacts) {
       if (artifact.content.format !== 'file') continue;
@@ -1545,11 +1567,13 @@ export function registerWorkspaceTransferRoutes({
   app,
   coreDb,
   dataRoot,
+  fileAdmission,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
+  readonly fileAdmission: FileStorageAdmission;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'workspace.archive-download', (c) => {
@@ -1618,7 +1642,7 @@ export function registerWorkspaceTransferRoutes({
 
     let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
     try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot);
+      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
       const store = requestStore(c);
       const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
       if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
@@ -1667,7 +1691,7 @@ export function registerWorkspaceTransferRoutes({
 
     let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
     try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot);
+      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
       const store = requestStore(c);
       const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
       if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
@@ -1678,14 +1702,16 @@ export function registerWorkspaceTransferRoutes({
         );
       }
       return c.json(
-        importVerifiedWorkspace({
-          authorityUserId: c.get('actor').userId,
-          coreDb,
-          dataRoot,
-          requestId,
-          store,
-          verified,
-        })
+        withCanonicalFileWriteAdmission(fileAdmission, () =>
+          importVerifiedWorkspace({
+            authorityUserId: c.get('actor').userId,
+            coreDb,
+            dataRoot,
+            requestId,
+            store,
+            verified,
+          })
+        )
       );
     } catch {
       return asApiError(

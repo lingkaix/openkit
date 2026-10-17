@@ -13,6 +13,7 @@ import { dirname, join, posix } from 'node:path';
 import { Readable, Transform, type TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createZstdDecompress } from 'node:zlib';
+import type { FileStorageAdmission, FileStorageReservation } from './artifacts/file-admission.js';
 
 /** Canonical media type for portable Workspace archives. */
 export const WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE =
@@ -188,6 +189,7 @@ function writeAll(fileDescriptor: number, bytes: Buffer): void {
 /** Strict streaming tar extractor for one private request staging root. */
 class WorkspaceTarExtractTransform extends Transform {
   private currentFile: number | null = null;
+  private currentReservation: FileStorageReservation | undefined;
   private currentPadding = 0;
   private currentRemaining = 0;
   private ended = false;
@@ -198,7 +200,10 @@ class WorkspaceTarExtractTransform extends Transform {
   private readonly casePaths = new Set<string>();
   private zeroBlocks = 0;
 
-  public constructor(private readonly exportRoot: string) {
+  public constructor(
+    private readonly exportRoot: string,
+    private readonly admission: FileStorageAdmission
+  ) {
     super();
   }
 
@@ -249,6 +254,12 @@ class WorkspaceTarExtractTransform extends Transform {
     }
   }
 
+  /** Releases a failed entry only after its exclusively owned staging tree was removed. */
+  public releaseUnusedReservation(): void {
+    this.currentReservation?.release();
+    this.currentReservation = undefined;
+  }
+
   private consume(): void {
     while (this.pending.length > 0) {
       if (this.ended) {
@@ -264,11 +275,15 @@ class WorkspaceTarExtractTransform extends Transform {
         if (this.currentFile === null) {
           throw new Error('Workspace archive lost its staging file owner.');
         }
+        this.currentReservation!.assertAvailable();
         writeAll(this.currentFile, this.pending.subarray(0, length));
+        this.currentReservation!.recordWritten(length);
         this.pending = this.pending.subarray(length);
         this.currentRemaining -= length;
         if (this.currentRemaining === 0) {
+          this.currentReservation!.assertAvailable();
           this.closeCurrentFile();
+          this.releaseUnusedReservation();
         }
         continue;
       }
@@ -300,6 +315,16 @@ class WorkspaceTarExtractTransform extends Transform {
     }
   }
 
+  /** Reserves the full declared entry plus bounded filesystem overhead against other requests. */
+  private reserveEntry(size: number): FileStorageReservation {
+    return this.admission.reserve({
+      stagingBytes: 0n,
+      extractionBytes: BigInt(size),
+      derivativeBytes: 0n,
+      publicationBytes: 65_536n,
+    });
+  }
+
   private startEntry(header: Buffer): void {
     verifyTarHeader(header);
     this.entries += 1;
@@ -325,12 +350,18 @@ class WorkspaceTarExtractTransform extends Transform {
       if (size !== 0) {
         throw new Error('Workspace archive directory contains a body.');
       }
+      this.currentReservation = this.reserveEntry(0);
       mkdirSync(join(this.exportRoot, path), { recursive: true, mode: 0o700 });
+      this.currentReservation.assertAvailable();
+      this.releaseUnusedReservation();
       return;
     }
     if (size > MAX_FILE_BYTES) {
       throw new Error('Workspace archive file exceeds its byte limit.');
     }
+    this.currentReservation = this.reserveEntry(size);
+    // Retain this forecast if open/write fails until the request tree is removed.
+    this.currentRemaining = size;
     const target = join(this.exportRoot, path);
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
     this.currentFile = openSync(
@@ -338,10 +369,11 @@ class WorkspaceTarExtractTransform extends Transform {
       constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
       0o600
     );
-    this.currentRemaining = size;
     this.currentPadding = (512 - (size % 512)) % 512;
     if (size === 0) {
+      this.currentReservation.assertAvailable();
       this.closeCurrentFile();
+      this.releaseUnusedReservation();
     }
   }
 }
@@ -351,11 +383,13 @@ class WorkspaceTarExtractTransform extends Transform {
  *
  * @param request Archive upload request.
  * @param dataRoot Canonical target data root.
+ * @param admission Existing App-owned capacity admission, including concurrent file reservations.
  * @returns Owned staging handle whose caller must remove in a finally block.
  */
 export async function stageWorkspaceArchive(
   request: Request,
-  dataRoot: string
+  dataRoot: string,
+  admission: FileStorageAdmission
 ): Promise<StagedWorkspaceArchive> {
   if (request.headers.get('content-type') !== WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE) {
     throw new Error('Workspace archive media type is invalid.');
@@ -381,17 +415,19 @@ export async function stageWorkspaceArchive(
   mkdirSync(exportRoot, { mode: 0o700 });
   const remove = () => rmSync(requestRoot, { force: true, recursive: true });
 
+  const extractor = new WorkspaceTarExtractTransform(exportRoot, admission);
   try {
     await pipeline(
       Readable.fromWeb(request.body as never),
       new ByteLimitTransform(MAX_COMPRESSED_BYTES),
       createZstdDecompress(),
       new ByteLimitTransform(MAX_EXPANDED_BYTES),
-      new WorkspaceTarExtractTransform(exportRoot)
+      extractor
     );
     return { exportRoot, remove };
   } catch (error) {
     remove();
+    extractor.releaseUnusedReservation();
     throw error;
   }
 }

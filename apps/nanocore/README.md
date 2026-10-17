@@ -586,6 +586,8 @@ The native join uses the existing Retrieval Kernel for admitted saved Pages and 
 
 The Host effect producer fixture, definition-derived Worker lifecycle cases, native-restart preservation family, Notebook reversal fixture, reasoning-effort admission/replay family, Worker Skill snapshot setup hook, retained Thread publication-capacity fixture and original file handoff family use local 60-second test runner limits for their real Git, SQLite and transport setup. They verify exact fixture, capture, replay and outcome behavior. Product operation deadlines and these assertions remain unchanged. The canonical-write capacity fixture seeds through the Notebook publisher and verifies record persistence preserves exact published page bytes, digest and commit; the other capacity-refusal cases retain their existing write owners.
 
+Selected PDF text-layer extraction uses the packaged `pdfjs-dist` dependency in a short-lived Node child on both the host and containers. The child has bounded input, pages, text, heap and wall time, an explicit environment without inherited secrets, and no native text-extractor fallback. The [Context guide](src/context/README.md) describes provenance and focused checks.
+
 `skill-candidate-artifact.ts` admits exact current JSON Artifacts from retained inline content or file-backed `application/json` originals. Native parsing reads the verified no-follow original within the existing 64 MiB JSON framing bound, then applies the separate 16 MiB Skill tree bound. It preserves the retained version, digest, producer and current source/destination checks without copying original bytes into model context. Material text processing retains its independent 16 MiB cap.
 
 ### Exact Artifact Review feedback and choices
