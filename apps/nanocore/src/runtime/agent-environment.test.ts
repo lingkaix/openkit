@@ -1143,7 +1143,10 @@ describe('agent environment package resolver', () => {
         producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n',
+              'utf8'
+            ).toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },
@@ -1196,7 +1199,10 @@ describe('agent environment package resolver', () => {
         producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# v1\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# v1\n',
+              'utf8'
+            ).toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },
@@ -1220,7 +1226,10 @@ describe('agent environment package resolver', () => {
         producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# v2\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# v2\n',
+              'utf8'
+            ).toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },

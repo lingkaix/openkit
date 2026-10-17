@@ -460,3 +460,9 @@ New API-key Provider profiles allocate one canonical Vault reference through the
 The Web end-to-end suite runs with one worker to keep the shared development machine within its test resource bound. The root test:e2e:web command builds and runs the complete suite.
 
 The local Web E2E simulator image fixture reuses its recorded Artifact identity for the same request and allocates canonical ar UUIDv7 only for a new settlement.
+
+Catalog Skill pin, candidate decision and default-version selection commands retain the exact observed pin or current digest together with the catalog revision. The native catalog owner checks those values before changing a pointer; a refreshed view does not authorize a stale selection.
+
+Catalog Skill history reads exact retained provenance and file inventory, previews or downloads exact file bytes, compares versions, and checks the original source for updates. Removal retains history and blocks future selection; permanent version-byte deletion has an explicit confirmation and remains subject to Core retention checks. Candidate submitters can withdraw their own proposals. All commands use the observed catalog revision and selected Workspace.
+
+Skill history hides retained versions, file previews, downloads and comparisons when the current read fails. Removal and byte deletion disable another attempt after an error and offer read-only inspection; a lost or invalid response is an unknown result. Inventory comparisons show each file path, size and digest.

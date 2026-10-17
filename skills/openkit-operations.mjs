@@ -14,6 +14,11 @@ import * as appSchemas from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { AccessTokenIdSchema, UserIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { acquireLocalEcosystemSkill } from '../apps/nanocore/dist/catalog/skill-local-source.js';
+import {
+  parseSkillImportSource,
+  SkillSourceInputError,
+} from '../apps/nanocore/dist/catalog/skill-source.js';
 import { isValidCredentialDestination } from './openkit-secrets.mjs';
 
 const EMPTY_INPUT = z.object({}).strict();
@@ -432,6 +437,23 @@ export const operationCatalog = [
     inputSchema: strictShared(definition.inputSchema),
     outputSchema: definition.outputSchema,
     handler: async ({ client }, input) => {
+      if (id === 'catalog.skill-import' && typeof input.source === 'string') {
+        try {
+          const source = parseSkillImportSource(input.source);
+          if (source.kind === 'local') {
+            const { tree } = acquireLocalEcosystemSkill({
+              path: source.path,
+              ...(input.sourceSubpath === undefined ? {} : { subpath: input.sourceSubpath }),
+              ...(input.sourceSkillName === undefined ? {} : { skillName: input.sourceSkillName }),
+            });
+            input = { ...bodyWithout(input, 'source', 'sourceSubpath', 'sourceSkillName'), tree };
+          }
+        } catch (error) {
+          if (error instanceof SkillSourceInputError)
+            throw localError('invalid_skill_source', error.message);
+          throw error;
+        }
+      }
       if (id === 'material.create') requireAgentReadableMaterial(input.sensitivity);
       if (id === 'material.revision-read' || id === 'material.revision-save') {
         const { material } = await client.operations['material.read']({

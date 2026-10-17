@@ -112,6 +112,37 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('startTurn orchestrator', () => {
+  it('reports conflicting exact Skill setup before creating a Turn or starting its executor', async () => {
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const configured = manifest('agent_codex_host');
+    configured.skills = [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }];
+    configured.profiles = [
+      {
+        id: 'default',
+        skills: [{ id: 'review-skill', digest: `sha256:${'b'.repeat(64)}` }],
+        mcp: [],
+      },
+    ];
+    const before = store.listThreadTurns('ws_demo', 'th_demo');
+    await expect(
+      startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: configured.id,
+        agentManifests: [configured],
+        input: 'Run tests',
+        providerRegistry: localProviderRegistry(),
+        store,
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+        turnExecutor,
+        triggerActor: { kind: 'user', id: 'user_local' },
+      })
+    ).rejects.toMatchObject({ code: 'conflict', status: 409 });
+    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before);
+    expect(turnExecutor.calls).toEqual([]);
+  });
+
   it.each([
     'agent_pi',
     'agent_fourth_runtime',
