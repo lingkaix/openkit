@@ -6,13 +6,9 @@ import {
   SubscriptionProviderIdSchema as ConfigSubscriptionProviderIdSchema,
   ProviderSubscriptionAccountSlotIdSchema,
 } from '@openkit/config-schema/provider-subscription';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import {
-  DEMO_THREAD_ID,
-  DEMO_WORKSPACE_ID,
-} from '../../../apps/nanocore/src/test-support/demo-store.js';
-import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 
 import * as appApiSchemas from './index.js';
 import {
@@ -4713,6 +4709,10 @@ describe('app api schemas', () => {
   });
 
   it('accepts dashboard, auth, agent catalog, and action center payloads', () => {
+    const workspaceId = allocateEntityId('ws');
+    const threadId = allocateEntityId('th');
+    const automationId = allocateEntityId('auto');
+    const responsibleUserId = allocateEntityId('usr');
     expect(
       AuthSignUpEmailResponseSchema.parse({
         token: 'as_00000000-0000-78f3-bdfb-13f04d6a5a83',
@@ -4976,16 +4976,16 @@ describe('app api schemas', () => {
     ).toBe(false);
     expect(
       AutomationRecordSchema.parse({
-        id: testEntityId('auto', 'dashboard-automation'),
+        id: automationId,
         name: 'Daily summary',
-        workspaceId: DEMO_WORKSPACE_ID,
-        threadId: DEMO_THREAD_ID,
+        workspaceId,
+        threadId,
         intervalSeconds: 60,
-        responsibleUserId: testEntityId('usr', 'user_creator'),
+        responsibleUserId,
         actor: {
           kind: 'automation',
-          id: testEntityId('auto', 'dashboard-automation'),
-          responsibleUserId: testEntityId('usr', 'user_creator'),
+          id: automationId,
+          responsibleUserId,
         },
         revision: 1,
         nextScheduledAt: null,
