@@ -759,7 +759,8 @@ function createWorkResourceLineageExportInput(
     decisionRequestId?: string;
   },
   sourceSnapshotRoot?: string,
-  retainRepresentation = false
+  retainRepresentation = false,
+  knowledgeExcerpt = false
 ): WriteWorkspaceExportTreeInput {
   const input = createLineageExportInput();
   const materialId = 'mat_00000000-0000-7807-b767-6378f3fcdcf3';
@@ -776,7 +777,9 @@ function createWorkResourceLineageExportInput(
       id: knowledgePageId,
       kind: 'project-context',
       title: 'Retained portable Knowledge',
-      content: '# Retained portable knowledge\n\nUse the retained package bytes.\n',
+      content:
+        '# Retained portable knowledge\n\nUse the retained package bytes.\n' +
+        (knowledgeExcerpt ? 'Omitted canonical Knowledge body.\n'.repeat(3000) : ''),
       sourceReferences: knowledgeSourceRefs,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -984,6 +987,23 @@ function createWorkResourceLineageExportInput(
         contentDigest: knowledgeContentDigest,
         knowledgePageId,
         notebookRevision,
+        ...(knowledgeExcerpt
+          ? {
+              deliveredContent: knowledgeContent.slice(0, 2048),
+              projection: {
+                kind: 'excerpt' as const,
+                sourceRevision: notebookRevision,
+                representationId: 'original-utf8',
+                representationDigest: knowledgeContentDigest,
+                representationByteLength: Buffer.byteLength(knowledgeContent),
+                deliveredDigest: `sha256:${createHash('sha256').update(knowledgeContent.slice(0, 2048)).digest('hex')}`,
+                ranges: [{ start: 0, end: 2048 }],
+                byteLength: 2048,
+                truncated: true,
+                availability: 'incomplete' as const,
+              },
+            }
+          : {}),
         sourceRefs: knowledgeSourceRefs,
       },
     ],
@@ -2538,12 +2558,41 @@ describe('workspace auxiliary lineage reminting', () => {
   });
 
   it('remints one complete Material, Review, and S39 imported-history graph', () => {
-    const input = createWorkResourceLineageExportInput();
+    const input = createWorkResourceLineageExportInput(undefined, undefined, false, true);
+    const sourceKnowledgeContent = input.portableFileState!.nativeKnowledgePages.get(
+      'knowledge/pages/knowledge_portable_source.md'
+    )!;
+    const sourceKnowledgeExcerpt = input.portableFileState!.workerContextPackageFiles.get(
+      `threads/${source.threadId}/turns/${source.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
+    )!;
+    expect(sourceKnowledgeContent).toBeDefined();
+    expect(sourceKnowledgeExcerpt).toBeDefined();
     const sourceRetrievalTrace = [...input.portableFileState!.retrievalTraceFiles.values()][0]!;
     const imported = importLineage(input);
     const targetKnowledgeContent = imported.portableFileState.nativeKnowledgePages.get(
       'knowledge/pages/knowledge_portable_source.md'
     )!;
+    // Ownership-header reminting preserves the selected body prefix, without adding unseen bytes.
+    const expectedExcerptBytes = Buffer.from(targetKnowledgeContent).subarray(
+      0,
+      Buffer.byteLength(sourceKnowledgeExcerpt) +
+        Buffer.byteLength(targetKnowledgeContent) -
+        Buffer.byteLength(sourceKnowledgeContent)
+    );
+    const expectedExcerpt = expectedExcerptBytes.toString('utf8');
+    expect(
+      parseOwnedKnowledgeEntry(
+        'knowledge/pages/knowledge_portable_source.md',
+        'knowledge_portable_source',
+        expectedExcerpt
+      ).content
+    ).toBe(
+      parseOwnedKnowledgeEntry(
+        'knowledge/pages/knowledge_portable_source.md',
+        'knowledge_portable_source',
+        sourceKnowledgeExcerpt
+      ).content
+    );
     expect(
       parseOwnedKnowledgeEntry(
         'knowledge/pages/knowledge_portable_source.md',
@@ -2561,14 +2610,41 @@ describe('workspace auxiliary lineage reminting', () => {
     const revisions = imported.workspaceMaterialRevisions;
     const binding = imported.threadMaterialBindings[0];
     const review = imported.artifactReviews[0];
-    const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
-      ([path]) => path.endsWith('/context-package.json')
-    )?.[1];
-    const trace = parseWorkerContextPackageTrace(JSON.parse(traceText ?? '{}'));
     const [retrievalTracePath, retrievalTrace] = [
       ...imported.portableFileState.retrievalTraceFiles.entries(),
     ][0]!;
     const stagedRoot = mkdtempSync(join(tmpdir(), 'openkit-imported-history-package-'));
+    // Re-export uses the actual target commit, as the public import publisher does.
+    const targetNotebook = new KnowledgeNotebook({
+      repositoryPath: join(stagedRoot, 'knowledge', 'notebook.git'),
+    });
+    const targetNotebookFiles = Object.fromEntries(
+      [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
+        path.slice('knowledge/pages/'.length),
+        content,
+      ])
+    );
+    const targetRevision = targetNotebook.initialize({
+      files: targetNotebookFiles,
+      metadata: {
+        summary: 'Imported Notebook archive fixture',
+        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        authority: { kind: 'direct', instructionReference: 'test:reexport-notebook-s39' },
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(targetNotebookFiles)).digest('hex')}`,
+        },
+        sourceReferences: [],
+      },
+    });
+    imported.finalizeNotebookKnowledge?.({
+      notebookRevision: targetRevision,
+      nativeKnowledgePages: imported.portableFileState.nativeKnowledgePages,
+    });
+    const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
+      ([path]) => path.endsWith('/context-package.json')
+    )?.[1];
+    const trace = parseWorkerContextPackageTrace(JSON.parse(traceText ?? '{}'));
     writeWorkspacePortableFileState(stagedRoot, imported.portableFileState);
     expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).not.toThrow();
 
@@ -2657,6 +2733,17 @@ describe('workspace auxiliary lineage reminting', () => {
             .update(targetKnowledgeContent)
             .digest('hex')}`,
           knowledgePageId: 'knowledge_portable_source',
+          notebookRevision: targetRevision,
+          projection: expect.objectContaining({
+            kind: 'excerpt',
+            sourceRevision: targetRevision,
+            representationDigest: `sha256:${createHash('sha256').update(targetKnowledgeContent).digest('hex')}`,
+            representationByteLength: Buffer.byteLength(targetKnowledgeContent),
+            deliveredDigest: `sha256:${createHash('sha256').update(expectedExcerptBytes).digest('hex')}`,
+            byteLength: expectedExcerptBytes.byteLength,
+            ranges: [{ start: 0, end: expectedExcerptBytes.byteLength }],
+            truncated: true,
+          }),
           packagePath: 'knowledge/pages/knowledge_portable_source.md',
           sourceRefs: [],
         },
@@ -2714,7 +2801,8 @@ describe('workspace auxiliary lineage reminting', () => {
       imported.portableFileState.workerContextPackageFiles.get(
         `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
       )
-    ).toBe(targetKnowledgeContent);
+    ).toBe(expectedExcerpt);
+    expect(targetKnowledgeContent.length).toBeGreaterThan(51_200);
     expect(imported.turnEvents[0]?.[1][2]?.data).toMatchObject({
       itemId: imported.turns[0]?.items[0]?.id,
       item: imported.turns[0]?.items[0],
@@ -2727,29 +2815,6 @@ describe('workspace auxiliary lineage reminting', () => {
       artifactId: imported.artifacts[0]?.id,
     });
 
-    // Re-export uses the actual target commit, as the public import publisher does.
-    const targetNotebook = new KnowledgeNotebook({
-      repositoryPath: join(stagedRoot, 'knowledge', 'notebook.git'),
-    });
-    const targetNotebookFiles = Object.fromEntries(
-      [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
-        path.slice('knowledge/pages/'.length),
-        content,
-      ])
-    );
-    const targetRevision = targetNotebook.initialize({
-      files: targetNotebookFiles,
-      metadata: {
-        summary: 'Imported Notebook archive fixture',
-        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-        authority: { kind: 'direct', instructionReference: 'test:reexport-notebook-s39' },
-        changeRequest: {
-          requestId: randomUUID(),
-          inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(targetNotebookFiles)).digest('hex')}`,
-        },
-        sourceReferences: [],
-      },
-    });
     const reExportFileState = {
       ...imported.portableFileState,
       notebookRevision: targetRevision,
@@ -2794,6 +2859,33 @@ describe('workspace auxiliary lineage reminting', () => {
       targetServerId: 'server_reimport_target',
     });
     const reimportedRoot = mkdtempSync(join(tmpdir(), 'openkit-reimported-history-package-'));
+    const reimportedNotebook = new KnowledgeNotebook({
+      repositoryPath: join(reimportedRoot, 'knowledge', 'notebook.git'),
+    });
+    const reimportedRevision = reimportedNotebook.initialize({
+      files: Object.fromEntries(
+        [...reimported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
+          path.slice('knowledge/pages/'.length),
+          content,
+        ])
+      ),
+      metadata: {
+        summary: 'Reimported Notebook fixture',
+        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        authority: { kind: 'direct', instructionReference: 'test:reimport-notebook-s39' },
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256')
+            .update(JSON.stringify([...reimported.portableFileState.nativeKnowledgePages]))
+            .digest('hex')}`,
+        },
+        sourceReferences: [],
+      },
+    });
+    reimported.finalizeNotebookKnowledge?.({
+      notebookRevision: reimportedRevision,
+      nativeKnowledgePages: reimported.portableFileState.nativeKnowledgePages,
+    });
     writeWorkspacePortableFileState(reimportedRoot, reimported.portableFileState);
     expect(() =>
       verifyImportedWorkerContextPackageSnapshot(reimported, reimportedRoot)

@@ -8873,30 +8873,45 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const launchSpy = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
       expect(JSON.parse(readFileSync(fixture.tracePath, 'utf8'))).toMatchObject({
         goalId: null,
-        knowledgeExclusions: [
-          {
-            contentDigest: oversizedKnowledgePageDigest,
-            knowledgePageId: oversizedKnowledge.id,
-            reason: 'budget_exceeded',
-          },
-        ],
+        knowledgeExclusions: [],
         knowledgeSelectionInput: { retrievalTraceRef },
-        knowledgeSelections: [
-          {
+        knowledgeSelections: expect.arrayContaining([
+          expect.objectContaining({
             contentDigest: knowledgePageDigest,
             knowledgePageId: knowledge.id,
+            notebookRevision: notebook.publishedRevision(),
             packagePath: `knowledge/pages/${knowledge.id}.md`,
             sourceRefs: [],
-          },
-        ],
+            projection: expect.objectContaining({ kind: 'body', truncated: false }),
+          }),
+          expect.objectContaining({
+            contentDigest: oversizedKnowledgePageDigest,
+            knowledgePageId: oversizedKnowledge.id,
+            notebookRevision: notebook.publishedRevision(),
+            projection: expect.objectContaining({
+              kind: 'excerpt',
+              representationDigest: oversizedKnowledgePageDigest,
+              sourceRevision: notebook.publishedRevision(),
+              truncated: true,
+              availability: 'incomplete',
+            }),
+          }),
+        ]),
         taskId: null,
       });
       expect(
         readFileSync(join(fixture.packageRoot, 'knowledge', 'pages', `${knowledge.id}.md`), 'utf8')
       ).toBe(knowledgePageBytes);
+      const excerpt = readFileSync(
+        join(fixture.packageRoot, 'knowledge', 'pages', `${oversizedKnowledge.id}.md`),
+        'utf8'
+      );
+      expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(2048);
+      expect(oversizedKnowledgePageBytes.startsWith(excerpt)).toBe(true);
+      expect(excerpt).not.toBe(oversizedKnowledgePageBytes);
       expect(
-        existsSync(join(fixture.packageRoot, 'knowledge', 'pages', `${oversizedKnowledge.id}.md`))
-      ).toBe(false);
+        notebook.readRevision(notebook.publishedRevision()).files[`${oversizedKnowledge.id}.md`]
+      ).toBe(oversizedKnowledgePageBytes);
       return launch(...args);
     });
     const executor = new WorkerGovernanceTurnExecutor({

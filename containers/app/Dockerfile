@@ -6,7 +6,8 @@ ENV CARGO_HOME="/usr/local/cargo"
 ENV CARGO_BUILD_JOBS="1"
 ENV RUSTUP_HOME="/usr/local/rustup"
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
-ENV LINDERA_BUILD_DICTIONARY_CACHE_DIR="/opt/openkit-lindera"
+# Keep generated dictionaries with Cargo artifacts so incremental cache hits retain their include_bytes! inputs.
+ENV LINDERA_BUILD_DICTIONARY_CACHE_DIR="/build/target/lindera"
 ARG TARGETARCH
 WORKDIR /build
 RUN apt-get update \

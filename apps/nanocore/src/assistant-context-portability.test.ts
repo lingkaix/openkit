@@ -152,6 +152,7 @@ async function seed() {
   );
   const originals: Item[] = [];
   let traceTurn: Turn | undefined;
+  // Keep the same history Items under pressure with the local bytes/3 estimate.
   for (let index = 0; index < 8; index += 1) {
     const turn = admit(f, f.workspace.id, thread.id);
     originals.push(
@@ -161,7 +162,7 @@ async function seed() {
         'user-message',
         index === 0
           ? `Exact Unicode source: ${'😀漢'.repeat(800)}`
-          : `Question ${index}: ${'q'.repeat(1_200)}`
+          : `Question ${index}: ${'q'.repeat(3_600)}`
       )
     );
     if (index === 1) {
@@ -197,7 +198,7 @@ async function seed() {
       expect(next.isError).not.toBe(true);
     }
     originals.push(
-      message(f, turn, 'assistant-message', `Decision ${index}: ${'a'.repeat(1_200)}`)
+      message(f, turn, 'assistant-message', `Decision ${index}: ${'a'.repeat(3_600)}`)
     );
     f.store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
   }
@@ -348,11 +349,12 @@ describe('Assistant conversation context portability', () => {
       null,
       { agentId: 'knowledge-manager', executorKind: 'assistant', startedAt: timestamp }
     );
+    // Preserve real compaction pressure under the local bytes/3 estimate.
     const original = message(
       source,
       turn,
       'user-message',
-      `Keep the decision pending. ${'source '.repeat(1600)}`
+      `Keep the decision pending. ${'source '.repeat(4_800)}`
     );
     const owner = {
       store: source.store,

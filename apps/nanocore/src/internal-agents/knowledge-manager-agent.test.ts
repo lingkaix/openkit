@@ -162,7 +162,9 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
           required: ['answer'],
           additionalProperties: false,
         },
-        validateResult: (text) => expect(JSON.parse(text)).toEqual({ answer: 'Cited answer.' }),
+        validateResult: (text) => {
+          expect(JSON.parse(text)).toEqual({ answer: 'Cited answer.' });
+        },
       }
     );
     expect(JSON.parse(result.text)).toEqual({ answer: 'Cited answer.' });

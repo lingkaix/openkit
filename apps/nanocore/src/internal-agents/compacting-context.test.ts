@@ -151,7 +151,8 @@ function tools() {
         content: [
           {
             type: 'text' as const,
-            text: ++count === 1 ? 'Observed source. '.repeat(450) : 'Later observation.',
+            // Keep the observation above the compaction threshold under the local bytes/3 estimate.
+            text: ++count === 1 ? 'Observed source. '.repeat(1_350) : 'Later observation.',
           },
         ],
       }),

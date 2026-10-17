@@ -576,6 +576,9 @@ describe('worker MCP routes', () => {
         'work_input_request',
         'work_peer_list',
         'work_peer_read',
+        'work_source_read',
+        'work_source_search',
+        'work_source_view',
         'work_artifact_submit',
       ]);
       const delivered = await workClient.callTool({
@@ -1194,8 +1197,20 @@ describe('worker MCP routes', () => {
         'work_input_request',
         'work_peer_list',
         'work_peer_read',
+        'work_source_read',
+        'work_source_search',
+        'work_source_view',
         'work_artifact_submit',
       ]);
+      const sourceSchema = tools.find((tool) => tool.name === 'work_source_read')!.inputSchema;
+      expect(sourceSchema.required).toEqual(['path']);
+      expect(sourceSchema.additionalProperties).not.toBe(false);
+      const searchSchema = tools.find((tool) => tool.name === 'work_source_search')!.inputSchema;
+      expect(searchSchema.required).toEqual(['path', 'query']);
+      expect(searchSchema.additionalProperties).not.toBe(false);
+      const viewSchema = tools.find((tool) => tool.name === 'work_source_view')!.inputSchema;
+      expect(viewSchema.required).toEqual(['path']);
+      expect(viewSchema.additionalProperties).not.toBe(false);
       const readSchema = tools.find((tool) => tool.name === 'work_peer_read')!.inputSchema;
       expect(readSchema.required).toEqual(['handle']);
       expect(readSchema.additionalProperties).not.toBe(false);

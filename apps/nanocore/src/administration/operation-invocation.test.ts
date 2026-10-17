@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as policyKernel from '@openkit/policy-kernel';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -91,6 +92,35 @@ describe('real administration assembly through invocation', () => {
         ...lineage,
       });
       expect(entered).toHaveBeenCalled();
+      const actualEvaluate = policyKernel.evaluateAccess;
+      const evaluate = vi.spyOn(policyKernel, 'evaluateAccess');
+      try {
+        evaluate.mockImplementation((policy, request) =>
+          actualEvaluate({ ...policy, associations: [] }, request)
+        );
+        const refused = await tool.execute(
+          {},
+          { callId: 'call_policy_denied', toolOccurrence: 1, signal: new AbortController().signal }
+        );
+        expect(refused.isError).toBe(true);
+        expect(JSON.parse((refused.content[0] as { text: string }).text)).toMatchObject({
+          code: 'workspace_access_denied',
+        });
+        expect(evaluate).toHaveBeenCalled();
+        evaluate.mockImplementation(() => {
+          throw new Error('Policy dependency unavailable.');
+        });
+        const failed = await tool.execute(
+          {},
+          { callId: 'call_policy_error', toolOccurrence: 1, signal: new AbortController().signal }
+        );
+        expect(failed.isError).toBe(true);
+        expect(JSON.parse((failed.content[0] as { text: string }).text)).toMatchObject({
+          code: 'workspace_access_denied',
+        });
+      } finally {
+        evaluate.mockRestore();
+      }
       revokeOpenKitAccessTokenRecord(coreDb, issued.record.tokenId);
       const denied = await tool.execute(
         {},
