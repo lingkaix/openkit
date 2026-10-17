@@ -421,7 +421,8 @@ function ArtifactVersionCreate(props: {
           Refresh current version
         </Button>
       ) : null}
-      {(changedParent ||
+      {/* A newer head cannot discard a request whose publication still needs reconciliation. */}
+      {((changedParent && commit.isIdle) ||
         (commit.isError &&
           refreshedAfterFailure &&
           !isRetryableArtifactVersionCommit(commit.error) &&

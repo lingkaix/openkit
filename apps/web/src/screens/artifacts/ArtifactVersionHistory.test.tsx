@@ -6,9 +6,10 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactVersionHistory } from './ArtifactVersionHistory';
 
-const { list, read, commit, commitFile, threads } = vi.hoisted(() => ({
+const { list, read, headRead, commit, commitFile, threads } = vi.hoisted(() => ({
   list: vi.fn(),
   read: vi.fn(),
+  headRead: vi.fn(),
   commit: vi.fn(),
   commitFile: vi.fn(),
   threads: vi.fn(),
@@ -18,7 +19,7 @@ vi.mock('../../app/core-client', () => ({
     operations: {
       'artifact.version-list': list,
       'artifact.version-read': read,
-      'artifact.read': () => Promise.resolve(current),
+      'artifact.read': headRead,
       'artifact.version-commit': commit,
       'thread.list': threads,
     },
@@ -96,6 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   list.mockResolvedValue({ items: [firstVersion, secondVersion] });
   read.mockResolvedValue({ artifact: first, version: firstVersion });
+  headRead.mockResolvedValue(current);
   threads.mockResolvedValue({
     items: [
       {
@@ -115,7 +117,7 @@ function mount(artifact = current) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
   const onVersionChange = vi.fn();
-  const view = render(
+  const content = (artifact: typeof current) => (
     <QueryClientProvider client={client}>
       <ArtifactVersionHistory
         currentArtifact={artifact}
@@ -124,10 +126,59 @@ function mount(artifact = current) {
       />
     </QueryClientProvider>
   );
-  return { ...view, client, onVersionChange };
+  const view = render(content(artifact));
+  return {
+    ...view,
+    client,
+    onVersionChange,
+    showHead: (next: typeof current) => view.rerender(content(next)),
+  };
 }
 
 describe('Artifact version history', () => {
+  it('keeps an unknown commit frozen when another version becomes the current head', async () => {
+    const view = mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create next version' }));
+    await user.click(await screen.findByRole('button', { name: /Publishing conversation/ }));
+    await user.click(await screen.findByRole('option', { name: 'Report discussion' }));
+    await user.click(screen.getByRole('button', { name: 'Save new version' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The result is unknown.');
+    const advanced = ArtifactSchema.parse({
+      ...current,
+      version: 3,
+      content: { format: 'markdown', body: '# Another committed version' },
+      contentDigest: `sha256:${'c'.repeat(64)}`,
+      lastMutationRequestId: 'req_third',
+    });
+    list.mockResolvedValue({
+      items: [
+        firstVersion,
+        secondVersion,
+        {
+          ...secondVersion,
+          artifactVersion: 3,
+          parentVersion: 2,
+          contentDigest: advanced.contentDigest,
+          requestId: 'req_third',
+        },
+      ],
+    });
+    headRead.mockResolvedValue(advanced);
+    view.showHead(advanced);
+    await user.click(await screen.findByRole('button', { name: 'View version 3' }));
+    await user.click(screen.getByRole('button', { name: 'Refresh current version' }));
+    await waitFor(() => expect(headRead).toHaveBeenCalledTimes(2));
+    expect(
+      screen.queryByRole('button', { name: 'Use version 3 as parent' })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save new version' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Retry same version request' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    expect(commit.mock.calls[1]).toEqual(commit.mock.calls[0]);
+    expect(commit.mock.calls[1][0].expectedArtifactVersion).toBe(2);
+  });
+
   it('streams exact selected replacement bytes with their digest under the retained parent', async () => {
     // JSDOM needs FileReader to supply the browser Blob byte-read method.
     Object.defineProperty(Blob.prototype, 'arrayBuffer', {
