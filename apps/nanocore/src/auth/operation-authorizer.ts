@@ -8,6 +8,10 @@ import { asApiError } from '../api-errors.js';
 import type { FsStore } from '../lib/store.js';
 import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
 import {
+  evaluateAdministratorWorkspaceAccess,
+  evaluateUserAccess,
+} from '../policy/server-access.js';
+import {
   evaluateWorkspaceMemberAccess,
   type ProductOperation,
 } from '../policy/workspace-access.js';
@@ -283,29 +287,36 @@ export function currentWorkspaceAuthority(
   effectAuthority: boolean,
   requestActor?: Actor
 ): WorkspaceAuthority | null {
-  if (!effectAuthority) {
-    return null;
-  }
-  if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
-    if (
-      actor.kind !== 'user' ||
-      actor.id !== requestActor.userId ||
-      !isUsablePresentedServerAdminToken(coreDb, requestActor) ||
-      !isActiveRegisteredWorkspace(coreDb, workspaceId)
-    ) {
+  try {
+    if (!effectAuthority) {
       return null;
     }
-    return evaluateWorkspaceMemberAccess({ operation }).effect === 'allow' ? 'administrator' : null;
-  }
-  const responsibleUserId = responsibleUserIdForActor(actor);
-  if (!responsibleUserId) {
+    if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
+      if (
+        actor.kind !== 'user' ||
+        actor.id !== requestActor.userId ||
+        !isUsablePresentedServerAdminToken(coreDb, requestActor) ||
+        !isActiveRegisteredWorkspace(coreDb, workspaceId)
+      ) {
+        return null;
+      }
+      return evaluateAdministratorWorkspaceAccess({ operation, userId: actor.id, workspaceId })
+        .effect === 'allow'
+        ? 'administrator'
+        : null;
+    }
+    const responsibleUserId = responsibleUserIdForActor(actor);
+    if (!responsibleUserId) {
+      return null;
+    }
+    const role = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
+    if (!role || evaluateWorkspaceMemberAccess({ operation }).effect !== 'allow') {
+      return null;
+    }
+    return 'member';
+  } catch {
     return null;
   }
-  const role = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
-  if (!role || evaluateWorkspaceMemberAccess({ operation }).effect !== 'allow') {
-    return null;
-  }
-  return 'member';
 }
 
 /**
@@ -433,7 +444,7 @@ async function authorizeOperation(
 
   if (route.access.scope === 'user') {
     if (route.access.authentication === 'canonical-user') {
-      return isCanonicalUserOperationAuthorized(input.coreDb, actor)
+      return isCanonicalUserOperationAuthorized(input.coreDb, actor, route.access.policyOperation)
         ? null
         : workspaceAccessDenied();
     }
@@ -456,14 +467,26 @@ async function authorizeOperation(
   return authorizeWorkspaceOperation(context, actor, { ...route, access: route.access }, input);
 }
 
-/** Reuses canonical-user admission, including current administrator eligibility, without Workspace membership. */
-export function isCanonicalUserOperationAuthorized(coreDb: CoreDb, actor: Actor): boolean {
-  if (!isCanonicalUserActive(coreDb, actor.userId)) return false;
-  return (
-    actor.kind === 'local' ||
-    actor.kind === 'session' ||
-    isCurrentDeploymentAdministrator(coreDb, actor)
-  );
+/** Intersects current canonical-user eligibility with its primary Policy decision, without Workspace membership. */
+export function isCanonicalUserOperationAuthorized(
+  coreDb: CoreDb,
+  actor: Actor,
+  operation: string = 'api.call'
+): boolean {
+  try {
+    if (
+      !isCanonicalUserActive(coreDb, actor.userId) ||
+      !(
+        actor.kind === 'local' ||
+        actor.kind === 'session' ||
+        isCurrentDeploymentAdministrator(coreDb, actor)
+      )
+    )
+      return false;
+    return evaluateUserAccess({ userId: actor.userId, operation }).effect === 'allow';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -663,6 +686,18 @@ export function authorizeWorkspace(
   }
   if (isCurrentDeploymentAdministrator(coreDb, actor)) {
     if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) {
+      return null;
+    }
+    try {
+      if (
+        evaluateAdministratorWorkspaceAccess({
+          userId: actor.userId,
+          workspaceId,
+          operation: access.policyOperation,
+        }).effect !== 'allow'
+      )
+        return null;
+    } catch {
       return null;
     }
     return {
