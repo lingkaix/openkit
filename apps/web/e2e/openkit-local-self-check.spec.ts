@@ -17,7 +17,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Verifies local Workspace, private Assistant reuse without work, member navigation, and safe Debug inspection.
+ * Verifies private Assistant reuse, member navigation, refused undisclosed handoff, and safe Debug inspection.
  *
  * Contract: docs/specs/20260529-test_strategy.md
  */
@@ -60,16 +60,22 @@ test('completes the local Workspace self-check', async ({ page }) => {
     .click();
   expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
-  // Start shared work from the unbound Workspace composer, outside the private Timeline.
-  await page.getByRole('button', { name: /^Overview$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
   await page.getByRole('button', { name: /^Send message$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Story thread' })).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(
+    page.getByText(
+      'Explicit disclosure admission is required before private Assistant input becomes shared Task work.',
+      { exact: true }
+    )
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: assistant.name })).toBeVisible();
+  expect(
+    (await client.operations['thread.list']({ workspaceId: assistant.workspaceId })).items.map(
+      (thread) => ({ id: thread.id, visibility: thread.visibility })
+    )
+  ).toEqual([{ id: assistant.id, visibility: 'private' }]);
 
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^General$/ }).click();
