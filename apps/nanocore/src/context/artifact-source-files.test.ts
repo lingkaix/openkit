@@ -57,7 +57,7 @@ async function fixture(
   const workspaceRoot = join(root, 'workspaces', workspace.id);
   const admission = new FileStorageAdmission(root, () => 0n);
   const digest = sha256(body);
-  const requestId = 'artifact-source-import';
+  const requestId = sourceId;
   const artifact: Artifact = {
     id: artifactId,
     workspaceId: workspace.id,

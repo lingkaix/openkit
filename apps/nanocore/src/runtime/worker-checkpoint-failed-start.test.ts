@@ -601,6 +601,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
     }
   });
 
+  // Allow fixture I/O and both byte-proof passes; product deadlines remain unchanged.
   it.each([
     'open',
     'reconnecting',
@@ -913,5 +914,5 @@ describe('checkpoint-owned never-submitted failed start', () => {
       getSchedulerPreparationClaims(f.coreDb).delete(f.attempt.queueEntryId);
       f.cleanup();
     }
-  });
+  }, 60_000);
 });

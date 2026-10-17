@@ -2220,6 +2220,7 @@ describe('worker MCP routes', () => {
     const exportRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-export-'));
     const callFile = join(dataRoot, 'mcp-calls.txt');
     const coreDb = openCoreDb(dataRoot);
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000n);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
@@ -2430,6 +2431,7 @@ describe('worker MCP routes', () => {
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission,
       coreDb,
       env: {},
       nanoHostSessionDispatch,
@@ -2438,6 +2440,7 @@ describe('worker MCP routes', () => {
       workspaceMutationAdmission,
     });
     const app = createApp({
+      fileAdmission,
       coreDb,
       dataRoot,
       nanoHostSessionDispatch,
