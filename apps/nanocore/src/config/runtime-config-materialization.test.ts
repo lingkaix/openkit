@@ -721,7 +721,7 @@ function assistantSelectionFixture(mode: 'create' | 'update') {
           kind: 'file',
           path: 'SKILL.md',
           contentBase64: Buffer.from(
-            `---\nname: ${id}\ndescription: Guidance for ${id}.\n---\n# Guidance\n`
+            `---\nname: ${id}\ndescription: Configuration fixture guidance.\n---\n# Guidance\n`
           ).toString('base64'),
         },
       ],

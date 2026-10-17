@@ -79,7 +79,7 @@
       "outputs": ["../../target/debug/retrieval-kernel"]
     },
     "@openkit/nanocore#test": {
-      "dependsOn": ["^build", "^test", "@openkit/retrieval-kernel#build"],
+      "dependsOn": ["^build", "^test", "@openkit/nanocore#build"],
       "outputs": ["coverage/**"]
     },
     "@openkit/nanocore#build": {
