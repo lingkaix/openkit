@@ -720,7 +720,9 @@ function assistantSelectionFixture(mode: 'create' | 'update') {
         {
           kind: 'file',
           path: 'SKILL.md',
-          contentBase64: Buffer.from('# Guidance\n').toString('base64'),
+          contentBase64: Buffer.from(
+            `---\nname: ${id}\ndescription: Fixture configuration Skill.\n---\n# Guidance\n`
+          ).toString('base64'),
         },
       ],
       workspaceId,
