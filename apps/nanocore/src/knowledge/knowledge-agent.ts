@@ -226,6 +226,13 @@ export async function askKnowledgeAgent(
       input.assertCurrent?.();
       input.signal.throwIfAborted();
       admitKnowledgeRetrieval(bound);
+      // Initial overviews are delivered evidence even when no page Tool reads them again.
+      for (const overview of overviews) {
+        const candidate = candidates.get(overview.pageId)!;
+        const page = currentPage(candidate);
+        if (!page || page.contentDigest !== candidate.contentDigest)
+          throw new Error('Knowledge overview is no longer available.');
+      }
       for (const evidence of read.values()) {
         const page = currentPage(evidence.candidate);
         if (!page || page.contentDigest !== evidence.candidate.contentDigest)
