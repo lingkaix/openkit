@@ -2873,7 +2873,7 @@ describe('Catalog', () => {
     updateMcpBinding.mockRejectedValueOnce(
       new ApiCallError(403, 'Deployment administrator required')
     );
-    await user.click(screen.getByRole('button', { name: 'Disable', exact: true }));
+    await user.click(screen.getByRole('button', { name: 'Disable' }));
     expect(await screen.findByRole('button', { name: 'Refresh MCP bindings' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: 'Refresh MCP bindings' }));
