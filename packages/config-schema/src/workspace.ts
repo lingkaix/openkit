@@ -3,7 +3,11 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { VaultGrantIdSchema } from '@openkit/protocol';
 
 import { z } from 'zod';
-import { AuthoredAgentMcpEntrySchema, AuthoredAgentSandboxSchema } from './agent.js';
+import {
+  AuthoredAgentMcpEntrySchema,
+  AuthoredAgentSandboxSchema,
+  AuthoredAgentSkillEntrySchema,
+} from './agent.js';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
@@ -25,7 +29,7 @@ export const WorkspaceAgentBindingSchema = z
       .union([z.literal('all'), z.array(z.string().min(1)).min(1)])
       .optional(),
     credentialBindings: z.array(WorkspaceCredentialBindingSchema).default([]),
-    skills: z.array(z.object({ id: z.string().min(1) }).strict()).default([]),
+    skills: z.array(AuthoredAgentSkillEntrySchema).default([]),
     mcp: z.array(AuthoredAgentMcpEntrySchema).default([]),
     sandbox: AuthoredAgentSandboxSchema.optional(),
   })

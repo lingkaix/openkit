@@ -1,4 +1,4 @@
-import { ResourceCandidateIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import { ArtifactSchema, ResourceCandidateIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 import {
@@ -6,6 +6,7 @@ import {
   CreateMcpConfigRequestSchema,
   CreateMcpConfigResponseSchema,
   DecideSkillCandidateRequestSchema,
+  DiffSkillVersionsResponseSchema,
   GetWorkspaceCatalogResponseSchema,
   ImportPluginRequestSchema,
   ImportPluginResponseSchema,
@@ -14,8 +15,13 @@ import {
   ListMcpCatalogResponseSchema,
   ListPluginCatalogResponseSchema,
   ListSkillCatalogResponseSchema,
+  ListSkillVersionsResponseSchema,
+  ReadSkillContentResponseSchema,
+  ReadSkillVersionResponseSchema,
+  RemoveSkillRequestSchema,
   SelectMcpVersionRequestSchema,
   SelectSkillVersionRequestSchema,
+  SetSkillPinRequestSchema,
   SkillCandidateResponseSchema,
   SubmitSkillCandidateRequestSchema,
   UpdateMcpBindingRequestSchema,
@@ -28,6 +34,26 @@ const credentials = [
   'user-bearer',
   'deployment-administrator',
 ] as const;
+
+/** One exact retained Artifact alternative; the addressed Workspace owns its source and destination. */
+const candidateInput = SubmitSkillCandidateRequestSchema.omit({ tree: true })
+  .safeExtend({
+    workspaceId: WorkspaceIdSchema,
+    skillId: z.string().min(1),
+    tree: SubmitSkillCandidateRequestSchema.shape.tree.optional(),
+    artifact: z
+      .object({
+        artifactId: ArtifactSchema.shape.id,
+        version: ArtifactSchema.shape.version,
+        contentDigest: ArtifactSchema.shape.contentDigest,
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((input) => (input.tree === undefined) !== (input.artifact === undefined), {
+    message: 'Supply exactly one inline tree or retained Artifact selection.',
+  });
 
 /** Catalog declarations reuse native payloads and closed admission strategies. */
 export const CATALOG_OPERATION_DEFINITIONS = {
@@ -70,15 +96,148 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     policyOperation: 'workspace.configure',
     mutating: true,
   },
+  'catalog.skill-version-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'List immutable Skill versions and original provenance.',
+    inputSchema: z.object({ workspaceId: WorkspaceIdSchema, skillId: z.string().min(1) }).strict(),
+    outputSchema: ListSkillVersionsResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
+  'catalog.skill-update-check': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Check an immutable Skill version against its source without changing catalog selection.',
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        skillId: z.string().min(1),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      })
+      .strict(),
+    outputSchema: z
+      .object({
+        status: z.enum(['changed', 'unchanged', 'unavailable']),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        sourceCommit: z.string().min(1).nullable(),
+        observedDigest: z
+          .string()
+          .regex(/^sha256:[a-f0-9]{64}$/)
+          .nullable(),
+        observedCommit: z.string().min(1).nullable(),
+      })
+      .strict(),
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.configure',
+    mutating: false,
+  },
+  'catalog.skill-version-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Read one immutable Skill version and original provenance.',
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        skillId: z.string().min(1),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      })
+      .strict(),
+    outputSchema: ReadSkillVersionResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
+  'catalog.skill-content-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Read exact file bytes from a verified retained Skill version.',
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        skillId: z.string().min(1),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        path: z.string().min(1),
+      })
+      .strict(),
+    outputSchema: ReadSkillContentResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
+  'catalog.skill-diff': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Compare exact inventories of two verified retained Skill versions.',
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        skillId: z.string().min(1),
+        baseDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        candidateDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      })
+      .strict(),
+    outputSchema: DiffSkillVersionsResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
+  'catalog.skill-remove': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Block future Skill selection while retaining historical bytes and lineage.',
+    inputSchema: RemoveSkillRequestSchema.safeExtend({
+      workspaceId: WorkspaceIdSchema,
+      skillId: z.string().min(1),
+    }).strict(),
+    outputSchema: CatalogMutationResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.configure',
+    mutating: true,
+  },
+  'catalog.skill-purge': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Purge exact Skill bytes only after complete current retention admission.',
+    inputSchema: RemoveSkillRequestSchema.safeExtend({
+      workspaceId: WorkspaceIdSchema,
+      skillId: z.string().min(1),
+      digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    }).strict(),
+    outputSchema: CatalogMutationResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.configure',
+    mutating: true,
+  },
   'catalog.skill-candidate-submit': {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
     description: 'Submit a Skill candidate against its base digest.',
-    inputSchema: SubmitSkillCandidateRequestSchema.safeExtend({
-      workspaceId: WorkspaceIdSchema,
-      skillId: z.string().min(1),
-    }).strict(),
+    inputSchema: candidateInput,
     outputSchema: SkillCandidateResponseSchema,
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -100,6 +259,22 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
     policyOperation: 'workspace.configure',
+    mutating: true,
+  },
+  'catalog.skill-candidate-withdraw': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Withdraw a proposed Skill candidate submitted by the current actor.',
+    inputSchema: RemoveSkillRequestSchema.safeExtend({
+      workspaceId: WorkspaceIdSchema,
+      candidateId: z.string().min(1),
+    }).strict(),
+    outputSchema: CatalogMutationResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.write',
     mutating: true,
   },
   'catalog.skill-select': {
@@ -124,7 +299,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Set or remove an immutable Skill pin.',
-    inputSchema: SelectSkillVersionRequestSchema.safeExtend({
+    inputSchema: SetSkillPinRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
       skillId: z.string().min(1),
     }).strict(),
