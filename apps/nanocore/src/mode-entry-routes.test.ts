@@ -5076,6 +5076,7 @@ describe('#144 real Assistant command wiring', () => {
     }
   });
 
+  // This fixture includes real database, Notebook and HTTP setup; its runner limit is not an admission deadline.
   it.each([
     ...[
       'actor',
@@ -5133,7 +5134,7 @@ describe('#144 real Assistant command wiring', () => {
     } finally {
       f.close();
     }
-  });
+  }, 60_000);
 
   it('refuses a missing private handler binding before content access through the real command', async () => {
     const f = assistantWiringFixture(true);
