@@ -333,7 +333,7 @@ function requireAuthorizedKnowledgeProposal(
 type KnowledgeImplementations = Pick<
   OperationImplementations,
   Extract<
-    | keyof typeof KNOWLEDGE_OPERATION_DEFINITIONS
+    | Exclude<keyof typeof KNOWLEDGE_OPERATION_DEFINITIONS, 'knowledge.proposal.read'>
     | keyof typeof KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
     OperationId
   >

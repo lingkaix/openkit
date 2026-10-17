@@ -240,7 +240,7 @@ export async function dispatchOpenkitWorkTool(
           ...KnowledgeAskRequestSchema.omit({ workspaceId: true }).parse(args),
           workspaceId: scope.workspaceId, caller: 'worker', capabilityCallId: input.knowledgeCallId,
           access: { store: input.store, coreDb: input.coreDb, actor: scope.triggerActor,
-            ...(serverKnowledgeActor ? { serverKnowledgeActor } : {}),
+            ...(serverKnowledgeActor ? { serverKnowledgeActor, requestActor: serverKnowledgeActor } : {}),
             outputThreadId: scope.threadId, outputTurnId: scope.turnId }, signal,
           assertCurrent: () => { input.requireAdmission?.(); },
         })
@@ -249,6 +249,7 @@ export async function dispatchOpenkitWorkTool(
           workspaceId: scope.workspaceId, requestId: uuidv5(JSON.stringify(['knowledge.tell', input.knowledgeCallId])),
           instructions: 'Integrate the supplied information and keep the notebook overview current.',
           trigger: 'request', actor: scope.triggerActor, signal,
+          ...(serverKnowledgeActor ? { requestActor: serverKnowledgeActor } : {}),
           askingThreadId: scope.threadId, askingTurnId: scope.turnId,
           currentAdmission: input.knowledgePublicationAdmission,
           tellContent: KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true }).parse(args).content,
