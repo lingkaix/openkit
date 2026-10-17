@@ -230,10 +230,6 @@ Web projects the [Composer-owned effort control](20260831-unified_conversation_c
 
 Gateway settings acceptance requires the three sections over existing owners, guided subscription setup with honest partial failures, key entry without readback, always-enabled use-independent Remove/Log out with affected logical-model disclosure, no route rewrite or promotion, preserved account-observation semantics, and distinct reload versus restart-required activation. Existing deployment-admin authority, redaction, and release-readiness gates remain required. Acceptance also requires the supported subscription inventory and complete existing account lifecycle to remain reachable, including retained unbound slots and display-name updates, with authored Provider and server-default JSONC workflows preserved.
 
-### Versioned Skill Catalog projection
-
-The Catalog groups retained Skill version list/read, exact file read/download, inventory diff and source update checks in the selected Skill's history inspector. These reads do not change current selection. Removal blocks future selection and retains history; permanent deletion names the exact version and requires an explicit confirmation before the existing Core retention admission. Candidate submitters can withdraw their own proposed updates. All mutations use the current observed catalog revision, and pin/default/decision commands also bind the observed pointer digest. Failed reads, denied or stale writes and disconnected controls remain visible; changing Workspace, Skill or version cannot display another selection's response.
-
 ### Observable acceptance
 
 Acceptance of this completeness contract requires all of the following:
@@ -287,6 +283,8 @@ The selected-Workspace Repositories screen is retired. Web does not project a ho
 Worker-proposed-file Workspace Sync review-to-apply remains in the ordinary-user inclusion set and MUST receive a `live`, `workflow`, or `roadmap` disposition under this specification. Core review and apply semantics remain owned by `docs/specs/20260703-workspace_synchronization.md`. This specification does not authorize a full collapsible Workspace or thread tree as a replacement for the retired screen. Generic pending-request projections keep their own server-state rules. This contract does not copy the retired screen's approval-response rule onto those requests.
 
 ## Current Implementation Projection
+
+The versioned Skill backend and CLI increment retains the existing Catalog import, candidate decision, selection and pin controls. The new version list, update check, version metadata, content read, diff, removal, purge and candidate withdrawal controls remain unpublished under R108 until the separately assigned Web Skill increment lands. Their canonical operations remain available through the governed native API and CLI; callable operations do not establish completed Web workflows.
 
 Agent, Worker and resource catalog operations derive from the three browser-safe tables in `agent-operations.ts`, `worker-operations.ts` and `catalog-operations.ts`. Their exact native maps live in `agents/agent-operations.ts`, `agents/workspace-workers.ts` and `catalog/catalog-operations.ts`, composed once in `operation-composition.ts`. The seventeen former routes, client members, access keys, OpenAPI descriptors and literal CLI rows are removed. Agent discovery preserves authorized Workspace candidates; Worker reads preserve recorded work, exact immutable package supply, audit-controlled usage and current administrator eligibility for private Thread audiences. Catalog mutations preserve compare-and-set revisions, immutable selections, actor attribution, stdio host authority, credential-binding omission versus replacement, runtime configuration reload and affected MCP session invalidation. Every consumer uses complete canonical inputs, with no archive protocol or credential mechanism added.
 

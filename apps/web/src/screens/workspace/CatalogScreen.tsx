@@ -25,11 +25,9 @@ import {
   useSetSkillPin,
   useSubmitSkillCandidate,
   useUpdateMcpBinding,
-  useWithdrawSkillCandidate,
   useWorkspaceCatalog,
   useWorkspaces,
 } from './data';
-import { SkillHistory } from './SkillHistory';
 
 /**
  * Workspace Skill, MCP, and Agent Plugin catalog (product workflow, not an API console).
@@ -44,8 +42,6 @@ export function CatalogScreen() {
   const setPin = useSetSkillPin();
   const submitCandidate = useSubmitSkillCandidate();
   const decideCandidate = useDecideSkillCandidate();
-  const withdrawCandidate = useWithdrawSkillCandidate();
-  const [historySkillId, setHistorySkillId] = useState<string | null>(null);
   const selectSkill = useSelectSkillDefault();
   const createMcp = useCreateMcpConfig();
   const selectMcp = useSelectMcpVersion();
@@ -147,17 +143,6 @@ export function CatalogScreen() {
                     <div className="flex min-w-0 shrink-0 flex-wrap gap-2">
                       <Button
                         size="sm"
-                        isDisabled={writeBlocked}
-                        onPress={() =>
-                          setHistorySkillId(historySkillId === skill.id ? null : skill.id)
-                        }
-                      >
-                        {historySkillId === skill.id
-                          ? 'Close Skill history'
-                          : 'Inspect Skill history'}
-                      </Button>
-                      <Button
-                        size="sm"
                         isDisabled={writeBlocked || setPin.isPending || !skill.currentDigest}
                         onPress={() => {
                           if (!workspaceId || !skill.currentDigest) return;
@@ -196,15 +181,6 @@ export function CatalogScreen() {
                       </Button>
                     </div>
                   </ListRow>
-                  {historySkillId === skill.id && workspaceId && !catalog.isError ? (
-                    <SkillHistory
-                      key={`${workspaceId}:${skill.id}`}
-                      workspaceId={workspaceId}
-                      skillId={skill.id}
-                      revision={revision}
-                      blocked={writeBlocked}
-                    />
-                  ) : null}
                   {(skill.versions ?? []).map((version) => (
                     <Button
                       key={version.digest}
@@ -239,10 +215,6 @@ export function CatalogScreen() {
                 hint="Upload a SKILL.md to add the first Skill."
               />
             )}
-            {withdrawCandidate.isError &&
-            withdrawCandidate.variables?.workspaceId === workspaceId ? (
-              <ErrorBanner message="Couldn't withdraw that proposal. Only its submitter can withdraw it; refresh the catalog before retrying." />
-            ) : null}
             {proposed.length ? (
               <div className="flex flex-col gap-2 pt-3">
                 <h3 className="text-xs font-bold text-fg">Proposed updates</h3>
@@ -255,20 +227,6 @@ export function CatalogScreen() {
                       </p>
                     </div>
                     <div className="flex shrink-0 gap-2">
-                      <Button
-                        size="sm"
-                        isDisabled={writeBlocked || withdrawCandidate.isPending}
-                        onPress={() => {
-                          if (workspaceId)
-                            withdrawCandidate.mutate({
-                              workspaceId,
-                              candidateId: candidate.id,
-                              expectedRevision: revision,
-                            });
-                        }}
-                      >
-                        Withdraw my proposal
-                      </Button>
                       <Button
                         size="sm"
                         isDisabled={writeBlocked || decideCandidate.isPending}
