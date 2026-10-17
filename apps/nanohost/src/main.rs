@@ -59,6 +59,13 @@ use sandbox_bridge::{
     RetainedExportResult,
 };
 
+/// Identifies an import failure whose local owner permits typed settlement.
+fn is_definite_import_failure(command: &PolledEffectCommand, error: &str) -> bool {
+    command.kind == RuntimeEffectKind::ImportReference
+        && (command.admission_failure.is_some()
+            || error == epoch_coordinator::REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE)
+}
+
 /// Parsed and verified NanoHost outer-session deployment inputs.
 struct NanoHostSessionInputs {
     rendezvous_url: String,
@@ -1172,8 +1179,7 @@ async fn run_sessions(
                                     ));
                                 }
                                 Err(_error)
-                                    if (command.kind == RuntimeEffectKind::ImportReference
-                                        && command.admission_failure.is_some()) || matches!(
+                                    if is_definite_import_failure(&command, _error) || matches!(
                                         command.kind,
                                         RuntimeEffectKind::AcquireImage
                                             | RuntimeEffectKind::BuildImage
@@ -1414,6 +1420,45 @@ mod tests {
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
+
+    /// Only proved cleanup or pre-helper refusal can settle an import as effect-local failure.
+    #[test]
+    fn import_failure_settlement_requires_definite_local_proof() {
+        use crate::epoch_coordinator::{
+            REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE, RuntimeEffectKind,
+        };
+        let mut command = super::PolledEffectCommand {
+            kind: RuntimeEffectKind::ImportReference,
+            request_id: "ab".repeat(32),
+            input: serde_json::json!({}),
+            file_data: None,
+            admission_failure: None,
+            trace_context: opentelemetry::Context::new(),
+        };
+        assert!(super::is_definite_import_failure(
+            &command,
+            REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE
+        ));
+        assert!(!super::is_definite_import_failure(
+            &command,
+            "reference.import failed or unknown"
+        ));
+        assert!(!super::is_definite_import_failure(
+            &command,
+            "reference.import request rejected"
+        ));
+        command.admission_failure = Some("reference.import entry kind missing");
+        assert!(super::is_definite_import_failure(
+            &command,
+            command.admission_failure.unwrap()
+        ));
+        command.admission_failure = None;
+        command.kind = RuntimeEffectKind::ExportFile;
+        assert!(!super::is_definite_import_failure(
+            &command,
+            REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE
+        ));
+    }
 
     /// Returns the exact non-secret execution-host environment projection.
     fn valid_nanohost_environment() -> BTreeMap<String, String> {
@@ -2363,8 +2408,7 @@ mod tests {
             .split_once("let failure_result")
             .unwrap()
             .0;
-        assert!(failure_branch.contains("command.kind == RuntimeEffectKind::ImportReference"));
-        assert!(failure_branch.contains("command.admission_failure.is_some()"));
+        assert!(failure_branch.contains("is_definite_import_failure(&command, _error)"));
         let failure_path = &run[typed_failure.saturating_sub(600)..];
         assert!(failure_path.contains("command.request_id"));
         assert!(failure_path.contains("submit_effect_result("));
