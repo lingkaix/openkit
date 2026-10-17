@@ -41,7 +41,7 @@ type Selection = {
 type Change = { path: string; before: string | null; after: string | null };
 
 /** Bound display text without changing retained bytes or using a partial destructive confirmation. */
-function boundedDiff(changes: Change[], requireComplete: boolean) {
+export function boundedNotebookDiff(changes: Change[], requireComplete: boolean) {
   const bytes = changes.reduce(
     (size, { before, after }) =>
       size + Buffer.byteLength(before ?? '') + Buffer.byteLength(after ?? ''),
@@ -224,7 +224,7 @@ export function createNotebookHistoryOperations(
         baseRevision: input.baseRevision,
         fromRevision: input.fromRevision,
         forRestore: input.forRestore === true,
-        ...boundedDiff(
+        ...boundedNotebookDiff(
           open(input.workspaceId, context).diff(input, input.forRestore),
           input.forRestore === true
         ),
@@ -232,7 +232,7 @@ export function createNotebookHistoryOperations(
     'knowledge.notebook.restore': async (input, context) =>
       run(async () => {
         const history = open(input.workspaceId, context);
-        const { changes } = boundedDiff(history.diff(input, true), true);
+        const { changes } = boundedNotebookDiff(history.diff(input, true), true);
         const actor = context.actorRef;
         const {
           runtimeConfigManager,
